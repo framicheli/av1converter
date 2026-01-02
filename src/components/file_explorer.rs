@@ -4,7 +4,7 @@ use std::path::PathBuf;
 /// `FileExplorer` maintains the current directory, a sorted list of entries,
 /// and the currently selected index. It supports navigating directories,
 /// moving the selection, and selecting files.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FileExplorer {
     /// Current directory being explored.
     pub current_dir: PathBuf,
