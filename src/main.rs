@@ -1,6 +1,5 @@
 mod app;
 mod components;
-mod encoder;
 mod ui;
 
 use anyhow::Result;

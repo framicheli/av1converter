@@ -1,0 +1,3 @@
+[submodule "libs/transcoder"]
+	path = libs/transcoder
+	url = https://github.com/framicheli/av1-transcode.git
