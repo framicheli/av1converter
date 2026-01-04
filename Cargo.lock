@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "av1converter"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "av1-transcode",

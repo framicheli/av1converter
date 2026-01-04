@@ -1,6 +1,6 @@
 [package]
 name = "av1converter"
-version = "1.0.0"
+version = "1.0.1"
 description = "A simple TUI tool to convert videos into AV1"
 authors = ["Francesco <mi.francesco@gmail.com>"]
 license = "MIT"
