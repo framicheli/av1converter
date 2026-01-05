@@ -1,5 +1,65 @@
+use ratatui::{
+    Frame,
+    layout::{Alignment, Constraint, Layout},
+    style::{Color, Style, Stylize},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+};
 use std::fs;
 use std::path::PathBuf;
+
+use crate::app::App;
+
+pub fn draw_file_explorer(frame: &mut Frame, app: &mut App) {
+    let size = frame.area();
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(5),
+        Constraint::Length(3),
+    ])
+    .split(size);
+
+    // Title
+    let title = Paragraph::new("Select Video File")
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL))
+        .bold()
+        .blue();
+    frame.render_widget(title, chunks[0]);
+
+    // File list
+    let files: Vec<ListItem> = app
+        .explorer
+        .files
+        .iter()
+        .map(|path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let display_name = if path.is_dir() {
+                format!("📁 {}", name)
+            } else {
+                format!("📄 {}", name)
+            };
+            ListItem::new(display_name)
+        })
+        .collect();
+
+    let mut state = ListState::default();
+    state.select(Some(app.explorer.selected_index));
+
+    let title_text = format!(" Current: {} ", app.explorer.current_dir.to_string_lossy());
+    let list = List::new(files)
+        .block(Block::default().borders(Borders::ALL).title(title_text))
+        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
+        .highlight_symbol(">> ");
+
+    frame.render_stateful_widget(list, chunks[1], &mut state);
+
+    // Help text
+    let help_text = Paragraph::new("↑/↓: Navigate  Enter: Select  Esc: Back")
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).title(" Help "))
+        .gray();
+    frame.render_widget(help_text, chunks[2]);
+}
 
 /// `FileExplorer` maintains the current directory, a sorted list of entries,
 /// and the currently selected index. It supports navigating directories,
@@ -116,8 +176,8 @@ impl FileExplorer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env::temp_dir;
-    use std::fs::{File, create_dir};
+
+    use std::fs::File;
 
     fn setup_temp_fs() -> PathBuf {
         use std::time::{SystemTime, UNIX_EPOCH};
