@@ -1,24 +1,6 @@
 [package]
 name = "av1converter"
-version = "1.0.2"
-description = "A simple TUI tool to convert videos into AV1"
-authors = ["Francesco <mi.francesco@gmail.com>"]
-license = "MIT"
+version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crossterm = "0.29.0"
-ratatui = "0.30.0"
-ffmpeg-next = "8.0.0"
-anyhow = "1.0.100"
-tracing = "0.1.44"
-transcoder = { path = "libs/transcoder", package = "av1-transcode" }
-
-[dev-dependencies]
-pkg-config = "0.3"
-
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"
-strip = true
