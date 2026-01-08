@@ -28,7 +28,7 @@ ffprobe -v error \
 
 ```bash
 ffmpeg -y -i input.mkv \
-  -map 0:v:0 -map 0:a? -map 0:s? \
+  -map 0:v:0 -map '0:a?' -map '0:s?' \
   -c:v libsvtav1 \
   -preset 4 \
   -crf 28 \
@@ -43,7 +43,7 @@ ffmpeg -y -i input.mkv \
 
 ```bash
 ffmpeg -y -i input.mkv \
-  -map 0:v:0 -map 0:a? -map 0:s? \
+  -map 0:v:0 -map '0:a?' -map '0:s?' \
   -c:v libsvtav1 \
   -preset 4 \
   -crf 29 \
@@ -61,7 +61,7 @@ ffmpeg -y -i input.mkv \
 
 ```bash
 ffmpeg -y -i input.mkv \
-  -map 0:v:0 -map 0:a? -map 0:s? \
+  -map 0:v:0 -map '0:a?' -map '0:s?' \
   -c:v libsvtav1 \
   -preset 4 \
   -crf 30 \
@@ -77,7 +77,7 @@ ffmpeg -y -i input.mkv \
 
 ```bash
 ffmpeg -y -i input.mkv \
-  -map 0:v:0 -map 0:a? -map 0:s? \
+  -map 0:v:0 -map '0:a?' -map '0:s?' \
   -c:v libsvtav1 \
   -preset 4 \
   -crf 30 \
@@ -89,4 +89,13 @@ ffmpeg -y -i input.mkv \
   -c:a copy \
   -c:s copy \
   output_4k_hdr_av1.mkv
+```
+
+## Evaluate
+```bash
+ffmpeg \
+  -i "original.mkv" \
+  -i "film_AV1.mkv" \
+  -lavfi "[0:v]format=yuv420p[ref];[1:v]format=yuv420p[dist];[ref][dist]libvmaf" \
+  -f null -
 ```
