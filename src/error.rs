@@ -3,7 +3,6 @@ use std::fmt::Display;
 #[derive(Debug, Clone)]
 pub enum AppError {
     CommandExecutionError { message: String },
-    InternalError { message: String },
 }
 
 impl Display for AppError {
@@ -12,7 +11,6 @@ impl Display for AppError {
             AppError::CommandExecutionError { message } => {
                 write!(f, "Error executing the shell command: {}", message)
             }
-            AppError::InternalError { message } => write!(f, "Internal Server Error: {}", message),
         }
     }
 }

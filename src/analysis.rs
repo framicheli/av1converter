@@ -13,10 +13,11 @@ pub enum Resolution {
     UHD2160pDV, // Don't convert
 }
 
+#[allow(unused)]
 #[derive(Debug, Deserialize)]
 pub struct AnalysisResult {
-    width: u32,
-    height: u32,
+    pub width: u32,
+    pub height: u32,
     pix_fmt: String,
     color_primaries: Option<String>,
     color_transfer: Option<String>,
@@ -25,24 +26,24 @@ pub struct AnalysisResult {
 }
 
 impl AnalysisResult {
-    pub fn is_hdr(&self, ar: &AnalysisResult) -> bool {
+    pub fn is_hdr(&self) -> bool {
         matches!(
-            ar.color_transfer.as_deref(),
+            self.color_transfer.as_deref(),
             Some("smpte2084") | Some("arib-std-b67")
         )
     }
 
-    pub fn is_dolby_vision(&self, ar: &AnalysisResult) -> bool {
-        ar.side_data_list
+    pub fn is_dolby_vision(&self) -> bool {
+        self.side_data_list
             .as_ref()
             .map(|list| list.iter().any(|v| v.to_string().contains("Dolby Vision")))
             .unwrap_or(false)
     }
 
-    pub fn classify_video(&self, ar: &AnalysisResult) -> Result<Resolution, AppError> {
-        let is_4k = ar.width >= 3840 || ar.height >= 2160;
-        let hdr = self.is_hdr(ar);
-        let dv = self.is_dolby_vision(ar);
+    pub fn classify_video(&self) -> Result<Resolution, AppError> {
+        let is_4k = self.width >= 3000 || self.height >= 1800;
+        let hdr = self.is_hdr();
+        let dv = self.is_dolby_vision();
 
         Ok(match (is_4k, hdr, dv) {
             (false, false, false) => Resolution::HD1080p,

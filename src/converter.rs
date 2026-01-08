@@ -2,11 +2,25 @@ use crate::analysis::{AnalysisOutput, AnalysisResult, Resolution};
 use crate::error::AppError;
 use std::process::Command;
 
+#[derive(Debug)]
 pub enum EncoderProfile {
     HD1080p,
     HD1080pHDR,
     UHD2160p,
     UHD2160pHDR,
+}
+
+impl From<Resolution> for EncoderProfile {
+    fn from(resolution: Resolution) -> Self {
+        match resolution {
+            Resolution::HD1080p => EncoderProfile::HD1080p,
+            Resolution::HD1080pHDR => EncoderProfile::HD1080pHDR,
+            Resolution::UHD2160p => EncoderProfile::UHD2160p,
+            Resolution::UHD2160pHDR => EncoderProfile::UHD2160pHDR,
+            // TODO: fix
+            Resolution::HD1080pDV | Resolution::UHD2160pDV => EncoderProfile::HD1080p,
+        }
+    }
 }
 
 impl EncoderProfile {
@@ -73,7 +87,7 @@ impl EncoderProfile {
     }
 }
 
-struct Converter {
+pub struct Converter {
     resolution: Resolution,
 }
 
@@ -142,7 +156,7 @@ impl Converter {
     }
 
     /// Determine if conversion is needed based on resolution
-    pub fn should_convert(&self, analysis: &AnalysisResult) -> bool {
+    pub fn should_convert(&self) -> bool {
         matches!(
             self.resolution,
             Resolution::HD1080p
@@ -150,6 +164,15 @@ impl Converter {
                 | Resolution::UHD2160p
                 | Resolution::UHD2160pHDR
         )
+    }
+
+    /// Encode the video using the appropriate encoder profile
+    pub fn encode(&self, input: &str, output: &str) -> Result<(), AppError> {
+        let profile: EncoderProfile = self.resolution.into();
+        let args = profile.ffmpeg_args(input, output);
+
+        println!("Encoding video with profile: {:?}", profile);
+        self.execute("ffmpeg", &args)
     }
 
     /// Evaluate the video quality using the VMAF score
@@ -166,6 +189,7 @@ impl Converter {
             "-",
         ];
 
+        println!("Evaluating video quality with VMAF...");
         self.execute("ffmpeg", &args)
     }
 }
