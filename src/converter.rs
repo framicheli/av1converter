@@ -1,8 +1,9 @@
-use crate::analysis::{AnalysisOutput, AnalysisResult, Resolution};
+use crate::analysis::Resolution;
 use crate::error::AppError;
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EncoderProfile {
     HD1080p,
     HD1080pHDR,
@@ -17,179 +18,208 @@ impl From<Resolution> for EncoderProfile {
             Resolution::HD1080pHDR => EncoderProfile::HD1080pHDR,
             Resolution::UHD2160p => EncoderProfile::UHD2160p,
             Resolution::UHD2160pHDR => EncoderProfile::UHD2160pHDR,
-            // TODO: fix
             Resolution::HD1080pDV | Resolution::UHD2160pDV => EncoderProfile::HD1080p,
         }
     }
 }
 
+/// Track selection configuration
+#[derive(Debug, Clone)]
+pub struct TrackSelection {
+    pub audio_tracks: Vec<usize>,
+    pub subtitle_tracks: Vec<usize>,
+}
+
+impl Default for TrackSelection {
+    fn default() -> Self {
+        Self {
+            audio_tracks: Vec::new(),
+            subtitle_tracks: Vec::new(),
+        }
+    }
+}
+
+impl TrackSelection {
+    pub fn is_select_all(&self) -> bool {
+        self.audio_tracks.is_empty() && self.subtitle_tracks.is_empty()
+    }
+}
+
 impl EncoderProfile {
-    pub fn ffmpeg_args<'a>(&self, input: &'a str, output: &'a str) -> Vec<&'a str> {
+    pub fn build_ffmpeg_args(
+        &self,
+        input: &str,
+        output: &str,
+        track_selection: &TrackSelection,
+    ) -> Vec<String> {
         let mut args = vec![
-            "-y",
-            "-i",
-            input,
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a?",
-            "-map",
-            "0:s?",
-            "-c:v",
-            "libsvtav1",
-            "-preset",
-            "4",
-            "-pix_fmt",
-            "yuv420p10le",
-            "-c:a",
-            "copy",
-            "-c:s",
-            "copy",
+            "-y".to_string(),
+            "-i".to_string(),
+            input.to_string(),
+            "-map".to_string(),
+            "0:v:0".to_string(),
         ];
 
+        // Add track mappings
+        if track_selection.is_select_all() {
+            // Copy all audio and subtitle tracks
+            args.extend(["-map".to_string(), "0:a?".to_string()]);
+            args.extend(["-map".to_string(), "0:s?".to_string()]);
+        } else {
+            // Map specific audio tracks
+            for &track_idx in &track_selection.audio_tracks {
+                args.extend(["-map".to_string(), format!("0:a:{}", track_idx)]);
+            }
+            // Map specific subtitle tracks
+            for &track_idx in &track_selection.subtitle_tracks {
+                args.extend(["-map".to_string(), format!("0:s:{}", track_idx)]);
+            }
+        }
+
+        // Video codec settings
+        args.extend([
+            "-c:v".to_string(),
+            "libsvtav1".to_string(),
+            "-preset".to_string(),
+            "4".to_string(),
+            "-pix_fmt".to_string(),
+            "yuv420p10le".to_string(),
+            "-c:a".to_string(),
+            "copy".to_string(),
+            "-c:s".to_string(),
+            "copy".to_string(),
+        ]);
+
+        // Profile-specific settings
         match self {
             EncoderProfile::HD1080p => {
-                args.extend(["-crf", "28"]);
-                args.extend(["-svtav1-params", "tune=0:film-grain=0"]);
+                args.extend(["-crf".to_string(), "28".to_string()]);
+                args.extend([
+                    "-svtav1-params".to_string(),
+                    "tune=0:film-grain=0".to_string(),
+                ]);
             }
             EncoderProfile::HD1080pHDR => {
-                args.extend(["-crf", "29"]);
-                args.extend(["-svtav1-params", "tune=0:film-grain=1"]);
+                args.extend(["-crf".to_string(), "29".to_string()]);
                 args.extend([
-                    "-color_primaries",
-                    "bt2020",
-                    "-color_trc",
-                    "smpte2084",
-                    "-colorspace",
-                    "bt2020nc",
+                    "-svtav1-params".to_string(),
+                    "tune=0:film-grain=1".to_string(),
+                ]);
+                args.extend([
+                    "-color_primaries".to_string(),
+                    "bt2020".to_string(),
+                    "-color_trc".to_string(),
+                    "smpte2084".to_string(),
+                    "-colorspace".to_string(),
+                    "bt2020nc".to_string(),
                 ]);
             }
             EncoderProfile::UHD2160p => {
-                args.extend(["-crf", "30"]);
-                args.extend(["-svtav1-params", "tune=0:film-grain=1"]);
+                args.extend(["-crf".to_string(), "30".to_string()]);
+                args.extend([
+                    "-svtav1-params".to_string(),
+                    "tune=0:film-grain=1".to_string(),
+                ]);
             }
             EncoderProfile::UHD2160pHDR => {
-                args.extend(["-crf", "30"]);
-                args.extend(["-svtav1-params", "tune=0:film-grain=1"]);
+                args.extend(["-crf".to_string(), "30".to_string()]);
                 args.extend([
-                    "-color_primaries",
-                    "bt2020",
-                    "-color_trc",
-                    "smpte2084",
-                    "-colorspace",
-                    "bt2020nc",
+                    "-svtav1-params".to_string(),
+                    "tune=0:film-grain=1".to_string(),
+                ]);
+                args.extend([
+                    "-color_primaries".to_string(),
+                    "bt2020".to_string(),
+                    "-color_trc".to_string(),
+                    "smpte2084".to_string(),
+                    "-colorspace".to_string(),
+                    "bt2020nc".to_string(),
                 ]);
             }
         }
 
-        args.push(output);
+        // Add progress output for parsing
+        args.extend(["-progress".to_string(), "pipe:1".to_string()]);
+
+        args.push(output.to_string());
         args
     }
 }
 
-pub struct Converter {
+/// Progress callback type for encoding progress updates
+pub type ProgressCallback = Box<dyn FnMut(f32) + Send>;
+
+/// Encode a video file with the given profile and track selection
+pub fn encode_video(
+    input: &str,
+    output: &str,
     resolution: Resolution,
+    track_selection: &TrackSelection,
+    mut progress_callback: Option<ProgressCallback>,
+) -> Result<(), AppError> {
+    let profile: EncoderProfile = resolution.into();
+    let args = profile.build_ffmpeg_args(input, output, track_selection);
+
+    // Get video duration for progress calculation
+    let duration = get_video_duration(input).unwrap_or(0.0);
+
+    let mut child = Command::new("ffmpeg")
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| AppError::CommandExecutionError {
+            message: format!("Failed to start ffmpeg: {}", e),
+        })?;
+
+    // Parse progress from stdout
+    if let Some(stdout) = child.stdout.take() {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().map_while(Result::ok) {
+            if line.starts_with("out_time_us=") {
+                if let Ok(time_us) = line.trim_start_matches("out_time_us=").parse::<f64>() {
+                    let time_secs = time_us / 1_000_000.0;
+                    if duration > 0.0 {
+                        let progress = (time_secs / duration * 100.0).min(100.0) as f32;
+                        if let Some(ref mut cb) = progress_callback {
+                            cb(progress);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| AppError::CommandExecutionError {
+        message: format!("Failed to wait for ffmpeg: {}", e),
+    })?;
+
+    if !status.success() {
+        return Err(AppError::CommandExecutionError {
+            message: format!("ffmpeg failed with status: {}", status),
+        });
+    }
+
+    Ok(())
 }
 
-impl Converter {
-    pub fn new(resolution: Resolution) -> Self {
-        Self { resolution }
-    }
-
-    /// Execute the shell command
-    fn execute(&self, command: &str, args: &[&str]) -> Result<(), AppError> {
-        let status = Command::new(command).args(args).status().map_err(|e| {
-            AppError::CommandExecutionError {
-                message: format!("Failed to execute {}: {}", command, e),
-            }
-        })?;
-        if !status.success() {
-            return Err(AppError::CommandExecutionError {
-                message: format!("{} failed with status: {}", command, status),
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Execute the shell command and return the output
-    fn execute_output(&self, command: &str, args: &[&str]) -> Result<String, AppError> {
-        let output = Command::new(command).args(args).output().map_err(|e| {
-            AppError::CommandExecutionError {
-                message: format!("Failed to execute {}: {}", command, e),
-            }
-        })?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AppError::CommandExecutionError {
-                message: format!("{} failed: {}", command, stderr),
-            });
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    }
-
-    /// Analyze video file and get a JSON file response
-    pub fn analyze(&self, input_path: &str) -> Result<AnalysisResult, AppError> {
-        let args = [
+/// Get video duration in seconds using ffprobe
+fn get_video_duration(input: &str) -> Option<f64> {
+    let output = Command::new("ffprobe")
+        .args([
             "-v",
             "error",
-            "-select_streams",
-            "v:0",
             "-show_entries",
-            "stream=width,height,pix_fmt,color_primaries,color_transfer,color_space,side_data_list",
+            "format=duration",
             "-of",
-            "json",
-            input_path,
-        ];
-        let output: AnalysisOutput = serde_json::from_str(&self.execute_output("ffprobe", &args)?)
-            .map_err(|e| AppError::CommandExecutionError {
-                message: format!("Failed to parse ffprobe output: {}", e),
-            })?;
-        output
-            .streams
-            .into_iter()
-            .next()
-            .ok_or_else(|| AppError::CommandExecutionError {
-                message: "No video stream found".to_string(),
-            })
-    }
-
-    /// Determine if conversion is needed based on resolution
-    pub fn should_convert(&self) -> bool {
-        matches!(
-            self.resolution,
-            Resolution::HD1080p
-                | Resolution::HD1080pHDR
-                | Resolution::UHD2160p
-                | Resolution::UHD2160pHDR
-        )
-    }
-
-    /// Encode the video using the appropriate encoder profile
-    pub fn encode(&self, input: &str, output: &str) -> Result<(), AppError> {
-        let profile: EncoderProfile = self.resolution.into();
-        let args = profile.ffmpeg_args(input, output);
-
-        println!("Encoding video with profile: {:?}", profile);
-        self.execute("ffmpeg", &args)
-    }
-
-    /// Evaluate the video quality using the VMAF score
-    pub fn evaluate(&self, input: &str, output: &str) -> Result<(), AppError> {
-        let args = [
-            "-i",
+            "default=noprint_wrappers=1:nokey=1",
             input,
-            "-i",
-            output,
-            "-lavfi",
-            "[0:v]format=yuv420p[ref];[1:v]format=yuv420p[dist];[ref][dist]libvmaf",
-            "-f",
-            "null",
-            "-",
-        ];
+        ])
+        .output()
+        .ok()?;
 
-        println!("Evaluating video quality with VMAF...");
-        self.execute("ffmpeg", &args)
-    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .ok()
 }
