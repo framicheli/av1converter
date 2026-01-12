@@ -91,7 +91,7 @@ pub fn render_queue(f: &mut Frame, app: &App) {
     let help_text = if app.encoding_active {
         Line::from(vec![
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(" Cancel (not implemented)"),
+            Span::raw(" Cancel"),
         ])
     } else {
         Line::from(vec![

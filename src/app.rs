@@ -1,9 +1,11 @@
 use crate::analysis::{analyze_full, Resolution};
-use crate::converter::{encode_video, TrackSelection};
+use crate::converter::{encode_video, EncodeResult, TrackSelection};
 use crate::data::{is_video_file, FileStatus, VideoFile};
 use ratatui::widgets::ListState;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,11 +50,15 @@ pub struct App {
     // Encoding
     pub encoding_active: bool,
     pub progress_receiver: Option<Receiver<ProgressMessage>>,
+    pub cancel_flag: Arc<AtomicBool>,
 
     // Stats
     pub converted_count: usize,
     pub skipped_count: usize,
     pub error_count: usize,
+
+    // Message/notification
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,6 +72,7 @@ pub enum ProgressMessage {
     Progress(usize, f32),
     Done(usize),
     Error(usize, String),
+    Cancelled,
 }
 
 impl Default for App {
@@ -96,10 +103,20 @@ impl App {
             home_index: 0,
             encoding_active: false,
             progress_receiver: None,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
             converted_count: 0,
             skipped_count: 0,
             error_count: 0,
+            message: None,
         }
+    }
+
+    pub fn set_message(&mut self, msg: &str) {
+        self.message = Some(msg.to_string());
+    }
+
+    pub fn clear_message(&mut self) {
+        self.message = None;
     }
 
     pub fn refresh_dir_entries(&mut self) {
@@ -232,7 +249,9 @@ impl App {
                 } else {
                     // Select this folder and scan for videos
                     self.scan_folder_for_videos(&selected);
-                    if !self.files.is_empty() {
+                    if self.files.is_empty() {
+                        self.set_message("No video files found in this folder");
+                    } else {
                         self.analyze_files();
                     }
                 }
@@ -341,6 +360,10 @@ impl App {
         self.encoding_active = true;
         self.current_file_index = 0;
 
+        // Reset cancel flag
+        self.cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_flag = self.cancel_flag.clone();
+
         let (tx, rx) = mpsc::channel();
         self.progress_receiver = Some(rx);
 
@@ -375,7 +398,14 @@ impl App {
         // Start encoding thread
         thread::spawn(move || {
             for (idx, input, output, resolution, track_selection) in files_to_encode {
+                // Check if cancelled before starting next file
+                if cancel_flag.load(Ordering::Relaxed) {
+                    let _ = tx.send(ProgressMessage::Cancelled);
+                    break;
+                }
+
                 let tx_clone = tx.clone();
+                let cancel_clone = cancel_flag.clone();
 
                 // Send initial progress
                 let _ = tx.send(ProgressMessage::Progress(idx, 0.0));
@@ -388,18 +418,27 @@ impl App {
                     Some(Box::new(move |progress| {
                         let _ = tx_clone.send(ProgressMessage::Progress(idx, progress));
                     })),
+                    cancel_clone,
                 );
 
                 match result {
-                    Ok(()) => {
+                    EncodeResult::Success => {
                         let _ = tx.send(ProgressMessage::Done(idx));
                     }
-                    Err(e) => {
-                        let _ = tx.send(ProgressMessage::Error(idx, e.to_string()));
+                    EncodeResult::Cancelled => {
+                        let _ = tx.send(ProgressMessage::Cancelled);
+                        break;
+                    }
+                    EncodeResult::Error(e) => {
+                        let _ = tx.send(ProgressMessage::Error(idx, e));
                     }
                 }
             }
         });
+    }
+
+    pub fn cancel_encoding(&mut self) {
+        self.cancel_flag.store(true, Ordering::Relaxed);
     }
 
     pub fn process_progress_messages(&mut self) {
@@ -448,6 +487,18 @@ impl App {
                         file.status = FileStatus::Error { message: msg };
                         self.error_count += 1;
                     }
+                }
+                ProgressMessage::Cancelled => {
+                    // Mark current converting file as cancelled
+                    for file in &mut self.files {
+                        if matches!(file.status, FileStatus::Converting { .. }) {
+                            file.status = FileStatus::Skipped {
+                                reason: "Cancelled".to_string(),
+                            };
+                        }
+                    }
+                    self.encoding_active = false;
+                    should_finish = true;
                 }
             }
         }

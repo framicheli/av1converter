@@ -109,6 +109,9 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
 }
 
 fn handle_explorer_key(app: &mut App, key: KeyCode) {
+    // Clear any message when user takes action
+    app.clear_message();
+
     match key {
         KeyCode::Esc => app.navigate_to_home(),
         KeyCode::Up | KeyCode::Char('k') => {
@@ -228,6 +231,9 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
 
 fn handle_queue_key(app: &mut App, key: KeyCode) {
     match key {
+        KeyCode::Esc if app.encoding_active => {
+            app.cancel_encoding();
+        }
         KeyCode::Enter if !app.encoding_active => {
             app.navigate_to_finish();
         }

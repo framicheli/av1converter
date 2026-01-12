@@ -10,13 +10,24 @@ use ratatui::{
 use std::path::PathBuf;
 
 pub fn render_explorer(f: &mut Frame, app: &mut App) {
+    let has_message = app.message.is_some();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(3),
-        ])
+        .constraints(if has_message {
+            vec![
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(5),
+                Constraint::Length(3),
+            ]
+        } else {
+            vec![
+                Constraint::Length(3),
+                Constraint::Length(0),
+                Constraint::Min(5),
+                Constraint::Length(3),
+            ]
+        })
         .margin(1)
         .split(f.area());
 
@@ -32,6 +43,20 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
                 .title(" Current Directory "),
         );
     f.render_widget(path, chunks[0]);
+
+    // Message (if any)
+    if let Some(ref msg) = app.message {
+        let message = Paragraph::new(msg.as_str())
+            .style(Style::default().fg(Color::Yellow))
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow))
+                    .title(" Notice "),
+            );
+        f.render_widget(message, chunks[1]);
+    }
 
     // File list
     let items: Vec<ListItem> = app
@@ -58,7 +83,7 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         );
-    f.render_stateful_widget(list, chunks[1], &mut app.explorer_list_state);
+    f.render_stateful_widget(list, chunks[2], &mut app.explorer_list_state);
 
     // Help
     let help_text = match app.selection_mode {
@@ -85,7 +110,7 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE));
-    f.render_widget(help, chunks[2]);
+    f.render_widget(help, chunks[3]);
 }
 
 fn create_entry_item(

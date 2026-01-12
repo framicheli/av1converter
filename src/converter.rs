@@ -1,7 +1,8 @@
 use crate::analysis::Resolution;
-use crate::error::AppError;
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum EncoderProfile {
@@ -149,6 +150,14 @@ impl EncoderProfile {
 /// Progress callback type for encoding progress updates
 pub type ProgressCallback = Box<dyn FnMut(f32) + Send>;
 
+/// Result of encoding - can be success, error, or cancelled
+#[derive(Debug)]
+pub enum EncodeResult {
+    Success,
+    Cancelled,
+    Error(String),
+}
+
 /// Encode a video file with the given profile and track selection
 pub fn encode_video(
     input: &str,
@@ -156,26 +165,35 @@ pub fn encode_video(
     resolution: Resolution,
     track_selection: &TrackSelection,
     mut progress_callback: Option<ProgressCallback>,
-) -> Result<(), AppError> {
+    cancel_flag: Arc<AtomicBool>,
+) -> EncodeResult {
     let profile: EncoderProfile = resolution.into();
     let args = profile.build_ffmpeg_args(input, output, track_selection);
 
     // Get video duration for progress calculation
     let duration = get_video_duration(input).unwrap_or(0.0);
 
-    let mut child = Command::new("ffmpeg")
+    let mut child = match Command::new("ffmpeg")
         .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| AppError::CommandExecutionError {
-            message: format!("Failed to start ffmpeg: {}", e),
-        })?;
+    {
+        Ok(c) => c,
+        Err(e) => return EncodeResult::Error(format!("Failed to start ffmpeg: {}", e)),
+    };
 
     // Parse progress from stdout
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
         for line in reader.lines().map_while(Result::ok) {
+            // Check for cancellation
+            if cancel_flag.load(Ordering::Relaxed) {
+                kill_child(&mut child);
+                cleanup_partial_file(output);
+                return EncodeResult::Cancelled;
+            }
+
             if line.starts_with("out_time_us=") {
                 if let Ok(time_us) = line.trim_start_matches("out_time_us=").parse::<f64>() {
                     let time_secs = time_us / 1_000_000.0;
@@ -190,17 +208,33 @@ pub fn encode_video(
         }
     }
 
-    let status = child.wait().map_err(|e| AppError::CommandExecutionError {
-        message: format!("Failed to wait for ffmpeg: {}", e),
-    })?;
-
-    if !status.success() {
-        return Err(AppError::CommandExecutionError {
-            message: format!("ffmpeg failed with status: {}", status),
-        });
+    // Final cancellation check before waiting
+    if cancel_flag.load(Ordering::Relaxed) {
+        kill_child(&mut child);
+        cleanup_partial_file(output);
+        return EncodeResult::Cancelled;
     }
 
-    Ok(())
+    let status = match child.wait() {
+        Ok(s) => s,
+        Err(e) => return EncodeResult::Error(format!("Failed to wait for ffmpeg: {}", e)),
+    };
+
+    if !status.success() {
+        cleanup_partial_file(output);
+        return EncodeResult::Error(format!("ffmpeg failed with status: {}", status));
+    }
+
+    EncodeResult::Success
+}
+
+fn kill_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn cleanup_partial_file(path: &str) {
+    let _ = std::fs::remove_file(path);
 }
 
 /// Get video duration in seconds using ffprobe
