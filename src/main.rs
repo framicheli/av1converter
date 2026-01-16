@@ -5,13 +5,13 @@ mod data;
 mod error;
 mod ui;
 
-use app::{App, Screen, TrackFocus};
+use app::{App, ConfirmAction, Screen, TrackFocus};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
 use std::time::Duration;
 
@@ -57,6 +57,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 Screen::Queue => ui::render_queue(f, app),
                 Screen::Finish => ui::render_finish(f, app),
             }
+            // Render confirmation dialog as overlay
+            if app.confirm_dialog.is_some() {
+                ui::render_confirm_dialog(f, app);
+            }
         })?;
 
         // Handle input with timeout for progress updates
@@ -75,6 +79,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 }
 
 fn handle_key(app: &mut App, key: KeyCode) {
+    // Handle confirmation dialog
+    if app.confirm_dialog.is_some() {
+        handle_confirm_dialog_key(app, key);
+        return;
+    }
+
     match &app.current_screen {
         Screen::Home => handle_home_key(app, key),
         Screen::FileExplorer { .. } => handle_explorer_key(app, key),
@@ -84,9 +94,51 @@ fn handle_key(app: &mut App, key: KeyCode) {
     }
 }
 
+fn handle_confirm_dialog_key(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            if let Some(action) = app.confirm_dialog.take() {
+                execute_confirm_action(app, action);
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            app.confirm_dialog = None;
+        }
+        KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
+            app.confirm_selection = !app.confirm_selection;
+        }
+        KeyCode::Enter => {
+            if app.confirm_selection {
+                // Yes
+                if let Some(action) = app.confirm_dialog.take() {
+                    execute_confirm_action(app, action);
+                }
+            } else {
+                // No
+                app.confirm_dialog = None;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
+    match action {
+        ConfirmAction::CancelEncoding => {
+            app.cancel_encoding();
+        }
+        ConfirmAction::ExitApp => {
+            app.should_quit = true;
+        }
+    }
+}
+
 fn handle_home_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('q') => {
+            app.confirm_dialog = Some(ConfirmAction::ExitApp);
+            app.confirm_selection = false; // Default to "No"
+        }
         KeyCode::Up | KeyCode::Char('k') => {
             if app.home_index > 0 {
                 app.home_index -= 1;
@@ -174,31 +226,29 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
             }
             _ => {}
         },
-        KeyCode::Char(' ') => {
-            match app.track_focus {
-                TrackFocus::Audio => {
-                    let cursor = app.audio_cursor;
-                    if let Some(file) = app.current_config_file_mut() {
-                        if let Some(track) = file.audio_tracks.get(cursor) {
-                            let idx = track.index;
-                            file.toggle_audio(idx);
-                        }
+        KeyCode::Char(' ') => match app.track_focus {
+            TrackFocus::Audio => {
+                let cursor = app.audio_cursor;
+                if let Some(file) = app.current_config_file_mut() {
+                    if let Some(track) = file.audio_tracks.get(cursor) {
+                        let idx = track.index;
+                        file.toggle_audio(idx);
                     }
-                }
-                TrackFocus::Subtitle => {
-                    let cursor = app.subtitle_cursor;
-                    if let Some(file) = app.current_config_file_mut() {
-                        if let Some(track) = file.subtitle_tracks.get(cursor) {
-                            let idx = track.index;
-                            file.toggle_subtitle(idx);
-                        }
-                    }
-                }
-                TrackFocus::Confirm => {
-                    app.confirm_track_config();
                 }
             }
-        }
+            TrackFocus::Subtitle => {
+                let cursor = app.subtitle_cursor;
+                if let Some(file) = app.current_config_file_mut() {
+                    if let Some(track) = file.subtitle_tracks.get(cursor) {
+                        let idx = track.index;
+                        file.toggle_subtitle(idx);
+                    }
+                }
+            }
+            TrackFocus::Confirm => {
+                app.confirm_track_config();
+            }
+        },
         KeyCode::Char('a') => {
             // Select all audio
             if let Some(file) = app.current_config_file_mut() {
@@ -232,7 +282,8 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
 fn handle_queue_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc if app.encoding_active => {
-            app.cancel_encoding();
+            app.confirm_dialog = Some(ConfirmAction::CancelEncoding);
+            app.confirm_selection = false; // Default to "No"
         }
         KeyCode::Enter if !app.encoding_active => {
             app.navigate_to_finish();
@@ -243,7 +294,10 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
 
 fn handle_finish_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('q') => {
+            app.confirm_dialog = Some(ConfirmAction::ExitApp);
+            app.confirm_selection = false; // Default to "No"
+        }
         KeyCode::Enter => app.reset(),
         _ => {}
     }

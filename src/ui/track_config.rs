@@ -1,16 +1,48 @@
 use crate::app::{App, TrackFocus};
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame,
 };
 
-pub fn render_track_config(f: &mut Frame, app: &App) {
-    let file = match app.current_config_file() {
-        Some(f) => f,
-        None => return,
+pub fn render_track_config(f: &mut Frame, app: &mut App) {
+    let (filename, resolution_string, hdr_string, audio_data, subtitle_data) = {
+        let file = match app.current_config_file() {
+            Some(f) => f,
+            None => return,
+        };
+
+        let audio_data: Vec<(String, bool)> = file
+            .audio_tracks
+            .iter()
+            .map(|track| {
+                (
+                    track.display_name(),
+                    file.selected_audio.contains(&track.index),
+                )
+            })
+            .collect();
+
+        let subtitle_data: Vec<(String, bool)> = file
+            .subtitle_tracks
+            .iter()
+            .map(|track| {
+                (
+                    track.display_name(),
+                    file.selected_subtitles.contains(&track.index),
+                )
+            })
+            .collect();
+
+        (
+            file.filename(),
+            file.resolution_string(),
+            file.hdr_string(),
+            audio_data,
+            subtitle_data,
+        )
     };
 
     let chunks = Layout::default()
@@ -28,20 +60,22 @@ pub fn render_track_config(f: &mut Frame, app: &App) {
         Line::from(vec![
             Span::styled("File: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                file.filename(),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                filename,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
             Span::styled("Resolution: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(file.resolution_string(), Style::default().fg(Color::White)),
+            Span::styled(resolution_string, Style::default().fg(Color::White)),
             Span::raw("  "),
             Span::styled("Type: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                file.hdr_string(),
-                Style::default().fg(if file.hdr_string() == "HDR" {
+                &*hdr_string,
+                Style::default().fg(if hdr_string == "HDR" {
                     Color::Yellow
-                } else if file.hdr_string() == "Dolby Vision" {
+                } else if hdr_string == "Dolby Vision" {
                     Color::Red
                 } else {
                     Color::White
@@ -65,14 +99,12 @@ pub fn render_track_config(f: &mut Frame, app: &App) {
         .split(chunks[1]);
 
     // Audio tracks
-    let audio_items: Vec<ListItem> = file
-        .audio_tracks
+    let audio_items: Vec<ListItem> = audio_data
         .iter()
         .enumerate()
-        .map(|(i, track)| {
-            let selected = file.selected_audio.contains(&track.index);
+        .map(|(i, (name, selected))| {
             let is_cursor = app.track_focus == TrackFocus::Audio && i == app.audio_cursor;
-            create_track_item(&track.display_name(), selected, is_cursor)
+            create_track_item(name, *selected, is_cursor)
         })
         .collect();
 
@@ -82,23 +114,25 @@ pub fn render_track_config(f: &mut Frame, app: &App) {
         Color::DarkGray
     };
 
-    let audio_list = List::new(audio_items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(audio_border_color))
-            .title(" Audio Tracks [Space to toggle] "),
-    );
-    f.render_widget(audio_list, track_chunks[0]);
+    let audio_list = List::new(audio_items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(audio_border_color))
+                .title(" Audio Tracks [Space to toggle] "),
+        )
+        .highlight_style(Style::default());
+
+    app.audio_list_state.select(Some(app.audio_cursor));
+    f.render_stateful_widget(audio_list, track_chunks[0], &mut app.audio_list_state);
 
     // Subtitle tracks
-    let subtitle_items: Vec<ListItem> = file
-        .subtitle_tracks
+    let subtitle_items: Vec<ListItem> = subtitle_data
         .iter()
         .enumerate()
-        .map(|(i, track)| {
-            let selected = file.selected_subtitles.contains(&track.index);
+        .map(|(i, (name, selected))| {
             let is_cursor = app.track_focus == TrackFocus::Subtitle && i == app.subtitle_cursor;
-            create_track_item(&track.display_name(), selected, is_cursor)
+            create_track_item(name, *selected, is_cursor)
         })
         .collect();
 
@@ -108,13 +142,17 @@ pub fn render_track_config(f: &mut Frame, app: &App) {
         Color::DarkGray
     };
 
-    let subtitle_list = List::new(subtitle_items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(subtitle_border_color))
-            .title(" Subtitle Tracks [Space to toggle] "),
-    );
-    f.render_widget(subtitle_list, track_chunks[1]);
+    let subtitle_list = List::new(subtitle_items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(subtitle_border_color))
+                .title(" Subtitle Tracks [Space to toggle] "),
+        )
+        .highlight_style(Style::default());
+
+    app.subtitle_list_state.select(Some(app.subtitle_cursor));
+    f.render_stateful_widget(subtitle_list, track_chunks[1], &mut app.subtitle_list_state);
 
     // Help / Confirm button
     let confirm_style = if app.track_focus == TrackFocus::Confirm {
