@@ -67,6 +67,14 @@ pub struct App {
 
     // Message/notification
     pub message: Option<String>,
+
+    // Confirmation dialog
+    pub confirm_dialog: Option<ConfirmAction>,
+    pub confirm_selection: bool, // true = Yes, false = No
+
+    // Track list states for scrolling
+    pub audio_list_state: ListState,
+    pub subtitle_list_state: ListState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +82,12 @@ pub enum TrackFocus {
     Audio,
     Subtitle,
     Confirm,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfirmAction {
+    CancelEncoding,
+    ExitApp,
 }
 
 pub enum ProgressMessage {
@@ -94,6 +108,10 @@ impl App {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         let mut list_state = ListState::default();
         list_state.select(Some(0));
+        let mut audio_list_state = ListState::default();
+        audio_list_state.select(Some(0));
+        let mut subtitle_list_state = ListState::default();
+        subtitle_list_state.select(Some(0));
         Self {
             current_screen: Screen::Home,
             should_quit: false,
@@ -116,6 +134,10 @@ impl App {
             skipped_count: 0,
             error_count: 0,
             message: None,
+            confirm_dialog: None,
+            confirm_selection: false, // Default to "No"
+            audio_list_state,
+            subtitle_list_state,
         }
     }
 
