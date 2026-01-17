@@ -13,7 +13,11 @@ pub struct AudioTrack {
 impl AudioTrack {
     pub fn display_name(&self) -> String {
         let lang = self.language.as_deref().unwrap_or("Unknown");
-        let title = self.title.as_ref().map(|t| format!(" - {}", t)).unwrap_or_default();
+        let title = self
+            .title
+            .as_ref()
+            .map(|t| format!(" - {}", t))
+            .unwrap_or_default();
         let channels_str = match self.channels {
             1 => "Mono",
             2 => "Stereo",
@@ -21,7 +25,14 @@ impl AudioTrack {
             8 => "7.1",
             _ => "Multi",
         };
-        format!("{}: {} ({} {}){}", self.index, lang, self.codec.to_uppercase(), channels_str, title)
+        format!(
+            "{}: {} ({} {}){}",
+            self.index,
+            lang,
+            self.codec.to_uppercase(),
+            channels_str,
+            title
+        )
     }
 }
 
@@ -36,8 +47,18 @@ pub struct SubtitleTrack {
 impl SubtitleTrack {
     pub fn display_name(&self) -> String {
         let lang = self.language.as_deref().unwrap_or("Unknown");
-        let title = self.title.as_ref().map(|t| format!(" - {}", t)).unwrap_or_default();
-        format!("{}: {} ({}){}", self.index, lang, self.codec.to_uppercase(), title)
+        let title = self
+            .title
+            .as_ref()
+            .map(|t| format!(" - {}", t))
+            .unwrap_or_default();
+        format!(
+            "{}: {} ({}){}",
+            self.index,
+            lang,
+            self.codec.to_uppercase(),
+            title
+        )
     }
 }
 
@@ -157,7 +178,9 @@ impl VideoFile {
 }
 
 pub fn is_video_file(path: &std::path::Path) -> bool {
-    let extensions = ["mp4", "mkv", "avi", "mov", "webm", "m4v", "ts", "wmv", "flv"];
+    let extensions = [
+        "mp4", "mkv", "avi", "mov", "webm", "m4v", "ts", "wmv", "flv",
+    ];
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| extensions.contains(&e.to_lowercase().as_str()))

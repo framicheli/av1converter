@@ -1,11 +1,11 @@
 use crate::app::App;
 use crate::data::FileStatus;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame,
 };
 
 pub fn render_finish(f: &mut Frame, app: &App) {
@@ -21,14 +21,12 @@ pub fn render_finish(f: &mut Frame, app: &App) {
 
     // Summary
     let summary_lines = vec![
-        Line::from(vec![
-            Span::styled(
-                "Conversion Complete!",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            "Conversion Complete!",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::styled("✓ ", Style::default().fg(Color::Green)),
@@ -89,6 +87,5 @@ fn create_result_item(name: &str, status: &FileStatus) -> ListItem<'static> {
         _ => ("?", Color::DarkGray, String::new()),
     };
 
-    ListItem::new(format!("  {} {}{}", symbol, name, suffix))
-        .style(Style::default().fg(color))
+    ListItem::new(format!("  {} {}{}", symbol, name, suffix)).style(Style::default().fg(color))
 }

@@ -72,7 +72,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             Span::raw("  "),
             Span::styled("Type: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                &*hdr_string,
+                hdr_string,
                 Style::default().fg(if hdr_string == "HDR" {
                     Color::Yellow
                 } else if hdr_string == "Dolby Vision" {

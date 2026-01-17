@@ -1,11 +1,11 @@
 use crate::app::{App, SelectionMode};
 use crate::data::is_video_file;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame,
 };
 use std::path::PathBuf;
 

@@ -1,11 +1,11 @@
 use crate::app::App;
 use crate::data::FileStatus;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
-    Frame,
 };
 
 pub fn render_queue(f: &mut Frame, app: &App) {
@@ -25,7 +25,11 @@ pub fn render_queue(f: &mut Frame, app: &App) {
     let done = app.converted_count + app.skipped_count + app.error_count;
 
     let title = Paragraph::new(format!("Conversion Queue ({}/{})", done, total))
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .alignment(Alignment::Center)
         .block(
             Block::default()
@@ -112,9 +116,7 @@ fn create_queue_item(name: &str, status: &FileStatus, is_current: bool) -> ListI
         FileStatus::Analyzing => ("◐", Color::Yellow, " Analyzing...".to_string()),
         FileStatus::AwaitingConfig => ("◑", Color::Blue, " Configuring...".to_string()),
         FileStatus::ReadyToConvert => ("●", Color::Blue, " Ready".to_string()),
-        FileStatus::Converting { progress } => {
-            ("▶", Color::Cyan, format!(" {:.1}%", progress))
-        }
+        FileStatus::Converting { progress } => ("▶", Color::Cyan, format!(" {:.1}%", progress)),
         FileStatus::Done => ("✓", Color::Green, " Done".to_string()),
         FileStatus::Skipped { reason } => ("⊘", Color::Yellow, format!(" ({})", reason)),
         FileStatus::Error { message } => ("✗", Color::Red, format!(" Error: {}", message)),

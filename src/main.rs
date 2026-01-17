@@ -64,12 +64,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         })?;
 
         // Handle input with timeout for progress updates
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    handle_key(app, key.code);
-                }
-            }
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            handle_key(app, key.code);
         }
 
         if app.should_quit {
@@ -229,20 +228,20 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
         KeyCode::Char(' ') => match app.track_focus {
             TrackFocus::Audio => {
                 let cursor = app.audio_cursor;
-                if let Some(file) = app.current_config_file_mut() {
-                    if let Some(track) = file.audio_tracks.get(cursor) {
-                        let idx = track.index;
-                        file.toggle_audio(idx);
-                    }
+                if let Some(file) = app.current_config_file_mut()
+                    && let Some(track) = file.audio_tracks.get(cursor)
+                {
+                    let idx = track.index;
+                    file.toggle_audio(idx);
                 }
             }
             TrackFocus::Subtitle => {
                 let cursor = app.subtitle_cursor;
-                if let Some(file) = app.current_config_file_mut() {
-                    if let Some(track) = file.subtitle_tracks.get(cursor) {
-                        let idx = track.index;
-                        file.toggle_subtitle(idx);
-                    }
+                if let Some(file) = app.current_config_file_mut()
+                    && let Some(track) = file.subtitle_tracks.get(cursor)
+                {
+                    let idx = track.index;
+                    file.toggle_subtitle(idx);
                 }
             }
             TrackFocus::Confirm => {

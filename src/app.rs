@@ -1,17 +1,21 @@
-use crate::analysis::{analyze_full, Resolution};
-use crate::converter::{encode_video, EncodeResult, TrackSelection};
-use crate::data::{is_video_file, FileStatus, VideoFile};
+use crate::analysis::{Resolution, analyze_full};
+use crate::converter::{EncodeResult, TrackSelection, encode_video};
+use crate::data::{FileStatus, VideoFile, is_video_file};
 use ratatui::widgets::ListState;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
 use std::thread;
 
 fn debug_log(msg: &str) {
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open("/Users/francesco/av1_debug.log") {
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/Users/francesco/av1_debug.log")
+    {
         let _ = writeln!(f, "[app] {}", msg);
     }
 }
@@ -153,10 +157,10 @@ impl App {
         self.dir_entries.clear();
 
         // Add parent directory if not at root
-        if let Some(parent) = self.current_dir.parent() {
-            if parent != self.current_dir {
-                self.dir_entries.push(PathBuf::from(".."));
-            }
+        if let Some(parent) = self.current_dir.parent()
+            && parent != self.current_dir
+        {
+            self.dir_entries.push(PathBuf::from(".."));
         }
 
         // Read directory contents
@@ -171,12 +175,10 @@ impl App {
                 .collect();
 
             // Sort: directories first, then files
-            paths.sort_by(|a, b| {
-                match (a.is_dir(), b.is_dir()) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a.file_name().cmp(&b.file_name()),
-                }
+            paths.sort_by(|a, b| match (a.is_dir(), b.is_dir()) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.file_name().cmp(&b.file_name()),
             });
 
             self.dir_entries.extend(paths);
@@ -207,7 +209,7 @@ impl App {
 
         let selected = self.dir_entries[self.explorer_index].clone();
 
-        if selected == PathBuf::from("..") {
+        if selected == Path::new("..") {
             // Go to parent directory
             if let Some(parent) = self.current_dir.parent() {
                 self.current_dir = parent.to_path_buf();
@@ -259,7 +261,7 @@ impl App {
 
         match self.selection_mode {
             SelectionMode::File => {
-                if selected == PathBuf::from("..") {
+                if selected == Path::new("..") {
                     // Go to parent directory
                     self.enter_directory();
                 } else if selected.is_dir() {
@@ -273,7 +275,7 @@ impl App {
                 }
             }
             SelectionMode::Folder => {
-                if selected == PathBuf::from("..") || !selected.is_dir() {
+                if selected == Path::new("..") || !selected.is_dir() {
                     // Navigate up or ignore non-directories
                     self.enter_directory();
                 } else {
@@ -341,12 +343,17 @@ impl App {
         }
 
         // Find first file awaiting config
-        self.config_file_index = self.files
+        self.config_file_index = self
+            .files
             .iter()
             .position(|f| matches!(f.status, FileStatus::AwaitingConfig))
             .unwrap_or(0);
 
-        if self.files.iter().any(|f| matches!(f.status, FileStatus::AwaitingConfig)) {
+        if self
+            .files
+            .iter()
+            .any(|f| matches!(f.status, FileStatus::AwaitingConfig))
+        {
             self.navigate_to_track_config();
         } else {
             // All files are either skipped or errored
@@ -368,7 +375,8 @@ impl App {
         }
 
         // Find next file awaiting config
-        let next_index = self.files
+        let next_index = self
+            .files
             .iter()
             .skip(self.config_file_index + 1)
             .position(|f| matches!(f.status, FileStatus::AwaitingConfig))

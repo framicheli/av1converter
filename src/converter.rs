@@ -1,7 +1,7 @@
 use crate::analysis::Resolution;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -26,19 +26,10 @@ impl From<Resolution> for EncoderProfile {
 }
 
 /// Track selection configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TrackSelection {
     pub audio_tracks: Vec<usize>,
     pub subtitle_tracks: Vec<usize>,
-}
-
-impl Default for TrackSelection {
-    fn default() -> Self {
-        Self {
-            audio_tracks: Vec::new(),
-            subtitle_tracks: Vec::new(),
-        }
-    }
 }
 
 impl TrackSelection {
@@ -141,7 +132,6 @@ impl EncoderProfile {
             }
         }
 
-
         args.push(output.to_string());
         args
     }
@@ -167,15 +157,15 @@ pub fn encode_video(
     mut progress_callback: Option<ProgressCallback>,
     cancel_flag: Arc<AtomicBool>,
 ) -> EncodeResult {
-    
     let profile: EncoderProfile = resolution.into();
     let mut args = profile.build_ffmpeg_args(input, output, track_selection);
 
     // Get video duration for progress calculation
     let duration = get_video_duration(input).unwrap_or(0.0);
-    
+
     // Use a file for progress output (avoids pipe buffering issues on macOS)
-    let progress_file = std::env::temp_dir().join(format!("ffmpeg_progress_{}", std::process::id()));
+    let progress_file =
+        std::env::temp_dir().join(format!("ffmpeg_progress_{}", std::process::id()));
     let progress_path = progress_file.to_string_lossy().to_string();
 
     // Create empty progress file
@@ -187,7 +177,6 @@ pub fn encode_video(
     args.insert(2, "-progress".to_string());
     args.insert(3, progress_path.clone());
 
-    
     let mut child = match Command::new("ffmpeg")
         .args(&args)
         .stdout(Stdio::null())
@@ -215,12 +204,11 @@ pub fn encode_video(
         if let Ok(content) = std::fs::read_to_string(&progress_file) {
             let mut latest_time_us: Option<f64> = None;
             for line in content.lines() {
-                if let Some(value) = line.strip_prefix("out_time_us=") {
-                    if let Ok(time_us) = value.trim().parse::<f64>() {
-                        if time_us > 0.0 {
-                            latest_time_us = Some(time_us);
-                        }
-                    }
+                if let Some(value) = line.strip_prefix("out_time_us=")
+                    && let Ok(time_us) = value.trim().parse::<f64>()
+                    && time_us > 0.0
+                {
+                    latest_time_us = Some(time_us);
                 }
             }
 
@@ -281,8 +269,5 @@ fn get_video_duration(input: &str) -> Option<f64> {
         .output()
         .ok()?;
 
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse()
-        .ok()
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }

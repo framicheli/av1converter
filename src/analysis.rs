@@ -109,19 +109,19 @@ pub fn analyze_full(input_path: &str) -> Result<FullAnalysis, AppError> {
     ];
 
     let video_output = execute_ffprobe(&video_args)?;
-    let video_data: AnalysisOutput = serde_json::from_str(&video_output).map_err(|e| {
-        AppError::CommandExecutionError {
+    let video_data: AnalysisOutput =
+        serde_json::from_str(&video_output).map_err(|e| AppError::CommandExecutionError {
             message: format!("Failed to parse video ffprobe output: {}", e),
-        }
-    })?;
-
-    let video = video_data
-        .streams
-        .into_iter()
-        .next()
-        .ok_or_else(|| AppError::CommandExecutionError {
-            message: "No video stream found".to_string(),
         })?;
+
+    let video =
+        video_data
+            .streams
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::CommandExecutionError {
+                message: "No video stream found".to_string(),
+            })?;
 
     // Get all streams for audio and subtitle info
     let all_args = [
@@ -135,11 +135,10 @@ pub fn analyze_full(input_path: &str) -> Result<FullAnalysis, AppError> {
     ];
 
     let all_output = execute_ffprobe(&all_args)?;
-    let all_data: FullProbeOutput = serde_json::from_str(&all_output).map_err(|e| {
-        AppError::CommandExecutionError {
+    let all_data: FullProbeOutput =
+        serde_json::from_str(&all_output).map_err(|e| AppError::CommandExecutionError {
             message: format!("Failed to parse streams ffprobe output: {}", e),
-        }
-    })?;
+        })?;
 
     let mut audio_tracks = Vec::new();
     let mut subtitle_tracks = Vec::new();
