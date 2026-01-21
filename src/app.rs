@@ -1,6 +1,7 @@
 use crate::analysis::{Resolution, analyze_full};
 use crate::converter::{EncodeResult, TrackSelection, encode_video};
 use crate::data::{FileStatus, VideoFile, is_video_file};
+use crate::encoder::EncoderConfig;
 use ratatui::widgets::ListState;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -66,6 +67,7 @@ pub struct App {
     pub cancel_flag: Arc<AtomicBool>,
     pub start_time: Option<Instant>,
     pub total_files_to_encode: usize,
+    pub encoder_config: EncoderConfig,
 
     // Stats
     pub converted_count: usize,
@@ -119,6 +121,10 @@ impl App {
         audio_list_state.select(Some(0));
         let mut subtitle_list_state = ListState::default();
         subtitle_list_state.select(Some(0));
+
+        // Detect available AV1 encoders at startup
+        let encoder_config = EncoderConfig::new();
+
         Self {
             current_screen: Screen::Home,
             should_quit: false,
@@ -139,6 +145,7 @@ impl App {
             cancel_flag: Arc::new(AtomicBool::new(false)),
             start_time: None,
             total_files_to_encode: 0,
+            encoder_config,
             converted_count: 0,
             skipped_count: 0,
             error_count: 0,
@@ -411,6 +418,9 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.progress_receiver = Some(rx);
 
+        // Get the encoder
+        let encoder = self.encoder_config.selected_encoder;
+
         // Collect files to encode
         let files_to_encode: Vec<(usize, PathBuf, PathBuf, Resolution, TrackSelection)> = self
             .files
@@ -433,6 +443,7 @@ impl App {
             .collect();
 
         debug_log(&format!("files_to_encode count: {}", files_to_encode.len()));
+        debug_log(&format!("Using encoder: {}", encoder));
 
         // Start timer and track total files
         self.start_time = Some(Instant::now());
@@ -467,6 +478,7 @@ impl App {
                     output.to_str().unwrap_or(""),
                     resolution,
                     &track_selection,
+                    encoder,
                     Some(Box::new(move |progress| {
                         let _ = tx_clone.send(ProgressMessage::Progress(idx, progress));
                     })),

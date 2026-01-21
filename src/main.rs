@@ -2,6 +2,7 @@ mod analysis;
 mod app;
 mod converter;
 mod data;
+mod encoder;
 mod error;
 mod ui;
 
