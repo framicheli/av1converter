@@ -20,7 +20,8 @@ impl From<Resolution> for EncoderProfile {
             Resolution::HD1080pHDR => EncoderProfile::HD1080pHDR,
             Resolution::UHD2160p => EncoderProfile::UHD2160p,
             Resolution::UHD2160pHDR => EncoderProfile::UHD2160pHDR,
-            Resolution::HD1080pDV | Resolution::UHD2160pDV => EncoderProfile::HD1080p,
+            Resolution::HD1080pDV => EncoderProfile::HD1080pHDR,
+            Resolution::UHD2160pDV => EncoderProfile::UHD2160pHDR,
         }
     }
 }
@@ -140,7 +141,7 @@ impl EncoderProfile {
 /// Progress callback type for encoding progress updates
 pub type ProgressCallback = Box<dyn FnMut(f32) + Send>;
 
-/// Result of encoding - can be success, error, or cancelled
+/// Result of encoding
 #[derive(Debug)]
 pub enum EncodeResult {
     Success,

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+use std::time::Instant;
 
 fn debug_log(msg: &str) {
     if let Ok(mut f) = OpenOptions::new()
@@ -63,6 +64,8 @@ pub struct App {
     pub encoding_active: bool,
     pub progress_receiver: Option<Receiver<ProgressMessage>>,
     pub cancel_flag: Arc<AtomicBool>,
+    pub start_time: Option<Instant>,
+    pub total_files_to_encode: usize,
 
     // Stats
     pub converted_count: usize,
@@ -134,6 +137,8 @@ impl App {
             encoding_active: false,
             progress_receiver: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            start_time: None,
+            total_files_to_encode: 0,
             converted_count: 0,
             skipped_count: 0,
             error_count: 0,
@@ -429,6 +434,10 @@ impl App {
 
         debug_log(&format!("files_to_encode count: {}", files_to_encode.len()));
 
+        // Start timer and track total files
+        self.start_time = Some(Instant::now());
+        self.total_files_to_encode = files_to_encode.len();
+
         // Mark files as pending in queue
         for (idx, _, _, _, _) in &files_to_encode {
             if let Some(f) = self.files.get_mut(*idx) {
@@ -560,6 +569,77 @@ impl App {
         self.error_count = 0;
         self.encoding_active = false;
         self.progress_receiver = None;
+        self.start_time = None;
+        self.total_files_to_encode = 0;
         self.navigate_to_home();
+    }
+
+    /// Get the elapsed time since the queue started encoding
+    pub fn queue_elapsed_time(&self) -> Option<std::time::Duration> {
+        self.start_time.map(|start| start.elapsed())
+    }
+
+    /// Calculate the overall queue progress (0.0 to 100.0)
+    /// Takes into account completed files and current file progress
+    pub fn queue_overall_progress(&self) -> f32 {
+        if self.total_files_to_encode == 0 {
+            return 0.0;
+        }
+
+        // Count completed files in the queue (Done status, not skipped before encoding)
+        let completed = self
+            .files
+            .iter()
+            .filter(|f| matches!(f.status, FileStatus::Done))
+            .count();
+
+        // Get current file progress
+        let current_progress = self
+            .files
+            .get(self.current_file_index)
+            .and_then(|f| {
+                if let FileStatus::Converting { progress } = f.status {
+                    Some(progress)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0.0);
+
+        // Overall progress: (completed files * 100 + current file progress) / total files
+        let total_progress =
+            (completed as f32 * 100.0 + current_progress) / self.total_files_to_encode as f32;
+        total_progress.min(100.0)
+    }
+
+    /// Get the estimated time remaining for the entire queue
+    pub fn queue_estimated_time_remaining(&self) -> Option<std::time::Duration> {
+        let progress = self.queue_overall_progress();
+        if progress <= 0.0 || progress >= 100.0 {
+            return None;
+        }
+        let elapsed = self.queue_elapsed_time()?;
+        let elapsed_secs = elapsed.as_secs_f64();
+        let total_estimated_secs = elapsed_secs / (progress as f64 / 100.0);
+        let remaining_secs = total_estimated_secs - elapsed_secs;
+        if remaining_secs > 0.0 {
+            Some(std::time::Duration::from_secs_f64(remaining_secs))
+        } else {
+            None
+        }
+    }
+}
+
+/// Format a duration as HH:MM:SS or MM:SS
+pub fn format_duration(duration: std::time::Duration) -> String {
+    let total_secs = duration.as_secs();
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+
+    if hours > 0 {
+        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    } else {
+        format!("{:02}:{:02}", minutes, seconds)
     }
 }
