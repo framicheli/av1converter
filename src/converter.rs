@@ -1,11 +1,12 @@
 use crate::analysis::Resolution;
+use crate::encoder::{AV1Encoder, QualityProfile, get_hdr_params, get_quality_params};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum EncoderProfile {
     HD1080p,
     HD1080pHDR,
@@ -20,7 +21,19 @@ impl From<Resolution> for EncoderProfile {
             Resolution::HD1080pHDR => EncoderProfile::HD1080pHDR,
             Resolution::UHD2160p => EncoderProfile::UHD2160p,
             Resolution::UHD2160pHDR => EncoderProfile::UHD2160pHDR,
-            Resolution::HD1080pDV | Resolution::UHD2160pDV => EncoderProfile::HD1080p,
+            Resolution::HD1080pDV => EncoderProfile::HD1080pHDR,
+            Resolution::UHD2160pDV => EncoderProfile::UHD2160pHDR,
+        }
+    }
+}
+
+impl From<EncoderProfile> for QualityProfile {
+    fn from(profile: EncoderProfile) -> Self {
+        match profile {
+            EncoderProfile::HD1080p => QualityProfile::HD1080p,
+            EncoderProfile::HD1080pHDR => QualityProfile::HD1080pHDR,
+            EncoderProfile::UHD2160p => QualityProfile::UHD2160p,
+            EncoderProfile::UHD2160pHDR => QualityProfile::UHD2160pHDR,
         }
     }
 }
@@ -44,6 +57,7 @@ impl EncoderProfile {
         input: &str,
         output: &str,
         track_selection: &TrackSelection,
+        encoder: AV1Encoder,
     ) -> Vec<String> {
         let mut args = vec![
             "-y".to_string(),
@@ -71,66 +85,25 @@ impl EncoderProfile {
         }
 
         // Video codec settings
+        args.extend(["-c:v".to_string(), encoder.ffmpeg_name().to_string()]);
+
+        // Pixel format (10-bit)
+        args.extend(["-pix_fmt".to_string(), "yuv420p10le".to_string()]);
+
+        // Audio and subtitle copy
         args.extend([
-            "-c:v".to_string(),
-            "libsvtav1".to_string(),
-            "-preset".to_string(),
-            "4".to_string(),
-            "-pix_fmt".to_string(),
-            "yuv420p10le".to_string(),
             "-c:a".to_string(),
             "copy".to_string(),
             "-c:s".to_string(),
             "copy".to_string(),
         ]);
 
-        // Profile-specific settings
-        match self {
-            EncoderProfile::HD1080p => {
-                args.extend(["-crf".to_string(), "28".to_string()]);
-                args.extend([
-                    "-svtav1-params".to_string(),
-                    "tune=0:film-grain=0".to_string(),
-                ]);
-            }
-            EncoderProfile::HD1080pHDR => {
-                args.extend(["-crf".to_string(), "29".to_string()]);
-                args.extend([
-                    "-svtav1-params".to_string(),
-                    "tune=0:film-grain=1".to_string(),
-                ]);
-                args.extend([
-                    "-color_primaries".to_string(),
-                    "bt2020".to_string(),
-                    "-color_trc".to_string(),
-                    "smpte2084".to_string(),
-                    "-colorspace".to_string(),
-                    "bt2020nc".to_string(),
-                ]);
-            }
-            EncoderProfile::UHD2160p => {
-                args.extend(["-crf".to_string(), "30".to_string()]);
-                args.extend([
-                    "-svtav1-params".to_string(),
-                    "tune=0:film-grain=1".to_string(),
-                ]);
-            }
-            EncoderProfile::UHD2160pHDR => {
-                args.extend(["-crf".to_string(), "30".to_string()]);
-                args.extend([
-                    "-svtav1-params".to_string(),
-                    "tune=0:film-grain=1".to_string(),
-                ]);
-                args.extend([
-                    "-color_primaries".to_string(),
-                    "bt2020".to_string(),
-                    "-color_trc".to_string(),
-                    "smpte2084".to_string(),
-                    "-colorspace".to_string(),
-                    "bt2020nc".to_string(),
-                ]);
-            }
-        }
+        // Get quality parameters for the specific encoder and profile
+        let quality_profile: QualityProfile = (*self).into();
+        args.extend(get_quality_params(encoder, quality_profile));
+
+        // Add HDR parameters if needed
+        args.extend(get_hdr_params(quality_profile));
 
         args.push(output.to_string());
         args
@@ -140,7 +113,7 @@ impl EncoderProfile {
 /// Progress callback type for encoding progress updates
 pub type ProgressCallback = Box<dyn FnMut(f32) + Send>;
 
-/// Result of encoding - can be success, error, or cancelled
+/// Result of encoding
 #[derive(Debug)]
 pub enum EncodeResult {
     Success,
@@ -148,17 +121,18 @@ pub enum EncodeResult {
     Error(String),
 }
 
-/// Encode a video file with the given profile and track selection
+/// Encode video
 pub fn encode_video(
     input: &str,
     output: &str,
     resolution: Resolution,
     track_selection: &TrackSelection,
+    encoder: AV1Encoder,
     mut progress_callback: Option<ProgressCallback>,
     cancel_flag: Arc<AtomicBool>,
 ) -> EncodeResult {
     let profile: EncoderProfile = resolution.into();
-    let mut args = profile.build_ffmpeg_args(input, output, track_selection);
+    let mut args = profile.build_ffmpeg_args(input, output, track_selection, encoder);
 
     // Get video duration for progress calculation
     let duration = get_video_duration(input).unwrap_or(0.0);

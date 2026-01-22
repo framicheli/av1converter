@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::app::{App, format_duration};
 use crate::data::FileStatus;
 use ratatui::{
     Frame,
@@ -60,6 +60,22 @@ pub fn render_queue(f: &mut Frame, app: &App) {
     // Current file progress
     if let Some(file) = app.files.get(app.current_file_index) {
         if let FileStatus::Converting { progress } = file.status {
+            // Label with elapsed time and ETA
+            let elapsed_str = app
+                .queue_elapsed_time()
+                .map(format_duration)
+                .unwrap_or_else(|| "--:--".to_string());
+
+            let eta_str = app
+                .queue_estimated_time_remaining()
+                .map(format_duration)
+                .unwrap_or_else(|| "--:--".to_string());
+
+            let label = format!(
+                "{:.1}%  |  Elapsed: {}  |  ETA: {}",
+                progress, elapsed_str, eta_str
+            );
+
             let gauge = Gauge::default()
                 .block(
                     Block::default()
@@ -69,7 +85,7 @@ pub fn render_queue(f: &mut Frame, app: &App) {
                 )
                 .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
                 .percent(progress as u16)
-                .label(format!("{:.1}%", progress));
+                .label(label);
             f.render_widget(gauge, chunks[2]);
         } else {
             let status_text = match &file.status {

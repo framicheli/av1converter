@@ -18,10 +18,10 @@ ffprobe -v error \
 | ---------- | --- | ------------ | ------------------------------------ |
 | 1080p      | No  | No           | **1080p SDR AV1**                    |
 | 1080p      | Yes | No           | **1080p HDR AV1**                    |
-| 1080p      | Yes | Yes          | **DON'T CONVERT**                    |
+| 1080p      | Yes | Yes          | **1080p HDR AV1**                    |
 | 4K         | No  | No           | **4K SDR AV1**                       |
 | 4K         | Yes | No           | **4K HDR AV1**                       |
-| 4K         | Yes | Yes          | **DON'T CONVERT**                    |
+| 4K         | Yes | Yes          | **4K HDR AV1**                       |
 
 
 ## HD 1080p
