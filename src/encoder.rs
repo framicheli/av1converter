@@ -49,10 +49,14 @@ impl fmt::Display for AV1Encoder {
 pub struct EncoderConfig {
     /// Selected encoder to use
     pub selected_encoder: AV1Encoder,
-    /// Available encoders in the system
-    #[allow(dead_code)]
-    pub available_encoders: Vec<AV1Encoder>,
+    /// Whether to run VMAF quality check after encoding (always true)
+    pub run_vmaf: bool,
+    /// VMAF quality threshold (default: 90.0)
+    pub vmaf_threshold: Option<f64>,
 }
+
+/// Default VMAF quality threshold
+pub const DEFAULT_VMAF_THRESHOLD: f64 = 90.0;
 
 impl Default for EncoderConfig {
     fn default() -> Self {
@@ -62,13 +66,16 @@ impl Default for EncoderConfig {
 
 impl EncoderConfig {
     /// Create a new encoder config by detecting available encoders
+    /// VMAF is always enabled by default with a threshold of 90.0
     pub fn new() -> Self {
         let available_encoders = detect_available_encoders();
         let selected_encoder = select_encoder(&available_encoders);
 
         Self {
             selected_encoder,
-            available_encoders,
+            // VMAF is always enabled
+            run_vmaf: true,
+            vmaf_threshold: Some(DEFAULT_VMAF_THRESHOLD),
         }
     }
 }
@@ -122,7 +129,7 @@ fn has_nvidia_av1_support() -> bool {
     let gpu_name = String::from_utf8_lossy(&output.stdout).to_lowercase();
 
     let av1_capable_patterns = [
-        "rtx 40", // RTX 50 series
+        "rtx 40", // RTX 40 series
         "rtx 50", // RTX 50 series
         "ada",    // Ada Lovelace architecture
         "l40",    // NVIDIA L40 data center GPU
@@ -230,74 +237,156 @@ pub enum QualityProfile {
     UHD2160pHDR,
 }
 
+/// Content type for optimized encoding parameters
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ContentType {
+    /// Live action footage
+    #[default]
+    LiveAction,
+    /// Animation / cartoon content
+    Animation,
+}
+
+impl ContentType {
+    /// Detect content type from filename (basic heuristic)
+    pub fn from_filename(filename: &str) -> Self {
+        let lower = filename.to_lowercase();
+        if lower.contains("anime")
+            || lower.contains("animation")
+            || lower.contains("cartoon")
+            || lower.contains("animated")
+        {
+            ContentType::Animation
+        } else {
+            ContentType::LiveAction
+        }
+    }
+}
+
 /// Get quality parameters for a specific encoder and profile
-pub fn get_quality_params(encoder: AV1Encoder, profile: QualityProfile) -> Vec<String> {
+pub fn get_quality_params(
+    encoder: AV1Encoder,
+    profile: QualityProfile,
+    content_type: ContentType,
+) -> Vec<String> {
     match encoder {
-        AV1Encoder::SvtAv1 => get_svtav1_params(profile),
+        AV1Encoder::SvtAv1 => get_svtav1_params(profile, content_type),
         AV1Encoder::Nvenc => get_nvenc_params(profile),
         AV1Encoder::Qsv => get_qsv_params(profile),
         AV1Encoder::Amf => get_amf_params(profile),
     }
 }
 
-fn get_svtav1_params(profile: QualityProfile) -> Vec<String> {
-    let (crf, film_grain) = match profile {
-        QualityProfile::HD1080p => ("28", "0"),
-        QualityProfile::HD1080pHDR => ("29", "1"),
-        QualityProfile::UHD2160p => ("30", "1"),
-        QualityProfile::UHD2160pHDR => ("30", "1"),
+/// SVT-AV1 parameters with optimized quality settings
+///
+/// Key improvements:
+/// - Lower CRF values (24-26 instead of 28-30) for better quality
+/// - Film-grain synthesis (4-8) to mask compression artifacts
+/// - film-grain-denoise=1 to remove source grain and re-synthesize
+/// - enable-overlays=1 for better handling of complex scenes
+/// - scd=1 for improved scene change detection
+fn get_svtav1_params(profile: QualityProfile, content_type: ContentType) -> Vec<String> {
+    // Base CRF and film-grain values based on profile
+    let (crf, base_film_grain) = match profile {
+        // SDR 1080p: Lower CRF for quality, no film-grain needed
+        QualityProfile::HD1080p => ("24", 0),
+        // HDR 1080p: Slightly higher CRF, moderate film-grain for HDR artifacts
+        QualityProfile::HD1080pHDR => ("25", 4),
+        // SDR 4K: Medium CRF, some film-grain helps at this resolution
+        QualityProfile::UHD2160p => ("25", 5),
+        // HDR 4K: Most demanding - lowest CRF, higher film-grain
+        QualityProfile::UHD2160pHDR => ("24", 6),
+    };
+
+    // Adjust film-grain based on content type
+    let film_grain = match content_type {
+        ContentType::Animation => 0, // Animation doesn't benefit from film-grain
+        ContentType::LiveAction => base_film_grain,
+    };
+
+    // Build SVT-AV1 params string
+    let svt_params = if film_grain > 0 {
+        format!(
+            "tune=0:film-grain={}:film-grain-denoise=1:enable-overlays=1:scd=1",
+            film_grain
+        )
+    } else {
+        // For animation: disable film-grain, enable temporal filtering
+        "tune=0:film-grain=0:enable-overlays=1:scd=1:enable-tf=1".to_string()
     };
 
     vec![
         "-crf".to_string(),
         crf.to_string(),
         "-preset".to_string(),
-        "4".to_string(),
+        "4".to_string(), // Preset 4 = good speed/quality balance
         "-svtav1-params".to_string(),
-        format!("tune=0:film-grain={}", film_grain),
+        svt_params,
     ]
 }
 
+/// NVENC parameters with optimized quality settings
+///
+/// Key improvements:
+/// - Lower CQ values (22-25 instead of 28-30)
+/// - Preset p7 (slowest/best quality) instead of p4
+/// - Multipass encoding for consistent quality
+/// - Lookahead buffer for better rate control
+/// - Spatial and temporal AQ for better bit distribution
 fn get_nvenc_params(profile: QualityProfile) -> Vec<String> {
-    let cq = match profile {
-        QualityProfile::HD1080p => "28",
-        QualityProfile::HD1080pHDR => "29",
-        QualityProfile::UHD2160p => "30",
-        QualityProfile::UHD2160pHDR => "30",
+    let (cq, lookahead) = match profile {
+        QualityProfile::HD1080p => ("24", "32"),
+        QualityProfile::HD1080pHDR => ("23", "32"),
+        QualityProfile::UHD2160p => ("25", "48"),
+        QualityProfile::UHD2160pHDR => ("22", "48"),
     };
 
     vec![
         "-cq".to_string(),
         cq.to_string(),
         "-preset".to_string(),
-        "p4".to_string(),
+        "p7".to_string(), // p7 = slowest/best quality
         "-tune".to_string(),
         "hq".to_string(),
+        "-multipass".to_string(),
+        "fullres".to_string(),
+        "-rc-lookahead".to_string(),
+        lookahead.to_string(),
+        "-spatial-aq".to_string(),
+        "1".to_string(),
+        "-temporal-aq".to_string(),
+        "1".to_string(),
     ]
 }
 
+/// Intel QSV parameters with optimized quality settings
 fn get_qsv_params(profile: QualityProfile) -> Vec<String> {
     let quality = match profile {
-        QualityProfile::HD1080p => "28",
-        QualityProfile::HD1080pHDR => "29",
-        QualityProfile::UHD2160p => "30",
-        QualityProfile::UHD2160pHDR => "30",
+        QualityProfile::HD1080p => "24",
+        QualityProfile::HD1080pHDR => "23",
+        QualityProfile::UHD2160p => "25",
+        QualityProfile::UHD2160pHDR => "22",
     };
 
     vec![
         "-global_quality".to_string(),
         quality.to_string(),
         "-preset".to_string(),
-        "medium".to_string(),
+        "veryslow".to_string(), // Best quality preset
+        "-look_ahead".to_string(),
+        "1".to_string(),
+        "-look_ahead_depth".to_string(),
+        "40".to_string(),
     ]
 }
 
+/// AMD AMF parameters with optimized quality settings
 fn get_amf_params(profile: QualityProfile) -> Vec<String> {
     let quality = match profile {
-        QualityProfile::HD1080p => "28",
-        QualityProfile::HD1080pHDR => "29",
-        QualityProfile::UHD2160p => "30",
-        QualityProfile::UHD2160pHDR => "30",
+        QualityProfile::HD1080p => "24",
+        QualityProfile::HD1080pHDR => "23",
+        QualityProfile::UHD2160p => "25",
+        QualityProfile::UHD2160pHDR => "22",
     };
 
     vec![
@@ -305,20 +394,106 @@ fn get_amf_params(profile: QualityProfile) -> Vec<String> {
         quality.to_string(),
         "-usage".to_string(),
         "transcoding".to_string(),
+        "-rc".to_string(),
+        "cqp".to_string(), // Constant QP mode for consistent quality
     ]
 }
 
-/// Get HDR color parameters for HDR profiles
-pub fn get_hdr_params(profile: QualityProfile) -> Vec<String> {
+/// Get HDR color parameters with metadata passthrough
+///
+/// Key improvements:
+/// - Proper color primaries, transfer, and space settings
+/// - Metadata passthrough for mastering display info
+/// - Support for both PQ (HDR10) and HLG transfer functions
+pub fn get_hdr_params(profile: QualityProfile, transfer: Option<&str>) -> Vec<String> {
     match profile {
-        QualityProfile::HD1080pHDR | QualityProfile::UHD2160pHDR => vec![
-            "-color_primaries".to_string(),
-            "bt2020".to_string(),
-            "-color_trc".to_string(),
-            "smpte2084".to_string(),
-            "-colorspace".to_string(),
-            "bt2020nc".to_string(),
-        ],
+        QualityProfile::HD1080pHDR | QualityProfile::UHD2160pHDR => {
+            // Determine transfer characteristic (PQ or HLG)
+            let color_trc = match transfer {
+                Some("arib-std-b67") => "arib-std-b67", // HLG
+                _ => "smpte2084",                       // PQ (default for HDR)
+            };
+
+            vec![
+                "-color_primaries".to_string(),
+                "bt2020".to_string(),
+                "-color_trc".to_string(),
+                color_trc.to_string(),
+                "-colorspace".to_string(),
+                "bt2020nc".to_string(),
+                // Copy metadata from source
+                "-map_metadata".to_string(),
+                "0".to_string(),
+            ]
+        }
         _ => vec![],
+    }
+}
+
+/// Get parameters for converting Dolby Vision to HDR10
+///
+/// This extracts the HDR10 base layer from Dolby Vision content,
+/// allowing playback on non-DV displays while preserving HDR.
+/// The DV metadata is stripped but the HDR10 color information is retained.
+pub fn get_dv_to_hdr10_params() -> Vec<String> {
+    vec![
+        // Set color parameters explicitly for HDR10
+        "-vf".to_string(),
+        "setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084".to_string(),
+        // Ensure HDR10 color metadata in output
+        "-color_primaries".to_string(),
+        "bt2020".to_string(),
+        "-color_trc".to_string(),
+        "smpte2084".to_string(),
+        "-colorspace".to_string(),
+        "bt2020nc".to_string(),
+    ]
+}
+
+/// Check if a resolution represents Dolby Vision content
+pub fn is_dolby_vision_resolution(resolution: &crate::analysis::Resolution) -> bool {
+    matches!(
+        resolution,
+        crate::analysis::Resolution::HD1080pDV | crate::analysis::Resolution::UHD2160pDV
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encoder_names() {
+        assert_eq!(AV1Encoder::SvtAv1.ffmpeg_name(), "libsvtav1");
+        assert_eq!(AV1Encoder::Nvenc.ffmpeg_name(), "av1_nvenc");
+    }
+
+    #[test]
+    fn test_svtav1_params() {
+        let params = get_svtav1_params(QualityProfile::HD1080p, ContentType::LiveAction);
+        assert!(params.contains(&"-crf".to_string()));
+        assert!(params.contains(&"24".to_string()));
+    }
+
+    #[test]
+    fn test_content_type_detection() {
+        assert_eq!(
+            ContentType::from_filename("My_Anime_Episode_01.mkv"),
+            ContentType::Animation
+        );
+        assert_eq!(
+            ContentType::from_filename("Movie_2024.mkv"),
+            ContentType::LiveAction
+        );
+    }
+
+    #[test]
+    fn test_animation_no_film_grain() {
+        let params = get_svtav1_params(QualityProfile::HD1080p, ContentType::Animation);
+        let svt_params = params
+            .iter()
+            .find(|p| p.contains("film-grain="))
+            .expect("Should have film-grain param");
+        assert!(svt_params.contains("film-grain=0"));
     }
 }

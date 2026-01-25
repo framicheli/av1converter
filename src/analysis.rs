@@ -9,10 +9,10 @@ use std::process::Command;
 pub enum Resolution {
     HD1080p,
     HD1080pHDR,
-    HD1080pDV, // Don't convert
+    HD1080pDV,
     UHD2160p,
     UHD2160pHDR,
-    UHD2160pDV, // Don't convert
+    UHD2160pDV,
 }
 
 #[allow(unused)]
@@ -40,6 +40,11 @@ impl AnalysisResult {
             .as_ref()
             .map(|list| list.iter().any(|v| v.to_string().contains("Dolby Vision")))
             .unwrap_or(false)
+    }
+
+    /// Get the color transfer characteristic
+    pub fn color_transfer(&self) -> Option<&str> {
+        self.color_transfer.as_deref()
     }
 
     pub fn classify_video(&self) -> Result<Resolution, AppError> {
@@ -110,7 +115,7 @@ pub fn analyze_full(input_path: &str) -> Result<FullAnalysis, AppError> {
 
     let video_output = execute_ffprobe(&video_args)?;
     let video_data: AnalysisOutput =
-        serde_json::from_str(&video_output).map_err(|e| AppError::CommandExecutionError {
+        serde_json::from_str(&video_output).map_err(|e| AppError::CommandExecution {
             message: format!("Failed to parse video ffprobe output: {}", e),
         })?;
 
@@ -119,7 +124,7 @@ pub fn analyze_full(input_path: &str) -> Result<FullAnalysis, AppError> {
             .streams
             .into_iter()
             .next()
-            .ok_or_else(|| AppError::CommandExecutionError {
+            .ok_or_else(|| AppError::CommandExecution {
                 message: "No video stream found".to_string(),
             })?;
 
@@ -136,7 +141,7 @@ pub fn analyze_full(input_path: &str) -> Result<FullAnalysis, AppError> {
 
     let all_output = execute_ffprobe(&all_args)?;
     let all_data: FullProbeOutput =
-        serde_json::from_str(&all_output).map_err(|e| AppError::CommandExecutionError {
+        serde_json::from_str(&all_output).map_err(|e| AppError::CommandExecution {
             message: format!("Failed to parse streams ffprobe output: {}", e),
         })?;
 
@@ -178,15 +183,17 @@ pub fn analyze_full(input_path: &str) -> Result<FullAnalysis, AppError> {
 }
 
 fn execute_ffprobe(args: &[&str]) -> Result<String, AppError> {
-    let output = Command::new("ffprobe").args(args).output().map_err(|e| {
-        AppError::CommandExecutionError {
-            message: format!("Failed to execute ffprobe: {}", e),
-        }
-    })?;
+    let output =
+        Command::new("ffprobe")
+            .args(args)
+            .output()
+            .map_err(|e| AppError::CommandExecution {
+                message: format!("Failed to execute ffprobe: {}", e),
+            })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AppError::CommandExecutionError {
+        return Err(AppError::CommandExecution {
             message: format!("ffprobe failed: {}", stderr),
         });
     }

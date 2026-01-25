@@ -14,6 +14,7 @@ pub fn render_home(f: &mut Frame, app: &App) {
             Constraint::Length(3),
             Constraint::Min(5),
             Constraint::Length(3),
+            Constraint::Length(3),
         ])
         .margin(2)
         .split(f.area());
@@ -47,6 +48,13 @@ pub fn render_home(f: &mut Frame, app: &App) {
 
     f.render_widget(menu, menu_area);
 
+    // VMAF Info line (non-interactive)
+    let vmaf_info = render_vmaf_info(app);
+    let vmaf_widget = Paragraph::new(vmaf_info)
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::NONE));
+    f.render_widget(vmaf_widget, chunks[2]);
+
     // Help
     let help_text = Line::from(vec![
         Span::styled("↑↓", Style::default().fg(Color::Yellow)),
@@ -60,7 +68,44 @@ pub fn render_home(f: &mut Frame, app: &App) {
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE));
-    f.render_widget(help, chunks[2]);
+    f.render_widget(help, chunks[3]);
+}
+
+fn render_vmaf_info(app: &App) -> Line<'static> {
+    let vmaf_available = app.vmaf_available;
+
+    if vmaf_available {
+        Line::from(vec![
+            Span::styled("✓ ", Style::default().fg(Color::Green)),
+            Span::raw("VMAF quality validation enabled (threshold: "),
+            Span::styled(
+                "90",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(")"),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("⚠ ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "VMAF unavailable - FFmpeg not compiled with libvmaf",
+                Style::default().fg(Color::Yellow),
+            ),
+        ])
+    }
+}
+
+/// Get color for VMAF score/threshold
+pub fn get_vmaf_color(score: f64) -> Color {
+    match score as u32 {
+        95..=100 => Color::Cyan,            // Excellent/Transparent
+        90..=94 => Color::Green,            // Very Good
+        85..=89 => Color::Yellow,           // Good
+        80..=84 => Color::Rgb(255, 165, 0), // Fair (Orange)
+        _ => Color::Red,                    // Poor
+    }
 }
 
 fn create_menu_item(text: &str, index: usize, selected: usize) -> ListItem<'static> {

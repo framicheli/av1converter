@@ -70,24 +70,10 @@ pub enum FileStatus {
     ReadyToConvert,
     Converting { progress: f32 },
     Done,
+    DoneWithVmaf { score: f64 },
     Skipped { reason: String },
     Error { message: String },
-}
-
-impl FileStatus {
-    #[allow(dead_code)]
-    pub fn symbol(&self) -> &'static str {
-        match self {
-            FileStatus::Pending => "○",
-            FileStatus::Analyzing => "◐",
-            FileStatus::AwaitingConfig => "◑",
-            FileStatus::ReadyToConvert => "●",
-            FileStatus::Converting { .. } => "▶",
-            FileStatus::Done => "✓",
-            FileStatus::Skipped { .. } => "⊘",
-            FileStatus::Error { .. } => "✗",
-        }
-    }
+    QualityWarning { vmaf: f64, threshold: f64 },
 }
 
 #[derive(Debug, Clone)]
@@ -152,13 +138,6 @@ impl VideoFile {
             self.selected_subtitles.push(index);
             self.selected_subtitles.sort();
         }
-    }
-
-    pub fn is_dolby_vision(&self) -> bool {
-        matches!(
-            self.resolution,
-            Some(Resolution::HD1080pDV) | Some(Resolution::UHD2160pDV)
-        )
     }
 
     pub fn resolution_string(&self) -> String {

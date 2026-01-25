@@ -1,3 +1,4 @@
+use super::home::get_vmaf_color;
 use crate::app::{App, format_duration};
 use crate::data::FileStatus;
 use ratatui::{
@@ -127,22 +128,60 @@ pub fn render_queue(f: &mut Frame, app: &App) {
 }
 
 fn create_queue_item(name: &str, status: &FileStatus, is_current: bool) -> ListItem<'static> {
-    let (symbol, color, suffix) = match status {
-        FileStatus::Pending => ("○", Color::DarkGray, String::new()),
-        FileStatus::Analyzing => ("◐", Color::Yellow, " Analyzing...".to_string()),
-        FileStatus::AwaitingConfig => ("◑", Color::Blue, " Configuring...".to_string()),
-        FileStatus::ReadyToConvert => ("●", Color::Blue, " Ready".to_string()),
-        FileStatus::Converting { progress } => ("▶", Color::Cyan, format!(" {:.1}%", progress)),
-        FileStatus::Done => ("✓", Color::Green, " Done".to_string()),
-        FileStatus::Skipped { reason } => ("⊘", Color::Yellow, format!(" ({})", reason)),
-        FileStatus::Error { message } => ("✗", Color::Red, format!(" Error: {}", message)),
-    };
-
-    let style = if is_current {
-        Style::default().fg(color).add_modifier(Modifier::BOLD)
+    let bold_mod = if is_current {
+        Modifier::BOLD
     } else {
-        Style::default().fg(color)
+        Modifier::empty()
     };
 
-    ListItem::new(format!("  {} {}{}", symbol, name, suffix)).style(style)
+    match status {
+        FileStatus::Pending => ListItem::new(format!("  ○ {}", name))
+            .style(Style::default().fg(Color::DarkGray).add_modifier(bold_mod)),
+        FileStatus::Analyzing => ListItem::new(format!("  ◐ {} Analyzing...", name))
+            .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
+        FileStatus::AwaitingConfig => ListItem::new(format!("  ◑ {} Configuring...", name))
+            .style(Style::default().fg(Color::Blue).add_modifier(bold_mod)),
+        FileStatus::ReadyToConvert => ListItem::new(format!("  ● {} Ready", name))
+            .style(Style::default().fg(Color::Blue).add_modifier(bold_mod)),
+        FileStatus::Converting { progress } => {
+            ListItem::new(format!("  ▶ {} {:.1}%", name, progress))
+                .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod))
+        }
+        FileStatus::Done => ListItem::new(format!("  ✓ {} Done", name))
+            .style(Style::default().fg(Color::Green).add_modifier(bold_mod)),
+        FileStatus::DoneWithVmaf { score } => {
+            let vmaf_color = get_vmaf_color(*score);
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("  ✓ {} Done ", name),
+                    Style::default().fg(Color::Green).add_modifier(bold_mod),
+                ),
+                Span::styled(
+                    format!("VMAF: {:.1}", score),
+                    Style::default().fg(vmaf_color).add_modifier(bold_mod),
+                ),
+            ]))
+        }
+        FileStatus::Skipped { reason } => ListItem::new(format!("  ⊘ {} ({})", name, reason))
+            .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
+        FileStatus::Error { message } => ListItem::new(format!("  ✗ {} Error: {}", name, message))
+            .style(Style::default().fg(Color::Red).add_modifier(bold_mod)),
+        FileStatus::QualityWarning { vmaf, threshold } => {
+            let vmaf_color = get_vmaf_color(*vmaf);
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("  ⚠ {} ", name),
+                    Style::default().fg(Color::Yellow).add_modifier(bold_mod),
+                ),
+                Span::styled(
+                    format!("VMAF: {:.1}", vmaf),
+                    Style::default().fg(vmaf_color).add_modifier(bold_mod),
+                ),
+                Span::styled(
+                    format!(" < {:.0}", threshold),
+                    Style::default().fg(Color::Red).add_modifier(bold_mod),
+                ),
+            ]))
+        }
+    }
 }

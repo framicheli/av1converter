@@ -72,11 +72,15 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             Span::raw("  "),
             Span::styled("Type: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                hdr_string,
+                if hdr_string == "Dolby Vision" {
+                    "Dolby Vision → HDR10".to_string()
+                } else {
+                    hdr_string.to_string()
+                },
                 Style::default().fg(if hdr_string == "HDR" {
                     Color::Yellow
                 } else if hdr_string == "Dolby Vision" {
-                    Color::Red
+                    Color::Magenta // DV to HDR10 conversion indicated
                 } else {
                     Color::White
                 }),

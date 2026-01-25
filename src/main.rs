@@ -5,6 +5,7 @@ mod data;
 mod encoder;
 mod error;
 mod ui;
+mod vmaf;
 
 use app::{App, ConfirmAction, Screen, TrackFocus};
 use crossterm::{
@@ -16,7 +17,39 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
 use std::time::Duration;
 
+/// Initialize logging based on AV1_DEBUG environment variable
+fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    if std::env::var("AV1_DEBUG").is_ok() {
+        let log_dir = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("av1converter");
+
+        let _ = std::fs::create_dir_all(&log_dir);
+
+        let file_appender = tracing_appender::rolling::daily(&log_dir, "av1converter.log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+        tracing_subscriber::fmt()
+            .with_writer(non_blocking)
+            .with_ansi(false)
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive(tracing::Level::DEBUG.into()),
+            )
+            .init();
+
+        tracing::info!("AV1 Converter logging initialized");
+        Some(guard)
+    } else {
+        // No logging when AV1_DEBUG is not set
+        None
+    }
+}
+
 fn main() -> io::Result<()> {
+    // Initialize logging (returns guard that must be kept alive)
+    let _log_guard = init_logging();
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();

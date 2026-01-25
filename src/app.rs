@@ -1,26 +1,16 @@
 use crate::analysis::{Resolution, analyze_full};
-use crate::converter::{EncodeResult, TrackSelection, encode_video};
+use crate::converter::{EncodeOptions, EncodeResult, TrackSelection, encode_video};
 use crate::data::{FileStatus, VideoFile, is_video_file};
-use crate::encoder::EncoderConfig;
+use crate::encoder::{ContentType, EncoderConfig};
+use crate::vmaf::is_vmaf_available;
 use ratatui::widgets::ListState;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Instant;
-
-fn debug_log(msg: &str) {
-    if let Ok(mut f) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/Users/francesco/av1_debug.log")
-    {
-        let _ = writeln!(f, "[app] {}", msg);
-    }
-}
+use tracing::{debug, info};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Screen {
@@ -84,6 +74,9 @@ pub struct App {
     // Track list states for scrolling
     pub audio_list_state: ListState,
     pub subtitle_list_state: ListState,
+
+    // VMAF availability (cached at startup)
+    pub vmaf_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,7 +95,9 @@ pub enum ConfirmAction {
 pub enum ProgressMessage {
     Progress(usize, f32),
     Done(usize),
+    DoneWithVmaf(usize, f64),
     Error(usize, String),
+    QualityWarning(usize, f64, f64), // index, vmaf, threshold
     Cancelled,
 }
 
@@ -124,6 +119,12 @@ impl App {
 
         // Detect available AV1 encoders at startup
         let encoder_config = EncoderConfig::new();
+
+        // Check VMAF availability
+        let vmaf_available = is_vmaf_available();
+
+        info!("Using encoder: {}", encoder_config.selected_encoder);
+        info!("VMAF available: {}", vmaf_available);
 
         Self {
             current_screen: Screen::Home,
@@ -154,6 +155,7 @@ impl App {
             confirm_selection: false, // Default to "No"
             audio_list_state,
             subtitle_list_state,
+            vmaf_available,
         }
     }
 
@@ -335,15 +337,8 @@ impl App {
                     file.select_all_tracks();
                     file.generate_output_path();
 
-                    // Check for Dolby Vision
-                    if file.is_dolby_vision() {
-                        file.status = FileStatus::Skipped {
-                            reason: "Dolby Vision".to_string(),
-                        };
-                        self.skipped_count += 1;
-                    } else {
-                        file.status = FileStatus::AwaitingConfig;
-                    }
+                    // Dolby Vision files are converted to HDR10
+                    file.status = FileStatus::AwaitingConfig;
                 }
                 Err(e) => {
                     file.status = FileStatus::Error {
@@ -406,7 +401,7 @@ impl App {
     }
 
     pub fn start_encoding(&mut self) {
-        debug_log("start_encoding called");
+        info!("Starting encoding process");
         self.navigate_to_queue();
         self.encoding_active = true;
         self.current_file_index = 0;
@@ -420,9 +415,18 @@ impl App {
 
         // Get the encoder
         let encoder = self.encoder_config.selected_encoder;
+        let run_vmaf = self.encoder_config.run_vmaf;
+        let vmaf_threshold = self.encoder_config.vmaf_threshold;
 
-        // Collect files to encode
-        let files_to_encode: Vec<(usize, PathBuf, PathBuf, Resolution, TrackSelection)> = self
+        // Collect files to encode with their encode options
+        let files_to_encode: Vec<(
+            usize,
+            PathBuf,
+            PathBuf,
+            Resolution,
+            TrackSelection,
+            EncodeOptions,
+        )> = self
             .files
             .iter()
             .enumerate()
@@ -432,25 +436,40 @@ impl App {
                     audio_tracks: f.selected_audio.clone(),
                     subtitle_tracks: f.selected_subtitles.clone(),
                 };
+
+                // Encode options based on file analysis
+                let mut encode_options = if let Some(ref analysis) = f.analysis {
+                    EncodeOptions::from_analysis(analysis, &f.filename())
+                } else {
+                    EncodeOptions {
+                        content_type: ContentType::from_filename(&f.filename()),
+                        ..Default::default()
+                    }
+                };
+
+                // Apply VMAF settings from encoder config
+                encode_options.run_vmaf = run_vmaf;
+                encode_options.vmaf_threshold = vmaf_threshold;
+
                 (
                     i,
                     f.path.clone(),
                     f.output_path.clone().unwrap_or_else(|| f.path.clone()),
                     f.resolution.unwrap_or(Resolution::HD1080p),
                     track_selection,
+                    encode_options,
                 )
             })
             .collect();
 
-        debug_log(&format!("files_to_encode count: {}", files_to_encode.len()));
-        debug_log(&format!("Using encoder: {}", encoder));
+        info!("Files to encode: {}", files_to_encode.len());
 
         // Start timer and track total files
         self.start_time = Some(Instant::now());
         self.total_files_to_encode = files_to_encode.len();
 
         // Mark files as pending in queue
-        for (idx, _, _, _, _) in &files_to_encode {
+        for (idx, _, _, _, _, _) in &files_to_encode {
             if let Some(f) = self.files.get_mut(*idx) {
                 f.status = FileStatus::Pending;
             }
@@ -458,9 +477,11 @@ impl App {
 
         // Start encoding thread
         thread::spawn(move || {
-            debug_log("Encoding thread started");
-            for (idx, input, output, resolution, track_selection) in files_to_encode {
-                debug_log(&format!("Processing file idx={}, input={:?}", idx, input));
+            debug!("Encoding thread started");
+            for (idx, input, output, resolution, track_selection, encode_options) in files_to_encode
+            {
+                debug!("Processing file idx={}, input={:?}", idx, input);
+
                 // Check if cancelled before starting next file
                 if cancel_flag.load(Ordering::Relaxed) {
                     let _ = tx.send(ProgressMessage::Cancelled);
@@ -483,11 +504,15 @@ impl App {
                         let _ = tx_clone.send(ProgressMessage::Progress(idx, progress));
                     })),
                     cancel_clone,
+                    &encode_options,
                 );
 
                 match result {
                     EncodeResult::Success => {
                         let _ = tx.send(ProgressMessage::Done(idx));
+                    }
+                    EncodeResult::SuccessWithVmaf(vmaf) => {
+                        let _ = tx.send(ProgressMessage::DoneWithVmaf(idx, vmaf.score));
                     }
                     EncodeResult::Cancelled => {
                         let _ = tx.send(ProgressMessage::Cancelled);
@@ -495,6 +520,12 @@ impl App {
                     }
                     EncodeResult::Error(e) => {
                         let _ = tx.send(ProgressMessage::Error(idx, e));
+                    }
+                    EncodeResult::QualityBelowThreshold {
+                        vmaf, threshold, ..
+                    } => {
+                        let _ =
+                            tx.send(ProgressMessage::QualityWarning(idx, vmaf.score, threshold));
                     }
                 }
             }
@@ -534,14 +565,18 @@ impl App {
                     }
 
                     // Check if all done
-                    if self.files.iter().all(|f| {
-                        matches!(
-                            f.status,
-                            FileStatus::Done
-                                | FileStatus::Skipped { .. }
-                                | FileStatus::Error { .. }
-                        )
-                    }) {
+                    if self.all_files_completed() {
+                        self.encoding_active = false;
+                        should_finish = true;
+                    }
+                }
+                ProgressMessage::DoneWithVmaf(idx, score) => {
+                    if let Some(file) = self.files.get_mut(idx) {
+                        file.status = FileStatus::DoneWithVmaf { score };
+                        self.converted_count += 1;
+                    }
+
+                    if self.all_files_completed() {
                         self.encoding_active = false;
                         should_finish = true;
                     }
@@ -550,6 +585,23 @@ impl App {
                     if let Some(file) = self.files.get_mut(idx) {
                         file.status = FileStatus::Error { message: msg };
                         self.error_count += 1;
+                    }
+
+                    if self.all_files_completed() {
+                        self.encoding_active = false;
+                        should_finish = true;
+                    }
+                }
+                ProgressMessage::QualityWarning(idx, vmaf, threshold) => {
+                    if let Some(file) = self.files.get_mut(idx) {
+                        file.status = FileStatus::QualityWarning { vmaf, threshold };
+                        // Converted but with warning
+                        self.converted_count += 1;
+                    }
+
+                    if self.all_files_completed() {
+                        self.encoding_active = false;
+                        should_finish = true;
                     }
                 }
                 ProgressMessage::Cancelled => {
@@ -570,6 +622,20 @@ impl App {
         if should_finish {
             self.navigate_to_finish();
         }
+    }
+
+    /// Check if all files have completed (success, error, skipped)
+    fn all_files_completed(&self) -> bool {
+        self.files.iter().all(|f| {
+            matches!(
+                f.status,
+                FileStatus::Done
+                    | FileStatus::DoneWithVmaf { .. }
+                    | FileStatus::Skipped { .. }
+                    | FileStatus::Error { .. }
+                    | FileStatus::QualityWarning { .. }
+            )
+        })
     }
 
     pub fn reset(&mut self) {
@@ -602,7 +668,7 @@ impl App {
         let completed = self
             .files
             .iter()
-            .filter(|f| matches!(f.status, FileStatus::Done))
+            .filter(|f| matches!(f.status, FileStatus::Done | FileStatus::DoneWithVmaf { .. }))
             .count();
 
         // Get current file progress
