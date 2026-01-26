@@ -1,6 +1,6 @@
 mod analysis;
 mod app;
-mod converter;
+mod config;
 mod data;
 mod encoder;
 mod error;

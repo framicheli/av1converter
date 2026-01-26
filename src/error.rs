@@ -1,9 +1,8 @@
 use std::fmt;
 use std::path::PathBuf;
 
-/// Comprehensive error type for the AV1 converter application
+/// AV1Converter application error
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum AppError {
     /// File I/O error
     Io {

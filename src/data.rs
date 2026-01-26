@@ -1,5 +1,17 @@
-use crate::analysis::{AnalysisResult, Resolution};
+use crate::analysis::AnalysisResult;
 use std::path::PathBuf;
+
+/// Video resolutions enum
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Resolution {
+    Unknown,
+    HD1080p,
+    HD1080pHDR,
+    HD1080pDV,
+    UHD2160p,
+    UHD2160pHDR,
+    UHD2160pDV,
+}
 
 #[derive(Debug, Clone)]
 pub struct AudioTrack {
@@ -80,7 +92,7 @@ pub enum FileStatus {
 pub struct VideoFile {
     pub path: PathBuf,
     pub analysis: Option<AnalysisResult>,
-    pub resolution: Option<Resolution>,
+    pub resolution: Resolution,
     pub audio_tracks: Vec<AudioTrack>,
     pub subtitle_tracks: Vec<SubtitleTrack>,
     pub selected_audio: Vec<usize>,
@@ -94,7 +106,7 @@ impl VideoFile {
         Self {
             path,
             analysis: None,
-            resolution: None,
+            resolution: Resolution::Unknown,
             audio_tracks: Vec::new(),
             subtitle_tracks: Vec::new(),
             selected_audio: Vec::new(),
@@ -149,8 +161,8 @@ impl VideoFile {
 
     pub fn hdr_string(&self) -> &'static str {
         match &self.resolution {
-            Some(Resolution::HD1080pHDR) | Some(Resolution::UHD2160pHDR) => "HDR",
-            Some(Resolution::HD1080pDV) | Some(Resolution::UHD2160pDV) => "Dolby Vision",
+            Resolution::HD1080pHDR | Resolution::UHD2160pHDR => "HDR",
+            Resolution::HD1080pDV | Resolution::UHD2160pDV => "Dolby Vision",
             _ => "SDR",
         }
     }

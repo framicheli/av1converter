@@ -1,28 +1,19 @@
-use crate::data::{AudioTrack, SubtitleTrack};
+use crate::data::{AudioTrack, Resolution, SubtitleTrack};
 use crate::error::AppError;
 use serde::Deserialize;
 use serde_json::Value;
 use std::process::Command;
 
-/// Video resolutions enum
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Resolution {
-    HD1080p,
-    HD1080pHDR,
-    HD1080pDV,
-    UHD2160p,
-    UHD2160pHDR,
-    UHD2160pDV,
-}
-
-#[allow(unused)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct AnalysisResult {
     pub width: u32,
     pub height: u32,
+    #[allow(unused)]
     pix_fmt: String,
+    #[allow(unused)]
     color_primaries: Option<String>,
     color_transfer: Option<String>,
+    #[allow(unused)]
     color_space: Option<String>,
     side_data_list: Option<Vec<Value>>,
 }
@@ -47,19 +38,19 @@ impl AnalysisResult {
         self.color_transfer.as_deref()
     }
 
-    pub fn classify_video(&self) -> Result<Resolution, AppError> {
+    pub fn classify_video(&self) -> Resolution {
         let is_4k = self.width >= 3000 || self.height >= 1800;
         let hdr = self.is_hdr();
         let dv = self.is_dolby_vision();
 
-        Ok(match (is_4k, hdr, dv) {
+        match (is_4k, hdr, dv) {
             (false, false, false) => Resolution::HD1080p,
             (false, true, false) => Resolution::HD1080pHDR,
             (false, _, true) => Resolution::HD1080pDV,
             (true, false, false) => Resolution::UHD2160p,
             (true, true, false) => Resolution::UHD2160pHDR,
             (true, _, true) => Resolution::UHD2160pDV,
-        })
+        }
     }
 }
 

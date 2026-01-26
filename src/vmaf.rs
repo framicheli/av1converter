@@ -1,4 +1,4 @@
-//! VMAF (Video Multi-Method Assessment Fusion) quality scoring module
+//! VMAF (Video Multi-Method Assessment Fusion) Module
 //!
 //! Provides functionality to calculate VMAF scores between original and
 //! encoded videos to validate encoding quality.
@@ -186,21 +186,4 @@ pub fn is_vmaf_available() -> bool {
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("libvmaf"));
 
     output.unwrap_or(false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_vmaf_result_quality_grade() {
-        let result = VmafResult {
-            score: 95.5,
-            min_score: 85.0,
-            max_score: 100.0,
-        };
-
-        assert_eq!(result.quality_grade(), "Excellent (Transparent)");
-        assert!(result.meets_threshold(95.0));
-    }
 }

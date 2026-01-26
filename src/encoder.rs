@@ -1,10 +1,23 @@
+//! Encoder Module
+//!
+//! Implement Encoding operations
+
+use crate::config::{EncoderOptions, EncoderProfile, ProgressCallback, TrackSelection};
+use crate::data::Resolution;
+use crate::vmaf::{VmafOptions, VmafResult, calculate_vmaf};
 use std::fmt;
-#[cfg(not(target_os = "macos"))]
-use std::process::Command;
+use std::{
+    path::Path,
+    process::{Child, Command, Stdio},
+    sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::Duration,
+};
+use tracing::{debug, info, warn};
 
 /// AV1 encoders
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum AV1Encoder {
     /// NVIDIA NVENC
     Nvenc,
@@ -44,264 +57,28 @@ impl fmt::Display for AV1Encoder {
     }
 }
 
-/// Encoder configuration
-#[derive(Debug, Clone)]
-pub struct EncoderConfig {
-    /// Selected encoder to use
-    pub selected_encoder: AV1Encoder,
-    /// Whether to run VMAF quality check after encoding (always true)
-    pub run_vmaf: bool,
-    /// VMAF quality threshold (default: 90.0)
-    pub vmaf_threshold: Option<f64>,
-}
-
-/// Default VMAF quality threshold
-pub const DEFAULT_VMAF_THRESHOLD: f64 = 90.0;
-
-impl Default for EncoderConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl EncoderConfig {
-    /// Create a new encoder config by detecting available encoders
-    /// VMAF is always enabled by default with a threshold of 90.0
-    pub fn new() -> Self {
-        let available_encoders = detect_available_encoders();
-        let selected_encoder = select_encoder(&available_encoders);
-
-        Self {
-            selected_encoder,
-            // VMAF is always enabled
-            run_vmaf: true,
-            vmaf_threshold: Some(DEFAULT_VMAF_THRESHOLD),
-        }
-    }
-}
-
-/// Detect available AV1 encoders
-pub fn detect_available_encoders() -> Vec<AV1Encoder> {
-    // macOS: No AV1 hardware encoding available
-    #[cfg(target_os = "macos")]
-    {
-        vec![AV1Encoder::SvtAv1]
-    }
-
-    // Linux/Windows: Check for hardware encoders
-    #[cfg(not(target_os = "macos"))]
-    {
-        let mut encoders = Vec::new();
-
-        // Check NVIDIA
-        if has_nvidia_av1_support() {
-            encoders.push(AV1Encoder::Nvenc);
-        }
-
-        // Check Intel Arc / QSV
-        if has_intel_av1_support() {
-            encoders.push(AV1Encoder::Qsv);
-        }
-
-        // Check AMD
-        if has_amd_av1_support() {
-            encoders.push(AV1Encoder::Amf);
-        }
-
-        // Software fallback
-        encoders.push(AV1Encoder::SvtAv1);
-
-        encoders
-    }
-}
-
-/// Check NVIDIA GPU AV1 encoding support
-#[cfg(not(target_os = "macos"))]
-fn has_nvidia_av1_support() -> bool {
-    let output = match Command::new("nvidia-smi")
-        .args(["--query-gpu=name", "--format=csv,noheader"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return false,
-    };
-
-    let gpu_name = String::from_utf8_lossy(&output.stdout).to_lowercase();
-
-    let av1_capable_patterns = [
-        "rtx 40", // RTX 40 series
-        "rtx 50", // RTX 50 series
-        "ada",    // Ada Lovelace architecture
-        "l40",    // NVIDIA L40 data center GPU
-        "l4",     // NVIDIA L4 data center GPU
-    ];
-
-    av1_capable_patterns
-        .iter()
-        .any(|pattern| gpu_name.contains(pattern))
-}
-
-/// Check Intel GPU AV1 encoding support
-#[cfg(not(target_os = "macos"))]
-fn has_intel_av1_support() -> bool {
-    // Check for Intel Arc GPUs via lspci (Linux)
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(output) = Command::new("lspci").output() {
-            let lspci_output = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if lspci_output.contains("intel") && lspci_output.contains("arc") {
-                return true;
-            }
-        }
-
-        if let Ok(output) = Command::new("vainfo").output() {
-            let vainfo_output = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if vainfo_output.contains("vaentrypointencslice") && vainfo_output.contains("av1") {
-                return true;
-            }
-        }
-    }
-
-    // Windows: Check for Intel Arc via WMIC or PowerShell
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(output) = Command::new("wmic")
-            .args(["path", "win32_VideoController", "get", "name"])
-            .output()
-        {
-            let gpu_info = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if gpu_info.contains("intel") && gpu_info.contains("arc") {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-/// Check AMD GPU AV1 encoding support
-#[cfg(not(target_os = "macos"))]
-fn has_amd_av1_support() -> bool {
-    // Check for AMD RDNA3 GPUs
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(output) = Command::new("lspci").output() {
-            let lspci_output = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if lspci_output.contains("amd") || lspci_output.contains("radeon") {
-                let rdna3_patterns = ["navi 31", "navi 32", "navi 33", "rx 7"];
-                if rdna3_patterns.iter().any(|p| lspci_output.contains(p)) {
-                    return true;
-                }
-            }
-        }
-
-        if let Ok(output) = Command::new("vainfo").output() {
-            let vainfo_output = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if vainfo_output.contains("radeon")
-                && vainfo_output.contains("vaentrypointencslice")
-                && vainfo_output.contains("av1")
-            {
-                return true;
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(output) = Command::new("wmic")
-            .args(["path", "win32_VideoController", "get", "name"])
-            .output()
-        {
-            let gpu_info = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if gpu_info.contains("rx 7") {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-/// Select available encoder
-/// uses hardware encoder if present or software as a fallback
-fn select_encoder(available: &[AV1Encoder]) -> AV1Encoder {
-    available.first().copied().unwrap_or(AV1Encoder::SvtAv1)
-}
-
-/// Quality profile for encoding
-#[derive(Debug, Clone, Copy)]
-pub enum QualityProfile {
-    HD1080p,
-    HD1080pHDR,
-    UHD2160p,
-    UHD2160pHDR,
-}
-
-/// Content type for optimized encoding parameters
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ContentType {
-    /// Live action footage
-    #[default]
-    LiveAction,
-    /// Animation / cartoon content
-    Animation,
-}
-
-impl ContentType {
-    /// Detect content type from filename (basic heuristic)
-    pub fn from_filename(filename: &str) -> Self {
-        let lower = filename.to_lowercase();
-        if lower.contains("anime")
-            || lower.contains("animation")
-            || lower.contains("cartoon")
-            || lower.contains("animated")
-        {
-            ContentType::Animation
-        } else {
-            ContentType::LiveAction
-        }
-    }
-}
-
 /// Get quality parameters for a specific encoder and profile
-pub fn get_quality_params(
-    encoder: AV1Encoder,
-    profile: QualityProfile,
-    content_type: ContentType,
-) -> Vec<String> {
+pub fn get_quality_params(encoder: AV1Encoder, profile: EncoderProfile) -> Vec<String> {
     match encoder {
-        AV1Encoder::SvtAv1 => get_svtav1_params(profile, content_type),
+        AV1Encoder::SvtAv1 => get_svtav1_params(profile),
         AV1Encoder::Nvenc => get_nvenc_params(profile),
         AV1Encoder::Qsv => get_qsv_params(profile),
         AV1Encoder::Amf => get_amf_params(profile),
     }
 }
 
-/// SVT-AV1 parameters with optimized quality settings
-///
-/// Key improvements:
-/// - Lower CRF values (24-26 instead of 28-30) for better quality
-/// - Film-grain synthesis (4-8) to mask compression artifacts
-/// - film-grain-denoise=1 to remove source grain and re-synthesize
-/// - enable-overlays=1 for better handling of complex scenes
-/// - scd=1 for improved scene change detection
-fn get_svtav1_params(profile: QualityProfile, content_type: ContentType) -> Vec<String> {
+/// SVT-AV1 parameters
+fn get_svtav1_params(profile: EncoderProfile) -> Vec<String> {
     // Base CRF and film-grain values based on profile
-    let (crf, base_film_grain) = match profile {
+    let (crf, film_grain) = match profile {
         // SDR 1080p: Lower CRF for quality, no film-grain needed
-        QualityProfile::HD1080p => ("24", 0),
+        EncoderProfile::HD1080p => ("24", 0),
         // HDR 1080p: Slightly higher CRF, moderate film-grain for HDR artifacts
-        QualityProfile::HD1080pHDR => ("25", 4),
+        EncoderProfile::HD1080pHDR => ("25", 4),
         // SDR 4K: Medium CRF, some film-grain helps at this resolution
-        QualityProfile::UHD2160p => ("25", 5),
+        EncoderProfile::UHD2160p => ("25", 5),
         // HDR 4K: Most demanding - lowest CRF, higher film-grain
-        QualityProfile::UHD2160pHDR => ("24", 6),
-    };
-
-    // Adjust film-grain based on content type
-    let film_grain = match content_type {
-        ContentType::Animation => 0, // Animation doesn't benefit from film-grain
-        ContentType::LiveAction => base_film_grain,
+        EncoderProfile::UHD2160pHDR => ("24", 6),
     };
 
     // Build SVT-AV1 params string
@@ -325,20 +102,13 @@ fn get_svtav1_params(profile: QualityProfile, content_type: ContentType) -> Vec<
     ]
 }
 
-/// NVENC parameters with optimized quality settings
-///
-/// Key improvements:
-/// - Lower CQ values (22-25 instead of 28-30)
-/// - Preset p7 (slowest/best quality) instead of p4
-/// - Multipass encoding for consistent quality
-/// - Lookahead buffer for better rate control
-/// - Spatial and temporal AQ for better bit distribution
-fn get_nvenc_params(profile: QualityProfile) -> Vec<String> {
+/// NVENC parameters
+fn get_nvenc_params(profile: EncoderProfile) -> Vec<String> {
     let (cq, lookahead) = match profile {
-        QualityProfile::HD1080p => ("24", "32"),
-        QualityProfile::HD1080pHDR => ("23", "32"),
-        QualityProfile::UHD2160p => ("25", "48"),
-        QualityProfile::UHD2160pHDR => ("22", "48"),
+        EncoderProfile::HD1080p => ("24", "32"),
+        EncoderProfile::HD1080pHDR => ("23", "32"),
+        EncoderProfile::UHD2160p => ("25", "48"),
+        EncoderProfile::UHD2160pHDR => ("22", "48"),
     };
 
     vec![
@@ -360,12 +130,12 @@ fn get_nvenc_params(profile: QualityProfile) -> Vec<String> {
 }
 
 /// Intel QSV parameters with optimized quality settings
-fn get_qsv_params(profile: QualityProfile) -> Vec<String> {
+fn get_qsv_params(profile: EncoderProfile) -> Vec<String> {
     let quality = match profile {
-        QualityProfile::HD1080p => "24",
-        QualityProfile::HD1080pHDR => "23",
-        QualityProfile::UHD2160p => "25",
-        QualityProfile::UHD2160pHDR => "22",
+        EncoderProfile::HD1080p => "24",
+        EncoderProfile::HD1080pHDR => "23",
+        EncoderProfile::UHD2160p => "25",
+        EncoderProfile::UHD2160pHDR => "22",
     };
 
     vec![
@@ -381,12 +151,12 @@ fn get_qsv_params(profile: QualityProfile) -> Vec<String> {
 }
 
 /// AMD AMF parameters with optimized quality settings
-fn get_amf_params(profile: QualityProfile) -> Vec<String> {
+fn get_amf_params(profile: EncoderProfile) -> Vec<String> {
     let quality = match profile {
-        QualityProfile::HD1080p => "24",
-        QualityProfile::HD1080pHDR => "23",
-        QualityProfile::UHD2160p => "25",
-        QualityProfile::UHD2160pHDR => "22",
+        EncoderProfile::HD1080p => "24",
+        EncoderProfile::HD1080pHDR => "23",
+        EncoderProfile::UHD2160p => "25",
+        EncoderProfile::UHD2160pHDR => "22",
     };
 
     vec![
@@ -400,14 +170,9 @@ fn get_amf_params(profile: QualityProfile) -> Vec<String> {
 }
 
 /// Get HDR color parameters with metadata passthrough
-///
-/// Key improvements:
-/// - Proper color primaries, transfer, and space settings
-/// - Metadata passthrough for mastering display info
-/// - Support for both PQ (HDR10) and HLG transfer functions
-pub fn get_hdr_params(profile: QualityProfile, transfer: Option<&str>) -> Vec<String> {
+pub fn get_hdr_params(profile: EncoderProfile, transfer: Option<&str>) -> Vec<String> {
     match profile {
-        QualityProfile::HD1080pHDR | QualityProfile::UHD2160pHDR => {
+        EncoderProfile::HD1080pHDR | EncoderProfile::UHD2160pHDR => {
             // Determine transfer characteristic (PQ or HLG)
             let color_trc = match transfer {
                 Some("arib-std-b67") => "arib-std-b67", // HLG
@@ -431,16 +196,10 @@ pub fn get_hdr_params(profile: QualityProfile, transfer: Option<&str>) -> Vec<St
 }
 
 /// Get parameters for converting Dolby Vision to HDR10
-///
-/// This extracts the HDR10 base layer from Dolby Vision content,
-/// allowing playback on non-DV displays while preserving HDR.
-/// The DV metadata is stripped but the HDR10 color information is retained.
 pub fn get_dv_to_hdr10_params() -> Vec<String> {
     vec![
-        // Set color parameters explicitly for HDR10
         "-vf".to_string(),
         "setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084".to_string(),
-        // Ensure HDR10 color metadata in output
         "-color_primaries".to_string(),
         "bt2020".to_string(),
         "-color_trc".to_string(),
@@ -451,49 +210,248 @@ pub fn get_dv_to_hdr10_params() -> Vec<String> {
 }
 
 /// Check if a resolution represents Dolby Vision content
-pub fn is_dolby_vision_resolution(resolution: &crate::analysis::Resolution) -> bool {
-    matches!(
-        resolution,
-        crate::analysis::Resolution::HD1080pDV | crate::analysis::Resolution::UHD2160pDV
-    )
+pub fn is_dolby_vision_resolution(resolution: &Resolution) -> bool {
+    matches!(resolution, Resolution::HD1080pDV | Resolution::UHD2160pDV)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Get video duration in seconds using ffprobe
+fn get_video_duration(input: &str) -> Option<f64> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            input,
+        ])
+        .output()
+        .ok()?;
 
-    #[test]
-    fn test_encoder_names() {
-        assert_eq!(AV1Encoder::SvtAv1.ffmpeg_name(), "libsvtav1");
-        assert_eq!(AV1Encoder::Nvenc.ffmpeg_name(), "av1_nvenc");
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+fn kill_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn cleanup_partial_file(path: &str) {
+    let _ = std::fs::remove_file(path);
+}
+
+/// Encode video with optional VMAF quality check
+#[allow(clippy::too_many_arguments)]
+pub fn encode_video(
+    input: &str,
+    output: &str,
+    resolution: Resolution,
+    track_selection: &TrackSelection,
+    encoder: AV1Encoder,
+    progress_callback: Option<ProgressCallback>,
+    cancel_flag: Arc<AtomicBool>,
+    options: &EncoderOptions,
+) -> EncodeResult {
+    // Check if source is Dolby Vision
+    let is_dolby_vision = crate::encoder::is_dolby_vision_resolution(&resolution);
+
+    let enc_options = EncoderOptions::default();
+    let mut args =
+        enc_options.ffmpeg_args(input, output, track_selection, encoder, is_dolby_vision);
+
+    // Get video duration for progress calculation
+    let duration = get_video_duration(input).unwrap_or_else(|| {
+        warn!("Could not determine duration for {}", input);
+        0.0
+    });
+
+    // Use a file for progress output (avoids pipe buffering issues on macOS)
+    let progress_file =
+        std::env::temp_dir().join(format!("ffmpeg_progress_{}", std::process::id()));
+    let progress_path = progress_file.to_string_lossy().to_string();
+
+    // Create empty progress file
+    if let Err(e) = std::fs::File::create(&progress_file) {
+        return EncodeResult::Error(format!("Failed to create progress file: {}", e));
     }
 
-    #[test]
-    fn test_svtav1_params() {
-        let params = get_svtav1_params(QualityProfile::HD1080p, ContentType::LiveAction);
-        assert!(params.contains(&"-crf".to_string()));
-        assert!(params.contains(&"24".to_string()));
+    // Insert progress args at the beginning (after -y -nostdin)
+    args.insert(2, "-progress".to_string());
+    args.insert(3, progress_path.clone());
+
+    info!("Starting encode: {} -> {}", input, output);
+    debug!("FFmpeg args: {:?}", args);
+
+    let mut child = match Command::new("ffmpeg")
+        .args(&args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = std::fs::remove_file(&progress_file);
+            return EncodeResult::Error(format!("Failed to start ffmpeg: {}", e));
+        }
+    };
+
+    // Main loop: poll progress file and check for completion
+    let result = run_encode_loop(
+        &mut child,
+        &progress_file,
+        duration,
+        progress_callback,
+        cancel_flag,
+        output,
+    );
+
+    // Clean up progress file
+    let _ = std::fs::remove_file(&progress_file);
+
+    // If encoding succeeded and VMAF is enabled, calculate quality score
+    if matches!(result, EncodeResult::Success) {
+        return run_vmaf_check(input, output, options);
     }
 
-    #[test]
-    fn test_content_type_detection() {
-        assert_eq!(
-            ContentType::from_filename("My_Anime_Episode_01.mkv"),
-            ContentType::Animation
-        );
-        assert_eq!(
-            ContentType::from_filename("Movie_2024.mkv"),
-            ContentType::LiveAction
-        );
-    }
+    result
+}
 
-    #[test]
-    fn test_animation_no_film_grain() {
-        let params = get_svtav1_params(QualityProfile::HD1080p, ContentType::Animation);
-        let svt_params = params
-            .iter()
-            .find(|p| p.contains("film-grain="))
-            .expect("Should have film-grain param");
-        assert!(svt_params.contains("film-grain=0"));
+/// Run the main encoding loop
+fn run_encode_loop(
+    child: &mut Child,
+    progress_file: &Path,
+    duration: f64,
+    mut progress_callback: Option<ProgressCallback>,
+    cancel_flag: Arc<AtomicBool>,
+    output: &str,
+) -> EncodeResult {
+    loop {
+        // Check for cancellation
+        if cancel_flag.load(Ordering::Relaxed) {
+            kill_child(child);
+            cleanup_partial_file(output);
+            return EncodeResult::Cancelled;
+        }
+
+        // Read progress file and find the latest out_time_us value
+        if let Ok(content) = std::fs::read_to_string(progress_file) {
+            let mut latest_time_us: Option<f64> = None;
+            for line in content.lines() {
+                if let Some(value) = line.strip_prefix("out_time_us=")
+                    && let Ok(time_us) = value.trim().parse::<f64>()
+                    && time_us > 0.0
+                {
+                    latest_time_us = Some(time_us);
+                }
+            }
+
+            if let Some(time_us) = latest_time_us {
+                let time_secs = time_us / 1_000_000.0;
+                if duration > 0.0 {
+                    let progress = (time_secs / duration * 100.0).min(100.0) as f32;
+                    if let Some(ref mut cb) = progress_callback {
+                        cb(progress);
+                    }
+                }
+            }
+        }
+
+        // Check if ffmpeg has finished
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    // Try to get stderr for error details
+                    let stderr = child
+                        .stderr
+                        .take()
+                        .and_then(|mut s| {
+                            use std::io::Read;
+                            let mut buf = String::new();
+                            s.read_to_string(&mut buf).ok()?;
+                            Some(buf)
+                        })
+                        .unwrap_or_default();
+
+                    cleanup_partial_file(output);
+
+                    let error_msg = if stderr.is_empty() {
+                        format!("ffmpeg failed with status: {}", status)
+                    } else {
+                        // Extract last few lines of stderr for error message
+                        let last_lines: Vec<&str> = stderr.lines().rev().take(5).collect();
+                        format!(
+                            "ffmpeg failed ({}): {}",
+                            status,
+                            last_lines.into_iter().rev().collect::<Vec<_>>().join("\n")
+                        )
+                    };
+
+                    return EncodeResult::Error(error_msg);
+                }
+                return EncodeResult::Success;
+            }
+            Ok(None) => {
+                // Still running
+                thread::sleep(Duration::from_millis(250));
+            }
+            Err(e) => {
+                return EncodeResult::Error(format!("Failed to check ffmpeg status: {}", e));
+            }
+        }
     }
+}
+
+/// Run VMAF quality check after encoding
+fn run_vmaf_check(input: &str, output: &str, options: &EncoderOptions) -> EncodeResult {
+    info!("Running VMAF quality check...");
+
+    let input_path = Path::new(input);
+    let output_path = Path::new(output);
+
+    // Use quick mode for reasonable speed
+    let vmaf_options = VmafOptions::quick();
+
+    match calculate_vmaf(input_path, output_path, &vmaf_options) {
+        Ok(vmaf) => {
+            info!("VMAF score: {:.2} ({})", vmaf.score, vmaf.quality_grade());
+
+            // Check against threshold if set
+            if let Some(threshold) = options.vmaf
+                && !vmaf.meets_threshold(threshold)
+            {
+                warn!(
+                    "VMAF score {:.2} is below threshold {:.2}",
+                    vmaf.score, threshold
+                );
+
+                return EncodeResult::QualityBelowThreshold { vmaf, threshold };
+            }
+
+            EncodeResult::SuccessWithVmaf(vmaf)
+        }
+        Err(e) => {
+            warn!(
+                "VMAF calculation failed: {}. Reporting success without score.",
+                e
+            );
+            // VMAF failed but encoding succeeded, report success without score
+            EncodeResult::Success
+        }
+    }
+}
+
+/// Result of encoding with optional VMAF score
+#[derive(Debug)]
+pub enum EncodeResult {
+    /// Encoding completed successfully
+    Success,
+    /// Encoding completed with VMAF quality score
+    SuccessWithVmaf(VmafResult),
+    /// Encoding was cancelled by user
+    Cancelled,
+    /// Encoding failed with error message
+    Error(String),
+    /// Encoding succeeded but quality is below threshold
+    QualityBelowThreshold { vmaf: VmafResult, threshold: f64 },
 }

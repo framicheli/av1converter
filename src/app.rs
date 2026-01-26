@@ -1,7 +1,7 @@
-use crate::analysis::{Resolution, analyze};
-use crate::converter::{EncodeOptions, EncodeResult, TrackSelection, encode_video};
-use crate::data::{FileStatus, VideoFile, is_video_file};
-use crate::encoder::{ContentType, EncoderConfig};
+use crate::analysis::analyze;
+use crate::config::{EncoderConfig, EncoderOptions, TrackSelection};
+use crate::data::{FileStatus, Resolution, VideoFile, is_video_file};
+use crate::encoder::{EncodeResult, encode_video};
 use crate::vmaf::is_vmaf_available;
 use ratatui::widgets::ListState;
 use std::path::{Path, PathBuf};
@@ -329,7 +329,7 @@ impl App {
 
             match analyze(file.path.to_str().unwrap_or("")) {
                 Ok(analysis) => {
-                    let resolution = analysis.video.classify_video().ok();
+                    let resolution = analysis.video.classify_video();
                     file.analysis = Some(analysis.video);
                     file.audio_tracks = analysis.audio_tracks;
                     file.subtitle_tracks = analysis.subtitle_tracks;
@@ -415,7 +415,6 @@ impl App {
 
         // Get the encoder
         let encoder = self.encoder_config.selected_encoder;
-        let run_vmaf = self.encoder_config.run_vmaf;
         let vmaf_threshold = self.encoder_config.vmaf_threshold;
 
         // Collect files to encode with their encode options
@@ -425,7 +424,7 @@ impl App {
             PathBuf,
             Resolution,
             TrackSelection,
-            EncodeOptions,
+            EncoderOptions,
         )> = self
             .files
             .iter()
@@ -439,23 +438,21 @@ impl App {
 
                 // Encode options based on file analysis
                 let mut encode_options = if let Some(ref analysis) = f.analysis {
-                    EncodeOptions::from_analysis(analysis, &f.filename())
+                    EncoderOptions::from_analysis(analysis)
                 } else {
-                    EncodeOptions {
-                        content_type: ContentType::from_filename(&f.filename()),
+                    EncoderOptions {
                         ..Default::default()
                     }
                 };
 
                 // Apply VMAF settings from encoder config
-                encode_options.run_vmaf = run_vmaf;
-                encode_options.vmaf_threshold = vmaf_threshold;
+                encode_options.vmaf = vmaf_threshold;
 
                 (
                     i,
                     f.path.clone(),
                     f.output_path.clone().unwrap_or_else(|| f.path.clone()),
-                    f.resolution.unwrap_or(Resolution::HD1080p),
+                    f.resolution,
                     track_selection,
                     encode_options,
                 )
