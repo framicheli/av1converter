@@ -1,4 +1,4 @@
-use crate::analysis::{Resolution, analyze_full};
+use crate::analysis::{Resolution, analyze};
 use crate::converter::{EncodeOptions, EncodeResult, TrackSelection, encode_video};
 use crate::data::{FileStatus, VideoFile, is_video_file};
 use crate::encoder::{ContentType, EncoderConfig};
@@ -327,7 +327,7 @@ impl App {
         for file in &mut self.files {
             file.status = FileStatus::Analyzing;
 
-            match analyze_full(file.path.to_str().unwrap_or("")) {
+            match analyze(file.path.to_str().unwrap_or("")) {
                 Ok(analysis) => {
                     let resolution = analysis.video.classify_video().ok();
                     file.analysis = Some(analysis.video);

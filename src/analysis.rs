@@ -99,8 +99,7 @@ pub struct FullAnalysis {
 }
 
 /// Analyze a video file and extract all track information
-pub fn analyze_full(input_path: &str) -> Result<FullAnalysis, AppError> {
-    // First, get video stream analysis (existing logic)
+pub fn analyze(input_path: &str) -> Result<FullAnalysis, AppError> {
     let video_args = [
         "-v",
         "error",
