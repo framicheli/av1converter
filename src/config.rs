@@ -128,6 +128,29 @@ impl From<Resolution> for EncoderProfile {
     }
 }
 
+/// Encoder configuration
+#[derive(Debug, Clone)]
+pub struct EncoderConfig {
+    /// Selected encoder to use
+    pub selected_encoder: AV1Encoder,
+    /// VMAF quality threshold
+    pub vmaf_threshold: Option<f64>,
+}
+
+impl EncoderConfig {
+    pub fn new() -> Self {
+        let available_encoders = detect_available_encoders();
+        let selected_encoder = available_encoders
+            .first()
+            .copied()
+            .unwrap_or(AV1Encoder::SvtAv1);
+        Self {
+            selected_encoder,
+            vmaf_threshold: Some(90.0),
+        }
+    }
+}
+
 /// Progress callback type for encoding progress updates
 pub type ProgressCallback = Box<dyn FnMut(f32) + Send>;
 
@@ -271,43 +294,4 @@ fn has_amd_av1_support() -> bool {
     }
 
     false
-}
-
-/// Select available encoder
-/// uses hardware encoder if present or software as a fallback
-fn select_encoder(available: &[AV1Encoder]) -> AV1Encoder {
-    available.first().copied().unwrap_or(AV1Encoder::SvtAv1)
-}
-
-/// Encoder configuration
-#[derive(Debug, Clone)]
-pub struct EncoderConfig {
-    /// Selected encoder to use
-    pub selected_encoder: AV1Encoder,
-    /// Whether to run VMAF quality check after encoding (always true)
-    pub run_vmaf: bool,
-    /// VMAF quality threshold (default: 90.0)
-    pub vmaf_threshold: Option<f64>,
-}
-
-/// Default VMAF quality threshold
-pub const DEFAULT_VMAF_THRESHOLD: f64 = 90.0;
-
-impl Default for EncoderConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl EncoderConfig {
-    pub fn new() -> Self {
-        let available_encoders = detect_available_encoders();
-        let selected_encoder = select_encoder(&available_encoders);
-
-        Self {
-            selected_encoder,
-            run_vmaf: true,
-            vmaf_threshold: Some(DEFAULT_VMAF_THRESHOLD),
-        }
-    }
 }

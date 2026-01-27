@@ -7,6 +7,7 @@ use crate::error::AppError;
 use serde::Deserialize;
 use std::path::Path;
 use std::process::Command;
+use tracing::info;
 
 /// VMAF quality assessment result
 #[derive(Debug, Clone)]
@@ -26,14 +27,14 @@ impl VmafResult {
     }
 
     /// Get a human-readable quality grade
-    pub fn quality_grade(&self) -> &'static str {
+    pub fn quality_grade(&self) -> String {
         match self.score as u32 {
-            95..=100 => "Excellent (Transparent)",
-            90..=94 => "Very Good",
-            80..=89 => "Good",
-            70..=79 => "Fair",
-            60..=69 => "Poor",
-            _ => "Bad",
+            95..=100 => "Excellent (Transparent)".to_string(),
+            90..=94 => "Very Good".to_string(),
+            80..=89 => "Good".to_string(),
+            70..=79 => "Fair".to_string(),
+            60..=69 => "Poor".to_string(),
+            _ => "Bad".to_string(),
         }
     }
 }
@@ -74,7 +75,7 @@ struct MetricStats {
 pub struct VmafOptions {
     /// Number of threads to use (0 = auto)
     pub threads: u32,
-    /// Subsample rate (1 = every frame, 5 = every 5th frame)
+    /// Subsample rate (5 = every 5th frame, 10 = every 10th frame)
     pub subsample: u32,
 }
 
@@ -82,7 +83,7 @@ impl Default for VmafOptions {
     fn default() -> Self {
         Self {
             threads: 4,
-            subsample: 1, // Every frame for full accuracy
+            subsample: 5,
         }
     }
 }
@@ -92,7 +93,7 @@ impl VmafOptions {
     pub fn quick() -> Self {
         Self {
             threads: 4,
-            subsample: 5, // Every 5th frame
+            subsample: 10,
         }
     }
 }
@@ -115,7 +116,7 @@ pub fn calculate_vmaf(
         options.subsample
     );
 
-    tracing::info!(
+    info!(
         "Calculating VMAF: {} vs {}",
         original.display(),
         encoded.display()
@@ -172,7 +173,7 @@ pub fn calculate_vmaf(
         max_score: vmaf_data.pooled_metrics.vmaf.max,
     };
 
-    tracing::info!("VMAF result: {}", result);
+    info!("VMAF result: {}", result);
 
     Ok(result)
 }

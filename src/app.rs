@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Instant;
-use tracing::{debug, info};
+use tracing::info;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Screen {
@@ -474,11 +474,8 @@ impl App {
 
         // Start encoding thread
         thread::spawn(move || {
-            debug!("Encoding thread started");
             for (idx, input, output, resolution, track_selection, encode_options) in files_to_encode
             {
-                debug!("Processing file idx={}, input={:?}", idx, input);
-
                 // Check if cancelled before starting next file
                 if cancel_flag.load(Ordering::Relaxed) {
                     let _ = tx.send(ProgressMessage::Cancelled);

@@ -14,7 +14,7 @@ use std::{
     thread,
     time::Duration,
 };
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// AV1 encoders
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,7 +281,6 @@ pub fn encode_video(
     args.insert(3, progress_path.clone());
 
     info!("Starting encode: {} -> {}", input, output);
-    debug!("FFmpeg args: {:?}", args);
 
     let mut child = match Command::new("ffmpeg")
         .args(&args)
