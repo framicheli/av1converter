@@ -2,7 +2,7 @@
 //!
 //! Video file analysis using ffprobe.
 
-use crate::data::{AudioTrack, SubtitleTrack, VideoAnalysis};
+use crate::data::{AudioTrack, HdrType, SubtitleTrack, VideoAnalysis};
 use crate::error::AppError;
 use serde::Deserialize;
 use serde_json::Value;
@@ -59,23 +59,28 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoAnalysis, AppError> {
             message: "No video stream found".to_string(),
         })?;
 
-    let is_hdr = matches!(
-        stream.color_transfer.as_deref(),
-        Some("smpte2084") | Some("arib-std-b67")
-    );
-
+    // Check for Dolby Vision first (takes priority)
     let is_dolby_vision = stream
         .side_data_list
         .as_ref()
         .map(|list| list.iter().any(|v| v.to_string().contains("Dolby Vision")))
         .unwrap_or(false);
 
+    // Determine HDR type based on color transfer and Dolby Vision detection
+    let hdr_type = if is_dolby_vision {
+        HdrType::DolbyVision
+    } else {
+        match stream.color_transfer.as_deref() {
+            Some("smpte2084") => HdrType::Pq,
+            Some("arib-std-b67") => HdrType::Hlg,
+            _ => HdrType::Sdr,
+        }
+    };
+
     Ok(VideoAnalysis {
         width: stream.width,
         height: stream.height,
-        is_hdr,
-        is_dolby_vision,
-        color_transfer: stream.color_transfer,
+        hdr_type,
     })
 }
 

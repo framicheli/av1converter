@@ -424,7 +424,7 @@ impl App {
                     f.path.clone(),
                     f.output_path.clone().unwrap_or_else(|| f.path.clone()),
                     f.profile(),
-                    f.is_dolby_vision(),
+                    f.hdr_type(),
                     tracks,
                 )
             })
@@ -446,7 +446,7 @@ impl App {
 
         // Start encoding thread
         thread::spawn(move || {
-            for (idx, input, output, profile, is_dv, tracks) in files_to_encode {
+            for (idx, input, output, profile, hdr_type, tracks) in files_to_encode {
                 if cancel_flag.load(Ordering::Relaxed) {
                     let _ = tx.send(ProgressMessage::Cancelled);
                     break;
@@ -463,7 +463,7 @@ impl App {
                     profile,
                     &tracks,
                     encoder,
-                    is_dv,
+                    hdr_type,
                     Some(Box::new(move |progress| {
                         let _ = tx_clone.send(ProgressMessage::Progress(idx, progress));
                     })),

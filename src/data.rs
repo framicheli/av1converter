@@ -5,6 +5,37 @@
 use crate::config::Profile;
 use std::path::{Path, PathBuf};
 
+/// HDR type classification
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HdrType {
+    /// Standard Dynamic Range
+    #[default]
+    Sdr,
+    /// PQ (Perceptual Quantizer) - HDR10/HDR10+
+    Pq,
+    /// HLG (Hybrid Log-Gamma)
+    Hlg,
+    /// Dolby Vision
+    DolbyVision,
+}
+
+impl HdrType {
+    /// Check if this is any HDR format
+    pub fn is_hdr(&self) -> bool {
+        !matches!(self, HdrType::Sdr)
+    }
+
+    /// Get display string for this HDR type
+    pub fn display_string(&self) -> &'static str {
+        match self {
+            HdrType::Sdr => "SDR",
+            HdrType::Pq => "HDR10",
+            HdrType::Hlg => "HLG",
+            HdrType::DolbyVision => "Dolby Vision",
+        }
+    }
+}
+
 /// Audio track information
 #[derive(Debug, Clone)]
 pub struct AudioTrack {
@@ -98,19 +129,14 @@ pub enum FileStatus {
 pub struct VideoAnalysis {
     pub width: u32,
     pub height: u32,
-    pub is_hdr: bool,
-    pub is_dolby_vision: bool,
-    #[allow(dead_code)]
-    pub color_transfer: Option<String>,
+    pub hdr_type: HdrType,
 }
 
 impl VideoAnalysis {
     /// Determine the encoding profile based on analysis
     pub fn profile(&self) -> Profile {
         let is_4k = self.width >= 3000 || self.height >= 1800;
-
-        // Dolby Vision is converted to HDR
-        let is_hdr = self.is_hdr || self.is_dolby_vision;
+        let is_hdr = self.hdr_type.is_hdr();
 
         match (is_4k, is_hdr) {
             (false, false) => Profile::HD1080p,
@@ -127,13 +153,7 @@ impl VideoAnalysis {
 
     /// Get HDR status string for display
     pub fn hdr_string(&self) -> &'static str {
-        if self.is_dolby_vision {
-            "Dolby Vision"
-        } else if self.is_hdr {
-            "HDR"
-        } else {
-            "SDR"
-        }
+        self.hdr_type.display_string()
     }
 }
 
@@ -181,12 +201,12 @@ impl VideoFile {
             .unwrap_or_default()
     }
 
-    /// Check if this is Dolby Vision content
-    pub fn is_dolby_vision(&self) -> bool {
+    /// Get the HDR type for this video
+    pub fn hdr_type(&self) -> HdrType {
         self.analysis
             .as_ref()
-            .map(|a| a.is_dolby_vision)
-            .unwrap_or(false)
+            .map(|a| a.hdr_type)
+            .unwrap_or(HdrType::Sdr)
     }
 
     /// Generate the output path

@@ -58,6 +58,7 @@ pub enum Profile {
 
 impl Profile {
     /// Check if this is an HDR profile
+    #[allow(dead_code)]
     pub fn is_hdr(&self) -> bool {
         matches!(self, Profile::HD1080pHDR | Profile::UHD2160pHDR)
     }

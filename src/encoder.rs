@@ -3,6 +3,7 @@
 //! Handles AV1 video encoding with FFmpeg.
 
 use crate::config::{Encoder, Profile};
+use crate::data::HdrType;
 use crate::vmaf::{VmafResult, calculate_vmaf};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -45,12 +46,12 @@ pub fn encode(
     profile: Profile,
     tracks: &TrackSelection,
     encoder: Encoder,
-    is_dolby_vision: bool,
+    hdr_type: HdrType,
     progress_callback: Option<ProgressCallback>,
     cancel_flag: Arc<AtomicBool>,
     vmaf_threshold: Option<f64>,
 ) -> EncodeResult {
-    let args = build_ffmpeg_args(input, output, profile, tracks, encoder, is_dolby_vision);
+    let args = build_ffmpeg_args(input, output, profile, tracks, encoder, hdr_type);
 
     // Get video duration for progress calculation
     let duration = get_duration(input).unwrap_or(0.0);
@@ -111,7 +112,7 @@ fn build_ffmpeg_args(
     profile: Profile,
     tracks: &TrackSelection,
     encoder: Encoder,
-    is_dolby_vision: bool,
+    hdr_type: HdrType,
 ) -> Vec<String> {
     let mut args = vec![
         "-y".to_string(),
@@ -153,11 +154,12 @@ fn build_ffmpeg_args(
     // Encoder-specific quality parameters
     args.extend(get_quality_params(encoder, profile));
 
-    // HDR/color parameters
-    if is_dolby_vision {
-        args.extend(get_dolby_vision_params());
-    } else if profile.is_hdr() {
-        args.extend(get_hdr_params());
+    // HDR/color parameters based on source HDR type
+    match hdr_type {
+        HdrType::DolbyVision => args.extend(get_dolby_vision_params()),
+        HdrType::Pq => args.extend(get_pq_params()),
+        HdrType::Hlg => args.extend(get_hlg_params()),
+        HdrType::Sdr => {}
     }
 
     args.push(output.to_string());
@@ -269,8 +271,8 @@ fn get_amf_params(profile: Profile) -> Vec<String> {
     ]
 }
 
-/// HDR color parameters
-fn get_hdr_params() -> Vec<String> {
+/// PQ (HDR10/HDR10+) color parameters
+fn get_pq_params() -> Vec<String> {
     vec![
         "-color_primaries".to_string(),
         "bt2020".to_string(),
@@ -283,7 +285,21 @@ fn get_hdr_params() -> Vec<String> {
     ]
 }
 
-/// Dolby Vision to HDR10 conversion parameters
+/// HLG (Hybrid Log-Gamma) color parameters
+fn get_hlg_params() -> Vec<String> {
+    vec![
+        "-color_primaries".to_string(),
+        "bt2020".to_string(),
+        "-color_trc".to_string(),
+        "arib-std-b67".to_string(),
+        "-colorspace".to_string(),
+        "bt2020nc".to_string(),
+        "-map_metadata".to_string(),
+        "0".to_string(),
+    ]
+}
+
+/// Dolby Vision to HDR10 (PQ) conversion parameters
 fn get_dolby_vision_params() -> Vec<String> {
     vec![
         "-vf".to_string(),
