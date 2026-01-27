@@ -1,6 +1,11 @@
-use crate::analysis::{AnalysisResult, Resolution};
-use std::path::PathBuf;
+//! Data Module
+//!
+//! Core data structures for video files and tracks.
 
+use crate::config::Profile;
+use std::path::{Path, PathBuf};
+
+/// Audio track information
 #[derive(Debug, Clone)]
 pub struct AudioTrack {
     pub index: usize,
@@ -36,6 +41,7 @@ impl AudioTrack {
     }
 }
 
+/// Subtitle track information
 #[derive(Debug, Clone)]
 pub struct SubtitleTrack {
     pub index: usize,
@@ -62,25 +68,80 @@ impl SubtitleTrack {
     }
 }
 
+/// Video file status during processing
 #[derive(Debug, Clone)]
 pub enum FileStatus {
+    /// Waiting to be processed
     Pending,
+    /// Being analyzed
     Analyzing,
+    /// Waiting for track configuration
     AwaitingConfig,
-    ReadyToConvert,
-    Converting { progress: f32 },
+    /// Ready to encode
+    Ready,
+    /// Currently encoding
+    Encoding { progress: f32 },
+    /// Successfully encoded
     Done,
+    /// Encoded with VMAF score
     DoneWithVmaf { score: f64 },
+    /// Skipped (e.g., cancelled)
     Skipped { reason: String },
+    /// Error occurred
     Error { message: String },
+    /// Encoded but quality below threshold
     QualityWarning { vmaf: f64, threshold: f64 },
 }
 
+/// Video analysis result
+#[derive(Debug, Clone)]
+pub struct VideoAnalysis {
+    pub width: u32,
+    pub height: u32,
+    pub is_hdr: bool,
+    pub is_dolby_vision: bool,
+    #[allow(dead_code)]
+    pub color_transfer: Option<String>,
+}
+
+impl VideoAnalysis {
+    /// Determine the encoding profile based on analysis
+    pub fn profile(&self) -> Profile {
+        let is_4k = self.width >= 3000 || self.height >= 1800;
+
+        // Dolby Vision is converted to HDR
+        let is_hdr = self.is_hdr || self.is_dolby_vision;
+
+        match (is_4k, is_hdr) {
+            (false, false) => Profile::HD1080p,
+            (false, true) => Profile::HD1080pHDR,
+            (true, false) => Profile::UHD2160p,
+            (true, true) => Profile::UHD2160pHDR,
+        }
+    }
+
+    /// Get resolution string for display
+    pub fn resolution_string(&self) -> String {
+        format!("{}x{}", self.width, self.height)
+    }
+
+    /// Get HDR status string for display
+    pub fn hdr_string(&self) -> &'static str {
+        if self.is_dolby_vision {
+            "Dolby Vision"
+        } else if self.is_hdr {
+            "HDR"
+        } else {
+            "SDR"
+        }
+    }
+}
+
+/// Video file with all metadata
 #[derive(Debug, Clone)]
 pub struct VideoFile {
     pub path: PathBuf,
-    pub analysis: Option<AnalysisResult>,
-    pub resolution: Option<Resolution>,
+    pub analysis: Option<VideoAnalysis>,
     pub audio_tracks: Vec<AudioTrack>,
     pub subtitle_tracks: Vec<SubtitleTrack>,
     pub selected_audio: Vec<usize>,
@@ -90,11 +151,11 @@ pub struct VideoFile {
 }
 
 impl VideoFile {
+    /// Create a new video file entry
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
             analysis: None,
-            resolution: None,
             audio_tracks: Vec::new(),
             subtitle_tracks: Vec::new(),
             selected_audio: Vec::new(),
@@ -104,6 +165,7 @@ impl VideoFile {
         }
     }
 
+    /// Get the filename
     pub fn filename(&self) -> String {
         self.path
             .file_name()
@@ -111,17 +173,36 @@ impl VideoFile {
             .unwrap_or_else(|| "Unknown".to_string())
     }
 
+    /// Get the encoding profile based on analysis
+    pub fn profile(&self) -> Profile {
+        self.analysis
+            .as_ref()
+            .map(|a| a.profile())
+            .unwrap_or_default()
+    }
+
+    /// Check if this is Dolby Vision content
+    pub fn is_dolby_vision(&self) -> bool {
+        self.analysis
+            .as_ref()
+            .map(|a| a.is_dolby_vision)
+            .unwrap_or(false)
+    }
+
+    /// Generate the output path
     pub fn generate_output_path(&mut self) {
         let stem = self.path.file_stem().unwrap_or_default().to_string_lossy();
-        let parent = self.path.parent().unwrap_or(std::path::Path::new("."));
+        let parent = self.path.parent().unwrap_or(Path::new("."));
         self.output_path = Some(parent.join(format!("{}_av1.mkv", stem)));
     }
 
+    /// Select all available tracks
     pub fn select_all_tracks(&mut self) {
         self.selected_audio = self.audio_tracks.iter().map(|t| t.index).collect();
         self.selected_subtitles = self.subtitle_tracks.iter().map(|t| t.index).collect();
     }
 
+    /// Toggle audio track selection
     pub fn toggle_audio(&mut self, index: usize) {
         if self.selected_audio.contains(&index) {
             self.selected_audio.retain(|&i| i != index);
@@ -131,6 +212,7 @@ impl VideoFile {
         }
     }
 
+    /// Toggle subtitle track selection
     pub fn toggle_subtitle(&mut self, index: usize) {
         if self.selected_subtitles.contains(&index) {
             self.selected_subtitles.retain(|&i| i != index);
@@ -140,28 +222,31 @@ impl VideoFile {
         }
     }
 
+    /// Get resolution string for display
     pub fn resolution_string(&self) -> String {
-        match &self.analysis {
-            Some(a) => format!("{}x{}", a.width, a.height),
-            None => "Unknown".to_string(),
-        }
+        self.analysis
+            .as_ref()
+            .map(|a| a.resolution_string())
+            .unwrap_or_else(|| "Unknown".to_string())
     }
 
+    /// Get HDR status string for display
     pub fn hdr_string(&self) -> &'static str {
-        match &self.resolution {
-            Some(Resolution::HD1080pHDR) | Some(Resolution::UHD2160pHDR) => "HDR",
-            Some(Resolution::HD1080pDV) | Some(Resolution::UHD2160pDV) => "Dolby Vision",
-            _ => "SDR",
-        }
+        self.analysis
+            .as_ref()
+            .map(|a| a.hdr_string())
+            .unwrap_or("Unknown")
     }
 }
 
-pub fn is_video_file(path: &std::path::Path) -> bool {
-    let extensions = [
+/// Check if a path is a video file
+pub fn is_video_file(path: &Path) -> bool {
+    const VIDEO_EXTENSIONS: [&str; 9] = [
         "mp4", "mkv", "avi", "mov", "webm", "m4v", "ts", "wmv", "flv",
     ];
+
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| extensions.contains(&e.to_lowercase().as_str()))
+        .map(|e| VIDEO_EXTENSIONS.contains(&e.to_lowercase().as_str()))
         .unwrap_or(false)
 }

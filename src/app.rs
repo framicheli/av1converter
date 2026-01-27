@@ -1,8 +1,11 @@
-use crate::analysis::{Resolution, analyze_full};
-use crate::converter::{EncodeOptions, EncodeResult, TrackSelection, encode_video};
+//! Application Module
+//!
+//! Main application state and logic.
+
+use crate::analysis::analyze;
+use crate::config::Config;
 use crate::data::{FileStatus, VideoFile, is_video_file};
-use crate::encoder::{ContentType, EncoderConfig};
-use crate::vmaf::is_vmaf_available;
+use crate::encoder::{self, EncodeResult, TrackSelection};
 use ratatui::widgets::ListState;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,8 +13,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Instant;
-use tracing::{debug, info};
+use tracing::info;
 
+/// Application screens
 #[derive(Debug, Clone, PartialEq)]
 pub enum Screen {
     Home,
@@ -21,18 +25,45 @@ pub enum Screen {
     Finish,
 }
 
+/// File selection mode
 #[derive(Debug, Clone, PartialEq)]
 pub enum SelectionMode {
     File,
     Folder,
 }
 
+/// Track configuration focus
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrackFocus {
+    Audio,
+    Subtitle,
+    Confirm,
+}
+
+/// Confirmation dialog action
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfirmAction {
+    CancelEncoding,
+    ExitApp,
+}
+
+/// Progress message from encoding thread
+pub enum ProgressMessage {
+    Progress(usize, f32),
+    Done(usize),
+    DoneWithVmaf(usize, f64),
+    Error(usize, String),
+    QualityWarning(usize, f64, f64),
+    Cancelled,
+}
+
+/// Main application state
 pub struct App {
     pub current_screen: Screen,
     pub should_quit: bool,
     pub selection_mode: SelectionMode,
 
-    // File explorer state
+    // File explorer
     pub current_dir: PathBuf,
     pub dir_entries: Vec<PathBuf>,
     pub explorer_index: usize,
@@ -43,10 +74,12 @@ pub struct App {
     pub current_file_index: usize,
     pub config_file_index: usize,
 
-    // Track config state
+    // Track config
     pub track_focus: TrackFocus,
     pub audio_cursor: usize,
     pub subtitle_cursor: usize,
+    pub audio_list_state: ListState,
+    pub subtitle_list_state: ListState,
 
     // Home menu
     pub home_index: usize,
@@ -57,48 +90,19 @@ pub struct App {
     pub cancel_flag: Arc<AtomicBool>,
     pub start_time: Option<Instant>,
     pub total_files_to_encode: usize,
-    pub encoder_config: EncoderConfig,
+
+    // Configuration
+    pub config: Config,
 
     // Stats
     pub converted_count: usize,
     pub skipped_count: usize,
     pub error_count: usize,
 
-    // Message/notification
+    // UI state
     pub message: Option<String>,
-
-    // Confirmation dialog
     pub confirm_dialog: Option<ConfirmAction>,
-    pub confirm_selection: bool, // true = Yes, false = No
-
-    // Track list states for scrolling
-    pub audio_list_state: ListState,
-    pub subtitle_list_state: ListState,
-
-    // VMAF availability (cached at startup)
-    pub vmaf_available: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum TrackFocus {
-    Audio,
-    Subtitle,
-    Confirm,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ConfirmAction {
-    CancelEncoding,
-    ExitApp,
-}
-
-pub enum ProgressMessage {
-    Progress(usize, f32),
-    Done(usize),
-    DoneWithVmaf(usize, f64),
-    Error(usize, String),
-    QualityWarning(usize, f64, f64), // index, vmaf, threshold
-    Cancelled,
+    pub confirm_selection: bool,
 }
 
 impl Default for App {
@@ -117,20 +121,16 @@ impl App {
         let mut subtitle_list_state = ListState::default();
         subtitle_list_state.select(Some(0));
 
-        // Detect available AV1 encoders at startup
-        let encoder_config = EncoderConfig::new();
+        let config = Config::new();
 
-        // Check VMAF availability
-        let vmaf_available = is_vmaf_available();
-
-        info!("Using encoder: {}", encoder_config.selected_encoder);
-        info!("VMAF available: {}", vmaf_available);
+        info!("Using encoder: {}", config.encoder);
+        info!("VMAF available: {}", config.vmaf_available);
 
         Self {
             current_screen: Screen::Home,
             should_quit: false,
             selection_mode: SelectionMode::File,
-            current_dir: current_dir.clone(),
+            current_dir,
             dir_entries: Vec::new(),
             explorer_index: 0,
             explorer_list_state: list_state,
@@ -140,24 +140,25 @@ impl App {
             track_focus: TrackFocus::Audio,
             audio_cursor: 0,
             subtitle_cursor: 0,
+            audio_list_state,
+            subtitle_list_state,
             home_index: 0,
             encoding_active: false,
             progress_receiver: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             start_time: None,
             total_files_to_encode: 0,
-            encoder_config,
+            config,
             converted_count: 0,
             skipped_count: 0,
             error_count: 0,
             message: None,
             confirm_dialog: None,
-            confirm_selection: false, // Default to "No"
-            audio_list_state,
-            subtitle_list_state,
-            vmaf_available,
+            confirm_selection: false,
         }
     }
+
+    // Message handling
 
     pub fn set_message(&mut self, msg: &str) {
         self.message = Some(msg.to_string());
@@ -167,10 +168,44 @@ impl App {
         self.message = None;
     }
 
+    // Navigation
+
+    pub fn navigate_to_home(&mut self) {
+        self.current_screen = Screen::Home;
+        self.home_index = 0;
+    }
+
+    pub fn navigate_to_explorer(&mut self, select_folder: bool) {
+        self.selection_mode = if select_folder {
+            SelectionMode::Folder
+        } else {
+            SelectionMode::File
+        };
+        self.refresh_dir_entries();
+        self.current_screen = Screen::FileExplorer { select_folder };
+    }
+
+    pub fn navigate_to_track_config(&mut self) {
+        self.track_focus = TrackFocus::Audio;
+        self.audio_cursor = 0;
+        self.subtitle_cursor = 0;
+        self.current_screen = Screen::TrackConfig;
+    }
+
+    pub fn navigate_to_queue(&mut self) {
+        self.current_screen = Screen::Queue;
+    }
+
+    pub fn navigate_to_finish(&mut self) {
+        self.current_screen = Screen::Finish;
+    }
+
+    // File explorer
+
     pub fn refresh_dir_entries(&mut self) {
         self.dir_entries.clear();
 
-        // Add parent directory if not at root
+        // Add parent directory
         if let Some(parent) = self.current_dir.parent()
             && parent != self.current_dir
         {
@@ -182,10 +217,7 @@ impl App {
             let mut paths: Vec<PathBuf> = entries
                 .filter_map(|e| e.ok())
                 .map(|e| e.path())
-                .filter(|p| {
-                    // Show directories and video files
-                    p.is_dir() || is_video_file(p)
-                })
+                .filter(|p| p.is_dir() || is_video_file(p))
                 .collect();
 
             // Sort: directories first, then files
@@ -224,46 +256,14 @@ impl App {
         let selected = self.dir_entries[self.explorer_index].clone();
 
         if selected == Path::new("..") {
-            // Go to parent directory
             if let Some(parent) = self.current_dir.parent() {
                 self.current_dir = parent.to_path_buf();
                 self.refresh_dir_entries();
             }
         } else if selected.is_dir() {
-            // Enter directory
             self.current_dir = selected;
             self.refresh_dir_entries();
         }
-    }
-
-    pub fn navigate_to_home(&mut self) {
-        self.current_screen = Screen::Home;
-        self.home_index = 0;
-    }
-
-    pub fn navigate_to_explorer(&mut self, select_folder: bool) {
-        self.selection_mode = if select_folder {
-            SelectionMode::Folder
-        } else {
-            SelectionMode::File
-        };
-        self.refresh_dir_entries();
-        self.current_screen = Screen::FileExplorer { select_folder };
-    }
-
-    pub fn navigate_to_track_config(&mut self) {
-        self.track_focus = TrackFocus::Audio;
-        self.audio_cursor = 0;
-        self.subtitle_cursor = 0;
-        self.current_screen = Screen::TrackConfig;
-    }
-
-    pub fn navigate_to_queue(&mut self) {
-        self.current_screen = Screen::Queue;
-    }
-
-    pub fn navigate_to_finish(&mut self) {
-        self.current_screen = Screen::Finish;
     }
 
     pub fn select_explorer_entry(&mut self) {
@@ -275,14 +275,9 @@ impl App {
 
         match self.selection_mode {
             SelectionMode::File => {
-                if selected == Path::new("..") {
-                    // Go to parent directory
-                    self.enter_directory();
-                } else if selected.is_dir() {
-                    // Enter directory
+                if selected == Path::new("..") || selected.is_dir() {
                     self.enter_directory();
                 } else if is_video_file(&selected) {
-                    // Select single file
                     self.files.clear();
                     self.files.push(VideoFile::new(selected));
                     self.analyze_files();
@@ -290,11 +285,9 @@ impl App {
             }
             SelectionMode::Folder => {
                 if selected == Path::new("..") || !selected.is_dir() {
-                    // Navigate up or ignore non-directories
                     self.enter_directory();
                 } else {
-                    // Select this folder and scan for videos
-                    self.scan_folder_for_videos(&selected);
+                    self.scan_folder(&selected);
                     if self.files.is_empty() {
                         self.set_message("No video files found in this folder");
                     } else {
@@ -305,7 +298,7 @@ impl App {
         }
     }
 
-    fn scan_folder_for_videos(&mut self, folder: &PathBuf) {
+    fn scan_folder(&mut self, folder: &PathBuf) {
         self.files.clear();
 
         if let Ok(entries) = std::fs::read_dir(folder) {
@@ -327,17 +320,13 @@ impl App {
         for file in &mut self.files {
             file.status = FileStatus::Analyzing;
 
-            match analyze_full(file.path.to_str().unwrap_or("")) {
+            match analyze(file.path.to_str().unwrap_or("")) {
                 Ok(analysis) => {
-                    let resolution = analysis.video.classify_video().ok();
                     file.analysis = Some(analysis.video);
                     file.audio_tracks = analysis.audio_tracks;
                     file.subtitle_tracks = analysis.subtitle_tracks;
-                    file.resolution = resolution;
                     file.select_all_tracks();
                     file.generate_output_path();
-
-                    // Dolby Vision files are converted to HDR10
                     file.status = FileStatus::AwaitingConfig;
                 }
                 Err(e) => {
@@ -363,10 +352,11 @@ impl App {
         {
             self.navigate_to_track_config();
         } else {
-            // All files are either skipped or errored
             self.navigate_to_finish();
         }
     }
+
+    // Track configuration
 
     pub fn current_config_file(&self) -> Option<&VideoFile> {
         self.files.get(self.config_file_index)
@@ -378,7 +368,7 @@ impl App {
 
     pub fn confirm_track_config(&mut self) {
         if let Some(file) = self.files.get_mut(self.config_file_index) {
-            file.status = FileStatus::ReadyToConvert;
+            file.status = FileStatus::Ready;
         }
 
         // Find next file awaiting config
@@ -395,94 +385,68 @@ impl App {
             self.audio_cursor = 0;
             self.subtitle_cursor = 0;
         } else {
-            // All files configured, start encoding
             self.start_encoding();
         }
     }
+
+    // Encoding
 
     pub fn start_encoding(&mut self) {
         info!("Starting encoding process");
         self.navigate_to_queue();
         self.encoding_active = true;
         self.current_file_index = 0;
-
-        // Reset cancel flag
         self.cancel_flag = Arc::new(AtomicBool::new(false));
-        let cancel_flag = self.cancel_flag.clone();
 
         let (tx, rx) = mpsc::channel();
         self.progress_receiver = Some(rx);
 
-        // Get the encoder
-        let encoder = self.encoder_config.selected_encoder;
-        let run_vmaf = self.encoder_config.run_vmaf;
-        let vmaf_threshold = self.encoder_config.vmaf_threshold;
+        let encoder = self.config.encoder;
+        let vmaf_threshold = if self.config.vmaf_available {
+            Some(self.config.vmaf_threshold)
+        } else {
+            None
+        };
 
-        // Collect files to encode with their encode options
-        let files_to_encode: Vec<(
-            usize,
-            PathBuf,
-            PathBuf,
-            Resolution,
-            TrackSelection,
-            EncodeOptions,
-        )> = self
+        // Collect files to encode
+        let files_to_encode: Vec<_> = self
             .files
             .iter()
             .enumerate()
-            .filter(|(_, f)| matches!(f.status, FileStatus::ReadyToConvert))
+            .filter(|(_, f)| matches!(f.status, FileStatus::Ready))
             .map(|(i, f)| {
-                let track_selection = TrackSelection {
-                    audio_tracks: f.selected_audio.clone(),
-                    subtitle_tracks: f.selected_subtitles.clone(),
+                let tracks = TrackSelection {
+                    audio_indices: f.selected_audio.clone(),
+                    subtitle_indices: f.selected_subtitles.clone(),
                 };
-
-                // Encode options based on file analysis
-                let mut encode_options = if let Some(ref analysis) = f.analysis {
-                    EncodeOptions::from_analysis(analysis, &f.filename())
-                } else {
-                    EncodeOptions {
-                        content_type: ContentType::from_filename(&f.filename()),
-                        ..Default::default()
-                    }
-                };
-
-                // Apply VMAF settings from encoder config
-                encode_options.run_vmaf = run_vmaf;
-                encode_options.vmaf_threshold = vmaf_threshold;
-
                 (
                     i,
                     f.path.clone(),
                     f.output_path.clone().unwrap_or_else(|| f.path.clone()),
-                    f.resolution.unwrap_or(Resolution::HD1080p),
-                    track_selection,
-                    encode_options,
+                    f.profile(),
+                    f.is_dolby_vision(),
+                    tracks,
                 )
             })
             .collect();
 
         info!("Files to encode: {}", files_to_encode.len());
 
-        // Start timer and track total files
         self.start_time = Some(Instant::now());
         self.total_files_to_encode = files_to_encode.len();
 
-        // Mark files as pending in queue
+        // Mark files as pending
         for (idx, _, _, _, _, _) in &files_to_encode {
             if let Some(f) = self.files.get_mut(*idx) {
                 f.status = FileStatus::Pending;
             }
         }
 
+        let cancel_flag = self.cancel_flag.clone();
+
         // Start encoding thread
         thread::spawn(move || {
-            debug!("Encoding thread started");
-            for (idx, input, output, resolution, track_selection, encode_options) in files_to_encode
-            {
-                debug!("Processing file idx={}, input={:?}", idx, input);
-
-                // Check if cancelled before starting next file
+            for (idx, input, output, profile, is_dv, tracks) in files_to_encode {
                 if cancel_flag.load(Ordering::Relaxed) {
                     let _ = tx.send(ProgressMessage::Cancelled);
                     break;
@@ -491,20 +455,20 @@ impl App {
                 let tx_clone = tx.clone();
                 let cancel_clone = cancel_flag.clone();
 
-                // Send initial progress
                 let _ = tx.send(ProgressMessage::Progress(idx, 0.0));
 
-                let result = encode_video(
+                let result = encoder::encode(
                     input.to_str().unwrap_or(""),
                     output.to_str().unwrap_or(""),
-                    resolution,
-                    &track_selection,
+                    profile,
+                    &tracks,
                     encoder,
+                    is_dv,
                     Some(Box::new(move |progress| {
                         let _ = tx_clone.send(ProgressMessage::Progress(idx, progress));
                     })),
                     cancel_clone,
-                    &encode_options,
+                    vmaf_threshold,
                 );
 
                 match result {
@@ -521,9 +485,7 @@ impl App {
                     EncodeResult::Error(e) => {
                         let _ = tx.send(ProgressMessage::Error(idx, e));
                     }
-                    EncodeResult::QualityBelowThreshold {
-                        vmaf, threshold, ..
-                    } => {
+                    EncodeResult::QualityWarning { vmaf, threshold } => {
                         let _ =
                             tx.send(ProgressMessage::QualityWarning(idx, vmaf.score, threshold));
                     }
@@ -537,7 +499,6 @@ impl App {
     }
 
     pub fn process_progress_messages(&mut self) {
-        // Collect messages first to avoid borrow conflicts
         let messages: Vec<ProgressMessage> = if let Some(ref rx) = self.progress_receiver {
             let mut msgs = Vec::new();
             while let Ok(msg) = rx.try_recv() {
@@ -554,7 +515,7 @@ impl App {
             match msg {
                 ProgressMessage::Progress(idx, progress) => {
                     if let Some(file) = self.files.get_mut(idx) {
-                        file.status = FileStatus::Converting { progress };
+                        file.status = FileStatus::Encoding { progress };
                         self.current_file_index = idx;
                     }
                 }
@@ -563,8 +524,6 @@ impl App {
                         file.status = FileStatus::Done;
                         self.converted_count += 1;
                     }
-
-                    // Check if all done
                     if self.all_files_completed() {
                         self.encoding_active = false;
                         should_finish = true;
@@ -575,7 +534,6 @@ impl App {
                         file.status = FileStatus::DoneWithVmaf { score };
                         self.converted_count += 1;
                     }
-
                     if self.all_files_completed() {
                         self.encoding_active = false;
                         should_finish = true;
@@ -586,7 +544,6 @@ impl App {
                         file.status = FileStatus::Error { message: msg };
                         self.error_count += 1;
                     }
-
                     if self.all_files_completed() {
                         self.encoding_active = false;
                         should_finish = true;
@@ -595,19 +552,16 @@ impl App {
                 ProgressMessage::QualityWarning(idx, vmaf, threshold) => {
                     if let Some(file) = self.files.get_mut(idx) {
                         file.status = FileStatus::QualityWarning { vmaf, threshold };
-                        // Converted but with warning
                         self.converted_count += 1;
                     }
-
                     if self.all_files_completed() {
                         self.encoding_active = false;
                         should_finish = true;
                     }
                 }
                 ProgressMessage::Cancelled => {
-                    // Mark current converting file as cancelled
                     for file in &mut self.files {
-                        if matches!(file.status, FileStatus::Converting { .. }) {
+                        if matches!(file.status, FileStatus::Encoding { .. }) {
                             file.status = FileStatus::Skipped {
                                 reason: "Cancelled".to_string(),
                             };
@@ -624,7 +578,6 @@ impl App {
         }
     }
 
-    /// Check if all files have completed (success, error, skipped)
     fn all_files_completed(&self) -> bool {
         self.files.iter().all(|f| {
             matches!(
@@ -638,45 +591,28 @@ impl App {
         })
     }
 
-    pub fn reset(&mut self) {
-        self.files.clear();
-        self.current_file_index = 0;
-        self.config_file_index = 0;
-        self.converted_count = 0;
-        self.skipped_count = 0;
-        self.error_count = 0;
-        self.encoding_active = false;
-        self.progress_receiver = None;
-        self.start_time = None;
-        self.total_files_to_encode = 0;
-        self.navigate_to_home();
-    }
+    // Statistics
 
-    /// Get the elapsed time since the queue started encoding
     pub fn queue_elapsed_time(&self) -> Option<std::time::Duration> {
         self.start_time.map(|start| start.elapsed())
     }
 
-    /// Calculate the overall queue progress (0.0 to 100.0)
-    /// Takes into account completed files and current file progress
     pub fn queue_overall_progress(&self) -> f32 {
         if self.total_files_to_encode == 0 {
             return 0.0;
         }
 
-        // Count completed files in the queue (Done status, not skipped before encoding)
         let completed = self
             .files
             .iter()
             .filter(|f| matches!(f.status, FileStatus::Done | FileStatus::DoneWithVmaf { .. }))
             .count();
 
-        // Get current file progress
         let current_progress = self
             .files
             .get(self.current_file_index)
             .and_then(|f| {
-                if let FileStatus::Converting { progress } = f.status {
+                if let FileStatus::Encoding { progress } = f.status {
                     Some(progress)
                 } else {
                     None
@@ -684,13 +620,11 @@ impl App {
             })
             .unwrap_or(0.0);
 
-        // Overall progress: (completed files * 100 + current file progress) / total files
         let total_progress =
             (completed as f32 * 100.0 + current_progress) / self.total_files_to_encode as f32;
         total_progress.min(100.0)
     }
 
-    /// Get the estimated time remaining for the entire queue
     pub fn queue_estimated_time_remaining(&self) -> Option<std::time::Duration> {
         let progress = self.queue_overall_progress();
         if progress <= 0.0 || progress >= 100.0 {
@@ -705,6 +639,20 @@ impl App {
         } else {
             None
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.files.clear();
+        self.current_file_index = 0;
+        self.config_file_index = 0;
+        self.converted_count = 0;
+        self.skipped_count = 0;
+        self.error_count = 0;
+        self.encoding_active = false;
+        self.progress_receiver = None;
+        self.start_time = None;
+        self.total_files_to_encode = 0;
+        self.navigate_to_home();
     }
 }
 
