@@ -41,13 +41,11 @@ fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
         tracing::info!("AV1 Converter logging initialized");
         Some(guard)
     } else {
-        // No logging when AV1_DEBUG is not set
         None
     }
 }
 
 fn main() -> io::Result<()> {
-    // Initialize logging (returns guard that must be kept alive)
     let _log_guard = init_logging();
 
     // Setup terminal
@@ -79,10 +77,8 @@ fn main() -> io::Result<()> {
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
     loop {
-        // Process any pending encoding progress
         app.process_progress_messages();
 
-        // Draw UI
         terminal.draw(|f| {
             match app.current_screen.clone() {
                 Screen::Home => ui::render_home(f, app),
@@ -91,13 +87,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 Screen::Queue => ui::render_queue(f, app),
                 Screen::Finish => ui::render_finish(f, app),
             }
-            // Render confirmation dialog as overlay
             if app.confirm_dialog.is_some() {
                 ui::render_confirm_dialog(f, app);
             }
         })?;
 
-        // Handle input with timeout for progress updates
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
@@ -112,7 +106,6 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 }
 
 fn handle_key(app: &mut App, key: KeyCode) {
-    // Handle confirmation dialog
     if app.confirm_dialog.is_some() {
         handle_confirm_dialog_key(app, key);
         return;
@@ -142,12 +135,10 @@ fn handle_confirm_dialog_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Enter => {
             if app.confirm_selection {
-                // Yes
                 if let Some(action) = app.confirm_dialog.take() {
                     execute_confirm_action(app, action);
                 }
             } else {
-                // No
                 app.confirm_dialog = None;
             }
         }
@@ -170,7 +161,7 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('q') => {
             app.confirm_dialog = Some(ConfirmAction::ExitApp);
-            app.confirm_selection = false; // Default to "No"
+            app.confirm_selection = false;
         }
         KeyCode::Up | KeyCode::Char('k') => {
             if app.home_index > 0 {
@@ -182,45 +173,27 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
                 app.home_index += 1;
             }
         }
-        KeyCode::Enter => {
-            match app.home_index {
-                0 => app.navigate_to_explorer(false), // Open file
-                1 => app.navigate_to_explorer(true),  // Open folder
-                _ => {}
-            }
-        }
+        KeyCode::Enter => match app.home_index {
+            0 => app.navigate_to_explorer(false),
+            1 => app.navigate_to_explorer(true),
+            _ => {}
+        },
         _ => {}
     }
 }
 
 fn handle_explorer_key(app: &mut App, key: KeyCode) {
-    // Clear any message when user takes action
     app.clear_message();
 
     match key {
         KeyCode::Esc => app.navigate_to_home(),
-        KeyCode::Up | KeyCode::Char('k') => {
-            app.explorer_move_up();
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.explorer_move_down();
-        }
-        KeyCode::Enter => {
-            match app.selection_mode {
-                app::SelectionMode::File => {
-                    // In file mode, Enter selects file or enters directory
-                    app.select_explorer_entry();
-                }
-                app::SelectionMode::Folder => {
-                    // In folder mode, Enter navigates into directory
-                    app.enter_directory();
-                }
-            }
-        }
-        KeyCode::Char(' ') => {
-            // Space selects the current item (file or folder depending on mode)
-            app.select_explorer_entry();
-        }
+        KeyCode::Up | KeyCode::Char('k') => app.explorer_move_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.explorer_move_down(),
+        KeyCode::Enter => match app.selection_mode {
+            app::SelectionMode::File => app.select_explorer_entry(),
+            app::SelectionMode::Folder => app.enter_directory(),
+        },
+        KeyCode::Char(' ') => app.select_explorer_entry(),
         _ => {}
     }
 }
@@ -278,12 +251,9 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                     file.toggle_subtitle(idx);
                 }
             }
-            TrackFocus::Confirm => {
-                app.confirm_track_config();
-            }
+            TrackFocus::Confirm => app.confirm_track_config(),
         },
         KeyCode::Char('a') => {
-            // Select all audio
             if let Some(file) = app.current_config_file_mut() {
                 let all_indices: Vec<usize> = file.audio_tracks.iter().map(|t| t.index).collect();
                 if file.selected_audio.len() == all_indices.len() {
@@ -294,7 +264,6 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
             }
         }
         KeyCode::Char('s') => {
-            // Select all subtitles
             if let Some(file) = app.current_config_file_mut() {
                 let all_indices: Vec<usize> =
                     file.subtitle_tracks.iter().map(|t| t.index).collect();
@@ -305,9 +274,7 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 }
             }
         }
-        KeyCode::Enter => {
-            app.confirm_track_config();
-        }
+        KeyCode::Enter => app.confirm_track_config(),
         _ => {}
     }
 }
@@ -316,7 +283,7 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc if app.encoding_active => {
             app.confirm_dialog = Some(ConfirmAction::CancelEncoding);
-            app.confirm_selection = false; // Default to "No"
+            app.confirm_selection = false;
         }
         KeyCode::Enter if !app.encoding_active => {
             app.navigate_to_finish();
@@ -329,7 +296,7 @@ fn handle_finish_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('q') => {
             app.confirm_dialog = Some(ConfirmAction::ExitApp);
-            app.confirm_selection = false; // Default to "No"
+            app.confirm_selection = false;
         }
         KeyCode::Enter => app.reset(),
         _ => {}

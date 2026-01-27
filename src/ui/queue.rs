@@ -60,7 +60,7 @@ pub fn render_queue(f: &mut Frame, app: &App) {
 
     // Current file progress
     if let Some(file) = app.files.get(app.current_file_index) {
-        if let FileStatus::Converting { progress } = file.status {
+        if let FileStatus::Encoding { progress } = file.status {
             // Label with elapsed time and ETA
             let elapsed_str = app
                 .queue_elapsed_time()
@@ -141,9 +141,9 @@ fn create_queue_item(name: &str, status: &FileStatus, is_current: bool) -> ListI
             .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
         FileStatus::AwaitingConfig => ListItem::new(format!("  ◑ {} Configuring...", name))
             .style(Style::default().fg(Color::Blue).add_modifier(bold_mod)),
-        FileStatus::ReadyToConvert => ListItem::new(format!("  ● {} Ready", name))
+        FileStatus::Ready => ListItem::new(format!("  ● {} Ready", name))
             .style(Style::default().fg(Color::Blue).add_modifier(bold_mod)),
-        FileStatus::Converting { progress } => {
+        FileStatus::Encoding { progress } => {
             ListItem::new(format!("  ▶ {} {:.1}%", name, progress))
                 .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod))
         }

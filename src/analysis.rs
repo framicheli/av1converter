@@ -1,97 +1,39 @@
-use crate::data::{AudioTrack, Resolution, SubtitleTrack};
+//! Analysis Module
+//!
+//! Video file analysis using ffprobe.
+
+use crate::data::{AudioTrack, SubtitleTrack, VideoAnalysis};
 use crate::error::AppError;
 use serde::Deserialize;
 use serde_json::Value;
 use std::process::Command;
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct AnalysisResult {
-    pub width: u32,
-    pub height: u32,
-    #[allow(unused)]
-    pix_fmt: String,
-    #[allow(unused)]
-    color_primaries: Option<String>,
-    color_transfer: Option<String>,
-    #[allow(unused)]
-    color_space: Option<String>,
-    side_data_list: Option<Vec<Value>>,
-}
-
-impl AnalysisResult {
-    pub fn is_hdr(&self) -> bool {
-        matches!(
-            self.color_transfer.as_deref(),
-            Some("smpte2084") | Some("arib-std-b67")
-        )
-    }
-
-    pub fn is_dolby_vision(&self) -> bool {
-        self.side_data_list
-            .as_ref()
-            .map(|list| list.iter().any(|v| v.to_string().contains("Dolby Vision")))
-            .unwrap_or(false)
-    }
-
-    /// Get the color transfer characteristic
-    pub fn color_transfer(&self) -> Option<&str> {
-        self.color_transfer.as_deref()
-    }
-
-    pub fn classify_video(&self) -> Resolution {
-        let is_4k = self.width >= 3000 || self.height >= 1800;
-        let hdr = self.is_hdr();
-        let dv = self.is_dolby_vision();
-
-        match (is_4k, hdr, dv) {
-            (false, false, false) => Resolution::HD1080p,
-            (false, true, false) => Resolution::HD1080pHDR,
-            (false, _, true) => Resolution::HD1080pDV,
-            (true, false, false) => Resolution::UHD2160p,
-            (true, true, false) => Resolution::UHD2160pHDR,
-            (true, _, true) => Resolution::UHD2160pDV,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AnalysisOutput {
-    pub streams: Vec<AnalysisResult>,
-}
-
-/// Raw stream data from ffprobe for all stream types
-#[derive(Debug, Deserialize)]
-struct RawStream {
-    #[allow(dead_code)]
-    index: usize,
-    codec_type: String,
-    codec_name: Option<String>,
-    channels: Option<u16>,
-    tags: Option<StreamTags>,
-}
-
-#[derive(Debug, Deserialize)]
-struct StreamTags {
-    language: Option<String>,
-    title: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FullProbeOutput {
-    streams: Vec<RawStream>,
-}
-
-/// Full analysis result including all tracks
+/// Full analysis result with all tracks
 #[derive(Debug)]
-pub struct FullAnalysis {
-    pub video: AnalysisResult,
+pub struct AnalysisResult {
+    pub video: VideoAnalysis,
     pub audio_tracks: Vec<AudioTrack>,
     pub subtitle_tracks: Vec<SubtitleTrack>,
 }
 
-/// Analyze a video file and extract all track information
-pub fn analyze(input_path: &str) -> Result<FullAnalysis, AppError> {
-    let video_args = [
+/// Analyze a video file
+pub fn analyze(input_path: &str) -> Result<AnalysisResult, AppError> {
+    // Get video stream info
+    let video = analyze_video_stream(input_path)?;
+
+    // Get audio and subtitle tracks
+    let (audio_tracks, subtitle_tracks) = analyze_tracks(input_path)?;
+
+    Ok(AnalysisResult {
+        video,
+        audio_tracks,
+        subtitle_tracks,
+    })
+}
+
+/// Analyze the primary video stream
+fn analyze_video_stream(input_path: &str) -> Result<VideoAnalysis, AppError> {
+    let args = [
         "-v",
         "error",
         "-select_streams",
@@ -103,23 +45,43 @@ pub fn analyze(input_path: &str) -> Result<FullAnalysis, AppError> {
         input_path,
     ];
 
-    let video_output = execute_ffprobe(&video_args)?;
-    let video_data: AnalysisOutput =
-        serde_json::from_str(&video_output).map_err(|e| AppError::CommandExecution {
-            message: format!("Failed to parse video ffprobe output: {}", e),
+    let output = run_ffprobe(&args)?;
+    let data: VideoStreamOutput =
+        serde_json::from_str(&output).map_err(|e| AppError::CommandExecution {
+            message: format!("Failed to parse ffprobe output: {}", e),
         })?;
 
-    let video =
-        video_data
-            .streams
-            .into_iter()
-            .next()
-            .ok_or_else(|| AppError::CommandExecution {
-                message: "No video stream found".to_string(),
-            })?;
+    let stream = data
+        .streams
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::CommandExecution {
+            message: "No video stream found".to_string(),
+        })?;
 
-    // Get all streams for audio and subtitle info
-    let all_args = [
+    let is_hdr = matches!(
+        stream.color_transfer.as_deref(),
+        Some("smpte2084") | Some("arib-std-b67")
+    );
+
+    let is_dolby_vision = stream
+        .side_data_list
+        .as_ref()
+        .map(|list| list.iter().any(|v| v.to_string().contains("Dolby Vision")))
+        .unwrap_or(false);
+
+    Ok(VideoAnalysis {
+        width: stream.width,
+        height: stream.height,
+        is_hdr,
+        is_dolby_vision,
+        color_transfer: stream.color_transfer,
+    })
+}
+
+/// Analyze audio and subtitle tracks
+fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrack>), AppError> {
+    let args = [
         "-v",
         "error",
         "-show_entries",
@@ -129,10 +91,10 @@ pub fn analyze(input_path: &str) -> Result<FullAnalysis, AppError> {
         input_path,
     ];
 
-    let all_output = execute_ffprobe(&all_args)?;
-    let all_data: FullProbeOutput =
-        serde_json::from_str(&all_output).map_err(|e| AppError::CommandExecution {
-            message: format!("Failed to parse streams ffprobe output: {}", e),
+    let output = run_ffprobe(&args)?;
+    let data: AllStreamsOutput =
+        serde_json::from_str(&output).map_err(|e| AppError::CommandExecution {
+            message: format!("Failed to parse ffprobe output: {}", e),
         })?;
 
     let mut audio_tracks = Vec::new();
@@ -140,7 +102,7 @@ pub fn analyze(input_path: &str) -> Result<FullAnalysis, AppError> {
     let mut audio_index = 0;
     let mut subtitle_index = 0;
 
-    for stream in all_data.streams {
+    for stream in data.streams {
         match stream.codec_type.as_str() {
             "audio" => {
                 audio_tracks.push(AudioTrack {
@@ -165,14 +127,11 @@ pub fn analyze(input_path: &str) -> Result<FullAnalysis, AppError> {
         }
     }
 
-    Ok(FullAnalysis {
-        video,
-        audio_tracks,
-        subtitle_tracks,
-    })
+    Ok((audio_tracks, subtitle_tracks))
 }
 
-fn execute_ffprobe(args: &[&str]) -> Result<String, AppError> {
+/// Run ffprobe with arguments
+fn run_ffprobe(args: &[&str]) -> Result<String, AppError> {
     let output =
         Command::new("ffprobe")
             .args(args)
@@ -189,4 +148,46 @@ fn execute_ffprobe(args: &[&str]) -> Result<String, AppError> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+// JSON deserialization structures
+
+#[derive(Debug, Deserialize)]
+struct VideoStreamOutput {
+    streams: Vec<VideoStream>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoStream {
+    width: u32,
+    height: u32,
+    #[allow(dead_code)]
+    pix_fmt: Option<String>,
+    #[allow(dead_code)]
+    color_primaries: Option<String>,
+    color_transfer: Option<String>,
+    #[allow(dead_code)]
+    color_space: Option<String>,
+    side_data_list: Option<Vec<Value>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AllStreamsOutput {
+    streams: Vec<RawStream>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawStream {
+    #[allow(dead_code)]
+    index: usize,
+    codec_type: String,
+    codec_name: Option<String>,
+    channels: Option<u16>,
+    tags: Option<StreamTags>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamTags {
+    language: Option<String>,
+    title: Option<String>,
 }

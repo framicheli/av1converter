@@ -72,9 +72,7 @@ pub fn render_home(f: &mut Frame, app: &App) {
 }
 
 fn render_vmaf_info(app: &App) -> Line<'static> {
-    let vmaf_available = app.vmaf_available;
-
-    if vmaf_available {
+    if app.config.vmaf_available {
         Line::from(vec![
             Span::styled("✓ ", Style::default().fg(Color::Green)),
             Span::raw("VMAF quality validation enabled (threshold: "),
