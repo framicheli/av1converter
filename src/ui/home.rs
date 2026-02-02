@@ -1,3 +1,4 @@
+use super::common::{create_menu_item, get_vmaf_color};
 use crate::app::App;
 use ratatui::{
     Frame,
@@ -13,6 +14,7 @@ pub fn render_home(f: &mut Frame, app: &App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
+            Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),
         ])
@@ -35,6 +37,9 @@ pub fn render_home(f: &mut Frame, app: &App) {
     let menu_items: Vec<ListItem> = vec![
         create_menu_item("Open video file", 0, app.home_index),
         create_menu_item("Open folder", 1, app.home_index),
+        create_menu_item("Open folder (recursive)", 2, app.home_index),
+        create_menu_item("Configuration", 3, app.home_index),
+        create_menu_item("Quit", 4, app.home_index),
     ];
 
     let menu = List::new(menu_items)
@@ -48,12 +53,19 @@ pub fn render_home(f: &mut Frame, app: &App) {
 
     f.render_widget(menu, menu_area);
 
-    // VMAF Info line (non-interactive)
+    // Encoder & dependency status
+    let status_info = render_status_info(app);
+    let status_widget = Paragraph::new(status_info)
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::NONE));
+    f.render_widget(status_widget, chunks[2]);
+
+    // VMAF Info line
     let vmaf_info = render_vmaf_info(app);
     let vmaf_widget = Paragraph::new(vmaf_info)
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE));
-    f.render_widget(vmaf_widget, chunks[2]);
+    f.render_widget(vmaf_widget, chunks[3]);
 
     // Help
     let help_text = Line::from(vec![
@@ -68,16 +80,32 @@ pub fn render_home(f: &mut Frame, app: &App) {
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE));
-    f.render_widget(help, chunks[3]);
+    f.render_widget(help, chunks[4]);
+}
+
+fn render_status_info(app: &App) -> Line<'static> {
+    let encoder_span = Span::styled(
+        format!("Encoder: {}", app.config.encoder),
+        Style::default().fg(Color::Cyan),
+    );
+
+    let ab_av1_span = if app.deps.ab_av1 {
+        Span::styled("  ab-av1: ✓", Style::default().fg(Color::Green))
+    } else {
+        Span::styled("  ab-av1: ✗", Style::default().fg(Color::DarkGray))
+    };
+
+    Line::from(vec![encoder_span, ab_av1_span])
 }
 
 fn render_vmaf_info(app: &App) -> Line<'static> {
-    if app.config.vmaf_available {
+    if app.deps.vmaf {
+        let _color = get_vmaf_color(app.config.quality.vmaf_threshold);
         Line::from(vec![
             Span::styled("✓ ", Style::default().fg(Color::Green)),
             Span::raw("VMAF quality validation enabled (threshold: "),
             Span::styled(
-                "90",
+                format!("{:.0}", app.config.quality.vmaf_threshold),
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
@@ -95,37 +123,13 @@ fn render_vmaf_info(app: &App) -> Line<'static> {
     }
 }
 
-/// Get color for VMAF score/threshold
-pub fn get_vmaf_color(score: f64) -> Color {
-    match score as u32 {
-        95..=100 => Color::Cyan,            // Excellent/Transparent
-        90..=94 => Color::Green,            // Very Good
-        85..=89 => Color::Yellow,           // Good
-        80..=84 => Color::Rgb(255, 165, 0), // Fair (Orange)
-        _ => Color::Red,                    // Poor
-    }
-}
-
-fn create_menu_item(text: &str, index: usize, selected: usize) -> ListItem<'static> {
-    let style = if index == selected {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
-
-    let prefix = if index == selected { "> " } else { "  " };
-    ListItem::new(format!("{}{}", prefix, text)).style(style)
-}
-
 fn centered_menu_area(area: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(30),
-            Constraint::Length(6),
-            Constraint::Percentage(30),
+            Constraint::Percentage(20),
+            Constraint::Length(9),
+            Constraint::Percentage(20),
         ])
         .split(area);
 

@@ -1,7 +1,3 @@
-//! VMAF Module
-//!
-//! Video quality assessment using VMAF (Video Multi-Method Assessment Fusion).
-
 use crate::error::AppError;
 use serde::Deserialize;
 use std::path::Path;
@@ -82,9 +78,7 @@ pub fn calculate_vmaf(original: &Path, encoded: &Path) -> Result<VmafResult, App
             "-",
         ])
         .output()
-        .map_err(|e| AppError::Vmaf {
-            message: format!("Failed to run ffmpeg for VMAF: {}", e),
-        })?;
+        .map_err(|e| AppError::Vmaf(format!("Failed to run ffmpeg for VMAF: {}", e)))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -92,26 +86,24 @@ pub fn calculate_vmaf(original: &Path, encoded: &Path) -> Result<VmafResult, App
             || stderr.contains("Unknown libvmaf")
             || stderr.contains("Option model not found")
         {
-            return Err(AppError::Vmaf {
-                message: "VMAF not available. FFmpeg must be compiled with libvmaf support."
-                    .to_string(),
-            });
+            return Err(AppError::Vmaf(
+                "VMAF not available. FFmpeg must be compiled with libvmaf support.".to_string(),
+            ));
         }
-        return Err(AppError::Vmaf {
-            message: format!("VMAF calculation failed: {}", stderr),
-        });
+        return Err(AppError::Vmaf(format!(
+            "VMAF calculation failed: {}",
+            stderr
+        )));
     }
 
     // Parse JSON result
-    let json_content = std::fs::read_to_string(&json_output).map_err(|e| AppError::Vmaf {
-        message: format!("Failed to read VMAF output: {}", e),
-    })?;
+    let json_content = std::fs::read_to_string(&json_output)
+        .map_err(|e| AppError::Vmaf(format!("Failed to read VMAF output: {}", e)))?;
 
     let _ = std::fs::remove_file(&json_output);
 
-    let vmaf_data: VmafJson = serde_json::from_str(&json_content).map_err(|e| AppError::Vmaf {
-        message: format!("Failed to parse VMAF JSON: {}", e),
-    })?;
+    let vmaf_data: VmafJson = serde_json::from_str(&json_content)
+        .map_err(|e| AppError::Vmaf(format!("Failed to parse VMAF JSON: {}", e)))?;
 
     let result = VmafResult {
         score: vmaf_data.pooled_metrics.vmaf.mean,

@@ -9,37 +9,40 @@ use ratatui::{
 
 pub fn render_track_config(f: &mut Frame, app: &mut App) {
     let (filename, resolution_string, hdr_string, audio_data, subtitle_data) = {
-        let file = match app.current_config_file() {
-            Some(f) => f,
+        let job = match app.current_config_job() {
+            Some(j) => j,
             None => return,
         };
 
-        let audio_data: Vec<(String, bool)> = file
+        let audio_data: Vec<(String, String, String, bool)> = job
             .audio_tracks
             .iter()
             .map(|track| {
                 (
                     track.display_name(),
-                    file.selected_audio.contains(&track.index),
+                    track.bitrate_string(),
+                    track.sample_rate_string(),
+                    job.track_selection.audio_indices.contains(&track.index),
                 )
             })
             .collect();
 
-        let subtitle_data: Vec<(String, bool)> = file
+        let subtitle_data: Vec<(String, bool, bool)> = job
             .subtitle_tracks
             .iter()
             .map(|track| {
                 (
                     track.display_name(),
-                    file.selected_subtitles.contains(&track.index),
+                    track.forced,
+                    job.track_selection.subtitle_indices.contains(&track.index),
                 )
             })
             .collect();
 
         (
-            file.filename(),
-            file.resolution_string(),
-            file.hdr_string(),
+            job.filename(),
+            job.resolution_string(),
+            job.hdr_string().to_string(),
             audio_data,
             subtitle_data,
         )
@@ -72,15 +75,15 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             Span::raw("  "),
             Span::styled("Type: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                match hdr_string {
+                match hdr_string.as_str() {
                     "Dolby Vision" => "Dolby Vision → HDR10".to_string(),
-                    _ => hdr_string.to_string(),
+                    _ => hdr_string.clone(),
                 },
-                Style::default().fg(match hdr_string {
+                Style::default().fg(match hdr_string.as_str() {
                     "HDR10" => Color::Yellow,
                     "HLG" => Color::Green,
                     "Dolby Vision" => Color::Magenta,
-                    _ => Color::White, // SDR
+                    _ => Color::White,
                 }),
             ),
         ]),
@@ -100,13 +103,13 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[1]);
 
-    // Audio tracks
+    // Audio tracks with bitrate/sample rate
     let audio_items: Vec<ListItem> = audio_data
         .iter()
         .enumerate()
-        .map(|(i, (name, selected))| {
+        .map(|(i, (name, bitrate, sample_rate, selected))| {
             let is_cursor = app.track_focus == TrackFocus::Audio && i == app.audio_cursor;
-            create_track_item(name, *selected, is_cursor)
+            create_audio_track_item(name, bitrate, sample_rate, *selected, is_cursor)
         })
         .collect();
 
@@ -128,13 +131,13 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
     app.audio_list_state.select(Some(app.audio_cursor));
     f.render_stateful_widget(audio_list, track_chunks[0], &mut app.audio_list_state);
 
-    // Subtitle tracks
+    // Subtitle tracks with forced flag
     let subtitle_items: Vec<ListItem> = subtitle_data
         .iter()
         .enumerate()
-        .map(|(i, (name, selected))| {
+        .map(|(i, (name, forced, selected))| {
             let is_cursor = app.track_focus == TrackFocus::Subtitle && i == app.subtitle_cursor;
-            create_track_item(name, *selected, is_cursor)
+            create_subtitle_track_item(name, *forced, *selected, is_cursor)
         })
         .collect();
 
@@ -188,9 +191,16 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
     f.render_widget(help, chunks[2]);
 }
 
-fn create_track_item(name: &str, selected: bool, is_cursor: bool) -> ListItem<'static> {
+fn create_audio_track_item(
+    name: &str,
+    bitrate: &str,
+    sample_rate: &str,
+    selected: bool,
+    is_cursor: bool,
+) -> ListItem<'static> {
     let checkbox = if selected { "[x]" } else { "[ ]" };
     let prefix = if is_cursor { "> " } else { "  " };
+    let extra = format!(" ({}, {})", bitrate, sample_rate);
 
     let style = if is_cursor {
         Style::default().add_modifier(Modifier::BOLD)
@@ -200,5 +210,26 @@ fn create_track_item(name: &str, selected: bool, is_cursor: bool) -> ListItem<'s
         Style::default().fg(Color::DarkGray)
     };
 
-    ListItem::new(format!("{}{} {}", prefix, checkbox, name)).style(style)
+    ListItem::new(format!("{}{} {}{}", prefix, checkbox, name, extra)).style(style)
+}
+
+fn create_subtitle_track_item(
+    name: &str,
+    forced: bool,
+    selected: bool,
+    is_cursor: bool,
+) -> ListItem<'static> {
+    let checkbox = if selected { "[x]" } else { "[ ]" };
+    let prefix = if is_cursor { "> " } else { "  " };
+    let forced_str = if forced { " [Forced]" } else { "" };
+
+    let style = if is_cursor {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else if selected {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    ListItem::new(format!("{}{} {}{}", prefix, checkbox, name, forced_str)).style(style)
 }

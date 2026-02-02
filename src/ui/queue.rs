@@ -1,6 +1,7 @@
-use super::home::get_vmaf_color;
-use crate::app::{App, format_duration};
-use crate::data::FileStatus;
+use super::common::get_vmaf_color;
+use crate::app::App;
+use crate::queue::JobStatus;
+use crate::utils::format_duration;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -22,8 +23,8 @@ pub fn render_queue(f: &mut Frame, app: &App) {
         .split(f.area());
 
     // Title with progress summary
-    let total = app.files.len();
-    let done = app.converted_count + app.skipped_count + app.error_count;
+    let total = app.queue.jobs.len();
+    let done = app.queue.converted_count + app.queue.skipped_count + app.queue.error_count;
 
     let title = Paragraph::new(format!("Conversion Queue ({}/{})", done, total))
         .style(
@@ -41,12 +42,13 @@ pub fn render_queue(f: &mut Frame, app: &App) {
 
     // File list
     let items: Vec<ListItem> = app
-        .files
+        .queue
+        .jobs
         .iter()
         .enumerate()
-        .map(|(i, file)| {
-            let is_current = i == app.current_file_index && app.encoding_active;
-            create_queue_item(&file.filename(), &file.status, is_current)
+        .map(|(i, job)| {
+            let is_current = i == app.queue.current_job_index && app.encoding_active;
+            create_queue_item(&job.filename(), &job.status, is_current, job.crf)
         })
         .collect();
 
@@ -59,52 +61,82 @@ pub fn render_queue(f: &mut Frame, app: &App) {
     f.render_widget(list, chunks[1]);
 
     // Current file progress
-    if let Some(file) = app.files.get(app.current_file_index) {
-        if let FileStatus::Encoding { progress } = file.status {
-            // Label with elapsed time and ETA
-            let elapsed_str = app
-                .queue_elapsed_time()
-                .map(format_duration)
-                .unwrap_or_else(|| "--:--".to_string());
+    if let Some(job) = app.queue.jobs.get(app.queue.current_job_index) {
+        match &job.status {
+            JobStatus::Encoding { progress } => {
+                let elapsed_str = app
+                    .queue
+                    .elapsed_time()
+                    .map(format_duration)
+                    .unwrap_or_else(|| "--:--".to_string());
 
-            let eta_str = app
-                .queue_estimated_time_remaining()
-                .map(format_duration)
-                .unwrap_or_else(|| "--:--".to_string());
+                let eta_str = app
+                    .queue
+                    .estimated_time_remaining()
+                    .map(format_duration)
+                    .unwrap_or_else(|| "--:--".to_string());
 
-            let label = format!(
-                "{:.1}%  |  Elapsed: {}  |  ETA: {}",
-                progress, elapsed_str, eta_str
-            );
+                let crf_str = job.crf.map(|c| format!("  CRF: {}", c)).unwrap_or_default();
 
-            let gauge = Gauge::default()
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray))
-                        .title(format!(" {} ", file.filename())),
-                )
-                .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
-                .percent(progress as u16)
-                .label(label);
-            f.render_widget(gauge, chunks[2]);
-        } else {
-            let status_text = match &file.status {
-                FileStatus::Pending => "Waiting...",
-                FileStatus::Done => "Complete!",
-                FileStatus::Skipped { reason } => reason.as_str(),
-                FileStatus::Error { message } => message.as_str(),
-                _ => "",
-            };
-            let status = Paragraph::new(status_text)
-                .alignment(Alignment::Center)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray))
-                        .title(" Status "),
+                let label = format!(
+                    "{:.1}%  |  Elapsed: {}  |  ETA: {}{}",
+                    progress, elapsed_str, eta_str, crf_str
                 );
-            f.render_widget(status, chunks[2]);
+
+                let gauge = Gauge::default()
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::DarkGray))
+                            .title(format!(" {} ", job.filename())),
+                    )
+                    .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+                    .percent(*progress as u16)
+                    .label(label);
+                f.render_widget(gauge, chunks[2]);
+            }
+            JobStatus::SearchingCrf => {
+                let status = Paragraph::new("Searching for optimal CRF...")
+                    .style(Style::default().fg(Color::Yellow))
+                    .alignment(Alignment::Center)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Yellow))
+                            .title(format!(" {} ", job.filename())),
+                    );
+                f.render_widget(status, chunks[2]);
+            }
+            JobStatus::Verifying => {
+                let status = Paragraph::new("Verifying output...")
+                    .style(Style::default().fg(Color::Cyan))
+                    .alignment(Alignment::Center)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Cyan))
+                            .title(format!(" {} ", job.filename())),
+                    );
+                f.render_widget(status, chunks[2]);
+            }
+            _ => {
+                let status_text = match &job.status {
+                    JobStatus::Pending => "Waiting...",
+                    JobStatus::Done => "Complete!",
+                    JobStatus::Skipped { reason } => reason.as_str(),
+                    JobStatus::Error { message } => message.as_str(),
+                    _ => "",
+                };
+                let status = Paragraph::new(status_text)
+                    .alignment(Alignment::Center)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::DarkGray))
+                            .title(" Status "),
+                    );
+                f.render_widget(status, chunks[2]);
+            }
         }
     }
 
@@ -127,29 +159,40 @@ pub fn render_queue(f: &mut Frame, app: &App) {
     f.render_widget(help, chunks[3]);
 }
 
-fn create_queue_item(name: &str, status: &FileStatus, is_current: bool) -> ListItem<'static> {
+fn create_queue_item(
+    name: &str,
+    status: &JobStatus,
+    is_current: bool,
+    crf: Option<u8>,
+) -> ListItem<'static> {
     let bold_mod = if is_current {
         Modifier::BOLD
     } else {
         Modifier::empty()
     };
 
+    let crf_str = crf.map(|c| format!(" [CRF:{}]", c)).unwrap_or_default();
+
     match status {
-        FileStatus::Pending => ListItem::new(format!("  ○ {}", name))
+        JobStatus::Pending => ListItem::new(format!("  ○ {}", name))
             .style(Style::default().fg(Color::DarkGray).add_modifier(bold_mod)),
-        FileStatus::Analyzing => ListItem::new(format!("  ◐ {} Analyzing...", name))
+        JobStatus::Analyzing => ListItem::new(format!("  ◐ {} Analyzing...", name))
             .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
-        FileStatus::AwaitingConfig => ListItem::new(format!("  ◑ {} Configuring...", name))
+        JobStatus::AwaitingConfig => ListItem::new(format!("  ◑ {} Configuring...", name))
             .style(Style::default().fg(Color::Blue).add_modifier(bold_mod)),
-        FileStatus::Ready => ListItem::new(format!("  ● {} Ready", name))
+        JobStatus::Ready => ListItem::new(format!("  ● {} Ready", name))
             .style(Style::default().fg(Color::Blue).add_modifier(bold_mod)),
-        FileStatus::Encoding { progress } => {
-            ListItem::new(format!("  ▶ {} {:.1}%", name, progress))
+        JobStatus::SearchingCrf => ListItem::new(format!("  ⟳ {} Searching CRF...", name))
+            .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
+        JobStatus::Encoding { progress } => {
+            ListItem::new(format!("  ▶ {} {:.1}%{}", name, progress, crf_str))
                 .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod))
         }
-        FileStatus::Done => ListItem::new(format!("  ✓ {} Done", name))
+        JobStatus::Verifying => ListItem::new(format!("  ◉ {} Verifying...", name))
+            .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod)),
+        JobStatus::Done => ListItem::new(format!("  ✓ {} Done", name))
             .style(Style::default().fg(Color::Green).add_modifier(bold_mod)),
-        FileStatus::DoneWithVmaf { score } => {
+        JobStatus::DoneWithVmaf { score } => {
             let vmaf_color = get_vmaf_color(*score);
             ListItem::new(Line::from(vec![
                 Span::styled(
@@ -162,11 +205,11 @@ fn create_queue_item(name: &str, status: &FileStatus, is_current: bool) -> ListI
                 ),
             ]))
         }
-        FileStatus::Skipped { reason } => ListItem::new(format!("  ⊘ {} ({})", name, reason))
+        JobStatus::Skipped { reason } => ListItem::new(format!("  ⊘ {} ({})", name, reason))
             .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
-        FileStatus::Error { message } => ListItem::new(format!("  ✗ {} Error: {}", name, message))
+        JobStatus::Error { message } => ListItem::new(format!("  ✗ {} Error: {}", name, message))
             .style(Style::default().fg(Color::Red).add_modifier(bold_mod)),
-        FileStatus::QualityWarning { vmaf, threshold } => {
+        JobStatus::QualityWarning { vmaf, threshold } => {
             let vmaf_color = get_vmaf_color(*vmaf);
             ListItem::new(Line::from(vec![
                 Span::styled(

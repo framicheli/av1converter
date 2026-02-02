@@ -1,12 +1,7 @@
-//! Configuration Module
-//!
-//! Handles encoder detection and application settings.
-
-use std::process::Command;
+use serde::{Deserialize, Serialize};
 
 /// AV1 encoders
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Encoder {
     /// NVIDIA NVENC
     Nvenc,
@@ -40,80 +35,15 @@ impl Encoder {
     }
 }
 
+impl Default for Encoder {
+    fn default() -> Self {
+        detect_encoder()
+    }
+}
+
 impl std::fmt::Display for Encoder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.display_name())
-    }
-}
-
-/// Encoding quality profile based on resolution and HDR
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Profile {
-    #[default]
-    HD1080p,
-    HD1080pHDR,
-    UHD2160p,
-    UHD2160pHDR,
-}
-
-impl Profile {
-    /// Check if this is an HDR profile
-    #[allow(dead_code)]
-    pub fn is_hdr(&self) -> bool {
-        matches!(self, Profile::HD1080pHDR | Profile::UHD2160pHDR)
-    }
-
-    /// Check if this is a 4K profile
-    #[allow(dead_code)]
-    pub fn is_4k(&self) -> bool {
-        matches!(self, Profile::UHD2160p | Profile::UHD2160pHDR)
-    }
-
-    /// Display name for UI
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Profile::HD1080p => "1080p SDR",
-            Profile::HD1080pHDR => "1080p HDR",
-            Profile::UHD2160p => "4K SDR",
-            Profile::UHD2160pHDR => "4K HDR",
-        }
-    }
-}
-
-impl std::fmt::Display for Profile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.display_name())
-    }
-}
-
-/// Application configuration
-#[derive(Debug, Clone)]
-pub struct Config {
-    /// Auto detected encoder
-    pub encoder: Encoder,
-    /// VMAF quality threshold (default: 90.0)
-    pub vmaf_threshold: f64,
-    /// Whether VMAF is available
-    pub vmaf_available: bool,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Config {
-    /// Create new config with auto-detected encoder
-    pub fn new() -> Self {
-        let encoder = detect_encoder();
-        let vmaf_available = check_vmaf_available();
-
-        Self {
-            encoder,
-            vmaf_threshold: 90.0,
-            vmaf_available,
-        }
     }
 }
 
@@ -121,7 +51,7 @@ impl Config {
 ///
 /// Priority: Hardware > Software (SVT-AV1)
 pub fn detect_encoder() -> Encoder {
-    // macOS: No hardware AV1 encoding support
+    // macOS: No hardware AV1 encoding support yet
     #[cfg(target_os = "macos")]
     {
         Encoder::SvtAv1
@@ -139,16 +69,6 @@ pub fn detect_encoder() -> Encoder {
             Encoder::SvtAv1
         }
     }
-}
-
-/// Check if VMAF is available in FFmpeg
-fn check_vmaf_available() -> bool {
-    Command::new("ffmpeg")
-        .args(["-filters"])
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("libvmaf"))
-        .unwrap_or(false)
 }
 
 // Hardware detection functions

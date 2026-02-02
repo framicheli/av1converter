@@ -1,5 +1,6 @@
 use crate::app::{App, SelectionMode};
-use crate::data::is_video_file;
+use crate::queue::is_video_file;
+use crate::utils::format_file_size;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -132,6 +133,16 @@ fn create_entry_item(
             .unwrap_or_else(|| path.to_string_lossy().to_string())
     };
 
+    // Add file metadata for video files
+    let metadata_str = if is_video && !is_parent {
+        path.metadata()
+            .ok()
+            .map(|m| format!("  [{}]", format_file_size(m.len())))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
     let (icon, color) = if is_parent {
         ("↑ ", Color::Yellow)
     } else if is_dir {
@@ -155,5 +166,5 @@ fn create_entry_item(
     };
 
     let prefix = if is_selected { "> " } else { "  " };
-    ListItem::new(format!("{}{}{}", prefix, icon, name)).style(style)
+    ListItem::new(format!("{}{}{}{}", prefix, icon, name, metadata_str)).style(style)
 }

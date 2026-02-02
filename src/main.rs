@@ -1,13 +1,16 @@
-mod analysis;
+mod analyzer;
 mod app;
 mod config;
-mod data;
 mod encoder;
 mod error;
+mod queue;
+mod tracks;
 mod ui;
-mod vmaf;
+mod utils;
+mod verifier;
 
 use app::{App, ConfirmAction, Screen, TrackFocus};
+use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
@@ -17,36 +20,24 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
 use std::time::Duration;
 
-/// Initialize logging based on AV1_DEBUG environment variable
-fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
-    if std::env::var("AV1_DEBUG").is_ok() {
-        let log_dir = dirs::data_local_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("av1converter");
-
-        let _ = std::fs::create_dir_all(&log_dir);
-
-        let file_appender = tracing_appender::rolling::daily(&log_dir, "av1converter.log");
-        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-
-        tracing_subscriber::fmt()
-            .with_writer(non_blocking)
-            .with_ansi(false)
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::from_default_env()
-                    .add_directive(tracing::Level::DEBUG.into()),
-            )
-            .init();
-
-        tracing::info!("AV1 Converter logging initialized");
-        Some(guard)
-    } else {
-        None
-    }
+/// AV1 Video Converter - Convert videos to AV1 codec
+#[derive(Parser)]
+#[command(version, about)]
+struct Cli {
+    /// Show the config file path and exit
+    #[arg(long)]
+    config: bool,
 }
 
 fn main() -> io::Result<()> {
-    let _log_guard = init_logging();
+    let cli = Cli::parse();
+
+    if cli.config {
+        println!("{}", config::AppConfig::config_path().display());
+        return Ok(());
+    }
+
+    let _log_guard = utils::init_logging();
 
     // Setup terminal
     enable_raw_mode()?;
@@ -86,6 +77,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 Screen::TrackConfig => ui::render_track_config(f, app),
                 Screen::Queue => ui::render_queue(f, app),
                 Screen::Finish => ui::render_finish(f, app),
+                Screen::Configuration => ui::render_config_screen(f, app),
             }
             if app.confirm_dialog.is_some() {
                 ui::render_confirm_dialog(f, app);
@@ -117,6 +109,7 @@ fn handle_key(app: &mut App, key: KeyCode) {
         Screen::TrackConfig => handle_track_config_key(app, key),
         Screen::Queue => handle_queue_key(app, key),
         Screen::Finish => handle_finish_key(app, key),
+        Screen::Configuration => handle_config_key(app, key),
     }
 }
 
@@ -169,13 +162,23 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if app.home_index < 1 {
+            if app.home_index < app.home_menu_count - 1 {
                 app.home_index += 1;
             }
         }
         KeyCode::Enter => match app.home_index {
-            0 => app.navigate_to_explorer(false),
-            1 => app.navigate_to_explorer(true),
+            0 => app.navigate_to_explorer(false), // Open video file
+            1 => app.navigate_to_explorer(true),  // Open folder
+            2 => {
+                // Open folder recursive - go to explorer in folder mode
+                // The actual recursive scan happens on selection
+                app.navigate_to_explorer(true);
+            }
+            3 => app.navigate_to_configuration(), // Configuration
+            4 => {
+                app.confirm_dialog = Some(ConfirmAction::ExitApp);
+                app.confirm_selection = false;
+            }
             _ => {}
         },
         _ => {}
@@ -199,13 +202,13 @@ fn handle_explorer_key(app: &mut App, key: KeyCode) {
 }
 
 fn handle_track_config_key(app: &mut App, key: KeyCode) {
-    let file = match app.current_config_file() {
-        Some(f) => f,
+    let job = match app.current_config_job() {
+        Some(j) => j,
         None => return,
     };
 
-    let audio_count = file.audio_tracks.len();
-    let subtitle_count = file.subtitle_tracks.len();
+    let audio_count = job.audio_tracks.len();
+    let subtitle_count = job.subtitle_tracks.len();
 
     match key {
         KeyCode::Esc => app.navigate_to_home(),
@@ -235,42 +238,41 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
         KeyCode::Char(' ') => match app.track_focus {
             TrackFocus::Audio => {
                 let cursor = app.audio_cursor;
-                if let Some(file) = app.current_config_file_mut()
-                    && let Some(track) = file.audio_tracks.get(cursor)
+                if let Some(job) = app.current_config_job_mut()
+                    && let Some(track) = job.audio_tracks.get(cursor)
                 {
                     let idx = track.index;
-                    file.toggle_audio(idx);
+                    job.track_selection.toggle_audio(idx);
                 }
             }
             TrackFocus::Subtitle => {
                 let cursor = app.subtitle_cursor;
-                if let Some(file) = app.current_config_file_mut()
-                    && let Some(track) = file.subtitle_tracks.get(cursor)
+                if let Some(job) = app.current_config_job_mut()
+                    && let Some(track) = job.subtitle_tracks.get(cursor)
                 {
                     let idx = track.index;
-                    file.toggle_subtitle(idx);
+                    job.track_selection.toggle_subtitle(idx);
                 }
             }
             TrackFocus::Confirm => app.confirm_track_config(),
         },
         KeyCode::Char('a') => {
-            if let Some(file) = app.current_config_file_mut() {
-                let all_indices: Vec<usize> = file.audio_tracks.iter().map(|t| t.index).collect();
-                if file.selected_audio.len() == all_indices.len() {
-                    file.selected_audio.clear();
+            if let Some(job) = app.current_config_job_mut() {
+                let all_indices: Vec<usize> = job.audio_tracks.iter().map(|t| t.index).collect();
+                if job.track_selection.audio_indices.len() == all_indices.len() {
+                    job.track_selection.audio_indices.clear();
                 } else {
-                    file.selected_audio = all_indices;
+                    job.track_selection.audio_indices = all_indices;
                 }
             }
         }
         KeyCode::Char('s') => {
-            if let Some(file) = app.current_config_file_mut() {
-                let all_indices: Vec<usize> =
-                    file.subtitle_tracks.iter().map(|t| t.index).collect();
-                if file.selected_subtitles.len() == all_indices.len() {
-                    file.selected_subtitles.clear();
+            if let Some(job) = app.current_config_job_mut() {
+                let all_indices: Vec<usize> = job.subtitle_tracks.iter().map(|t| t.index).collect();
+                if job.track_selection.subtitle_indices.len() == all_indices.len() {
+                    job.track_selection.subtitle_indices.clear();
                 } else {
-                    file.selected_subtitles = all_indices;
+                    job.track_selection.subtitle_indices = all_indices;
                 }
             }
         }
@@ -300,5 +302,90 @@ fn handle_finish_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Enter => app.reset(),
         _ => {}
+    }
+}
+
+fn handle_config_key(app: &mut App, key: KeyCode) {
+    let config_item_count = 10; // Number of config items
+
+    match key {
+        KeyCode::Esc => app.navigate_to_home(),
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.config_selected > 0 {
+                app.config_selected -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.config_selected < config_item_count - 1 {
+                app.config_selected += 1;
+            }
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            adjust_config_value(app, app.config_selected, false);
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            adjust_config_value(app, app.config_selected, true);
+        }
+        KeyCode::Char('s') => {
+            if let Err(e) = app.config.save() {
+                tracing::warn!("Failed to save config: {}", e);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
+    match index {
+        0 => {
+            // Encoder - cycle through options
+            use crate::config::Encoder;
+            let encoders = [Encoder::SvtAv1, Encoder::Nvenc, Encoder::Qsv, Encoder::Amf];
+            let current = encoders
+                .iter()
+                .position(|e| *e == app.config.encoder)
+                .unwrap_or(0);
+            let next = if increase {
+                (current + 1) % encoders.len()
+            } else {
+                (current + encoders.len() - 1) % encoders.len()
+            };
+            app.config.encoder = encoders[next];
+        }
+        1 => {
+            // VMAF Threshold
+            let delta = if increase { 1.0 } else { -1.0 };
+            app.config.quality.vmaf_threshold =
+                (app.config.quality.vmaf_threshold + delta).clamp(0.0, 100.0);
+        }
+        2 => {
+            // VMAF Enabled
+            app.config.quality.vmaf_enabled = !app.config.quality.vmaf_enabled;
+        }
+        3 => {
+            // SVT-AV1 Preset
+            let delta: i8 = if increase { 1 } else { -1 };
+            let new_val = app.config.performance.svt_preset as i8 + delta;
+            app.config.performance.svt_preset = new_val.clamp(0, 13) as u8;
+        }
+        4 => {
+            // NVENC Preset - cycle
+            let presets = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
+            let current = presets
+                .iter()
+                .position(|p| *p == app.config.performance.nvenc_preset)
+                .unwrap_or(6);
+            let next = if increase {
+                (current + 1) % presets.len()
+            } else {
+                (current + presets.len() - 1) % presets.len()
+            };
+            app.config.performance.nvenc_preset = presets[next].to_string();
+        }
+        7 => {
+            // Same Directory Output
+            app.config.output.same_directory = !app.config.output.same_directory;
+        }
+        _ => {} // String fields not adjustable via arrow keys
     }
 }

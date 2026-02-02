@@ -1,53 +1,52 @@
-use std::fmt;
 use std::path::PathBuf;
+use thiserror::Error;
 
 /// AV1Converter application error
-#[derive(Debug, Clone)]
+#[derive(Debug, Error)]
 pub enum AppError {
     /// File I/O error
+    #[error("Failed to {operation} '{}': {message}", path.display())]
     Io {
         path: PathBuf,
         operation: &'static str,
         message: String,
     },
 
+    /// Video analysis failed
+    #[error("Analysis error: {0}")]
+    Analysis(String),
+
+    /// Encoding failed
+    #[error("Encoding error: {0}")]
+    Encoding(String),
+
+    /// Post-encode validation failed
+    #[error("Validation error: {0}")]
+    Validation(String),
+
+    /// Configuration error
+    #[error("Config error: {0}")]
+    Config(String),
+
     /// VMAF calculation failed
-    Vmaf { message: String },
+    #[error("VMAF error: {0}")]
+    Vmaf(String),
+
+    /// ab-av1 error
+    #[error("ab-av1 error: {0}")]
+    AbAv1(String),
+
+    /// Required dependency missing
+    #[error("Missing dependency: {0}")]
+    DependencyMissing(String),
 
     /// JSON parsing error
+    #[error("Parse error in {context}: {message}")]
     Parse { context: String, message: String },
 
     /// Command execution failed
-    CommandExecution { message: String },
-}
-
-impl std::error::Error for AppError {}
-
-impl fmt::Display for AppError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AppError::Io {
-                path,
-                operation,
-                message,
-            } => {
-                write!(
-                    f,
-                    "Failed to {} '{}': {}",
-                    operation,
-                    path.display(),
-                    message
-                )
-            }
-            AppError::Vmaf { message } => write!(f, "VMAF error: {}", message),
-            AppError::Parse { context, message } => {
-                write!(f, "Parse error in {}: {}", context, message)
-            }
-            AppError::CommandExecution { message } => {
-                write!(f, "Error executing command: {}", message)
-            }
-        }
-    }
+    #[error("Error executing command: {0}")]
+    CommandExecution(String),
 }
 
 impl From<std::io::Error> for AppError {
@@ -66,5 +65,17 @@ impl From<serde_json::Error> for AppError {
             context: "JSON".to_string(),
             message: err.to_string(),
         }
+    }
+}
+
+impl From<toml::de::Error> for AppError {
+    fn from(err: toml::de::Error) -> Self {
+        AppError::Config(format!("Failed to parse TOML: {}", err))
+    }
+}
+
+impl From<toml::ser::Error> for AppError {
+    fn from(err: toml::ser::Error) -> Self {
+        AppError::Config(format!("Failed to serialize TOML: {}", err))
     }
 }
