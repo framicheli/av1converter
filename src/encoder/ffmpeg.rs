@@ -1,5 +1,6 @@
 use crate::encoder::command_builder::{EncodingParams, build_ffmpeg_args};
 use crate::error::AppError;
+use std::fs::File;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -34,7 +35,7 @@ pub fn encode_video(
     // Create progress file
     let progress_file =
         std::env::temp_dir().join(format!("ffmpeg_progress_{}", std::process::id()));
-    if std::fs::File::create(&progress_file).is_err() {
+    if File::create(&progress_file).is_err() {
         return EncodeResult::Error("Failed to create progress file".to_string());
     }
 
@@ -48,16 +49,31 @@ pub fn encode_video(
         params.input, params.output, params.encoder
     );
 
+    // Redirect stderr to a temp file to avoid pipe buffer deadlock.
+    // FFmpeg writes verbose status lines to stderr continuously; if stderr is
+    // piped but never drained, the OS pipe buffer (~64 KB) fills up and FFmpeg
+    // blocks, freezing both encoding and progress updates.
+    let stderr_path =
+        std::env::temp_dir().join(format!("ffmpeg_stderr_{}", std::process::id()));
+    let stderr_file = match File::create(&stderr_path) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = std::fs::remove_file(&progress_file);
+            return EncodeResult::Error(format!("Failed to create stderr file: {}", e));
+        }
+    };
+
     // Start FFmpeg
     let mut child = match Command::new("ffmpeg")
         .args(&args)
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::from(stderr_file))
         .spawn()
     {
         Ok(c) => c,
         Err(e) => {
             let _ = std::fs::remove_file(&progress_file);
+            let _ = std::fs::remove_file(&stderr_path);
             return EncodeResult::Error(format!("Failed to start ffmpeg: {}", e));
         }
     };
@@ -70,10 +86,12 @@ pub fn encode_video(
         progress_callback,
         cancel_flag,
         &params.output,
+        &stderr_path,
     );
 
     // Cleanup
     let _ = std::fs::remove_file(&progress_file);
+    let _ = std::fs::remove_file(&stderr_path);
 
     result
 }
@@ -135,6 +153,7 @@ fn run_encode_loop(
     mut progress_callback: Option<ProgressCallback>,
     cancel_flag: Arc<AtomicBool>,
     output: &str,
+    stderr_path: &Path,
 ) -> EncodeResult {
     loop {
         // Check cancellation
@@ -172,16 +191,7 @@ fn run_encode_loop(
         match child.try_wait() {
             Ok(Some(status)) => {
                 if !status.success() {
-                    let stderr = child
-                        .stderr
-                        .take()
-                        .and_then(|mut s| {
-                            use std::io::Read;
-                            let mut buf = String::new();
-                            s.read_to_string(&mut buf).ok()?;
-                            Some(buf)
-                        })
-                        .unwrap_or_default();
+                    let stderr = std::fs::read_to_string(stderr_path).unwrap_or_default();
 
                     let _ = std::fs::remove_file(output);
 
