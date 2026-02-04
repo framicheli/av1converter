@@ -100,6 +100,7 @@ impl AppConfig {
     }
 
     /// Validate configuration values
+    #[allow(unused)]
     pub fn validate(&self) -> Result<(), AppError> {
         if self.quality.vmaf_threshold < 0.0 || self.quality.vmaf_threshold > 100.0 {
             return Err(AppError::Config(

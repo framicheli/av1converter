@@ -107,7 +107,7 @@ impl App {
         subtitle_list_state.select(Some(0));
 
         let config = AppConfig::load();
-        let deps = DependencyStatus::check();
+        let deps = DependencyStatus::check().unwrap_or(false);
 
         info!("Using encoder: {}", config.encoder);
 
@@ -530,10 +530,7 @@ impl App {
                 }
                 WorkerMessage::Cancelled => {
                     for job in &mut self.queue.jobs {
-                        if matches!(
-                            job.status,
-                            JobStatus::Encoding { .. } | JobStatus::SearchingCrf
-                        ) {
+                        if matches!(job.status, JobStatus::Encoding { .. }) {
                             job.status = JobStatus::Skipped {
                                 reason: "Cancelled".to_string(),
                             };

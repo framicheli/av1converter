@@ -15,5 +15,6 @@ A simple tool to convert videos into the AV1 video codec using FFMPEG
 
 ## Prerequisites
 
+- ffprobe
 - ffmpeg
-- vmaf component for ffmpeg
+- libvmaf

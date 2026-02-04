@@ -31,6 +31,7 @@ impl HdrType {
 
 /// Video metadata from analysis
 #[derive(Debug, Clone)]
+#[allow(unused)]
 pub struct VideoMetadata {
     pub width: u32,
     pub height: u32,
@@ -52,19 +53,5 @@ impl VideoMetadata {
     /// Get HDR status string
     pub fn hdr_string(&self) -> &'static str {
         self.hdr_type.display_string()
-    }
-
-    /// Get frame rate string
-    pub fn frame_rate_string(&self) -> String {
-        let frame_rate = if self.frame_rate_den > 0 {
-            self.frame_rate_num as f64 / self.frame_rate_den as f64
-        } else {
-            0.0
-        };
-        if frame_rate > 0.0 {
-            format!("{:.3} fps", frame_rate)
-        } else {
-            "Unknown".to_string()
-        }
     }
 }

@@ -95,30 +95,6 @@ pub fn render_queue(f: &mut Frame, app: &App) {
                     .label(label);
                 f.render_widget(gauge, chunks[2]);
             }
-            JobStatus::SearchingCrf => {
-                let status = Paragraph::new("Searching for optimal CRF...")
-                    .style(Style::default().fg(Color::Yellow))
-                    .alignment(Alignment::Center)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::Yellow))
-                            .title(format!(" {} ", job.filename())),
-                    );
-                f.render_widget(status, chunks[2]);
-            }
-            JobStatus::Verifying => {
-                let status = Paragraph::new("Verifying output...")
-                    .style(Style::default().fg(Color::Cyan))
-                    .alignment(Alignment::Center)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::Cyan))
-                            .title(format!(" {} ", job.filename())),
-                    );
-                f.render_widget(status, chunks[2]);
-            }
             _ => {
                 let status_text = match &job.status {
                     JobStatus::Pending => "Waiting...",
@@ -182,14 +158,10 @@ fn create_queue_item(
             .style(Style::default().fg(Color::Blue).add_modifier(bold_mod)),
         JobStatus::Ready => ListItem::new(format!("  ● {} Ready", name))
             .style(Style::default().fg(Color::Blue).add_modifier(bold_mod)),
-        JobStatus::SearchingCrf => ListItem::new(format!("  ⟳ {} Searching CRF...", name))
-            .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
         JobStatus::Encoding { progress } => {
             ListItem::new(format!("  ▶ {} {:.1}%{}", name, progress, crf_str))
                 .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod))
         }
-        JobStatus::Verifying => ListItem::new(format!("  ◉ {} Verifying...", name))
-            .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod)),
         JobStatus::Done => ListItem::new(format!("  ✓ {} Done", name))
             .style(Style::default().fg(Color::Green).add_modifier(bold_mod)),
         JobStatus::DoneWithVmaf { score } => {

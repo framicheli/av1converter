@@ -1,5 +1,4 @@
 use crate::encoder::command_builder::{EncodingParams, build_ffmpeg_args};
-use crate::error::AppError;
 use std::fs::File;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -49,12 +48,8 @@ pub fn encode_video(
         params.input, params.output, params.encoder
     );
 
-    // Redirect stderr to a temp file to avoid pipe buffer deadlock.
-    // FFmpeg writes verbose status lines to stderr continuously; if stderr is
-    // piped but never drained, the OS pipe buffer (~64 KB) fills up and FFmpeg
-    // blocks, freezing both encoding and progress updates.
-    let stderr_path =
-        std::env::temp_dir().join(format!("ffmpeg_stderr_{}", std::process::id()));
+    // Redirect stderr to a temp file to avoid pipe buffer deadlock
+    let stderr_path = std::env::temp_dir().join(format!("ffmpeg_stderr_{}", std::process::id()));
     let stderr_file = match File::create(&stderr_path) {
         Ok(f) => f,
         Err(e) => {
@@ -94,55 +89,6 @@ pub fn encode_video(
     let _ = std::fs::remove_file(&stderr_path);
 
     result
-}
-
-/// Get video duration in seconds via ffprobe
-pub fn get_duration(input: &str) -> Option<f64> {
-    let output = Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            input,
-        ])
-        .output()
-        .ok()?;
-
-    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
-}
-
-/// Get encoded file's frame rate as num/den
-pub fn get_frame_rate(path: &str) -> Result<(u32, u32), AppError> {
-    let output = Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=r_frame_rate",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            path,
-        ])
-        .output()
-        .map_err(|e| AppError::Validation(format!("Failed to run ffprobe: {}", e)))?;
-
-    let rate_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let parts: Vec<&str> = rate_str.split('/').collect();
-    if parts.len() == 2 {
-        let num = parts[0].parse::<u32>().unwrap_or(0);
-        let den = parts[1].parse::<u32>().unwrap_or(1);
-        Ok((num, den))
-    } else {
-        Err(AppError::Validation(format!(
-            "Unexpected frame rate format: {}",
-            rate_str
-        )))
-    }
 }
 
 /// Run the encoding loop with progress updates

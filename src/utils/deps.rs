@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use std::process::Command;
 
 /// Status of required and optional dependencies
@@ -6,10 +7,18 @@ pub struct DependencyStatus;
 
 impl DependencyStatus {
     /// Check all dependencies
-    pub fn check() -> bool {
-        check_command("ffmpeg", &["-version"])  // Check ffmpeg
+    pub fn check() -> Result<bool, AppError> {
+        if check_command("ffmpeg", &["-version"])  // Check ffmpeg
             && check_command("ffprobe", &["-version"])  // Check ffprobe
-            && check_vmaf_available() // Check libvmaf
+            && check_vmaf_available()
+        // Check libvmaf
+        {
+            Ok(true)
+        } else {
+            Err(AppError::DependencyMissing(
+                "Dependencies missing".to_string(),
+            ))
+        }
     }
 }
 

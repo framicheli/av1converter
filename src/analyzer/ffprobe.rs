@@ -221,6 +221,7 @@ struct FormatInfo {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(unused)]
 struct VideoStream {
     width: u32,
     height: u32,
@@ -241,6 +242,7 @@ struct AllStreamsOutput {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(unused)]
 struct RawStream {
     index: Option<usize>,
     codec_type: Option<String>,

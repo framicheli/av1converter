@@ -13,12 +13,8 @@ pub enum JobStatus {
     AwaitingConfig,
     /// Ready to encode
     Ready,
-    /// Searching for optimal CRF via ab-av1
-    SearchingCrf,
     /// Currently encoding
     Encoding { progress: f32 },
-    /// Verifying encoded output
-    Verifying,
     /// Successfully encoded
     Done,
     /// Encoded with VMAF score
@@ -86,14 +82,6 @@ impl EncodingJob {
             .as_ref()
             .map(|m| m.hdr_string())
             .unwrap_or("Unknown")
-    }
-
-    /// Get the HDR type
-    pub fn hdr_type(&self) -> crate::analyzer::HdrType {
-        self.metadata
-            .as_ref()
-            .map(|m| m.hdr_type)
-            .unwrap_or(crate::analyzer::HdrType::Sdr)
     }
 
     /// Generate the output path based on config

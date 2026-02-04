@@ -16,14 +16,6 @@ pub enum AppError {
     #[error("Analysis error: {0}")]
     Analysis(String),
 
-    /// Encoding failed
-    #[error("Encoding error: {0}")]
-    Encoding(String),
-
-    /// Post-encode validation failed
-    #[error("Validation error: {0}")]
-    Validation(String),
-
     /// Configuration error
     #[error("Config error: {0}")]
     Config(String),

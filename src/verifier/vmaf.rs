@@ -78,7 +78,7 @@ pub fn calculate_vmaf(original: &Path, encoded: &Path) -> Result<VmafResult, App
             "-",
         ])
         .output()
-        .map_err(|e| AppError::Vmaf(format!("Failed to run ffmpeg for VMAF: {}", e)))?;
+        .map_err(|e| AppError::CommandExecution(format!("Failed to run ffmpeg for VMAF: {}", e)))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
