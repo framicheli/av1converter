@@ -32,10 +32,6 @@ pub enum AppError {
     #[error("VMAF error: {0}")]
     Vmaf(String),
 
-    /// ab-av1 error
-    #[error("ab-av1 error: {0}")]
-    AbAv1(String),
-
     /// Required dependency missing
     #[error("Missing dependency: {0}")]
     DependencyMissing(String),

@@ -2,27 +2,14 @@ use std::process::Command;
 
 /// Status of required and optional dependencies
 #[derive(Debug, Clone)]
-pub struct DependencyStatus {
-    pub ffmpeg: bool,
-    pub ffprobe: bool,
-    pub ab_av1: bool,
-    pub vmaf: bool,
-}
+pub struct DependencyStatus;
 
 impl DependencyStatus {
     /// Check all dependencies
-    pub fn check() -> Self {
-        Self {
-            ffmpeg: check_command("ffmpeg", &["-version"]),
-            ffprobe: check_command("ffprobe", &["-version"]),
-            ab_av1: check_command("ab-av1", &["--version"]),
-            vmaf: check_vmaf_available(),
-        }
-    }
-
-    /// Check if the minimum required dependencies are available
-    pub fn has_required(&self) -> bool {
-        self.ffmpeg && self.ffprobe
+    pub fn check() -> bool {
+        check_command("ffmpeg", &["-version"])  // Check ffmpeg
+            && check_command("ffprobe", &["-version"])  // Check ffprobe
+            && check_vmaf_available() // Check libvmaf
     }
 }
 

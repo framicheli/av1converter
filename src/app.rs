@@ -78,7 +78,7 @@ pub struct App {
 
     // Configuration
     pub config: AppConfig,
-    pub deps: DependencyStatus,
+    pub deps: bool,
 
     // UI state
     pub message: Option<String>,
@@ -110,8 +110,6 @@ impl App {
         let deps = DependencyStatus::check();
 
         info!("Using encoder: {}", config.encoder);
-        info!("VMAF available: {}", deps.vmaf);
-        info!("ab-av1 available: {}", deps.ab_av1);
 
         Self {
             current_screen: Screen::Home,
@@ -459,10 +457,9 @@ impl App {
 
         let cancel_flag = self.cancel_flag.clone();
         let config = self.config.clone();
-        let ab_av1_available = self.deps.ab_av1;
 
         thread::spawn(move || {
-            run_worker(worker_jobs, config, cancel_flag, tx, ab_av1_available);
+            run_worker(worker_jobs, config, cancel_flag, tx);
         });
     }
 
@@ -489,22 +486,6 @@ impl App {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
                         job.status = JobStatus::Encoding { progress };
                         self.queue.current_job_index = idx;
-                    }
-                }
-                WorkerMessage::SearchingCrf(idx) => {
-                    if let Some(job) = self.queue.jobs.get_mut(idx) {
-                        job.status = JobStatus::SearchingCrf;
-                        self.queue.current_job_index = idx;
-                    }
-                }
-                WorkerMessage::CrfFound(idx, crf) => {
-                    if let Some(job) = self.queue.jobs.get_mut(idx) {
-                        job.crf = crf;
-                    }
-                }
-                WorkerMessage::Verifying(idx) => {
-                    if let Some(job) = self.queue.jobs.get_mut(idx) {
-                        job.status = JobStatus::Verifying;
                     }
                 }
                 WorkerMessage::Done(idx) => {

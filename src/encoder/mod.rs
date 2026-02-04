@@ -1,4 +1,3 @@
-pub mod ab_av1;
 pub mod command_builder;
 pub mod ffmpeg;
 
@@ -41,41 +40,9 @@ pub fn run_encoding_pipeline(
     config: &AppConfig,
     progress_callback: Option<ProgressCallback>,
     cancel_flag: Arc<AtomicBool>,
-    ab_av1_available: bool,
-    crf_callback: Option<Box<dyn FnOnce(Option<u8>) + Send>>,
 ) -> FullEncodeResult {
-    // Step 1: CRF search (optional, via ab-av1)
-    let crf_override = if ab_av1_available {
-        match ab_av1::find_optimal_crf(
-            input,
-            config.encoder,
-            config.quality.vmaf_threshold,
-            cancel_flag.clone(),
-        ) {
-            Ok(result) => {
-                info!(
-                    "ab-av1 found CRF {} (predicted VMAF: {:.2})",
-                    result.crf, result.predicted_vmaf
-                );
-                Some(result.crf)
-            }
-            Err(e) => {
-                // Check if this was a cancellation
-                if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                    return FullEncodeResult::Cancelled;
-                }
-                warn!("ab-av1 CRF search failed: {}. Using config defaults.", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // Notify about CRF selection
-    if let Some(cb) = crf_callback {
-        cb(crf_override);
-    }
+    // Step 1: CRF
+    let crf_override = None;
 
     // Step 2: Build encoding parameters
     let params =

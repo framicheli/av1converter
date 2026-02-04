@@ -11,12 +11,6 @@ use std::sync::mpsc::Sender;
 pub enum WorkerMessage {
     /// Progress update for a file
     Progress(usize, f32),
-    /// CRF search started
-    SearchingCrf(usize),
-    /// CRF found
-    CrfFound(usize, Option<u8>),
-    /// Verifying output
-    Verifying(usize),
     /// Encoding completed successfully
     Done(usize),
     /// Encoding completed with VMAF score
@@ -45,7 +39,6 @@ pub fn run_worker(
     config: AppConfig,
     cancel_flag: Arc<AtomicBool>,
     tx: Sender<WorkerMessage>,
-    ab_av1_available: bool,
 ) {
     for job in jobs {
         if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
@@ -55,14 +48,8 @@ pub fn run_worker(
 
         let _ = tx.send(WorkerMessage::Progress(job.index, 0.0));
 
-        // Notify CRF search if ab-av1 is available
-        if ab_av1_available {
-            let _ = tx.send(WorkerMessage::SearchingCrf(job.index));
-        }
-
         let tx_progress = tx.clone();
         let idx = job.index;
-        let tx_crf = tx.clone();
 
         let input_str = job.input.to_str().unwrap_or("").to_string();
         let output_str = job.output.to_str().unwrap_or("").to_string();
@@ -77,10 +64,6 @@ pub fn run_worker(
                 let _ = tx_progress.send(WorkerMessage::Progress(idx, progress));
             })),
             cancel_flag.clone(),
-            ab_av1_available,
-            Some(Box::new(move |crf| {
-                let _ = tx_crf.send(WorkerMessage::CrfFound(idx, crf));
-            })),
         );
 
         match result {

@@ -1,3 +1,4 @@
+#[cfg(not(target_os = "macos"))]
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};

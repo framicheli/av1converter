@@ -1,5 +1,4 @@
 pub mod deps;
-pub mod disk_space;
 pub mod humanize;
 pub mod logger;
 

@@ -1,6 +1,6 @@
 # AV1Converter
 
-A simple tool to convert videos into the AV1 video codec
+A simple tool to convert videos into the AV1 video codec using FFMPEG
 
 ## Table conversion
 
@@ -12,3 +12,8 @@ A simple tool to convert videos into the AV1 video codec
 | 4K         | No  | No           | **4K SDR AV1**                       |
 | 4K         | Yes | No           | **4K HDR AV1**                       |
 | 4K         | Yes | Yes          | **4K HDR AV1**                       |
+
+## Prerequisites
+
+- ffmpeg
+- vmaf component for ffmpeg

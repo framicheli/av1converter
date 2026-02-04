@@ -1,4 +1,4 @@
-use super::common::{create_menu_item, get_vmaf_color};
+use super::common::create_menu_item;
 use crate::app::App;
 use ratatui::{
     Frame,
@@ -89,18 +89,11 @@ fn render_status_info(app: &App) -> Line<'static> {
         Style::default().fg(Color::Cyan),
     );
 
-    let ab_av1_span = if app.deps.ab_av1 {
-        Span::styled("  ab-av1: ✓", Style::default().fg(Color::Green))
-    } else {
-        Span::styled("  ab-av1: ✗", Style::default().fg(Color::DarkGray))
-    };
-
-    Line::from(vec![encoder_span, ab_av1_span])
+    Line::from(vec![encoder_span])
 }
 
 fn render_vmaf_info(app: &App) -> Line<'static> {
-    if app.deps.vmaf {
-        let _color = get_vmaf_color(app.config.quality.vmaf_threshold);
+    if app.deps {
         Line::from(vec![
             Span::styled("✓ ", Style::default().fg(Color::Green)),
             Span::raw("VMAF quality validation enabled (threshold: "),
@@ -116,7 +109,7 @@ fn render_vmaf_info(app: &App) -> Line<'static> {
         Line::from(vec![
             Span::styled("⚠ ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                "VMAF unavailable - FFmpeg not compiled with libvmaf",
+                "Required Dependencies not available",
                 Style::default().fg(Color::Yellow),
             ),
         ])
