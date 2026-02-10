@@ -167,13 +167,9 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
             }
         }
         KeyCode::Enter => match app.home_index {
-            0 => app.navigate_to_explorer(false), // Open video file
-            1 => app.navigate_to_explorer(true),  // Open folder
-            2 => {
-                // Open folder recursive - go to explorer in folder mode
-                // The actual recursive scan happens on selection
-                app.navigate_to_explorer(true);
-            }
+            0 => app.navigate_to_explorer(false, false), // Open video file
+            1 => app.navigate_to_explorer(true, false),  // Open folder
+            2 => app.navigate_to_explorer(true, true),   // Open folder recursive
             3 => app.navigate_to_configuration(), // Configuration
             4 => {
                 app.confirm_dialog = Some(ConfirmAction::ExitApp);

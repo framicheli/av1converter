@@ -56,6 +56,7 @@ pub struct App {
     pub dir_entries: Vec<PathBuf>,
     pub explorer_index: usize,
     pub explorer_list_state: ListState,
+    pub recursive_scan: bool,
 
     // Queue state (replaces Vec<VideoFile>)
     pub queue: QueueState,
@@ -119,6 +120,7 @@ impl App {
             dir_entries: Vec::new(),
             explorer_index: 0,
             explorer_list_state: list_state,
+            recursive_scan: false,
             queue: QueueState::new(),
             track_focus: TrackFocus::Audio,
             audio_cursor: 0,
@@ -157,12 +159,13 @@ impl App {
         self.home_index = 0;
     }
 
-    pub fn navigate_to_explorer(&mut self, select_folder: bool) {
+    pub fn navigate_to_explorer(&mut self, select_folder: bool, recursive: bool) {
         self.selection_mode = if select_folder {
             SelectionMode::Folder
         } else {
             SelectionMode::File
         };
+        self.recursive_scan = recursive;
         self.refresh_dir_entries();
         self.current_screen = Screen::FileExplorer { select_folder };
     }
@@ -285,7 +288,7 @@ impl App {
                 if selected == Path::new("..") || !selected.is_dir() {
                     self.enter_directory();
                 } else {
-                    self.scan_folder(&selected, false);
+                    self.scan_folder(&selected, self.recursive_scan);
                     if self.queue.jobs.is_empty() {
                         self.set_message("No video files found in this folder");
                     } else {
