@@ -116,8 +116,8 @@ impl EncodingJob {
 
 /// Check if a path is a video file
 pub fn is_video_file(path: &Path) -> bool {
-    const VIDEO_EXTENSIONS: [&str; 9] = [
-        "mp4", "mkv", "avi", "mov", "webm", "m4v", "ts", "wmv", "flv",
+    const VIDEO_EXTENSIONS: [&str; 10] = [
+        "mp4", "mkv", "avi", "mov", "webm", "m4v", "ts", "m2ts", "wmv", "flv",
     ];
 
     path.extension()

@@ -74,6 +74,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             match app.current_screen.clone() {
                 Screen::Home => ui::render_home(f, app),
                 Screen::FileExplorer { .. } => ui::render_explorer(f, app),
+                Screen::FileConfirm => ui::render_file_confirm(f, app),
                 Screen::TrackConfig => ui::render_track_config(f, app),
                 Screen::Queue => ui::render_queue(f, app),
                 Screen::Finish => ui::render_finish(f, app),
@@ -106,6 +107,7 @@ fn handle_key(app: &mut App, key: KeyCode) {
     match &app.current_screen {
         Screen::Home => handle_home_key(app, key),
         Screen::FileExplorer { .. } => handle_explorer_key(app, key),
+        Screen::FileConfirm => handle_file_confirm_key(app, key),
         Screen::TrackConfig => handle_track_config_key(app, key),
         Screen::Queue => handle_queue_key(app, key),
         Screen::Finish => handle_finish_key(app, key),
@@ -192,7 +194,28 @@ fn handle_explorer_key(app: &mut App, key: KeyCode) {
             app::SelectionMode::File => app.select_explorer_entry(),
             app::SelectionMode::Folder => app.enter_directory(),
         },
-        KeyCode::Char(' ') => app.select_explorer_entry(),
+        KeyCode::Char(' ') => match app.selection_mode {
+            app::SelectionMode::File => app.toggle_file_selection(),
+            app::SelectionMode::Folder => app.select_explorer_entry(),
+        },
+        _ => {}
+    }
+}
+
+fn handle_file_confirm_key(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Esc => app.cancel_file_confirm(),
+        KeyCode::Enter => app.confirm_queued_files(),
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.file_confirm_scroll > 0 {
+                app.file_confirm_scroll -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.file_confirm_scroll < app.queue.jobs.len().saturating_sub(1) {
+                app.file_confirm_scroll += 1;
+            }
+        }
         _ => {}
     }
 }

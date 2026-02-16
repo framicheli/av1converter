@@ -22,11 +22,33 @@ pub fn render_queue(f: &mut Frame, app: &App) {
         .margin(1)
         .split(f.area());
 
-    // Title with progress summary
-    let total = app.queue.jobs.len();
-    let done = app.queue.converted_count + app.queue.skipped_count + app.queue.error_count;
+    // Title with progress header
+    let total_to_encode = app.queue.total_jobs_to_encode;
 
-    let title = Paragraph::new(format!("Conversion Queue ({}/{})", done, total))
+    let title_text = if app.encoding_active {
+        if let Some(job) = app.queue.jobs.get(app.queue.current_job_index) {
+            if matches!(job.status, JobStatus::Encoding { .. }) {
+                let current_number =
+                    (app.queue.encoding_progress_done + 1).min(total_to_encode);
+                format!(
+                    "[{}/{}] Encoding: {}",
+                    current_number,
+                    total_to_encode,
+                    job.filename()
+                )
+            } else {
+                format!("Conversion Queue ({}/{})", app.queue.encoding_progress_done, total_to_encode)
+            }
+        } else {
+            format!("Conversion Queue (0/{})", total_to_encode)
+        }
+    } else {
+        let done = app.queue.converted_count + app.queue.skipped_count + app.queue.error_count;
+        let total = app.queue.jobs.len();
+        format!("Conversion Queue ({}/{})", done, total)
+    };
+
+    let title = Paragraph::new(title_text)
         .style(
             Style::default()
                 .fg(Color::Cyan)

@@ -17,6 +17,7 @@ use tracing::info;
 pub enum Screen {
     Home,
     FileExplorer { select_folder: bool },
+    FileConfirm,
     TrackConfig,
     Queue,
     Finish,
@@ -71,6 +72,10 @@ pub struct App {
     // Home menu
     pub home_index: usize,
     pub home_menu_count: usize,
+
+    // Multi-file selection
+    pub selected_files: Vec<PathBuf>,
+    pub file_confirm_scroll: usize,
 
     // Encoding
     pub encoding_active: bool,
@@ -129,7 +134,9 @@ impl App {
             audio_list_state,
             subtitle_list_state,
             home_index: 0,
-            home_menu_count: 5, // file, selected files, folder, folder recursive, config
+            home_menu_count: 5,
+            selected_files: Vec::new(),
+            file_confirm_scroll: 0,
             encoding_active: false,
             progress_receiver: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
@@ -159,6 +166,7 @@ impl App {
     pub fn navigate_to_home(&mut self) {
         self.current_screen = Screen::Home;
         self.home_index = 0;
+        self.selected_files.clear();
     }
 
     pub fn navigate_to_explorer(&mut self, select_folder: bool, recursive: bool) {
@@ -201,6 +209,11 @@ impl App {
         self.config_scroll = 0;
         self.config_selected = 0;
         self.current_screen = Screen::Configuration;
+    }
+
+    pub fn navigate_to_file_confirm(&mut self) {
+        self.file_confirm_scroll = 0;
+        self.current_screen = Screen::FileConfirm;
     }
 
     // File explorer
@@ -251,6 +264,40 @@ impl App {
         }
     }
 
+    /// Toggle a file in the multi-select list
+    pub fn toggle_file_selection(&mut self) {
+        if self.dir_entries.is_empty() {
+            return;
+        }
+
+        let selected = self.dir_entries[self.explorer_index].clone();
+        if selected == Path::new("..") || selected.is_dir() || !is_video_file(&selected) {
+            return;
+        }
+
+        if let Some(pos) = self.selected_files.iter().position(|f| f == &selected) {
+            self.selected_files.remove(pos);
+        } else {
+            self.selected_files.push(selected);
+        }
+    }
+
+    /// Confirm the queued files from the confirmation screen and start analysis
+    pub fn confirm_queued_files(&mut self) {
+        self.selected_files.clear();
+        self.analyze_jobs();
+    }
+
+    /// Navigate back from file confirm to the explorer
+    pub fn cancel_file_confirm(&mut self) {
+        if self.selection_mode == SelectionMode::File {
+            self.selected_files = self.queue.jobs.iter().map(|j| j.path.clone()).collect();
+        }
+        self.queue.jobs.clear();
+        let select_folder = self.selection_mode == SelectionMode::Folder;
+        self.current_screen = Screen::FileExplorer { select_folder };
+    }
+
     pub fn enter_directory(&mut self) {
         if self.dir_entries.is_empty() {
             return;
@@ -281,9 +328,22 @@ impl App {
                 if selected == Path::new("..") || selected.is_dir() {
                     self.enter_directory();
                 } else if is_video_file(&selected) {
-                    self.queue.jobs.clear();
-                    self.queue.jobs.push(EncodingJob::new(selected));
-                    self.analyze_jobs();
+                    if self.selected_files.is_empty() {
+                        // Single file — proceed directly (backward compatible)
+                        self.queue.jobs.clear();
+                        self.queue.jobs.push(EncodingJob::new(selected));
+                        self.analyze_jobs();
+                    } else {
+                        // Multi-file — include current file and go to confirmation
+                        if !self.selected_files.contains(&selected) {
+                            self.selected_files.push(selected);
+                        }
+                        self.queue.jobs.clear();
+                        for path in &self.selected_files {
+                            self.queue.jobs.push(EncodingJob::new(path.clone()));
+                        }
+                        self.navigate_to_file_confirm();
+                    }
                 }
             }
             SelectionMode::Folder => {
@@ -293,8 +353,12 @@ impl App {
                     self.scan_folder(&selected, self.recursive_scan);
                     if self.queue.jobs.is_empty() {
                         self.set_message("No video files found in this folder");
-                    } else {
+                    } else if self.queue.jobs.len() == 1 {
+                        // Single file in folder — proceed directly
                         self.analyze_jobs();
+                    } else {
+                        // Multiple files — show confirmation
+                        self.navigate_to_file_confirm();
                     }
                 }
             }
@@ -499,6 +563,7 @@ impl App {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
                         job.status = JobStatus::Done;
                         self.queue.converted_count += 1;
+                        self.queue.encoding_progress_done += 1;
                     }
                     if self.queue.all_completed() {
                         self.encoding_active = false;
@@ -509,6 +574,7 @@ impl App {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
                         job.status = JobStatus::DoneWithVmaf { score };
                         self.queue.converted_count += 1;
+                        self.queue.encoding_progress_done += 1;
                     }
                     if self.queue.all_completed() {
                         self.encoding_active = false;
@@ -519,6 +585,7 @@ impl App {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
                         job.status = JobStatus::Error { message: msg };
                         self.queue.error_count += 1;
+                        self.queue.encoding_progress_done += 1;
                     }
                     if self.queue.all_completed() {
                         self.encoding_active = false;
@@ -529,6 +596,7 @@ impl App {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
                         job.status = JobStatus::QualityWarning { vmaf, threshold };
                         self.queue.converted_count += 1;
+                        self.queue.encoding_progress_done += 1;
                     }
                     if self.queue.all_completed() {
                         self.encoding_active = false;
@@ -568,6 +636,7 @@ impl App {
         self.queue.reset();
         self.encoding_active = false;
         self.delete_source = false;
+        self.selected_files.clear();
         self.progress_receiver = None;
         self.navigate_to_home();
     }

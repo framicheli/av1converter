@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
-use tracing::info;
 
 /// Progress callback type
 pub type ProgressCallback = Box<dyn FnMut(f32) + Send>;
@@ -42,11 +41,6 @@ pub fn encode_video(
     let mut args = args;
     args.insert(2, "-progress".to_string());
     args.insert(3, progress_file.to_string_lossy().to_string());
-
-    info!(
-        "Encoding: {} -> {} with {}",
-        params.input, params.output, params.encoder
-    );
 
     // Redirect stderr to a temp file to avoid pipe buffer deadlock
     let stderr_path = std::env::temp_dir().join(format!("ffmpeg_stderr_{}", std::process::id()));
