@@ -76,6 +76,7 @@ pub struct App {
     pub encoding_active: bool,
     pub progress_receiver: Option<Receiver<WorkerMessage>>,
     pub cancel_flag: Arc<AtomicBool>,
+    pub delete_source: bool,
 
     // Configuration
     pub config: AppConfig,
@@ -132,6 +133,7 @@ impl App {
             encoding_active: false,
             progress_receiver: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            delete_source: false,
             config,
             deps,
             message: None,
@@ -428,6 +430,7 @@ impl App {
         self.progress_receiver = Some(rx);
 
         // Collect jobs to encode
+        let delete_source = self.delete_source;
         let worker_jobs: Vec<WorkerJob> = self
             .queue
             .jobs
@@ -442,6 +445,7 @@ impl App {
                     output: j.output_path.clone().unwrap_or_else(|| j.path.clone()),
                     metadata,
                     tracks: j.track_selection.clone(),
+                    delete_source,
                 })
             })
             .collect();
@@ -531,6 +535,16 @@ impl App {
                         should_finish = true;
                     }
                 }
+                WorkerMessage::SourceDeleted(idx) => {
+                    if let Some(job) = self.queue.jobs.get_mut(idx) {
+                        job.source_deleted = true;
+                    }
+                }
+                WorkerMessage::SourceKeptLowVmaf(idx, vmaf) => {
+                    if let Some(job) = self.queue.jobs.get_mut(idx) {
+                        job.source_kept_vmaf = Some(vmaf);
+                    }
+                }
                 WorkerMessage::Cancelled => {
                     for job in &mut self.queue.jobs {
                         if matches!(job.status, JobStatus::Encoding { .. }) {
@@ -553,6 +567,7 @@ impl App {
     pub fn reset(&mut self) {
         self.queue.reset();
         self.encoding_active = false;
+        self.delete_source = false;
         self.progress_receiver = None;
         self.navigate_to_home();
     }

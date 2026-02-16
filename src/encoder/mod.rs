@@ -4,7 +4,7 @@ pub mod ffmpeg;
 pub use command_builder::EncodingParams;
 pub use ffmpeg::{EncodeResult, ProgressCallback, encode_video};
 
-use crate::analyzer::VideoMetadata;
+use crate::analyzer::{HdrType, VideoMetadata};
 use crate::config::AppConfig;
 use crate::tracks::TrackSelection;
 use crate::verifier;
@@ -60,7 +60,7 @@ pub fn run_encoding_pipeline(
             } else {
                 None
             };
-            run_vmaf_check(input, output, vmaf_threshold)
+            run_vmaf_check(input, output, vmaf_threshold, metadata.hdr_type)
         }
         EncodeResult::Cancelled => FullEncodeResult::Cancelled,
         EncodeResult::Error(e) => FullEncodeResult::Error(e),
@@ -68,7 +68,12 @@ pub fn run_encoding_pipeline(
 }
 
 /// Run VMAF quality check after encoding
-fn run_vmaf_check(input: &str, output: &str, threshold: Option<f64>) -> FullEncodeResult {
+fn run_vmaf_check(
+    input: &str,
+    output: &str,
+    threshold: Option<f64>,
+    hdr_type: HdrType,
+) -> FullEncodeResult {
     let threshold = match threshold {
         Some(t) => t,
         None => return FullEncodeResult::Success,
@@ -79,7 +84,7 @@ fn run_vmaf_check(input: &str, output: &str, threshold: Option<f64>) -> FullEnco
     let input_path = std::path::Path::new(input);
     let output_path = std::path::Path::new(output);
 
-    match verifier::calculate_vmaf(input_path, output_path) {
+    match verifier::calculate_vmaf(input_path, output_path, hdr_type) {
         Ok(vmaf) => {
             info!("VMAF score: {:.2} ({})", vmaf.score, vmaf.quality_grade());
 

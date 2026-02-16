@@ -115,21 +115,26 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Get the encoding preset for a given resolution tier and HDR status
+    /// Get the encoding preset for a given resolution tier and HDR type
     pub fn preset_for(
         &self,
         tier: &crate::analyzer::ResolutionTier,
-        is_hdr: bool,
+        hdr_type: crate::analyzer::HdrType,
     ) -> &EncodingPreset {
-        use crate::analyzer::ResolutionTier;
-        match (tier, is_hdr) {
-            (ResolutionTier::SD, _) => &self.presets.sd,
-            (ResolutionTier::HD, _) => &self.presets.hd,
-            (ResolutionTier::FullHD, false) => &self.presets.full_hd,
-            (ResolutionTier::FullHD, true) => &self.presets.full_hd_hdr,
-            (ResolutionTier::Uhd, false) => &self.presets.uhd,
-            (ResolutionTier::Uhd, true) | (ResolutionTier::Above4K, true) => &self.presets.uhd_hdr,
-            (ResolutionTier::Above4K, false) => &self.presets.uhd,
+        use crate::analyzer::{HdrType, ResolutionTier};
+        match tier {
+            ResolutionTier::SD => &self.presets.sd,
+            ResolutionTier::HD => &self.presets.hd,
+            ResolutionTier::FullHD => match hdr_type {
+                HdrType::DolbyVision => &self.presets.full_hd_dv,
+                HdrType::Sdr => &self.presets.full_hd,
+                _ => &self.presets.full_hd_hdr,
+            },
+            ResolutionTier::Uhd | ResolutionTier::Above4K => match hdr_type {
+                HdrType::DolbyVision => &self.presets.uhd_dv,
+                HdrType::Sdr => &self.presets.uhd,
+                _ => &self.presets.uhd_hdr,
+            },
         }
     }
 }

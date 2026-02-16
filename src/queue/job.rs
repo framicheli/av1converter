@@ -40,6 +40,8 @@ pub struct EncodingJob {
     pub crf: Option<u8>,
     pub source_size: Option<u64>,
     pub output_size: Option<u64>,
+    pub source_deleted: bool,
+    pub source_kept_vmaf: Option<f64>,
 }
 
 impl EncodingJob {
@@ -57,6 +59,8 @@ impl EncodingJob {
             crf: None,
             source_size,
             output_size: None,
+            source_deleted: false,
+            source_kept_vmaf: None,
         }
     }
 

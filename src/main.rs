@@ -272,6 +272,9 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 }
             }
         }
+        KeyCode::Char('d') => {
+            app.delete_source = !app.delete_source;
+        }
         KeyCode::Enter => app.confirm_track_config(),
         _ => {}
     }

@@ -58,8 +58,32 @@ pub struct EncodingPresetsConfig {
     pub hd: EncodingPreset,
     pub full_hd: EncodingPreset,
     pub full_hd_hdr: EncodingPreset,
+    #[serde(default = "default_full_hd_dv")]
+    pub full_hd_dv: EncodingPreset,
     pub uhd: EncodingPreset,
     pub uhd_hdr: EncodingPreset,
+    #[serde(default = "default_uhd_dv")]
+    pub uhd_dv: EncodingPreset,
+}
+
+fn default_full_hd_dv() -> EncodingPreset {
+    EncodingPreset {
+        crf: 20,
+        film_grain: 3,
+        nvenc_cq: 21,
+        qsv_quality: 20,
+        amf_quality: 21,
+    }
+}
+
+fn default_uhd_dv() -> EncodingPreset {
+    EncodingPreset {
+        crf: 20,
+        film_grain: 4,
+        nvenc_cq: 20,
+        qsv_quality: 20,
+        amf_quality: 20,
+    }
 }
 
 impl Default for EncodingPresetsConfig {
@@ -93,6 +117,7 @@ impl Default for EncodingPresetsConfig {
                 qsv_quality: 23,
                 amf_quality: 23,
             },
+            full_hd_dv: default_full_hd_dv(),
             uhd: EncodingPreset {
                 crf: 23,
                 film_grain: 4,
@@ -107,6 +132,7 @@ impl Default for EncodingPresetsConfig {
                 qsv_quality: 22,
                 amf_quality: 22,
             },
+            uhd_dv: default_uhd_dv(),
         }
     }
 }

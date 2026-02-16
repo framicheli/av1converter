@@ -123,7 +123,7 @@ fn create_result_item(job: &crate::queue::EncodingJob) -> ListItem<'static> {
         JobStatus::DoneWithVmaf { score } => {
             let vmaf_color = get_vmaf_color(*score);
             let quality_desc = get_quality_description(*score);
-            ListItem::new(Line::from(vec![
+            let mut spans = vec![
                 Span::styled("  ✓ ", Style::default().fg(Color::Green)),
                 Span::raw(name),
                 Span::raw(" "),
@@ -136,7 +136,19 @@ fn create_result_item(job: &crate::queue::EncodingJob) -> ListItem<'static> {
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::styled(size_info, Style::default().fg(Color::DarkGray)),
-            ]))
+            ];
+            if job.source_deleted {
+                spans.push(Span::styled(
+                    " [source deleted]",
+                    Style::default().fg(Color::Yellow),
+                ));
+            } else if let Some(vmaf) = job.source_kept_vmaf {
+                spans.push(Span::styled(
+                    format!(" [source kept: VMAF {:.1} < 90]", vmaf),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            ListItem::new(Line::from(spans))
         }
         JobStatus::Skipped { reason } => ListItem::new(format!("  ⊘ {} ({})", name, reason))
             .style(Style::default().fg(Color::Yellow)),
@@ -144,7 +156,7 @@ fn create_result_item(job: &crate::queue::EncodingJob) -> ListItem<'static> {
             .style(Style::default().fg(Color::Red)),
         JobStatus::QualityWarning { vmaf, threshold } => {
             let vmaf_color = get_vmaf_color(*vmaf);
-            ListItem::new(Line::from(vec![
+            let mut spans = vec![
                 Span::styled("  ⚠ ", Style::default().fg(Color::Yellow)),
                 Span::raw(name),
                 Span::raw(" "),
@@ -157,7 +169,19 @@ fn create_result_item(job: &crate::queue::EncodingJob) -> ListItem<'static> {
                     Style::default().fg(Color::Red),
                 ),
                 Span::styled(size_info, Style::default().fg(Color::DarkGray)),
-            ]))
+            ];
+            if job.source_deleted {
+                spans.push(Span::styled(
+                    " [source deleted]",
+                    Style::default().fg(Color::Yellow),
+                ));
+            } else if let Some(kept_vmaf) = job.source_kept_vmaf {
+                spans.push(Span::styled(
+                    format!(" [source kept: VMAF {:.1} < 90]", kept_vmaf),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            ListItem::new(Line::from(spans))
         }
         _ => ListItem::new(format!("  ? {}", name)).style(Style::default().fg(Color::DarkGray)),
     }

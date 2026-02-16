@@ -1,3 +1,4 @@
+use crate::analyzer::HdrType;
 use crate::error::AppError;
 use serde::Deserialize;
 use std::path::Path;
@@ -48,21 +49,41 @@ impl std::fmt::Display for VmafResult {
 }
 
 /// Calculate VMAF score between original and encoded video
-pub fn calculate_vmaf(original: &Path, encoded: &Path) -> Result<VmafResult, AppError> {
+pub fn calculate_vmaf(
+    original: &Path,
+    encoded: &Path,
+    hdr_type: HdrType,
+) -> Result<VmafResult, AppError> {
     let json_output = std::env::temp_dir().join(format!("vmaf_result_{}.json", std::process::id()));
+
+    // Use vmaf_v0.6.1neg for HDR/DV content (trained on HDR), default model for SDR
+    let model_suffix = if hdr_type.is_hdr() {
+        ":model='version=vmaf_v0.6.1neg'"
+    } else {
+        ""
+    };
+
+    let model_name = if hdr_type.is_hdr() {
+        "vmaf_v0.6.1neg"
+    } else {
+        "vmaf_v0.6.1 (default)"
+    };
 
     // VMAF filter with quick settings (subsample=10 for speed)
     let filter = format!(
         "[0:v]format=yuv420p,setpts=PTS-STARTPTS[ref];\
          [1:v]format=yuv420p,setpts=PTS-STARTPTS[dist];\
-         [ref][dist]libvmaf=log_path={}:log_fmt=json:n_threads=4:n_subsample=10",
-        json_output.to_string_lossy()
+         [ref][dist]libvmaf=log_path={}:log_fmt=json:n_threads=4:n_subsample=10{}",
+        json_output.to_string_lossy(),
+        model_suffix
     );
 
     info!(
-        "Calculating VMAF: {} vs {}",
+        "Calculating VMAF: {} vs {} (model: {}, content: {})",
         original.display(),
-        encoded.display()
+        encoded.display(),
+        model_name,
+        hdr_type.display_string()
     );
 
     let output = Command::new("ffmpeg")

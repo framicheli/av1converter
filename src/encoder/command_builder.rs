@@ -29,7 +29,7 @@ impl EncodingParams {
         crf_override: Option<u8>,
     ) -> Self {
         let tier = ResolutionTier::from_dimensions(metadata.width, metadata.height);
-        let preset = config.preset_for(&tier, metadata.hdr_type.is_hdr());
+        let preset = config.preset_for(&tier, metadata.hdr_type);
 
         let crf = crf_override.unwrap_or(match config.encoder {
             Encoder::SvtAv1 => preset.crf,

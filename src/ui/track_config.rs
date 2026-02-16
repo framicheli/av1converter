@@ -53,6 +53,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(5),
             Constraint::Min(5),
+            Constraint::Length(1),
             Constraint::Length(3),
         ])
         .margin(1)
@@ -159,6 +160,24 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
     app.subtitle_list_state.select(Some(app.subtitle_cursor));
     f.render_stateful_widget(subtitle_list, track_chunks[1], &mut app.subtitle_list_state);
 
+    // Delete source toggle
+    let delete_checkbox = if app.delete_source { "[x]" } else { "[ ]" };
+    let delete_color = if app.delete_source {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+    let delete_line = Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            format!("{} Delete source after encoding (only if VMAF ≥ 90)", delete_checkbox),
+            Style::default().fg(delete_color),
+        ),
+        Span::styled("  [d] to toggle", Style::default().fg(Color::DarkGray)),
+    ]);
+    let delete_toggle = Paragraph::new(delete_line);
+    f.render_widget(delete_toggle, chunks[2]);
+
     // Help / Confirm button
     let confirm_style = if app.track_focus == TrackFocus::Confirm {
         Style::default()
@@ -188,7 +207,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE));
-    f.render_widget(help, chunks[2]);
+    f.render_widget(help, chunks[3]);
 }
 
 fn create_audio_track_item(
