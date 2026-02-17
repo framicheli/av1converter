@@ -101,7 +101,10 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
         JobStatus::Error { message } => {
             lines.push(Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("Error: {}", message), Style::default().fg(Color::Red)),
+                Span::styled(
+                    format!("Error: {}", message),
+                    Style::default().fg(Color::Red),
+                ),
             ]));
         }
         JobStatus::Skipped { reason } => {
@@ -161,14 +164,12 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
         ]));
     }
 
-    let summary = Paragraph::new(lines)
-        .alignment(Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Result "),
-        );
+    let summary = Paragraph::new(lines).alignment(Alignment::Center).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(" Result "),
+    );
     f.render_widget(summary, chunks[0]);
 
     // Help

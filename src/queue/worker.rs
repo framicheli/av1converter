@@ -92,9 +92,7 @@ pub fn run_worker(
             }
             FullEncodeResult::QualityWarning { vmaf, threshold } => {
                 let score = vmaf.score;
-                let _ = tx.send(WorkerMessage::QualityWarning(
-                    job.index, score, threshold,
-                ));
+                let _ = tx.send(WorkerMessage::QualityWarning(job.index, score, threshold));
                 if job.delete_source {
                     try_delete_source(&tx, job.index, &job.input, score);
                 }
@@ -118,11 +116,7 @@ fn try_delete_source(tx: &Sender<WorkerMessage>, index: usize, source: &PathBuf,
                 let _ = tx.send(WorkerMessage::SourceDeleted(index));
             }
             Err(e) => {
-                warn!(
-                    "Failed to delete source file {}: {}",
-                    source.display(),
-                    e
-                );
+                warn!("Failed to delete source file {}: {}", source.display(), e);
                 let _ = tx.send(WorkerMessage::Error(
                     index,
                     format!("Failed to delete source: {}", e),

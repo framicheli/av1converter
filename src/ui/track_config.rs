@@ -170,7 +170,10 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
     let delete_line = Line::from(vec![
         Span::styled("  ", Style::default()),
         Span::styled(
-            format!("{} Delete source after encoding (only if VMAF ≥ 90)", delete_checkbox),
+            format!(
+                "{} Delete source after encoding (only if VMAF ≥ 90)",
+                delete_checkbox
+            ),
             Style::default().fg(delete_color),
         ),
         Span::styled("  [d] to toggle", Style::default().fg(Color::DarkGray)),

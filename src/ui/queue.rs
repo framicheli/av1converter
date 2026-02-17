@@ -28,8 +28,7 @@ pub fn render_queue(f: &mut Frame, app: &App) {
     let title_text = if app.encoding_active {
         if let Some(job) = app.queue.jobs.get(app.queue.current_job_index) {
             if matches!(job.status, JobStatus::Encoding { .. }) {
-                let current_number =
-                    (app.queue.encoding_progress_done + 1).min(total_to_encode);
+                let current_number = (app.queue.encoding_progress_done + 1).min(total_to_encode);
                 format!(
                     "[{}/{}] Encoding: {}",
                     current_number,
@@ -37,7 +36,10 @@ pub fn render_queue(f: &mut Frame, app: &App) {
                     job.filename()
                 )
             } else {
-                format!("Conversion Queue ({}/{})", app.queue.encoding_progress_done, total_to_encode)
+                format!(
+                    "Conversion Queue ({}/{})",
+                    app.queue.encoding_progress_done, total_to_encode
+                )
             }
         } else {
             format!("Conversion Queue (0/{})", total_to_encode)

@@ -172,7 +172,7 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
             0 => app.navigate_to_explorer(false, false), // Open video file
             1 => app.navigate_to_explorer(true, false),  // Open folder
             2 => app.navigate_to_explorer(true, true),   // Open folder recursive
-            3 => app.navigate_to_configuration(), // Configuration
+            3 => app.navigate_to_configuration(),        // Configuration
             4 => {
                 app.confirm_dialog = Some(ConfirmAction::ExitApp);
                 app.confirm_selection = false;
