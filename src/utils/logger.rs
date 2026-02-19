@@ -3,7 +3,13 @@ use tracing_appender::non_blocking::WorkerGuard;
 /// Initialize logging based on AV1_DEBUG environment variable
 pub fn init_logging() -> Option<WorkerGuard> {
     if std::env::var("AV1_DEBUG").is_ok() {
-        let log_dir = dirs::data_local_dir()
+        let log_dir = std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".local/share"))
+            })
+            .or_else(|| std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from))
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("av1converter");
 

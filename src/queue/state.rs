@@ -12,6 +12,8 @@ pub struct QueueState {
     pub converted_count: usize,
     pub skipped_count: usize,
     pub error_count: usize,
+    /// Number of jobs that have finished the encoding phase (success or error)
+    pub encoding_progress_done: usize,
 }
 
 impl QueueState {
@@ -25,6 +27,7 @@ impl QueueState {
             converted_count: 0,
             skipped_count: 0,
             error_count: 0,
+            encoding_progress_done: 0,
         }
     }
 
@@ -40,7 +43,14 @@ impl QueueState {
         let completed = self
             .jobs
             .iter()
-            .filter(|j| matches!(j.status, JobStatus::Done | JobStatus::DoneWithVmaf { .. }))
+            .filter(|j| {
+                matches!(
+                    j.status,
+                    JobStatus::Done
+                        | JobStatus::DoneWithVmaf { .. }
+                        | JobStatus::QualityWarning { .. }
+                )
+            })
             .count();
 
         let current_progress = self
@@ -110,6 +120,7 @@ impl QueueState {
         self.converted_count = 0;
         self.skipped_count = 0;
         self.error_count = 0;
+        self.encoding_progress_done = 0;
     }
 }
 

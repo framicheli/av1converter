@@ -64,7 +64,10 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
         .dir_entries
         .iter()
         .enumerate()
-        .map(|(i, path)| create_entry_item(path, i, app.explorer_index, &app.selection_mode))
+        .map(|(i, path)| {
+            let is_toggled = app.selected_files.contains(path);
+            create_entry_item(path, i, app.explorer_index, &app.selection_mode, is_toggled)
+        })
         .collect();
 
     let title = match app.selection_mode {
@@ -88,14 +91,28 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
 
     // Help
     let help_text = match app.selection_mode {
-        SelectionMode::File => Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(" Navigate  "),
-            Span::styled("Enter/Space", Style::default().fg(Color::Yellow)),
-            Span::raw(" Select  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(" Back"),
-        ]),
+        SelectionMode::File => {
+            let mut spans = vec![
+                Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+                Span::raw(" Navigate  "),
+                Span::styled("Space", Style::default().fg(Color::Yellow)),
+                Span::raw(" Toggle  "),
+                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(" Proceed  "),
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(" Back"),
+            ];
+            if !app.selected_files.is_empty() {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    format!("[{} selected]", app.selected_files.len()),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            Line::from(spans)
+        }
         SelectionMode::Folder => Line::from(vec![
             Span::styled("↑↓", Style::default().fg(Color::Yellow)),
             Span::raw(" Navigate  "),
@@ -119,6 +136,7 @@ fn create_entry_item(
     index: usize,
     selected: usize,
     mode: &SelectionMode,
+    is_toggled: bool,
 ) -> ListItem<'static> {
     let is_selected = index == selected;
     let is_parent = path == &PathBuf::from("..");
@@ -147,6 +165,8 @@ fn create_entry_item(
         ("↑ ", Color::Yellow)
     } else if is_dir {
         ("▶ ", Color::Blue)
+    } else if is_toggled {
+        ("✓ ", Color::Cyan)
     } else if is_video {
         ("▷ ", Color::Green)
     } else {

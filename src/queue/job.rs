@@ -40,6 +40,8 @@ pub struct EncodingJob {
     pub crf: Option<u8>,
     pub source_size: Option<u64>,
     pub output_size: Option<u64>,
+    pub source_deleted: bool,
+    pub source_kept_vmaf: Option<f64>,
 }
 
 impl EncodingJob {
@@ -57,6 +59,8 @@ impl EncodingJob {
             crf: None,
             source_size,
             output_size: None,
+            source_deleted: false,
+            source_kept_vmaf: None,
         }
     }
 
@@ -112,8 +116,8 @@ impl EncodingJob {
 
 /// Check if a path is a video file
 pub fn is_video_file(path: &Path) -> bool {
-    const VIDEO_EXTENSIONS: [&str; 9] = [
-        "mp4", "mkv", "avi", "mov", "webm", "m4v", "ts", "wmv", "flv",
+    const VIDEO_EXTENSIONS: [&str; 10] = [
+        "mp4", "mkv", "avi", "mov", "webm", "m4v", "ts", "m2ts", "wmv", "flv",
     ];
 
     path.extension()

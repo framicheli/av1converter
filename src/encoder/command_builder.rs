@@ -29,7 +29,7 @@ impl EncodingParams {
         crf_override: Option<u8>,
     ) -> Self {
         let tier = ResolutionTier::from_dimensions(metadata.width, metadata.height);
-        let preset = config.preset_for(&tier, metadata.hdr_type.is_hdr());
+        let preset = config.preset_for(&tier, metadata.hdr_type);
 
         let crf = crf_override.unwrap_or(match config.encoder {
             Encoder::SvtAv1 => preset.crf,
@@ -81,8 +81,9 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     // Video encoder
     args.extend(["-c:v".to_string(), params.encoder.ffmpeg_name().to_string()]);
 
-    // 10-bit pixel format
-    args.extend(["-pix_fmt".to_string(), "yuv420p10le".to_string()]);
+    // Build video filter chain (explicit filter graph is more robust than -pix_fmt auto-insertion)
+    let vf = build_video_filter(params.hdr_type);
+    args.extend(["-vf".to_string(), vf]);
 
     // Explicit frame rate preservation
     if params.frame_rate_num > 0 && params.frame_rate_den > 0 {
@@ -103,9 +104,9 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     // Encoder-specific quality parameters
     args.extend(get_quality_params(params));
 
-    // HDR/color parameters
+    // HDR/color parameters (metadata only, filter is handled above)
     match params.hdr_type {
-        HdrType::DolbyVision => args.extend(get_dolby_vision_params()),
+        HdrType::DolbyVision => args.extend(get_dolby_vision_color_params()),
         HdrType::Pq => args.extend(get_pq_params()),
         HdrType::Hlg => args.extend(get_hlg_params()),
         HdrType::Sdr => {}
@@ -216,10 +217,22 @@ fn get_hlg_params() -> Vec<String> {
     ]
 }
 
-fn get_dolby_vision_params() -> Vec<String> {
+/// Build the video filter chain for format conversion and HDR metadata
+fn build_video_filter(hdr_type: HdrType) -> String {
+    let mut filters = vec!["format=yuv420p10le".to_string()];
+
+    if hdr_type == HdrType::DolbyVision {
+        filters.push(
+            "setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084".to_string(),
+        );
+    }
+
+    filters.join(",")
+}
+
+/// Dolby Vision color metadata parameters (filter is handled in build_video_filter)
+fn get_dolby_vision_color_params() -> Vec<String> {
     vec![
-        "-vf".to_string(),
-        "setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084".to_string(),
         "-color_primaries".to_string(),
         "bt2020".to_string(),
         "-color_trc".to_string(),
