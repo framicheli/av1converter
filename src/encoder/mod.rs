@@ -100,7 +100,7 @@ fn run_vmaf_check(
         }
         Err(e) => {
             warn!(
-                "VMAF calculation failed: {}. Reporting success without score.",
+                "VMAF calculation failed: {:?}. Reporting success without score.",
                 e
             );
             FullEncodeResult::Success

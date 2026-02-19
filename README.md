@@ -13,11 +13,6 @@ A simple tool to convert videos into the AV1 video codec using FFMPEG
 | 4K         | Yes | No           | **4K HDR**      | vmaf_v0.6.1neg     |
 | 4K         | Yes | Yes          | **4K DV**       | vmaf_v0.6.1neg     |
 
-> **Note:** Dolby Vision content uses dedicated encoding presets with lower CRF values
-> to preserve DV grading quality. HDR and DV content use the `vmaf_v0.6.1neg` model
-> which is trained for HDR content, providing more accurate VMAF scores than the
-> default SDR model.
-
 ## Prerequisites
 
 - ffprobe

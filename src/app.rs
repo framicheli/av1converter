@@ -369,14 +369,11 @@ impl App {
         self.queue.jobs.clear();
 
         if recursive {
-            for entry in walkdir::WalkDir::new(folder)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
-                let path = entry.path().to_path_buf();
-                if is_video_file(&path) {
-                    self.queue.jobs.push(EncodingJob::new(path));
-                }
+            let mut paths: Vec<PathBuf> = Vec::new();
+            collect_video_files(folder, &mut paths);
+            paths.sort();
+            for path in paths {
+                self.queue.jobs.push(EncodingJob::new(path));
             }
         } else if let Ok(entries) = std::fs::read_dir(folder) {
             let mut paths: Vec<PathBuf> = entries
@@ -639,5 +636,19 @@ impl App {
         self.selected_files.clear();
         self.progress_receiver = None;
         self.navigate_to_home();
+    }
+}
+
+fn collect_video_files(dir: &PathBuf, paths: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_video_files(&path, paths);
+        } else if is_video_file(&path) {
+            paths.push(path);
+        }
     }
 }

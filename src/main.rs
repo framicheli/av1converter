@@ -10,7 +10,6 @@ mod utils;
 mod verifier;
 
 use app::{App, ConfirmAction, Screen, TrackFocus};
-use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
@@ -20,23 +19,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
 use std::time::Duration;
 
-/// AV1 Video Converter - Convert videos to AV1 codec
-#[derive(Parser)]
-#[command(version, about)]
-struct Cli {
-    /// Show the config file path and exit
-    #[arg(long)]
-    config: bool,
-}
-
 fn main() -> io::Result<()> {
-    let cli = Cli::parse();
-
-    if cli.config {
-        println!("{}", config::AppConfig::config_path().display());
-        return Ok(());
-    }
-
     let _log_guard = utils::init_logging();
 
     // Setup terminal
@@ -350,7 +333,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Char('s') => {
             if let Err(e) = app.config.save() {
-                tracing::warn!("Failed to save config: {}", e);
+                tracing::warn!("Failed to save config: {:?}", e);
             }
         }
         _ => {}

@@ -52,7 +52,7 @@ impl AppConfig {
                     return config;
                 }
                 Err(e) => {
-                    warn!("Failed to load config: {}. Using defaults.", e);
+                    warn!("Failed to load config: {:?}. Using defaults.", e);
                 }
             }
         }
@@ -60,7 +60,7 @@ impl AppConfig {
         let config = Self::default();
         // Save default config for future editing
         if let Err(e) = config.save() {
-            warn!("Failed to save default config: {}", e);
+            warn!("Failed to save default config: {:?}", e);
         }
         config
     }
@@ -93,7 +93,10 @@ impl AppConfig {
 
     /// Get the default configuration file path
     pub fn config_path() -> PathBuf {
-        dirs::config_dir()
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("."))
             .join("av1converter")
             .join("config.toml")
