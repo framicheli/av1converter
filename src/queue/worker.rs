@@ -36,7 +36,6 @@ pub struct WorkerJob {
     pub output: PathBuf,
     pub metadata: VideoMetadata,
     pub tracks: TrackSelection,
-    pub delete_source: bool,
 }
 
 /// Run the encoding worker in a separate thread
@@ -79,9 +78,7 @@ pub fn run_worker(
             FullEncodeResult::SuccessWithVmaf(vmaf) => {
                 let score = vmaf.score;
                 let _ = tx.send(WorkerMessage::DoneWithVmaf(job.index, score));
-                if job.delete_source {
-                    try_delete_source(&tx, job.index, &job.input, score);
-                }
+                try_delete_source(&tx, job.index, &job.input, score);
             }
             FullEncodeResult::Cancelled => {
                 let _ = tx.send(WorkerMessage::Cancelled);
@@ -93,9 +90,7 @@ pub fn run_worker(
             FullEncodeResult::QualityWarning { vmaf, threshold } => {
                 let score = vmaf.score;
                 let _ = tx.send(WorkerMessage::QualityWarning(job.index, score, threshold));
-                if job.delete_source {
-                    try_delete_source(&tx, job.index, &job.input, score);
-                }
+                try_delete_source(&tx, job.index, &job.input, score);
             }
         }
     }

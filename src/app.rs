@@ -81,8 +81,6 @@ pub struct App {
     pub encoding_active: bool,
     pub progress_receiver: Option<Receiver<WorkerMessage>>,
     pub cancel_flag: Arc<AtomicBool>,
-    pub delete_source: bool,
-
     // Configuration
     pub config: AppConfig,
     pub deps: bool,
@@ -140,7 +138,6 @@ impl App {
             encoding_active: false,
             progress_receiver: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
-            delete_source: false,
             config,
             deps,
             message: None,
@@ -491,7 +488,6 @@ impl App {
         self.progress_receiver = Some(rx);
 
         // Collect jobs to encode
-        let delete_source = self.delete_source;
         let worker_jobs: Vec<WorkerJob> = self
             .queue
             .jobs
@@ -506,7 +502,6 @@ impl App {
                     output: j.output_path.clone().unwrap_or_else(|| j.path.clone()),
                     metadata,
                     tracks: j.track_selection.clone(),
-                    delete_source,
                 })
             })
             .collect();
@@ -632,7 +627,6 @@ impl App {
     pub fn reset(&mut self) {
         self.queue.reset();
         self.encoding_active = false;
-        self.delete_source = false;
         self.selected_files.clear();
         self.progress_receiver = None;
         self.navigate_to_home();
