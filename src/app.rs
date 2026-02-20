@@ -326,7 +326,7 @@ impl App {
                     self.enter_directory();
                 } else if is_video_file(&selected) {
                     if self.selected_files.is_empty() {
-                        // Single file — proceed directly (backward compatible)
+                        // Single file
                         self.queue.jobs.clear();
                         self.queue.jobs.push(EncodingJob::new(selected));
                         self.analyze_jobs();

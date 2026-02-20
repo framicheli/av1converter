@@ -60,7 +60,7 @@ pub fn run_encoding_pipeline(
             } else {
                 None
             };
-            run_vmaf_check(input, output, vmaf_threshold, metadata.hdr_type)
+            run_vmaf_check(input, output, vmaf_threshold, metadata.hdr_type, metadata.width)
         }
         EncodeResult::Cancelled => FullEncodeResult::Cancelled,
         EncodeResult::Error(e) => FullEncodeResult::Error(e),
@@ -73,6 +73,7 @@ fn run_vmaf_check(
     output: &str,
     threshold: Option<f64>,
     hdr_type: HdrType,
+    width: u32,
 ) -> FullEncodeResult {
     let threshold = match threshold {
         Some(t) => t,
@@ -84,7 +85,7 @@ fn run_vmaf_check(
     let input_path = std::path::Path::new(input);
     let output_path = std::path::Path::new(output);
 
-    match verifier::calculate_vmaf(input_path, output_path, hdr_type) {
+    match verifier::calculate_vmaf(input_path, output_path, hdr_type, width) {
         Ok(vmaf) => {
             info!("VMAF score: {:.2} ({})", vmaf.score, vmaf.quality_grade());
 
