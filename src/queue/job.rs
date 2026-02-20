@@ -122,6 +122,6 @@ pub fn is_video_file(path: &Path) -> bool {
 
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| VIDEO_EXTENSIONS.contains(&e.to_lowercase().as_str()))
+        .map(|e| VIDEO_EXTENSIONS.iter().any(|&ext| ext.eq_ignore_ascii_case(e)))
         .unwrap_or(false)
 }

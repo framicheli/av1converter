@@ -8,11 +8,11 @@ pub struct QueueState {
     pub current_job_index: usize,
     pub config_job_index: usize,
     pub start_time: Option<Instant>,
+    pub end_time: Option<Instant>,
     pub total_jobs_to_encode: usize,
     pub converted_count: usize,
     pub skipped_count: usize,
     pub error_count: usize,
-    /// Number of jobs that have finished the encoding phase (success or error)
     pub encoding_progress_done: usize,
 }
 
@@ -23,6 +23,7 @@ impl QueueState {
             current_job_index: 0,
             config_job_index: 0,
             start_time: None,
+            end_time: None,
             total_jobs_to_encode: 0,
             converted_count: 0,
             skipped_count: 0,
@@ -32,7 +33,11 @@ impl QueueState {
     }
 
     pub fn elapsed_time(&self) -> Option<Duration> {
-        self.start_time.map(|start| start.elapsed())
+        self.start_time.map(|start| {
+            self.end_time
+                .map(|end| end.duration_since(start))
+                .unwrap_or_else(|| start.elapsed())
+        })
     }
 
     pub fn overall_progress(&self) -> f32 {
@@ -116,6 +121,7 @@ impl QueueState {
         self.current_job_index = 0;
         self.config_job_index = 0;
         self.start_time = None;
+        self.end_time = None;
         self.total_jobs_to_encode = 0;
         self.converted_count = 0;
         self.skipped_count = 0;

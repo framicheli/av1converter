@@ -26,17 +26,16 @@ impl EncodingParams {
         metadata: &VideoMetadata,
         config: &AppConfig,
         tracks: TrackSelection,
-        crf_override: Option<u8>,
     ) -> Self {
         let tier = ResolutionTier::from_dimensions(metadata.width, metadata.height);
         let preset = config.preset_for(&tier, metadata.hdr_type);
 
-        let crf = crf_override.unwrap_or(match config.encoder {
+        let crf = match config.encoder {
             Encoder::SvtAv1 => preset.crf,
             Encoder::Nvenc => preset.nvenc_cq,
             Encoder::Qsv => preset.qsv_quality,
             Encoder::Amf => preset.amf_quality,
-        });
+        };
 
         Self {
             input: input.to_string(),

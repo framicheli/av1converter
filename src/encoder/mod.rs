@@ -17,8 +17,11 @@ use tracing::{info, warn};
 pub enum FullEncodeResult {
     /// Encoding completed successfully
     Success,
-    /// Encoding completed with VMAF score
-    SuccessWithVmaf(verifier::VmafResult),
+    /// Encoding completed with VMAF score and source deleted if score > threshold
+    SuccessWithVmaf {
+        vmaf: verifier::VmafResult,
+        source_deleted: bool,
+    },
     /// Encoding was cancelled
     Cancelled,
     /// Encoding failed
@@ -41,26 +44,48 @@ pub fn run_encoding_pipeline(
     progress_callback: Option<ProgressCallback>,
     cancel_flag: Arc<AtomicBool>,
 ) -> FullEncodeResult {
-    // Step 1: CRF
-    let crf_override = None;
-
-    // Step 2: Build encoding parameters
-    let params =
-        EncodingParams::from_metadata(input, output, metadata, config, tracks, crf_override);
+    // Encoding parameters
+    let params = EncodingParams::from_metadata(input, output, metadata, config, tracks);
     let duration = metadata.duration_secs;
 
-    // Step 3: Encode
+    // Encode
     let encode_result = encode_video(&params, progress_callback, cancel_flag, duration);
 
     match encode_result {
         EncodeResult::Success => {
-            // Step 4: Verify
+            // Verify
             let vmaf_threshold = if config.quality.vmaf_enabled {
                 Some(config.quality.vmaf_threshold)
             } else {
                 None
             };
-            run_vmaf_check(input, output, vmaf_threshold, metadata.hdr_type, metadata.width)
+            let result = run_vmaf_check(
+                input,
+                output,
+                vmaf_threshold,
+                metadata.hdr_type,
+                metadata.width,
+            );
+
+            // Delete source after VMAF passes
+            if let FullEncodeResult::SuccessWithVmaf { ref vmaf, .. } = result {
+                let source_deleted = match std::fs::remove_file(input) {
+                    Ok(()) => {
+                        info!("Deleted source file: {} (VMAF: {:.1})", input, vmaf.score);
+                        true
+                    }
+                    Err(e) => {
+                        warn!("Failed to delete source file {}: {}", input, e);
+                        false
+                    }
+                };
+                return FullEncodeResult::SuccessWithVmaf {
+                    vmaf: vmaf.clone(),
+                    source_deleted,
+                };
+            }
+
+            result
         }
         EncodeResult::Cancelled => FullEncodeResult::Cancelled,
         EncodeResult::Error(e) => FullEncodeResult::Error(e),
@@ -97,7 +122,10 @@ fn run_vmaf_check(
                 return FullEncodeResult::QualityWarning { vmaf, threshold };
             }
 
-            FullEncodeResult::SuccessWithVmaf(vmaf)
+            FullEncodeResult::SuccessWithVmaf {
+                vmaf,
+                source_deleted: false,
+            }
         }
         Err(e) => {
             warn!(
