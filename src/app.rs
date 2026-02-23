@@ -13,7 +13,7 @@ use std::thread;
 use tracing::info;
 
 /// Application screens
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Screen {
     Home,
     FileExplorer { select_folder: bool },
@@ -46,6 +46,14 @@ pub enum ConfirmAction {
     ExitApp,
 }
 
+pub const HOME_MENU: &[&str] = &[
+    "Open Video File",
+    "Open Folder",
+    "Open Folder (Recursive)",
+    "Configuration",
+    "Quit",
+];
+
 /// Main application state
 pub struct App {
     pub current_screen: Screen,
@@ -71,7 +79,6 @@ pub struct App {
 
     // Home menu
     pub home_index: usize,
-    pub home_menu_count: usize,
 
     // Multi-file selection
     pub selected_files: Vec<PathBuf>,
@@ -132,7 +139,6 @@ impl App {
             audio_list_state,
             subtitle_list_state,
             home_index: 0,
-            home_menu_count: 5,
             selected_files: Vec::new(),
             file_confirm_scroll: 0,
             encoding_active: false,
@@ -326,7 +332,7 @@ impl App {
                     self.enter_directory();
                 } else if is_video_file(&selected) {
                     if self.selected_files.is_empty() {
-                        // Single file — proceed directly (backward compatible)
+                        // Single file
                         self.queue.jobs.clear();
                         self.queue.jobs.push(EncodingJob::new(selected));
                         self.analyze_jobs();
@@ -393,8 +399,35 @@ impl App {
 
         for job in &mut self.queue.jobs {
             job.status = JobStatus::Analyzing;
+        }
 
-            match analyzer::analyze(job.path.to_str().unwrap_or("")) {
+        let paths: Vec<String> = self
+            .queue
+            .jobs
+            .iter()
+            .map(|j| j.path.to_str().unwrap_or("").to_string())
+            .collect();
+
+        // Analyze all files
+        let results: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = paths
+                .iter()
+                .map(|p| s.spawn(|| analyzer::analyze(p.as_str())))
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join().unwrap_or_else(|_| {
+                        Err(crate::error::AppError::Analysis(
+                            "Analysis thread panicked".to_string(),
+                        ))
+                    })
+                })
+                .collect()
+        });
+
+        for (job, result) in self.queue.jobs.iter_mut().zip(results) {
+            match result {
                 Ok(analysis) => {
                     // Check if already AV1 - skip
                     if is_av1_codec(&analysis.metadata.codec_name) {
@@ -402,15 +435,14 @@ impl App {
                             reason: "Already AV1".to_string(),
                         };
                         self.queue.skipped_count += 1;
-                        continue;
+                    } else {
+                        job.metadata = Some(analysis.metadata);
+                        job.audio_tracks = analysis.audio_tracks;
+                        job.subtitle_tracks = analysis.subtitle_tracks;
+                        job.select_all_tracks();
+                        job.generate_output_path(&suffix, &container);
+                        job.status = JobStatus::AwaitingConfig;
                     }
-
-                    job.metadata = Some(analysis.metadata);
-                    job.audio_tracks = analysis.audio_tracks;
-                    job.subtitle_tracks = analysis.subtitle_tracks;
-                    job.select_all_tracks();
-                    job.generate_output_path(&suffix, &container);
-                    job.status = JobStatus::AwaitingConfig;
                 }
                 Err(e) => {
                     job.status = JobStatus::Error {
@@ -620,6 +652,7 @@ impl App {
         }
 
         if should_finish {
+            self.queue.end_time = Some(std::time::Instant::now());
             self.navigate_to_finish();
         }
     }

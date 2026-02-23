@@ -53,26 +53,22 @@ pub fn calculate_vmaf(
     original: &Path,
     encoded: &Path,
     hdr_type: HdrType,
+    width: u32,
 ) -> Result<VmafResult, AppError> {
     let json_output = std::env::temp_dir().join(format!("vmaf_result_{}.json", std::process::id()));
 
-    // Use vmaf_v0.6.1neg for HDR/DV content (trained on HDR), default model for SDR
-    let model_suffix = if hdr_type.is_hdr() {
-        ":model='version=vmaf_v0.6.1neg'"
+    let (model_suffix, model_name) = if width >= 3840 {
+        (":model='version=vmaf_4k_v0.6.1'", "vmaf_4k_v0.6.1")
+    } else if hdr_type.is_hdr() {
+        (":model='version=vmaf_v0.6.1neg'", "vmaf_v0.6.1neg")
     } else {
-        ""
-    };
-
-    let model_name = if hdr_type.is_hdr() {
-        "vmaf_v0.6.1neg"
-    } else {
-        "vmaf_v0.6.1 (default)"
+        ("", "vmaf_v0.6.1 (default)")
     };
 
     // VMAF filter with quick settings (subsample=10 for speed)
     let filter = format!(
-        "[0:v]format=yuv420p,setpts=PTS-STARTPTS[ref];\
-         [1:v]format=yuv420p,setpts=PTS-STARTPTS[dist];\
+        "[0:v]format=yuv420p10le,setpts=PTS-STARTPTS[ref];\
+         [1:v]format=yuv420p10le,setpts=PTS-STARTPTS[dist];\
          [ref][dist]libvmaf=log_path={}:log_fmt=json:n_threads=4:n_subsample=10{}",
         json_output.to_string_lossy(),
         model_suffix

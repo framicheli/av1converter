@@ -6,8 +6,7 @@ pub fn init_logging() -> Option<WorkerGuard> {
         let log_dir = std::env::var_os("XDG_DATA_HOME")
             .map(std::path::PathBuf::from)
             .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|h| std::path::PathBuf::from(h).join(".local/share"))
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share"))
             })
             .or_else(|| std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from))
             .unwrap_or_else(|| std::path::PathBuf::from("."))

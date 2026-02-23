@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Messages sent from the worker thread to the main thread
 pub enum WorkerMessage {
@@ -75,10 +75,15 @@ pub fn run_worker(
             FullEncodeResult::Success => {
                 let _ = tx.send(WorkerMessage::Done(job.index));
             }
-            FullEncodeResult::SuccessWithVmaf(vmaf) => {
+            FullEncodeResult::SuccessWithVmaf {
+                vmaf,
+                source_deleted,
+            } => {
                 let score = vmaf.score;
+                if source_deleted {
+                    let _ = tx.send(WorkerMessage::SourceDeleted(job.index));
+                }
                 let _ = tx.send(WorkerMessage::DoneWithVmaf(job.index, score));
-                try_delete_source(&tx, job.index, &job.input, score);
             }
             FullEncodeResult::Cancelled => {
                 let _ = tx.send(WorkerMessage::Cancelled);
@@ -89,42 +94,15 @@ pub fn run_worker(
             }
             FullEncodeResult::QualityWarning { vmaf, threshold } => {
                 let score = vmaf.score;
-                let _ = tx.send(WorkerMessage::QualityWarning(job.index, score, threshold));
-                try_delete_source(&tx, job.index, &job.input, score);
-            }
-        }
-    }
-}
-
-const DELETE_VMAF_THRESHOLD: f64 = 90.0;
-
-/// Attempt to delete the source file if VMAF score meets the deletion threshold
-fn try_delete_source(tx: &Sender<WorkerMessage>, index: usize, source: &PathBuf, vmaf_score: f64) {
-    if vmaf_score >= DELETE_VMAF_THRESHOLD {
-        match std::fs::remove_file(source) {
-            Ok(()) => {
                 info!(
-                    "Deleted source file: {} (VMAF: {:.1})",
-                    source.display(),
-                    vmaf_score
+                    "Source file kept: {} (VMAF {:.1} < {:.0})",
+                    job.input.display(),
+                    score,
+                    threshold
                 );
-                let _ = tx.send(WorkerMessage::SourceDeleted(index));
-            }
-            Err(e) => {
-                warn!("Failed to delete source file {}: {}", source.display(), e);
-                let _ = tx.send(WorkerMessage::Error(
-                    index,
-                    format!("Failed to delete source: {}", e),
-                ));
+                let _ = tx.send(WorkerMessage::SourceKeptLowVmaf(job.index, score));
+                let _ = tx.send(WorkerMessage::QualityWarning(job.index, score, threshold));
             }
         }
-    } else {
-        info!(
-            "Source file kept: {} (VMAF {:.1} < {:.0})",
-            source.display(),
-            vmaf_score,
-            DELETE_VMAF_THRESHOLD
-        );
-        let _ = tx.send(WorkerMessage::SourceKeptLowVmaf(index, vmaf_score));
     }
 }
