@@ -88,6 +88,14 @@ jobs:
                       echo "name=v$VERSION" >> $GITHUB_OUTPUT
                   fi
 
+            - name: Create and push tag
+              if: github.ref_type != 'tag'
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git tag ${{ steps.tag.outputs.name }}
+                  git push origin ${{ steps.tag.outputs.name }}
+
             - name: Create GitHub Release
               uses: softprops/action-gh-release@v2
               with:
