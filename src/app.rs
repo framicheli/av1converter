@@ -13,7 +13,7 @@ use std::thread;
 use tracing::info;
 
 /// Application screens
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Screen {
     Home,
     FileExplorer { select_folder: bool },
@@ -46,6 +46,14 @@ pub enum ConfirmAction {
     ExitApp,
 }
 
+pub const HOME_MENU: &[&str] = &[
+    "Open Video File",
+    "Open Folder",
+    "Open Folder (Recursive)",
+    "Configuration",
+    "Quit",
+];
+
 /// Main application state
 pub struct App {
     pub current_screen: Screen,
@@ -71,7 +79,6 @@ pub struct App {
 
     // Home menu
     pub home_index: usize,
-    pub home_menu_count: usize,
 
     // Multi-file selection
     pub selected_files: Vec<PathBuf>,
@@ -132,7 +139,6 @@ impl App {
             audio_list_state,
             subtitle_list_state,
             home_index: 0,
-            home_menu_count: 5,
             selected_files: Vec::new(),
             file_confirm_scroll: 0,
             encoding_active: false,

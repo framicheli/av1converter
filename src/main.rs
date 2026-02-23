@@ -19,6 +19,8 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
 use std::time::Duration;
 
+use crate::app::HOME_MENU;
+
 fn main() -> io::Result<()> {
     let _log_guard = utils::init_logging();
 
@@ -147,7 +149,7 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if app.home_index < app.home_menu_count - 1 {
+            if app.home_index < HOME_MENU.len() - 1 {
                 app.home_index += 1;
             }
         }
