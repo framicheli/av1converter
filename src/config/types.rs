@@ -7,6 +7,9 @@ pub struct QualityConfig {
     pub vmaf_threshold: f64,
     /// Whether to run VMAF after encoding
     pub vmaf_enabled: bool,
+    /// Delete source file after encoding when VMAF score meets threshold
+    #[serde(default)]
+    pub delete_source_on_success: bool,
 }
 
 impl Default for QualityConfig {
@@ -14,6 +17,7 @@ impl Default for QualityConfig {
         Self {
             vmaf_threshold: 90.0,
             vmaf_enabled: true,
+            delete_source_on_success: false,
         }
     }
 }

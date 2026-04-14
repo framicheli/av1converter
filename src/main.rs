@@ -54,9 +54,10 @@ fn main() -> io::Result<()> {
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
     loop {
         app.process_progress_messages();
+        app.process_analysis_messages();
 
         terminal.draw(|f| {
-            match app.current_screen.clone() {
+            match app.current_screen {
                 Screen::Home => ui::render_home(f, app),
                 Screen::FileExplorer { .. } => ui::render_explorer(f, app),
                 Screen::FileConfirm => ui::render_file_confirm(f, app),
@@ -287,11 +288,14 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
 
 fn handle_queue_key(app: &mut App, key: KeyCode) {
     match key {
+        KeyCode::Esc if app.analyzing => {
+            app.cancel_analysis();
+        }
         KeyCode::Esc if app.encoding_active => {
             app.confirm_dialog = Some(ConfirmAction::CancelEncoding);
             app.confirm_selection = false;
         }
-        KeyCode::Enter if !app.encoding_active => {
+        KeyCode::Enter if !app.encoding_active && !app.analyzing => {
             app.navigate_to_finish();
         }
         _ => {}
@@ -310,7 +314,23 @@ fn handle_finish_key(app: &mut App, key: KeyCode) {
 }
 
 fn handle_config_key(app: &mut App, key: KeyCode) {
-    let config_item_count = 10; // Number of config items
+    if app.config_editing {
+        match key {
+            KeyCode::Enter => commit_config_edit(app),
+            KeyCode::Esc => {
+                app.config_editing = false;
+                app.config_input_buffer.clear();
+            }
+            KeyCode::Backspace => {
+                app.config_input_buffer.pop();
+            }
+            KeyCode::Char(c) => app.config_input_buffer.push(c),
+            _ => {}
+        }
+        return;
+    }
+
+    let config_item_count = crate::ui::config_screen::CONFIG_ITEMS.len();
 
     match key {
         KeyCode::Esc => app.navigate_to_home(),
@@ -330,6 +350,16 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         KeyCode::Right | KeyCode::Char('l') => {
             adjust_config_value(app, app.config_selected, true);
         }
+        KeyCode::Enter => {
+            use crate::ui::config_screen::{CONFIG_ITEMS, ConfigItemKind};
+            if CONFIG_ITEMS
+                .get(app.config_selected)
+                .map(|item| item.kind == ConfigItemKind::Text)
+                .unwrap_or(false)
+            {
+                start_config_edit(app);
+            }
+        }
         KeyCode::Char('s') => {
             if let Err(e) = app.config.save() {
                 tracing::warn!("Failed to save config: {:?}", e);
@@ -337,6 +367,44 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         }
         _ => {}
     }
+}
+
+/// Begin editing the currently selected text-editable config field.
+fn start_config_edit(app: &mut App) {
+    app.config_input_buffer = match app.config_selected {
+        6 => app.config.output.suffix.clone(),
+        7 => app.config.output.container.clone(),
+        9 => app.config.tracks.preferred_audio_languages.join(", "),
+        10 => app.config.tracks.preferred_subtitle_languages.join(", "),
+        _ => return,
+    };
+    app.config_editing = true;
+}
+
+/// Write the edit buffer back to the appropriate config field.
+fn commit_config_edit(app: &mut App) {
+    let value = app.config_input_buffer.trim().to_string();
+    match app.config_selected {
+        6 => app.config.output.suffix = value,
+        7 => app.config.output.container = value,
+        9 => {
+            app.config.tracks.preferred_audio_languages = value
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        10 => {
+            app.config.tracks.preferred_subtitle_languages = value
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        _ => {}
+    }
+    app.config_editing = false;
+    app.config_input_buffer.clear();
 }
 
 fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
@@ -367,12 +435,17 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             app.config.quality.vmaf_enabled = !app.config.quality.vmaf_enabled;
         }
         3 => {
+            // Delete Source on Success
+            app.config.quality.delete_source_on_success =
+                !app.config.quality.delete_source_on_success;
+        }
+        4 => {
             // SVT-AV1 Preset
             let delta: i8 = if increase { 1 } else { -1 };
             let new_val = app.config.performance.svt_preset as i8 + delta;
             app.config.performance.svt_preset = new_val.clamp(0, 13) as u8;
         }
-        4 => {
+        5 => {
             // NVENC Preset - cycle
             let presets = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
             let current = presets
@@ -386,10 +459,10 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             };
             app.config.performance.nvenc_preset = presets[next].to_string();
         }
-        7 => {
+        8 => {
             // Same Directory Output
             app.config.output.same_directory = !app.config.output.same_directory;
         }
-        _ => {} // String fields not adjustable via arrow keys
+        _ => {} // Text-editable fields handled via Enter
     }
 }

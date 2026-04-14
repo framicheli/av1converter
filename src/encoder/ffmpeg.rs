@@ -3,9 +3,11 @@ use std::fs::File;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
+
+static JOB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Progress callback type
 pub type ProgressCallback = Box<dyn FnMut(f32) + Send>;
@@ -30,9 +32,11 @@ pub fn encode_video(
 ) -> EncodeResult {
     let args = build_ffmpeg_args(params);
 
+    let uid = JOB_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tag = format!("{}_{}", std::process::id(), uid);
+
     // Create progress file
-    let progress_file =
-        std::env::temp_dir().join(format!("ffmpeg_progress_{}", std::process::id()));
+    let progress_file = std::env::temp_dir().join(format!("av1c_progress_{}.txt", tag));
     if File::create(&progress_file).is_err() {
         return EncodeResult::Error("Failed to create progress file".to_string());
     }
@@ -43,7 +47,7 @@ pub fn encode_video(
     args.insert(3, progress_file.to_string_lossy().to_string());
 
     // Redirect stderr to a temp file to avoid pipe buffer deadlock
-    let stderr_path = std::env::temp_dir().join(format!("ffmpeg_stderr_{}", std::process::id()));
+    let stderr_path = std::env::temp_dir().join(format!("av1c_stderr_{}.txt", tag));
     let stderr_file = match File::create(&stderr_path) {
         Ok(f) => f,
         Err(e) => {

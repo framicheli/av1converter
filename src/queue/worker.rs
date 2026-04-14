@@ -10,12 +10,16 @@ use tracing::info;
 
 /// Messages sent from the worker thread to the main thread
 pub enum WorkerMessage {
-    /// Progress update for a file
+    /// Progress update for a file (index, percent 0–100)
     Progress(usize, f32),
-    /// Encoding completed successfully
+    /// VMAF quality check is starting for this job
+    Verifying(usize),
+    /// Encoding completed successfully (no VMAF run)
     Done(usize),
-    /// Encoding completed with VMAF score
+    /// Encoding completed with VMAF score meeting threshold
     DoneWithVmaf(usize, f64),
+    /// Encoding succeeded but VMAF check could not run
+    DoneVmafFailed(usize, String),
     /// Error occurred
     Error(usize, String),
     /// Quality below threshold
@@ -24,7 +28,7 @@ pub enum WorkerMessage {
     Cancelled,
     /// Source file was deleted after successful encoding
     SourceDeleted(usize),
-    /// Source file was kept because VMAF was below 90
+    /// Source file was kept because VMAF was below the configured threshold
     SourceKeptLowVmaf(usize, f64),
 }
 
@@ -59,6 +63,9 @@ pub fn run_worker(
         let input_str = job.input.to_str().unwrap_or("").to_string();
         let output_str = job.output.to_str().unwrap_or("").to_string();
 
+        let tx_verifying = tx.clone();
+        let verifying_idx = job.index;
+
         let result = encoder::run_encoding_pipeline(
             &input_str,
             &output_str,
@@ -69,6 +76,9 @@ pub fn run_worker(
                 let _ = tx_progress.send(WorkerMessage::Progress(idx, progress));
             })),
             cancel_flag.clone(),
+            Some(Box::new(move || {
+                let _ = tx_verifying.send(WorkerMessage::Verifying(verifying_idx));
+            })),
         );
 
         match result {
@@ -84,6 +94,9 @@ pub fn run_worker(
                     let _ = tx.send(WorkerMessage::SourceDeleted(job.index));
                 }
                 let _ = tx.send(WorkerMessage::DoneWithVmaf(job.index, score));
+            }
+            FullEncodeResult::VmafFailed { message } => {
+                let _ = tx.send(WorkerMessage::DoneVmafFailed(job.index, message));
             }
             FullEncodeResult::Cancelled => {
                 let _ = tx.send(WorkerMessage::Cancelled);

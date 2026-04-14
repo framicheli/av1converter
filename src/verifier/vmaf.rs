@@ -3,7 +3,10 @@ use crate::error::AppError;
 use serde::Deserialize;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::info;
+
+static VMAF_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// VMAF quality result
 #[derive(Debug, Clone)]
@@ -55,9 +58,13 @@ pub fn calculate_vmaf(
     hdr_type: HdrType,
     width: u32,
 ) -> Result<VmafResult, AppError> {
-    let json_output = std::env::temp_dir().join(format!("vmaf_result_{}.json", std::process::id()));
+    let uid = VMAF_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let json_output =
+        std::env::temp_dir().join(format!("av1c_vmaf_{}_{}.json", std::process::id(), uid));
 
-    let (model_suffix, model_name) = if width >= 3840 {
+    let (model_suffix, model_name) = if width >= 3840 && hdr_type.is_hdr() {
+        (":model='version=vmaf_4k_v0.6.1neg'", "vmaf_4k_v0.6.1neg")
+    } else if width >= 3840 {
         (":model='version=vmaf_4k_v0.6.1'", "vmaf_4k_v0.6.1")
     } else if hdr_type.is_hdr() {
         (":model='version=vmaf_v0.6.1neg'", "vmaf_v0.6.1neg")

@@ -25,7 +25,16 @@ pub fn render_queue(f: &mut Frame, app: &App) {
     // Title with progress header
     let total_to_encode = app.queue.total_jobs_to_encode;
 
-    let title_text = if app.encoding_active {
+    let title_text = if app.analyzing {
+        let analyzed = app
+            .queue
+            .jobs
+            .iter()
+            .filter(|j| !matches!(j.status, JobStatus::Analyzing))
+            .count();
+        let total = app.queue.jobs.len();
+        format!("Analyzing Files... ({}/{})", analyzed, total)
+    } else if app.encoding_active {
         if let Some(job) = app.queue.jobs.get(app.queue.current_job_index) {
             if matches!(job.status, JobStatus::Encoding { .. }) {
                 let current_number = (app.queue.encoding_progress_done + 1).min(total_to_encode);
@@ -141,7 +150,7 @@ pub fn render_queue(f: &mut Frame, app: &App) {
     }
 
     // Help
-    let help_text = if app.encoding_active {
+    let help_text = if app.analyzing || app.encoding_active {
         Line::from(vec![
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" Cancel"),
@@ -186,8 +195,20 @@ fn create_queue_item(
             ListItem::new(format!("  ▶ {} {:.1}%{}", name, progress, crf_str))
                 .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod))
         }
+        JobStatus::Verifying => ListItem::new(format!("  ◈ {} Verifying quality...", name))
+            .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod)),
         JobStatus::Done => ListItem::new(format!("  ✓ {} Done", name))
             .style(Style::default().fg(Color::Green).add_modifier(bold_mod)),
+        JobStatus::DoneVmafFailed { reason } => ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("  ✓ {} Done ", name),
+                Style::default().fg(Color::Green).add_modifier(bold_mod),
+            ),
+            Span::styled(
+                format!("(VMAF: {})", reason),
+                Style::default().fg(Color::Yellow).add_modifier(bold_mod),
+            ),
+        ])),
         JobStatus::DoneWithVmaf { score } => {
             let vmaf_color = get_vmaf_color(*score);
             ListItem::new(Line::from(vec![

@@ -15,13 +15,15 @@ use tracing::{info, warn};
 /// Full encoding result including VMAF
 #[derive(Debug)]
 pub enum FullEncodeResult {
-    /// Encoding completed successfully
+    /// Encoding completed successfully (VMAF disabled)
     Success,
-    /// Encoding completed with VMAF score and source deleted if score > threshold
+    /// Encoding completed with VMAF score meeting the threshold
     SuccessWithVmaf {
         vmaf: verifier::VmafResult,
         source_deleted: bool,
     },
+    /// Encoding succeeded but VMAF check could not be run (e.g. libvmaf missing)
+    VmafFailed { message: String },
     /// Encoding was cancelled
     Cancelled,
     /// Encoding failed
@@ -33,7 +35,7 @@ pub enum FullEncodeResult {
     },
 }
 
-/// Orchestrate the full encoding pipeline: CRF search -> encode -> verify
+/// Orchestrate the full encoding pipeline: encode -> verify
 #[allow(clippy::too_many_arguments)]
 pub fn run_encoding_pipeline(
     input: &str,
@@ -43,6 +45,7 @@ pub fn run_encoding_pipeline(
     config: &AppConfig,
     progress_callback: Option<ProgressCallback>,
     cancel_flag: Arc<AtomicBool>,
+    on_before_vmaf: Option<Box<dyn FnOnce() + Send>>,
 ) -> FullEncodeResult {
     // Encoding parameters
     let params = EncodingParams::from_metadata(input, output, metadata, config, tracks);
@@ -53,8 +56,11 @@ pub fn run_encoding_pipeline(
 
     match encode_result {
         EncodeResult::Success => {
-            // Verify
+            // Notify the UI for VMAF verification phase
             let vmaf_threshold = if config.quality.vmaf_enabled {
+                if let Some(cb) = on_before_vmaf {
+                    cb();
+                }
                 Some(config.quality.vmaf_threshold)
             } else {
                 None
@@ -67,8 +73,10 @@ pub fn run_encoding_pipeline(
                 metadata.width,
             );
 
-            // Delete source after VMAF passes
-            if let FullEncodeResult::SuccessWithVmaf { ref vmaf, .. } = result {
+            // Optionally delete source after VMAF passes
+            if config.quality.delete_source_on_success
+                && let FullEncodeResult::SuccessWithVmaf { ref vmaf, .. } = result
+            {
                 let source_deleted = match std::fs::remove_file(input) {
                     Ok(()) => {
                         info!("Deleted source file: {} (VMAF: {:.1})", input, vmaf.score);
@@ -128,11 +136,10 @@ fn run_vmaf_check(
             }
         }
         Err(e) => {
-            warn!(
-                "VMAF calculation failed: {:?}. Reporting success without score.",
-                e
-            );
-            FullEncodeResult::Success
+            warn!("VMAF calculation failed: {:?}", e);
+            FullEncodeResult::VmafFailed {
+                message: e.to_string(),
+            }
         }
     }
 }

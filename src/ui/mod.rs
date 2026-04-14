@@ -1,5 +1,5 @@
 pub mod common;
-mod config_screen;
+pub mod config_screen;
 mod confirm_dialog;
 mod explorer;
 mod file_confirm;

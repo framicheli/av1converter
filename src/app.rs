@@ -1,5 +1,6 @@
-use crate::analyzer::{self, is_av1_codec};
+use crate::analyzer::{self, AnalysisResult, is_av1_codec};
 use crate::config::AppConfig;
+use crate::error::AppError;
 use crate::queue::{
     EncodingJob, JobStatus, QueueState, WorkerJob, WorkerMessage, is_video_file, run_worker,
 };
@@ -88,6 +89,11 @@ pub struct App {
     pub encoding_active: bool,
     pub progress_receiver: Option<Receiver<WorkerMessage>>,
     pub cancel_flag: Arc<AtomicBool>,
+
+    // Background analysis
+    pub analyzing: bool,
+    pub analysis_receiver: Option<Receiver<Vec<Result<AnalysisResult, AppError>>>>,
+
     // Configuration
     pub config: AppConfig,
     pub deps: bool,
@@ -100,6 +106,8 @@ pub struct App {
     // Config screen state
     pub config_scroll: usize,
     pub config_selected: usize,
+    pub config_editing: bool,
+    pub config_input_buffer: String,
 }
 
 impl Default for App {
@@ -110,7 +118,18 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
-        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    if cfg!(windows) {
+                        PathBuf::from("C:\\")
+                    } else {
+                        PathBuf::from("/")
+                    }
+                })
+        });
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         let mut audio_list_state = ListState::default();
@@ -144,6 +163,8 @@ impl App {
             encoding_active: false,
             progress_receiver: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            analyzing: false,
+            analysis_receiver: None,
             config,
             deps,
             message: None,
@@ -151,6 +172,8 @@ impl App {
             confirm_selection: false,
             config_scroll: 0,
             config_selected: 0,
+            config_editing: false,
+            config_input_buffer: String::new(),
         }
     }
 
@@ -368,7 +391,7 @@ impl App {
         }
     }
 
-    pub fn scan_folder(&mut self, folder: &PathBuf, recursive: bool) {
+    pub fn scan_folder(&mut self, folder: &Path, recursive: bool) {
         self.queue.jobs.clear();
 
         if recursive {
@@ -394,9 +417,6 @@ impl App {
     }
 
     fn analyze_jobs(&mut self) {
-        let suffix = self.config.output.suffix.clone();
-        let container = self.config.output.container.clone();
-
         for job in &mut self.queue.jobs {
             job.status = JobStatus::Analyzing;
         }
@@ -408,23 +428,35 @@ impl App {
             .map(|j| j.path.to_str().unwrap_or("").to_string())
             .collect();
 
-        // Analyze all files
-        let results: Vec<_> = std::thread::scope(|s| {
-            let handles: Vec<_> = paths
-                .iter()
-                .map(|p| s.spawn(|| analyzer::analyze(p.as_str())))
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| {
-                    h.join().unwrap_or_else(|_| {
-                        Err(crate::error::AppError::Analysis(
-                            "Analysis thread panicked".to_string(),
-                        ))
+        // Run analysis in a separate thread
+        let (tx, rx) = mpsc::channel();
+        self.analysis_receiver = Some(rx);
+        self.analyzing = true;
+
+        thread::spawn(move || {
+            let results: Vec<_> = std::thread::scope(|s| {
+                let handles: Vec<_> = paths
+                    .iter()
+                    .map(|p| s.spawn(|| analyzer::analyze(p.as_str())))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join().unwrap_or_else(|_| {
+                            Err(AppError::Analysis("Analysis thread panicked".to_string()))
+                        })
                     })
-                })
-                .collect()
+                    .collect()
+            });
+            let _ = tx.send(results);
         });
+
+        self.navigate_to_queue();
+    }
+
+    /// Apply completed analysis results and advance to the next screen.
+    fn apply_analysis_results(&mut self, results: Vec<Result<AnalysisResult, AppError>>) {
+        let output_config = self.config.output.clone();
 
         for (job, result) in self.queue.jobs.iter_mut().zip(results) {
             match result {
@@ -440,7 +472,7 @@ impl App {
                         job.audio_tracks = analysis.audio_tracks;
                         job.subtitle_tracks = analysis.subtitle_tracks;
                         job.select_all_tracks();
-                        job.generate_output_path(&suffix, &container);
+                        job.generate_output_path(&output_config);
                         job.status = JobStatus::AwaitingConfig;
                     }
                 }
@@ -471,6 +503,29 @@ impl App {
         } else {
             self.navigate_to_finish();
         }
+    }
+
+    /// Poll the analysis channel; called every frame from the main loop.
+    pub fn process_analysis_messages(&mut self) {
+        let results = if let Some(ref rx) = self.analysis_receiver {
+            rx.try_recv().ok()
+        } else {
+            return;
+        };
+
+        if let Some(results) = results {
+            self.analyzing = false;
+            self.analysis_receiver = None;
+            self.apply_analysis_results(results);
+        }
+    }
+
+    /// Cancel an in-progress analysis and return to the home screen.
+    pub fn cancel_analysis(&mut self) {
+        self.analyzing = false;
+        self.analysis_receiver = None;
+        self.queue.jobs.clear();
+        self.navigate_to_home();
     }
 
     // Track configuration
@@ -627,6 +682,22 @@ impl App {
                         should_finish = true;
                     }
                 }
+                WorkerMessage::Verifying(idx) => {
+                    if let Some(job) = self.queue.jobs.get_mut(idx) {
+                        job.status = JobStatus::Verifying;
+                    }
+                }
+                WorkerMessage::DoneVmafFailed(idx, reason) => {
+                    if let Some(job) = self.queue.jobs.get_mut(idx) {
+                        job.status = JobStatus::DoneVmafFailed { reason };
+                        self.queue.converted_count += 1;
+                        self.queue.encoding_progress_done += 1;
+                    }
+                    if self.queue.all_completed() {
+                        self.encoding_active = false;
+                        should_finish = true;
+                    }
+                }
                 WorkerMessage::SourceDeleted(idx) => {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
                         job.source_deleted = true;
@@ -639,7 +710,10 @@ impl App {
                 }
                 WorkerMessage::Cancelled => {
                     for job in &mut self.queue.jobs {
-                        if matches!(job.status, JobStatus::Encoding { .. }) {
+                        if matches!(
+                            job.status,
+                            JobStatus::Encoding { .. } | JobStatus::Verifying
+                        ) {
                             job.status = JobStatus::Skipped {
                                 reason: "Cancelled".to_string(),
                             };
@@ -666,7 +740,7 @@ impl App {
     }
 }
 
-fn collect_video_files(dir: &PathBuf, paths: &mut Vec<PathBuf>) {
+fn collect_video_files(dir: &Path, paths: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };

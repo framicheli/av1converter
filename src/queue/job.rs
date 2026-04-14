@@ -15,10 +15,14 @@ pub enum JobStatus {
     Ready,
     /// Currently encoding
     Encoding { progress: f32 },
-    /// Successfully encoded
+    /// Running VMAF quality check after encoding
+    Verifying,
+    /// Successfully encoded (no VMAF run)
     Done,
-    /// Encoded with VMAF score
+    /// Encoded with VMAF score meeting threshold
     DoneWithVmaf { score: f64 },
+    /// Encoded successfully but VMAF check could not run
+    DoneVmafFailed { reason: String },
     /// Skipped (e.g., already AV1, cancelled)
     Skipped { reason: String },
     /// Error occurred
@@ -89,10 +93,21 @@ impl EncodingJob {
     }
 
     /// Generate the output path based on config
-    pub fn generate_output_path(&mut self, suffix: &str, container: &str) {
+    pub fn generate_output_path(&mut self, output_config: &crate::config::OutputConfig) {
         let stem = self.path.file_stem().unwrap_or_default().to_string_lossy();
-        let parent = self.path.parent().unwrap_or(Path::new("."));
-        self.output_path = Some(parent.join(format!("{}{}.{}", stem, suffix, container)));
+        let parent = if !output_config.same_directory {
+            if let Some(ref dir) = output_config.output_directory {
+                std::path::PathBuf::from(dir)
+            } else {
+                self.path.parent().unwrap_or(Path::new(".")).to_path_buf()
+            }
+        } else {
+            self.path.parent().unwrap_or(Path::new(".")).to_path_buf()
+        };
+        self.output_path = Some(parent.join(format!(
+            "{}{}.{}",
+            stem, output_config.suffix, output_config.container
+        )));
     }
 
     /// Select all available tracks
@@ -122,6 +137,10 @@ pub fn is_video_file(path: &Path) -> bool {
 
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| VIDEO_EXTENSIONS.iter().any(|&ext| ext.eq_ignore_ascii_case(e)))
+        .map(|e| {
+            VIDEO_EXTENSIONS
+                .iter()
+                .any(|&ext| ext.eq_ignore_ascii_case(e))
+        })
         .unwrap_or(false)
 }

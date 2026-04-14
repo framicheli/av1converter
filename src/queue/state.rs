@@ -53,7 +53,9 @@ impl QueueState {
                     j.status,
                     JobStatus::Done
                         | JobStatus::DoneWithVmaf { .. }
+                        | JobStatus::DoneVmafFailed { .. }
                         | JobStatus::QualityWarning { .. }
+                        | JobStatus::Error { .. }
                 )
             })
             .count();
@@ -98,6 +100,7 @@ impl QueueState {
                 j.status,
                 JobStatus::Done
                     | JobStatus::DoneWithVmaf { .. }
+                    | JobStatus::DoneVmafFailed { .. }
                     | JobStatus::Skipped { .. }
                     | JobStatus::Error { .. }
                     | JobStatus::QualityWarning { .. }

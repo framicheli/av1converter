@@ -51,11 +51,21 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
         .next()
         .ok_or_else(|| AppError::Analysis("No video stream found".to_string()))?;
 
-    // Check for Dolby Vision
+    // Check for Dolby Vision by inspecting the side_data_type field
     let is_dolby_vision = stream
         .side_data_list
         .as_ref()
-        .map(|list| list.iter().any(|v| v.to_string().contains("Dolby Vision")))
+        .map(|list| {
+            list.iter().any(|v| {
+                v.get("side_data_type")
+                    .and_then(|t| t.as_str())
+                    .map(|t| {
+                        t.eq_ignore_ascii_case("DOVI configuration record")
+                            || t.contains("Dolby Vision")
+                    })
+                    .unwrap_or(false)
+            })
+        })
         .unwrap_or(false);
 
     // Determine HDR type
