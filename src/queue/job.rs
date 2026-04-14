@@ -110,12 +110,6 @@ impl EncodingJob {
         )));
     }
 
-    /// Select all available tracks
-    pub fn select_all_tracks(&mut self) {
-        self.track_selection =
-            TrackSelection::select_all(&self.audio_tracks, &self.subtitle_tracks);
-    }
-
     /// Calculate size reduction if both sizes are known
     pub fn size_reduction(&self) -> Option<(u64, f64)> {
         match (self.source_size, self.output_size) {

@@ -19,9 +19,6 @@ pub enum AppError {
     /// VMAF calculation failed
     Vmaf(String),
 
-    /// Required dependency missing
-    DependencyMissing(String),
-
     /// JSON parsing error
     Parse { context: String, message: String },
 
@@ -48,7 +45,6 @@ impl std::fmt::Display for AppError {
             AppError::Analysis(msg) => write!(f, "Video analysis failed: {}", msg),
             AppError::Config(msg) => write!(f, "Configuration error: {}", msg),
             AppError::Vmaf(msg) => write!(f, "VMAF calculation failed: {}", msg),
-            AppError::DependencyMissing(dep) => write!(f, "Required dependency missing: {}", dep),
             AppError::Parse { context, message } => {
                 write!(f, "Parse error in {}: {}", context, message)
             }
@@ -61,8 +57,8 @@ impl From<std::io::Error> for AppError {
     fn from(err: std::io::Error) -> Self {
         AppError::Io {
             path: PathBuf::new(),
-            operation: "unknown",
-            message: err.to_string(),
+            operation: "file operation",
+            message: format!("{} ({})", err, err.kind()),
         }
     }
 }

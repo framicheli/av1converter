@@ -1,5 +1,5 @@
 use crate::analyzer::{self, AnalysisResult, is_av1_codec};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, TrackPresetConfig};
 use crate::error::AppError;
 use crate::queue::{
     EncodingJob, JobStatus, QueueState, WorkerJob, WorkerMessage, is_video_file, run_worker,
@@ -93,6 +93,8 @@ pub struct App {
     // Background analysis
     pub analyzing: bool,
     pub analysis_receiver: Option<Receiver<Vec<Result<AnalysisResult, AppError>>>>,
+    /// Ask the analysis thread to stop spawning new ffprobe calls
+    pub analysis_cancel_flag: Arc<AtomicBool>,
 
     // Configuration
     pub config: AppConfig,
@@ -104,7 +106,6 @@ pub struct App {
     pub confirm_selection: bool,
 
     // Config screen state
-    pub config_scroll: usize,
     pub config_selected: usize,
     pub config_editing: bool,
     pub config_input_buffer: String,
@@ -138,7 +139,7 @@ impl App {
         subtitle_list_state.select(Some(0));
 
         let config = AppConfig::load();
-        let deps = DependencyStatus::check().unwrap_or(false);
+        let deps = DependencyStatus::check();
 
         info!("Using encoder: {}", config.encoder);
 
@@ -165,12 +166,12 @@ impl App {
             cancel_flag: Arc::new(AtomicBool::new(false)),
             analyzing: false,
             analysis_receiver: None,
+            analysis_cancel_flag: Arc::new(AtomicBool::new(false)),
             config,
             deps,
             message: None,
             confirm_dialog: None,
             confirm_selection: false,
-            config_scroll: 0,
             config_selected: 0,
             config_editing: false,
             config_input_buffer: String::new(),
@@ -218,11 +219,14 @@ impl App {
     }
 
     pub fn navigate_to_finish(&mut self) {
-        // Update output sizes for completed jobs
+        // Update output sizes for all jobs that produced an output file
         for job in &mut self.queue.jobs {
             if matches!(
                 job.status,
-                JobStatus::Done | JobStatus::DoneWithVmaf { .. } | JobStatus::QualityWarning { .. }
+                JobStatus::Done
+                    | JobStatus::DoneWithVmaf { .. }
+                    | JobStatus::DoneVmafFailed { .. }
+                    | JobStatus::QualityWarning { .. }
             ) && let Some(ref output_path) = job.output_path
             {
                 job.output_size = std::fs::metadata(output_path).ok().map(|m| m.len());
@@ -232,7 +236,6 @@ impl App {
     }
 
     pub fn navigate_to_configuration(&mut self) {
-        self.config_scroll = 0;
         self.config_selected = 0;
         self.current_screen = Screen::Configuration;
     }
@@ -417,34 +420,70 @@ impl App {
     }
 
     fn analyze_jobs(&mut self) {
+        // Pre-validate paths
+        let mut paths: Vec<Result<String, AppError>> = Vec::new();
         for job in &mut self.queue.jobs {
-            job.status = JobStatus::Analyzing;
+            match job.path.to_string_lossy() {
+                p if job.path.to_str().is_some() => {
+                    paths.push(Ok(p.into_owned()));
+                    job.status = JobStatus::Analyzing;
+                }
+                _ => {
+                    // Path has non-UTF-8 bytes
+                    job.status = JobStatus::Error {
+                        message: "File path contains non-UTF-8 characters".to_string(),
+                    };
+                    self.queue.error_count += 1;
+                    paths.push(Err(AppError::Analysis(
+                        "File path contains non-UTF-8 characters".to_string(),
+                    )));
+                }
+            }
         }
 
-        let paths: Vec<String> = self
-            .queue
-            .jobs
-            .iter()
-            .map(|j| j.path.to_str().unwrap_or("").to_string())
-            .collect();
+        self.analysis_cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_flag = self.analysis_cancel_flag.clone();
 
-        // Run analysis in a separate thread
         let (tx, rx) = mpsc::channel();
         self.analysis_receiver = Some(rx);
         self.analyzing = true;
 
         thread::spawn(move || {
-            let results: Vec<_> = std::thread::scope(|s| {
-                let handles: Vec<_> = paths
+            let results: Vec<Result<AnalysisResult, AppError>> = std::thread::scope(|s| {
+                // Spawn one thread per valid path
+                let handles: Vec<Option<_>> = paths
                     .iter()
-                    .map(|p| s.spawn(|| analyzer::analyze(p.as_str())))
+                    .map(|pr| match pr {
+                        Ok(p) => {
+                            if cancel_flag.load(Ordering::Relaxed) {
+                                None // skip remaining if already cancelled
+                            } else {
+                                let p = p.clone();
+                                let flag = cancel_flag.clone();
+                                Some(s.spawn(move || {
+                                    if flag.load(Ordering::Relaxed) {
+                                        Err(AppError::Analysis("Cancelled".to_string()))
+                                    } else {
+                                        analyzer::analyze(&p)
+                                    }
+                                }))
+                            }
+                        }
+                        Err(_) => None,
+                    })
                     .collect();
+
                 handles
                     .into_iter()
-                    .map(|h| {
-                        h.join().unwrap_or_else(|_| {
+                    .zip(paths.iter())
+                    .map(|(handle, original)| match handle {
+                        Some(h) => h.join().unwrap_or_else(|_| {
                             Err(AppError::Analysis("Analysis thread panicked".to_string()))
-                        })
+                        }),
+                        None => match original {
+                            Err(e) => Err(AppError::Analysis(e.to_string())),
+                            Ok(_) => Err(AppError::Analysis("Cancelled".to_string())),
+                        },
                     })
                     .collect()
             });
@@ -457,6 +496,7 @@ impl App {
     /// Apply completed analysis results and advance to the next screen.
     fn apply_analysis_results(&mut self, results: Vec<Result<AnalysisResult, AppError>>) {
         let output_config = self.config.output.clone();
+        let track_config = self.config.tracks.clone();
 
         for (job, result) in self.queue.jobs.iter_mut().zip(results) {
             match result {
@@ -471,9 +511,17 @@ impl App {
                         job.metadata = Some(analysis.metadata);
                         job.audio_tracks = analysis.audio_tracks;
                         job.subtitle_tracks = analysis.subtitle_tracks;
-                        job.select_all_tracks();
+                        auto_select_tracks(job, &track_config);
                         job.generate_output_path(&output_config);
                         job.status = JobStatus::AwaitingConfig;
+                    }
+                }
+                Err(ref e) if e.to_string().contains("Cancelled") => {
+                    if matches!(job.status, JobStatus::Analyzing) {
+                        job.status = JobStatus::Skipped {
+                            reason: "Cancelled".to_string(),
+                        };
+                        self.queue.skipped_count += 1;
                     }
                 }
                 Err(e) => {
@@ -522,6 +570,8 @@ impl App {
 
     /// Cancel an in-progress analysis and return to the home screen.
     pub fn cancel_analysis(&mut self) {
+        // Signal the analysis thread to stop spawning new ffprobe calls
+        self.analysis_cancel_flag.store(true, Ordering::Relaxed);
         self.analyzing = false;
         self.analysis_receiver = None;
         self.queue.jobs.clear();
@@ -574,6 +624,8 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.progress_receiver = Some(rx);
 
+        let output_config = self.config.output.clone();
+
         // Collect jobs to encode
         let worker_jobs: Vec<WorkerJob> = self
             .queue
@@ -583,10 +635,18 @@ impl App {
             .filter(|(_, j)| matches!(j.status, JobStatus::Ready))
             .filter_map(|(i, j)| {
                 let metadata = j.metadata.clone()?;
+                let output = j.output_path.clone().unwrap_or_else(|| {
+                    let stem = j.path.file_stem().unwrap_or_default().to_string_lossy();
+                    let parent = j.path.parent().unwrap_or(std::path::Path::new("."));
+                    parent.join(format!(
+                        "{}{}.{}",
+                        stem, output_config.suffix, output_config.container
+                    ))
+                });
                 Some(WorkerJob {
                     index: i,
                     input: j.path.clone(),
-                    output: j.output_path.clone().unwrap_or_else(|| j.path.clone()),
+                    output,
                     metadata,
                     tracks: j.track_selection.clone(),
                 })
@@ -712,11 +772,15 @@ impl App {
                     for job in &mut self.queue.jobs {
                         if matches!(
                             job.status,
-                            JobStatus::Encoding { .. } | JobStatus::Verifying
+                            JobStatus::Pending
+                                | JobStatus::Ready
+                                | JobStatus::Encoding { .. }
+                                | JobStatus::Verifying
                         ) {
                             job.status = JobStatus::Skipped {
                                 reason: "Cancelled".to_string(),
                             };
+                            self.queue.skipped_count += 1;
                         }
                     }
                     self.encoding_active = false;
@@ -746,10 +810,71 @@ fn collect_video_files(dir: &Path, paths: &mut Vec<PathBuf>) {
     };
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
+        if path.is_symlink() {
+            continue;
+        }
         if path.is_dir() {
             collect_video_files(&path, paths);
         } else if is_video_file(&path) {
             paths.push(path);
         }
     }
+}
+
+/// Select audio and subtitle tracks based on configured language preferences.
+fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig) {
+    // Audio tracks
+    let preferred_audio: Vec<usize> = job
+        .audio_tracks
+        .iter()
+        .filter(|t| {
+            t.language
+                .as_deref()
+                .map(|l| {
+                    config
+                        .preferred_audio_languages
+                        .iter()
+                        .any(|p| p.eq_ignore_ascii_case(l))
+                })
+                .unwrap_or(false)
+        })
+        .map(|t| t.index)
+        .collect();
+
+    job.track_selection.audio_indices = if !preferred_audio.is_empty() {
+        preferred_audio
+    } else if config.select_all_fallback || config.preferred_audio_languages.is_empty() {
+        job.audio_tracks.iter().map(|t| t.index).collect()
+    } else {
+        job.audio_tracks
+            .first()
+            .map(|t| vec![t.index])
+            .unwrap_or_default()
+    };
+
+    // Subtitle tracks
+    let preferred_subs: Vec<usize> = job
+        .subtitle_tracks
+        .iter()
+        .filter(|t| {
+            t.language
+                .as_deref()
+                .map(|l| {
+                    config
+                        .preferred_subtitle_languages
+                        .iter()
+                        .any(|p| p.eq_ignore_ascii_case(l))
+                })
+                .unwrap_or(false)
+        })
+        .map(|t| t.index)
+        .collect();
+
+    job.track_selection.subtitle_indices = if !preferred_subs.is_empty() {
+        preferred_subs
+    } else if config.select_all_fallback || config.preferred_subtitle_languages.is_empty() {
+        job.subtitle_tracks.iter().map(|t| t.index).collect()
+    } else {
+        Vec::new()
+    };
 }

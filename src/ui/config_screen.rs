@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
 /// How a config item's value is changed.
@@ -21,10 +21,27 @@ pub enum ConfigItemKind {
     Text,
 }
 
+/// Which AppConfig field a row maps to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigField {
+    Encoder,
+    VmafThreshold,
+    VmafEnabled,
+    DeleteSource,
+    SvtPreset,
+    NvencPreset,
+    OutputSuffix,
+    OutputContainer,
+    SameDirectory,
+    AudioLanguages,
+    SubtitleLanguages,
+}
+
 /// Descriptor for a single row in the config screen.
 pub struct ConfigItem {
     pub label: &'static str,
     pub kind: ConfigItemKind,
+    pub field: ConfigField,
 }
 
 /// Master list of every config item, in display order.
@@ -32,64 +49,77 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
     ConfigItem {
         label: "Encoder",
         kind: ConfigItemKind::Cycle,
+        field: ConfigField::Encoder,
     },
     ConfigItem {
         label: "VMAF Threshold",
         kind: ConfigItemKind::Numeric,
+        field: ConfigField::VmafThreshold,
     },
     ConfigItem {
         label: "VMAF Enabled",
         kind: ConfigItemKind::Toggle,
+        field: ConfigField::VmafEnabled,
     },
     ConfigItem {
         label: "Delete Source on Success",
         kind: ConfigItemKind::Toggle,
+        field: ConfigField::DeleteSource,
     },
     ConfigItem {
         label: "SVT-AV1 Preset",
         kind: ConfigItemKind::Numeric,
+        field: ConfigField::SvtPreset,
     },
     ConfigItem {
         label: "NVENC Preset",
         kind: ConfigItemKind::Cycle,
+        field: ConfigField::NvencPreset,
     },
     ConfigItem {
         label: "Output Suffix",
         kind: ConfigItemKind::Text,
+        field: ConfigField::OutputSuffix,
     },
     ConfigItem {
         label: "Output Container",
         kind: ConfigItemKind::Text,
+        field: ConfigField::OutputContainer,
     },
     ConfigItem {
         label: "Same Directory Output",
         kind: ConfigItemKind::Toggle,
+        field: ConfigField::SameDirectory,
     },
     ConfigItem {
         label: "Preferred Audio Languages",
         kind: ConfigItemKind::Text,
+        field: ConfigField::AudioLanguages,
     },
     ConfigItem {
         label: "Preferred Subtitle Languages",
         kind: ConfigItemKind::Text,
+        field: ConfigField::SubtitleLanguages,
     },
 ];
 
-/// Read the current display value for item `index` from `config`.
+/// Read the current display value for config item `index` from `config`.
 pub fn get_config_value(config: &AppConfig, index: usize) -> String {
-    match index {
-        0 => config.encoder.display_name().to_string(),
-        1 => format!("{:.0}", config.quality.vmaf_threshold),
-        2 => bool_display(config.quality.vmaf_enabled),
-        3 => bool_display(config.quality.delete_source_on_success),
-        4 => config.performance.svt_preset.to_string(),
-        5 => config.performance.nvenc_preset.clone(),
-        6 => config.output.suffix.clone(),
-        7 => config.output.container.clone(),
-        8 => bool_display(config.output.same_directory),
-        9 => config.tracks.preferred_audio_languages.join(", "),
-        10 => config.tracks.preferred_subtitle_languages.join(", "),
-        _ => String::new(),
+    let Some(item) = CONFIG_ITEMS.get(index) else {
+        return String::new();
+    };
+    match item.field {
+        ConfigField::Encoder => config.encoder.display_name().to_string(),
+        ConfigField::VmafThreshold => format!("{:.0}", config.quality.vmaf_threshold),
+        ConfigField::VmafEnabled => bool_display(config.quality.vmaf_enabled),
+        ConfigField::DeleteSource => bool_display(config.quality.delete_source_on_success),
+        ConfigField::SvtPreset => config.performance.svt_preset.to_string(),
+        ConfigField::NvencPreset => config.performance.nvenc_preset.clone(),
+        ConfigField::OutputSuffix => config.output.suffix.clone(),
+        ConfigField::OutputContainer => config.output.container.clone(),
+        ConfigField::SameDirectory => bool_display(config.output.same_directory),
+        ConfigField::AudioLanguages => config.tracks.preferred_audio_languages.join(", "),
+        ConfigField::SubtitleLanguages => config.tracks.preferred_subtitle_languages.join(", "),
     }
 }
 
@@ -133,16 +163,23 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
         &app.config_input_buffer,
     );
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(format!(
-                " Settings (config: {}) ",
-                AppConfig::config_path().display()
-            )),
-    );
-    f.render_widget(list, chunks[1]);
+    // Use a ListState to handle scrolling automatically
+    let mut list_state = ListState::default();
+    list_state.select(Some(app.config_selected));
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(format!(
+                    " Settings (config: {}) ",
+                    AppConfig::config_path().display()
+                )),
+        )
+        .highlight_style(Style::default());
+
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
 
     // Help line changes contextually when a text field is being edited
     let help_text = if app.config_editing {

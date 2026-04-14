@@ -27,7 +27,9 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
         .margin(1)
         .split(f.area());
 
-    let job = &app.queue.jobs[0];
+    let Some(job) = app.queue.jobs.first() else {
+        return;
+    };
     let elapsed_str = app
         .queue
         .elapsed_time()
@@ -152,7 +154,10 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
         )]));
     } else if let Some(vmaf) = job.source_kept_vmaf {
         lines.push(Line::from(vec![Span::styled(
-            format!("Source kept (VMAF {:.1} < 90)", vmaf),
+            format!(
+                "Source kept (VMAF {:.1} < {:.0})",
+                vmaf, app.config.quality.vmaf_threshold
+            ),
             Style::default().fg(Color::DarkGray),
         )]));
     }

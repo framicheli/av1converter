@@ -41,19 +41,16 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    /// Load configuration from TOML file, or create default if not found
+    /// Load configuration from TOML file, or create default if not found.
     pub fn load() -> Self {
         let config_path = Self::config_path();
 
         if config_path.exists() {
             match Self::load_from_file(&config_path) {
-                Ok(config) => {
-                    if let Err(e) = config.validate() {
-                        warn!("Config validation failed: {:?}. Using defaults.", e);
-                    } else {
-                        info!("Loaded config from {}", config_path.display());
-                        return config;
-                    }
+                Ok(mut config) => {
+                    config.sanitize();
+                    info!("Loaded config from {}", config_path.display());
+                    return config;
                 }
                 Err(e) => {
                     warn!("Failed to load config: {:?}. Using defaults.", e);
@@ -106,19 +103,10 @@ impl AppConfig {
             .join("config.toml")
     }
 
-    /// Validate configuration values
-    pub fn validate(&self) -> Result<(), AppError> {
-        if self.quality.vmaf_threshold < 0.0 || self.quality.vmaf_threshold > 100.0 {
-            return Err(AppError::Config(
-                "VMAF threshold must be between 0 and 100".to_string(),
-            ));
-        }
-        if self.performance.svt_preset > 13 {
-            return Err(AppError::Config(
-                "SVT-AV1 preset must be between 0 and 13".to_string(),
-            ));
-        }
-        Ok(())
+    /// Clamp all numeric fields to their valid ranges.
+    pub fn sanitize(&mut self) {
+        self.quality.vmaf_threshold = self.quality.vmaf_threshold.clamp(0.0, 100.0);
+        self.performance.svt_preset = self.performance.svt_preset.min(13);
     }
 
     /// Get the encoding preset for a given resolution tier and HDR type

@@ -93,6 +93,13 @@ fn render_status_info(app: &App) -> Line<'static> {
 }
 
 fn render_vmaf_info(app: &App) -> Line<'static> {
+    if !app.config.quality.vmaf_enabled {
+        return Line::from(vec![Span::styled(
+            "VMAF quality validation disabled",
+            Style::default().fg(Color::DarkGray),
+        )]);
+    }
+
     if app.deps {
         Line::from(vec![
             Span::styled("✓ ", Style::default().fg(Color::Green)),

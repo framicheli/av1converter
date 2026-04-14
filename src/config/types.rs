@@ -35,7 +35,7 @@ impl Default for PerformanceConfig {
     fn default() -> Self {
         Self {
             svt_preset: 4,
-            nvenc_preset: "p7".to_string(),
+            nvenc_preset: "p4".to_string(),
         }
     }
 }

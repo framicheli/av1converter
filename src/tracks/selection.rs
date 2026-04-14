@@ -1,5 +1,3 @@
-use super::{AudioTrack, SubtitleTrack};
-
 /// Track selection for encoding
 #[derive(Debug, Clone, Default)]
 pub struct TrackSelection {
@@ -8,14 +6,6 @@ pub struct TrackSelection {
 }
 
 impl TrackSelection {
-    /// Select all available tracks
-    pub fn select_all(audio_tracks: &[AudioTrack], subtitle_tracks: &[SubtitleTrack]) -> Self {
-        Self {
-            audio_indices: audio_tracks.iter().map(|t| t.index).collect(),
-            subtitle_indices: subtitle_tracks.iter().map(|t| t.index).collect(),
-        }
-    }
-
     /// Toggle an audio track selection
     pub fn toggle_audio(&mut self, index: usize) {
         if self.audio_indices.contains(&index) {

@@ -160,7 +160,7 @@ fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrac
         "-v",
         "error",
         "-show_entries",
-        "stream=index,codec_type,codec_name:stream_tags=language,title",
+        "stream=index,codec_type,codec_name:stream_tags=language,title:stream_disposition=forced",
         "-select_streams",
         "s",
         "-of",
@@ -181,7 +181,7 @@ fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrac
             index: audio_index,
             language: stream.tags.as_ref().and_then(|t| t.language.clone()),
             codec: stream.codec_name.unwrap_or_else(|| "unknown".to_string()),
-            channels: stream.channels.unwrap_or(2),
+            channels: stream.channels,
             title: stream.tags.as_ref().and_then(|t| t.title.clone()),
             bitrate: stream.bit_rate.and_then(|b| b.parse::<u64>().ok()),
             sample_rate: stream.sample_rate.and_then(|s| s.parse::<u32>().ok()),
@@ -189,12 +189,19 @@ fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrac
     }
 
     for (subtitle_index, stream) in sub_data.streams.into_iter().enumerate() {
+        let forced = stream
+            .disposition
+            .as_ref()
+            .and_then(|d| d.forced)
+            .unwrap_or(0)
+            != 0;
+
         subtitle_tracks.push(SubtitleTrack {
             index: subtitle_index,
             language: stream.tags.as_ref().and_then(|t| t.language.clone()),
             codec: stream.codec_name.unwrap_or_else(|| "unknown".to_string()),
             title: stream.tags.as_ref().and_then(|t| t.title.clone()),
-            forced: false,
+            forced,
         });
     }
 
@@ -261,10 +268,17 @@ struct RawStream {
     bit_rate: Option<String>,
     sample_rate: Option<String>,
     tags: Option<StreamTags>,
+    disposition: Option<StreamDisposition>,
 }
 
 #[derive(Debug, Deserialize)]
 struct StreamTags {
     language: Option<String>,
     title: Option<String>,
+}
+
+/// Stream disposition flags (only the forced flag is currently used)
+#[derive(Debug, Deserialize)]
+struct StreamDisposition {
+    forced: Option<u8>,
 }

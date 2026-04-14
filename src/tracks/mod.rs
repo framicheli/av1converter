@@ -8,7 +8,7 @@ pub struct AudioTrack {
     pub index: usize,
     pub language: Option<String>,
     pub codec: String,
-    pub channels: u16,
+    pub channels: Option<u16>,
     pub title: Option<String>,
     pub bitrate: Option<u64>,
     pub sample_rate: Option<u32>,
@@ -23,11 +23,12 @@ impl AudioTrack {
             .map(|t| format!(" - {}", t))
             .unwrap_or_default();
         let channels_str = match self.channels {
-            1 => "Mono",
-            2 => "Stereo",
-            6 => "5.1",
-            8 => "7.1",
-            _ => "Multi",
+            Some(1) => "Mono",
+            Some(2) => "Stereo",
+            Some(6) => "5.1",
+            Some(8) => "7.1",
+            Some(_) => "Multi",
+            None => "Unknown",
         };
         format!(
             "{}: {} ({} {}){}",

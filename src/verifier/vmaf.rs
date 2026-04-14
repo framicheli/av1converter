@@ -72,12 +72,18 @@ pub fn calculate_vmaf(
         ("", "vmaf_v0.6.1 (default)")
     };
 
+    // Scale thread count to available cores, capped at 8
+    let n_threads = std::thread::available_parallelism()
+        .map(|n| n.get().min(8))
+        .unwrap_or(4);
+
     // VMAF filter with quick settings (subsample=10 for speed)
     let filter = format!(
         "[0:v]format=yuv420p10le,setpts=PTS-STARTPTS[ref];\
          [1:v]format=yuv420p10le,setpts=PTS-STARTPTS[dist];\
-         [ref][dist]libvmaf=log_path={}:log_fmt=json:n_threads=4:n_subsample=10{}",
+         [ref][dist]libvmaf=log_path={}:log_fmt=json:n_threads={}:n_subsample=10{}",
         json_output.to_string_lossy(),
+        n_threads,
         model_suffix
     );
 
@@ -92,9 +98,9 @@ pub fn calculate_vmaf(
     let output = Command::new("ffmpeg")
         .args([
             "-i",
-            original.to_str().unwrap_or(""),
+            &original.to_string_lossy(),
             "-i",
-            encoded.to_str().unwrap_or(""),
+            &encoded.to_string_lossy(),
             "-lavfi",
             &filter,
             "-f",
@@ -105,6 +111,7 @@ pub fn calculate_vmaf(
         .map_err(|e| AppError::CommandExecution(format!("Failed to run ffmpeg for VMAF: {}", e)))?;
 
     if !output.status.success() {
+        let _ = std::fs::remove_file(&json_output);
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("No such filter: 'libvmaf'")
             || stderr.contains("Unknown libvmaf")
@@ -120,11 +127,11 @@ pub fn calculate_vmaf(
         )));
     }
 
-    // Parse JSON result
-    let json_content = std::fs::read_to_string(&json_output)
-        .map_err(|e| AppError::Vmaf(format!("Failed to read VMAF output: {}", e)))?;
-
+    // Read result then remove
+    let json_content = std::fs::read_to_string(&json_output);
     let _ = std::fs::remove_file(&json_output);
+    let json_content =
+        json_content.map_err(|e| AppError::Vmaf(format!("Failed to read VMAF output: {}", e)))?;
 
     let vmaf_data: VmafJson = serde_json::from_str(&json_content)
         .map_err(|e| AppError::Vmaf(format!("Failed to parse VMAF JSON: {}", e)))?;

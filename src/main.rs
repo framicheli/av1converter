@@ -24,6 +24,14 @@ use crate::app::HOME_MENU;
 fn main() -> io::Result<()> {
     let _log_guard = utils::init_logging();
 
+    // Restore the terminal even if panic
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        original_hook(info);
+    }));
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -371,11 +379,15 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
 
 /// Begin editing the currently selected text-editable config field.
 fn start_config_edit(app: &mut App) {
-    app.config_input_buffer = match app.config_selected {
-        6 => app.config.output.suffix.clone(),
-        7 => app.config.output.container.clone(),
-        9 => app.config.tracks.preferred_audio_languages.join(", "),
-        10 => app.config.tracks.preferred_subtitle_languages.join(", "),
+    use crate::ui::config_screen::{CONFIG_ITEMS, ConfigField};
+    let Some(item) = CONFIG_ITEMS.get(app.config_selected) else {
+        return;
+    };
+    app.config_input_buffer = match item.field {
+        ConfigField::OutputSuffix => app.config.output.suffix.clone(),
+        ConfigField::OutputContainer => app.config.output.container.clone(),
+        ConfigField::AudioLanguages => app.config.tracks.preferred_audio_languages.join(", "),
+        ConfigField::SubtitleLanguages => app.config.tracks.preferred_subtitle_languages.join(", "),
         _ => return,
     };
     app.config_editing = true;
@@ -383,23 +395,21 @@ fn start_config_edit(app: &mut App) {
 
 /// Write the edit buffer back to the appropriate config field.
 fn commit_config_edit(app: &mut App) {
+    use crate::ui::config_screen::{CONFIG_ITEMS, ConfigField};
+    let Some(item) = CONFIG_ITEMS.get(app.config_selected) else {
+        app.config_editing = false;
+        app.config_input_buffer.clear();
+        return;
+    };
     let value = app.config_input_buffer.trim().to_string();
-    match app.config_selected {
-        6 => app.config.output.suffix = value,
-        7 => app.config.output.container = value,
-        9 => {
-            app.config.tracks.preferred_audio_languages = value
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+    match item.field {
+        ConfigField::OutputSuffix => app.config.output.suffix = value,
+        ConfigField::OutputContainer => app.config.output.container = value,
+        ConfigField::AudioLanguages => {
+            app.config.tracks.preferred_audio_languages = parse_lang_list(&value);
         }
-        10 => {
-            app.config.tracks.preferred_subtitle_languages = value
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+        ConfigField::SubtitleLanguages => {
+            app.config.tracks.preferred_subtitle_languages = parse_lang_list(&value);
         }
         _ => {}
     }
@@ -407,10 +417,23 @@ fn commit_config_edit(app: &mut App) {
     app.config_input_buffer.clear();
 }
 
+/// Parse a comma-separated language tag list like "eng, ita" into ["eng", "ita"].
+fn parse_lang_list(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
 fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
-    match index {
-        0 => {
-            // Encoder - cycle through options
+    use crate::ui::config_screen::{CONFIG_ITEMS, ConfigField};
+
+    let Some(item) = CONFIG_ITEMS.get(index) else {
+        return;
+    };
+
+    match item.field {
+        ConfigField::Encoder => {
             use crate::config::Encoder;
             let encoders = [Encoder::SvtAv1, Encoder::Nvenc, Encoder::Qsv, Encoder::Amf];
             let current = encoders
@@ -424,34 +447,29 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             };
             app.config.encoder = encoders[next];
         }
-        1 => {
-            // VMAF Threshold
+        ConfigField::VmafThreshold => {
             let delta = if increase { 1.0 } else { -1.0 };
             app.config.quality.vmaf_threshold =
                 (app.config.quality.vmaf_threshold + delta).clamp(0.0, 100.0);
         }
-        2 => {
-            // VMAF Enabled
+        ConfigField::VmafEnabled => {
             app.config.quality.vmaf_enabled = !app.config.quality.vmaf_enabled;
         }
-        3 => {
-            // Delete Source on Success
+        ConfigField::DeleteSource => {
             app.config.quality.delete_source_on_success =
                 !app.config.quality.delete_source_on_success;
         }
-        4 => {
-            // SVT-AV1 Preset
+        ConfigField::SvtPreset => {
             let delta: i8 = if increase { 1 } else { -1 };
             let new_val = app.config.performance.svt_preset as i8 + delta;
             app.config.performance.svt_preset = new_val.clamp(0, 13) as u8;
         }
-        5 => {
-            // NVENC Preset - cycle
+        ConfigField::NvencPreset => {
             let presets = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
             let current = presets
                 .iter()
                 .position(|p| *p == app.config.performance.nvenc_preset)
-                .unwrap_or(6);
+                .unwrap_or(3); // default to p4 index
             let next = if increase {
                 (current + 1) % presets.len()
             } else {
@@ -459,10 +477,13 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             };
             app.config.performance.nvenc_preset = presets[next].to_string();
         }
-        8 => {
-            // Same Directory Output
+        ConfigField::SameDirectory => {
             app.config.output.same_directory = !app.config.output.same_directory;
         }
-        _ => {} // Text-editable fields handled via Enter
+        // Text fields are edited via Enter, not ← →
+        ConfigField::OutputSuffix
+        | ConfigField::OutputContainer
+        | ConfigField::AudioLanguages
+        | ConfigField::SubtitleLanguages => {}
     }
 }
