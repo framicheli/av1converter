@@ -53,7 +53,7 @@ fn main() -> io::Result<()> {
     terminal.show_cursor()?;
 
     if let Err(err) = res {
-        eprintln!("Error: {:?}", err);
+        eprintln!("Error: {err:?}");
     }
 
     Ok(())
@@ -63,6 +63,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
     loop {
         app.process_progress_messages();
         app.process_analysis_messages();
+        app.tick_message();
 
         terminal.draw(|f| {
             match app.current_screen {
@@ -111,15 +112,15 @@ fn handle_key(app: &mut App, key: KeyCode) {
 
 fn handle_confirm_dialog_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
+        KeyCode::Char('y' | 'Y') => {
             if let Some(action) = app.confirm_dialog.take() {
                 execute_confirm_action(app, action);
             }
         }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+        KeyCode::Char('n' | 'N') | KeyCode::Esc => {
             app.confirm_dialog = None;
         }
-        KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
+        KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l') => {
             app.confirm_selection = !app.confirm_selection;
         }
         KeyCode::Enter => {
@@ -152,15 +153,9 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
             app.confirm_dialog = Some(ConfirmAction::ExitApp);
             app.confirm_selection = false;
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.home_index > 0 {
-                app.home_index -= 1;
-            }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.home_index < HOME_MENU.len() - 1 {
-                app.home_index += 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if app.home_index > 0 => app.home_index -= 1,
+        KeyCode::Down | KeyCode::Char('j') if app.home_index < HOME_MENU.len() - 1 => {
+            app.home_index += 1;
         }
         KeyCode::Enter => match app.home_index {
             0 => app.navigate_to_explorer(false, false), // Open video file
@@ -200,24 +195,21 @@ fn handle_file_confirm_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc => app.cancel_file_confirm(),
         KeyCode::Enter => app.confirm_queued_files(),
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.file_confirm_scroll > 0 {
-                app.file_confirm_scroll -= 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if app.file_confirm_scroll > 0 => {
+            app.file_confirm_scroll -= 1;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.file_confirm_scroll < app.queue.jobs.len().saturating_sub(1) {
-                app.file_confirm_scroll += 1;
-            }
+        KeyCode::Down | KeyCode::Char('j')
+            if app.file_confirm_scroll < app.queue.jobs.len().saturating_sub(1) =>
+        {
+            app.file_confirm_scroll += 1;
         }
         _ => {}
     }
 }
 
 fn handle_track_config_key(app: &mut App, key: KeyCode) {
-    let job = match app.current_config_job() {
-        Some(j) => j,
-        None => return,
+    let Some(job) = app.current_config_job() else {
+        return;
     };
 
     let audio_count = job.audio_tracks.len();
@@ -228,10 +220,11 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
         KeyCode::Tab => {
             app.track_focus = match app.track_focus {
                 TrackFocus::Audio if subtitle_count > 0 => TrackFocus::Subtitle,
-                TrackFocus::Audio => TrackFocus::Confirm,
-                TrackFocus::Subtitle => TrackFocus::Confirm,
                 TrackFocus::Confirm if audio_count > 0 => TrackFocus::Audio,
-                TrackFocus::Confirm => TrackFocus::Subtitle,
+                TrackFocus::Confirm if subtitle_count > 0 => TrackFocus::Subtitle,
+                TrackFocus::Audio | TrackFocus::Subtitle | TrackFocus::Confirm => {
+                    TrackFocus::Confirm
+                }
             };
         }
         KeyCode::Up | KeyCode::Char('k') => match app.track_focus {
@@ -241,10 +234,10 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Down | KeyCode::Char('j') => match app.track_focus {
             TrackFocus::Audio if app.audio_cursor < audio_count.saturating_sub(1) => {
-                app.audio_cursor += 1
+                app.audio_cursor += 1;
             }
             TrackFocus::Subtitle if app.subtitle_cursor < subtitle_count.saturating_sub(1) => {
-                app.subtitle_cursor += 1
+                app.subtitle_cursor += 1;
             }
             _ => {}
         },
@@ -342,15 +335,11 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
 
     match key {
         KeyCode::Esc => app.navigate_to_home(),
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.config_selected > 0 {
-                app.config_selected -= 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if app.config_selected > 0 => {
+            app.config_selected -= 1;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.config_selected < config_item_count - 1 {
-                app.config_selected += 1;
-            }
+        KeyCode::Down | KeyCode::Char('j') if app.config_selected < config_item_count - 1 => {
+            app.config_selected += 1;
         }
         KeyCode::Left | KeyCode::Char('h') => {
             adjust_config_value(app, app.config_selected, false);
@@ -362,8 +351,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
             use crate::ui::config_screen::{CONFIG_ITEMS, ConfigItemKind};
             if CONFIG_ITEMS
                 .get(app.config_selected)
-                .map(|item| item.kind == ConfigItemKind::Text)
-                .unwrap_or(false)
+                .is_some_and(|item| item.kind == ConfigItemKind::Text)
             {
                 start_config_edit(app);
             }
@@ -371,6 +359,9 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('s') => {
             if let Err(e) = app.config.save() {
                 tracing::warn!("Failed to save config: {:?}", e);
+                app.set_timed_message(&format!("Save failed: {e}"), 3);
+            } else {
+                app.set_timed_message("Saved!", 3);
             }
         }
         _ => {}
@@ -417,7 +408,7 @@ fn commit_config_edit(app: &mut App) {
     app.config_input_buffer.clear();
 }
 
-/// Parse a comma-separated language tag list like "eng, ita" into ["eng", "ita"].
+/// Parse a comma-separated language tag list like `"eng, ita"` into `["eng", "ita"]`.
 fn parse_lang_list(s: &str) -> Vec<String> {
     s.split(',')
         .map(|t| t.trim().to_string())
@@ -460,9 +451,13 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
                 !app.config.quality.delete_source_on_success;
         }
         ConfigField::SvtPreset => {
-            let delta: i8 = if increase { 1 } else { -1 };
-            let new_val = app.config.performance.svt_preset as i8 + delta;
-            app.config.performance.svt_preset = new_val.clamp(0, 13) as u8;
+            if increase {
+                app.config.performance.svt_preset =
+                    app.config.performance.svt_preset.saturating_add(1).min(13);
+            } else {
+                app.config.performance.svt_preset =
+                    app.config.performance.svt_preset.saturating_sub(1);
+            }
         }
         ConfigField::NvencPreset => {
             let presets = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
@@ -480,10 +475,37 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         ConfigField::SameDirectory => {
             app.config.output.same_directory = !app.config.output.same_directory;
         }
+        ConfigField::RfSd => adjust_preset_rf(&mut app.config.presets.sd, app.config.encoder, increase),
+        ConfigField::RfHd => adjust_preset_rf(&mut app.config.presets.hd, app.config.encoder, increase),
+        ConfigField::RfFullHd => adjust_preset_rf(&mut app.config.presets.full_hd, app.config.encoder, increase),
+        ConfigField::RfFullHdHdr => adjust_preset_rf(&mut app.config.presets.full_hd_hdr, app.config.encoder, increase),
+        ConfigField::RfFullHdDv => adjust_preset_rf(&mut app.config.presets.full_hd_dv, app.config.encoder, increase),
+        ConfigField::RfUhd => adjust_preset_rf(&mut app.config.presets.uhd, app.config.encoder, increase),
+        ConfigField::RfUhdHdr => adjust_preset_rf(&mut app.config.presets.uhd_hdr, app.config.encoder, increase),
+        ConfigField::RfUhdDv => adjust_preset_rf(&mut app.config.presets.uhd_dv, app.config.encoder, increase),
         // Text fields are edited via Enter, not ← →
         ConfigField::OutputSuffix
         | ConfigField::OutputContainer
         | ConfigField::AudioLanguages
         | ConfigField::SubtitleLanguages => {}
+    }
+}
+
+fn adjust_preset_rf(
+    preset: &mut crate::config::EncodingPreset,
+    encoder: crate::config::Encoder,
+    increase: bool,
+) {
+    use crate::config::Encoder;
+    let val = match encoder {
+        Encoder::SvtAv1 => &mut preset.crf,
+        Encoder::Nvenc => &mut preset.nvenc_cq,
+        Encoder::Qsv => &mut preset.qsv_quality,
+        Encoder::Amf => &mut preset.amf_quality,
+    };
+    if increase {
+        *val = val.saturating_add(1).min(encoder.max_quality());
+    } else {
+        *val = val.saturating_sub(1);
     }
 }

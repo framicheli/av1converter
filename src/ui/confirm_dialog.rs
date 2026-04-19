@@ -9,9 +9,8 @@ use ratatui::{
 };
 
 pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
-    let action = match &app.confirm_dialog {
-        Some(a) => a,
-        None => return,
+    let Some(action) = &app.confirm_dialog else {
+        return;
     };
 
     let (title, message) = match action {
@@ -68,13 +67,13 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
         Style::default().fg(Color::Red)
     };
 
-    let no_style = if !app.confirm_selection {
+    let no_style = if app.confirm_selection {
+        Style::default().fg(Color::Green)
+    } else {
         Style::default()
             .fg(Color::Black)
             .bg(Color::Green)
             .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Green)
     };
 
     let buttons = Line::from(vec![

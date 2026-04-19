@@ -2,7 +2,6 @@ use crate::encoder::command_builder::{EncodingParams, build_ffmpeg_args};
 use std::fs::File;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -10,7 +9,7 @@ use std::time::Duration;
 static JOB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Progress callback type
-pub type ProgressCallback = Box<dyn FnMut(f32) + Send>;
+pub type ProgressCallback = Box<dyn FnMut(f64) + Send>;
 
 /// Encoding result
 #[derive(Debug)]
@@ -23,11 +22,11 @@ pub enum EncodeResult {
     Error(String),
 }
 
-/// Encode a video file using FFmpeg
+/// Encode a video file using `FFmpeg`
 pub fn encode_video(
     params: &EncodingParams,
     progress_callback: Option<ProgressCallback>,
-    cancel_flag: Arc<AtomicBool>,
+    cancel_flag: &AtomicBool,
     duration: f64,
 ) -> EncodeResult {
     let args = build_ffmpeg_args(params);
@@ -36,7 +35,7 @@ pub fn encode_video(
     let tag = format!("{}_{}", std::process::id(), uid);
 
     // Create progress file
-    let progress_file = std::env::temp_dir().join(format!("av1c_progress_{}.txt", tag));
+    let progress_file = std::env::temp_dir().join(format!("av1c_progress_{tag}.txt"));
     if File::create(&progress_file).is_err() {
         return EncodeResult::Error("Failed to create progress file".to_string());
     }
@@ -47,12 +46,12 @@ pub fn encode_video(
     args.insert(3, progress_file.to_string_lossy().to_string());
 
     // Redirect stderr to a temp file to avoid pipe buffer deadlock
-    let stderr_path = std::env::temp_dir().join(format!("av1c_stderr_{}.txt", tag));
+    let stderr_path = std::env::temp_dir().join(format!("av1c_stderr_{tag}.txt"));
     let stderr_file = match File::create(&stderr_path) {
         Ok(f) => f,
         Err(e) => {
             let _ = std::fs::remove_file(&progress_file);
-            return EncodeResult::Error(format!("Failed to create stderr file: {}", e));
+            return EncodeResult::Error(format!("Failed to create stderr file: {e}"));
         }
     };
 
@@ -67,7 +66,7 @@ pub fn encode_video(
         Err(e) => {
             let _ = std::fs::remove_file(&progress_file);
             let _ = std::fs::remove_file(&stderr_path);
-            return EncodeResult::Error(format!("Failed to start ffmpeg: {}", e));
+            return EncodeResult::Error(format!("Failed to start ffmpeg: {e}"));
         }
     };
 
@@ -95,7 +94,7 @@ fn run_encode_loop(
     progress_file: &Path,
     duration: f64,
     mut progress_callback: Option<ProgressCallback>,
-    cancel_flag: Arc<AtomicBool>,
+    cancel_flag: &AtomicBool,
     output: &str,
     stderr_path: &Path,
 ) -> EncodeResult {
@@ -123,7 +122,7 @@ fn run_encode_loop(
             if let Some(time_us) = latest_time_us {
                 let time_secs = time_us / 1_000_000.0;
                 if duration > 0.0 {
-                    let progress = (time_secs / duration * 100.0).min(100.0) as f32;
+                    let progress = (time_secs / duration * 100.0).min(100.0);
                     if let Some(ref mut cb) = progress_callback {
                         cb(progress);
                     }
@@ -140,7 +139,7 @@ fn run_encode_loop(
                     let _ = std::fs::remove_file(output);
 
                     let error_msg = if stderr.is_empty() {
-                        format!("ffmpeg failed with status: {}", status)
+                        format!("ffmpeg failed with status: {status}")
                     } else {
                         let last_lines: Vec<&str> = stderr.lines().rev().take(5).collect();
                         format!(
@@ -157,7 +156,7 @@ fn run_encode_loop(
                 thread::sleep(Duration::from_millis(250));
             }
             Err(e) => {
-                return EncodeResult::Error(format!("Failed to check ffmpeg status: {}", e));
+                return EncodeResult::Error(format!("Failed to check ffmpeg status: {e}"));
             }
         }
     }

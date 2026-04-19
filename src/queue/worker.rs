@@ -11,7 +11,7 @@ use tracing::info;
 /// Messages sent from the worker thread to the main thread
 pub enum WorkerMessage {
     /// Progress update for a file (index, percent 0–100)
-    Progress(usize, f32),
+    Progress(usize, f64),
     /// VMAF quality check is starting for this job
     Verifying(usize),
     /// Encoding completed successfully (no VMAF run)
@@ -45,9 +45,9 @@ pub struct WorkerJob {
 /// Run the encoding worker in a separate thread
 pub fn run_worker(
     jobs: Vec<WorkerJob>,
-    config: AppConfig,
-    cancel_flag: Arc<AtomicBool>,
-    tx: Sender<WorkerMessage>,
+    config: &AppConfig,
+    cancel_flag: &Arc<AtomicBool>,
+    tx: &Sender<WorkerMessage>,
 ) {
     for job in jobs {
         if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
@@ -71,11 +71,11 @@ pub fn run_worker(
             &output_str,
             &job.metadata,
             job.tracks,
-            &config,
+            config,
             Some(Box::new(move |progress| {
                 let _ = tx_progress.send(WorkerMessage::Progress(idx, progress));
             })),
-            cancel_flag.clone(),
+            cancel_flag.as_ref(),
             Some(Box::new(move || {
                 let _ = tx_verifying.send(WorkerMessage::Verifying(verifying_idx));
             })),

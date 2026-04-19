@@ -14,7 +14,7 @@ pub enum JobStatus {
     /// Ready to encode
     Ready,
     /// Currently encoding
-    Encoding { progress: f32 },
+    Encoding { progress: f64 },
     /// Running VMAF quality check after encoding
     Verifying,
     /// Successfully encoded (no VMAF run)
@@ -72,37 +72,33 @@ impl EncodingJob {
     pub fn filename(&self) -> String {
         self.path
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Unknown".to_string())
+            .map_or_else(|| "Unknown".to_string(), |n| n.to_string_lossy().to_string())
     }
 
     /// Get the resolution string
     pub fn resolution_string(&self) -> String {
         self.metadata
             .as_ref()
-            .map(|m| m.resolution_string())
-            .unwrap_or_else(|| "Unknown".to_string())
+            .map_or_else(|| "Unknown".to_string(), VideoMetadata::resolution_string)
     }
 
     /// Get the HDR string
     pub fn hdr_string(&self) -> &str {
         self.metadata
             .as_ref()
-            .map(|m| m.hdr_string())
-            .unwrap_or("Unknown")
+            .map_or("Unknown", VideoMetadata::hdr_string)
     }
 
     /// Generate the output path based on config
     pub fn generate_output_path(&mut self, output_config: &crate::config::OutputConfig) {
         let stem = self.path.file_stem().unwrap_or_default().to_string_lossy();
-        let parent = if !output_config.same_directory {
-            if let Some(ref dir) = output_config.output_directory {
-                std::path::PathBuf::from(dir)
-            } else {
-                self.path.parent().unwrap_or(Path::new(".")).to_path_buf()
-            }
+        let default_parent = || self.path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let parent = if output_config.same_directory {
+            default_parent()
+        } else if let Some(ref dir) = output_config.output_directory {
+            std::path::PathBuf::from(dir)
         } else {
-            self.path.parent().unwrap_or(Path::new(".")).to_path_buf()
+            default_parent()
         };
         self.output_path = Some(parent.join(format!(
             "{}{}.{}",
@@ -115,7 +111,10 @@ impl EncodingJob {
         match (self.source_size, self.output_size) {
             (Some(source), Some(output)) if source > 0 => {
                 let saved = source.saturating_sub(output);
-                let percent = (saved as f64 / source as f64) * 100.0;
+                // Use u128 to avoid u64→f64 precision lint: (saved*100)/source is in [0,100]
+                let percent_int =
+                    u32::try_from(u128::from(saved) * 100 / u128::from(source)).unwrap_or(100);
+                let percent = f64::from(percent_int);
                 Some((saved, percent))
             }
             _ => None,
@@ -131,10 +130,9 @@ pub fn is_video_file(path: &Path) -> bool {
 
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| {
+        .is_some_and(|e| {
             VIDEO_EXTENSIONS
                 .iter()
                 .any(|&ext| ext.eq_ignore_ascii_case(e))
         })
-        .unwrap_or(false)
 }

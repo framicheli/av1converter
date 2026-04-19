@@ -20,6 +20,7 @@ pub fn render_finish(f: &mut Frame, app: &App) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_single_file_finish(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -73,11 +74,11 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
             lines.push(Line::from(vec![
                 Span::styled("VMAF: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    format!("{:.1}", score),
+                    format!("{score:.1}"),
                     Style::default().fg(vmaf_color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" ({})", quality_desc),
+                    format!(" ({quality_desc})"),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]));
@@ -91,11 +92,11 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
             lines.push(Line::from(vec![
                 Span::styled("VMAF: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    format!("{:.1}", vmaf),
+                    format!("{vmaf:.1}"),
                     Style::default().fg(vmaf_color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" (threshold: {:.0})", threshold),
+                    format!(" (threshold: {threshold:.0})"),
                     Style::default().fg(Color::Red),
                 ),
             ]));
@@ -104,7 +105,7 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
             lines.push(Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    format!("Error: {}", message),
+                    format!("Error: {message}"),
                     Style::default().fg(Color::Red),
                 ),
             ]));
@@ -113,7 +114,7 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
             lines.push(Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    format!("Skipped: {}", reason),
+                    format!("Skipped: {reason}"),
                     Style::default().fg(Color::Yellow),
                 ),
             ]));
@@ -334,11 +335,11 @@ fn create_result_item(job: &crate::queue::EncodingJob) -> ListItem<'static> {
                 Span::styled(output_info, Style::default().fg(Color::DarkGray)),
                 Span::raw(" "),
                 Span::styled(
-                    format!("VMAF: {:.1}", score),
+                    format!("VMAF: {score:.1}"),
                     Style::default().fg(vmaf_color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" ({})", quality_desc),
+                    format!(" ({quality_desc})"),
                     Style::default().fg(Color::DarkGray),
                 ),
             ];
@@ -362,11 +363,11 @@ fn create_result_item(job: &crate::queue::EncodingJob) -> ListItem<'static> {
                 Span::styled(output_info, Style::default().fg(Color::DarkGray)),
                 Span::raw(" "),
                 Span::styled(
-                    format!("VMAF: {:.1}", vmaf),
+                    format!("VMAF: {vmaf:.1}"),
                     Style::default().fg(vmaf_color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" < {:.0} threshold", threshold),
+                    format!(" < {threshold:.0} threshold"),
                     Style::default().fg(Color::Red),
                 ),
             ];
@@ -378,6 +379,6 @@ fn create_result_item(job: &crate::queue::EncodingJob) -> ListItem<'static> {
             }
             ListItem::new(Line::from(spans))
         }
-        _ => ListItem::new(format!("  ? {}", name)).style(Style::default().fg(Color::DarkGray)),
+        _ => ListItem::new(format!("  ? {name}")).style(Style::default().fg(Color::DarkGray)),
     }
 }

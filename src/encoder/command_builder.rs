@@ -28,7 +28,7 @@ impl EncodingParams {
         tracks: TrackSelection,
     ) -> Self {
         let tier = ResolutionTier::from_dimensions(metadata.width, metadata.height);
-        let preset = config.preset_for(&tier, metadata.hdr_type);
+        let preset = config.preset_for(tier, metadata.hdr_type);
 
         let crf = match config.encoder {
             Encoder::SvtAv1 => preset.crf,
@@ -53,7 +53,7 @@ impl EncodingParams {
     }
 }
 
-/// Build FFmpeg arguments for encoding
+/// Build `FFmpeg` arguments for encoding
 pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     let mut args = vec![
         "-y".to_string(),
@@ -70,10 +70,10 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         args.extend(["-map".to_string(), "0:s?".to_string()]);
     } else {
         for idx in &params.tracks.audio_indices {
-            args.extend(["-map".to_string(), format!("0:a:{}", idx)]);
+            args.extend(["-map".to_string(), format!("0:a:{idx}")]);
         }
         for idx in &params.tracks.subtitle_indices {
-            args.extend(["-map".to_string(), format!("0:s:{}", idx)]);
+            args.extend(["-map".to_string(), format!("0:s:{idx}")]);
         }
     }
 
@@ -229,7 +229,7 @@ fn build_video_filter(hdr_type: HdrType) -> String {
     filters.join(",")
 }
 
-/// Dolby Vision color metadata parameters (filter is handled in build_video_filter)
+/// Dolby Vision color metadata parameters (filter is handled in `build_video_filter`)
 fn get_dolby_vision_color_params() -> Vec<String> {
     vec![
         "-color_primaries".to_string(),

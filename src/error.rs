@@ -42,13 +42,13 @@ impl std::fmt::Display for AppError {
                     message
                 )
             }
-            AppError::Analysis(msg) => write!(f, "Video analysis failed: {}", msg),
-            AppError::Config(msg) => write!(f, "Configuration error: {}", msg),
-            AppError::Vmaf(msg) => write!(f, "VMAF calculation failed: {}", msg),
+            AppError::Analysis(msg) => write!(f, "Video analysis failed: {msg}"),
+            AppError::Config(msg) => write!(f, "Configuration error: {msg}"),
+            AppError::Vmaf(msg) => write!(f, "VMAF calculation failed: {msg}"),
             AppError::Parse { context, message } => {
-                write!(f, "Parse error in {}: {}", context, message)
+                write!(f, "Parse error in {context}: {message}")
             }
-            AppError::CommandExecution(msg) => write!(f, "Command execution failed: {}", msg),
+            AppError::CommandExecution(msg) => write!(f, "Command execution failed: {msg}"),
         }
     }
 }
@@ -74,12 +74,12 @@ impl From<serde_json::Error> for AppError {
 
 impl From<toml::de::Error> for AppError {
     fn from(err: toml::de::Error) -> Self {
-        AppError::Config(format!("Failed to parse TOML: {}", err))
+        AppError::Config(format!("Failed to parse TOML: {err}"))
     }
 }
 
 impl From<toml::ser::Error> for AppError {
     fn from(err: toml::ser::Error) -> Self {
-        AppError::Config(format!("Failed to serialize TOML: {}", err))
+        AppError::Config(format!("Failed to serialize TOML: {err}"))
     }
 }

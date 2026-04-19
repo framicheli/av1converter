@@ -43,7 +43,7 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
 
     let output = run_ffprobe(&args)?;
     let data: FfprobeOutput = serde_json::from_str(&output)
-        .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe output: {}", e)))?;
+        .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe output: {e}")))?;
 
     let stream = data
         .streams
@@ -55,18 +55,16 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
     let is_dolby_vision = stream
         .side_data_list
         .as_ref()
-        .map(|list| {
+        .is_some_and(|list| {
             list.iter().any(|v| {
                 v.get("side_data_type")
                     .and_then(|t| t.as_str())
-                    .map(|t| {
+                    .is_some_and(|t| {
                         t.eq_ignore_ascii_case("DOVI configuration record")
                             || t.contains("Dolby Vision")
                     })
-                    .unwrap_or(false)
             })
-        })
-        .unwrap_or(false);
+        });
 
     // Determine HDR type
     let hdr_type = if is_dolby_vision {
@@ -154,7 +152,7 @@ fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrac
 
     let output = run_ffprobe(&args)?;
     let audio_data: AllStreamsOutput = serde_json::from_str(&output)
-        .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe audio output: {}", e)))?;
+        .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe audio output: {e}")))?;
 
     let args_sub = [
         "-v",
@@ -170,7 +168,7 @@ fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrac
 
     let output_sub = run_ffprobe(&args_sub)?;
     let sub_data: AllStreamsOutput = serde_json::from_str(&output_sub).map_err(|e| {
-        AppError::Analysis(format!("Failed to parse ffprobe subtitle output: {}", e))
+        AppError::Analysis(format!("Failed to parse ffprobe subtitle output: {e}"))
     })?;
 
     let mut audio_tracks = Vec::new();
@@ -213,11 +211,11 @@ fn run_ffprobe(args: &[&str]) -> Result<String, AppError> {
     let output = Command::new("ffprobe")
         .args(args)
         .output()
-        .map_err(|e| AppError::Analysis(format!("Failed to execute ffprobe: {}", e)))?;
+        .map_err(|e| AppError::Analysis(format!("Failed to execute ffprobe: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AppError::Analysis(format!("ffprobe failed: {}", stderr)));
+        return Err(AppError::Analysis(format!("ffprobe failed: {stderr}")));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())

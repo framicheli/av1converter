@@ -14,12 +14,12 @@ pub enum HdrType {
 
 impl HdrType {
     /// Check if this is any HDR format
-    pub fn is_hdr(&self) -> bool {
+    pub fn is_hdr(self) -> bool {
         !matches!(self, HdrType::Sdr)
     }
 
     /// Get display string for this HDR type
-    pub fn display_string(&self) -> &'static str {
+    pub fn display_string(self) -> &'static str {
         match self {
             HdrType::Sdr => "SDR",
             HdrType::Pq => "HDR10",

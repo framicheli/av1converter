@@ -8,7 +8,6 @@ use crate::analyzer::{HdrType, VideoMetadata};
 use crate::config::AppConfig;
 use crate::tracks::TrackSelection;
 use crate::verifier;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tracing::{info, warn};
 
@@ -35,6 +34,12 @@ pub enum FullEncodeResult {
     },
 }
 
+impl FullEncodeResult {
+    pub fn is_success(&self) -> bool {
+        matches!(self, Self::Success | Self::SuccessWithVmaf { .. })
+    }
+}
+
 /// Orchestrate the full encoding pipeline: encode -> verify
 #[allow(clippy::too_many_arguments)]
 pub fn run_encoding_pipeline(
@@ -44,7 +49,7 @@ pub fn run_encoding_pipeline(
     tracks: TrackSelection,
     config: &AppConfig,
     progress_callback: Option<ProgressCallback>,
-    cancel_flag: Arc<AtomicBool>,
+    cancel_flag: &AtomicBool,
     on_before_vmaf: Option<Box<dyn FnOnce() + Send>>,
 ) -> FullEncodeResult {
     // Encoding parameters
@@ -65,7 +70,7 @@ pub fn run_encoding_pipeline(
             } else {
                 None
             };
-            let result = run_vmaf_check(
+            let mut result = run_vmaf_check(
                 input,
                 output,
                 vmaf_threshold,
@@ -73,24 +78,21 @@ pub fn run_encoding_pipeline(
                 metadata.width,
             );
 
-            // Optionally delete source after VMAF passes
-            if config.quality.delete_source_on_success
-                && let FullEncodeResult::SuccessWithVmaf { ref vmaf, .. } = result
-            {
-                let source_deleted = match std::fs::remove_file(input) {
+            // Optionally delete source after any successful encode
+            if config.quality.delete_source_on_success && result.is_success() {
+                match std::fs::remove_file(input) {
                     Ok(()) => {
-                        info!("Deleted source file: {} (VMAF: {:.1})", input, vmaf.score);
-                        true
+                        info!("Deleted source file: {input}");
+                        if let FullEncodeResult::SuccessWithVmaf {
+                            ref mut source_deleted,
+                            ..
+                        } = result
+                        {
+                            *source_deleted = true;
+                        }
                     }
-                    Err(e) => {
-                        warn!("Failed to delete source file {}: {}", input, e);
-                        false
-                    }
-                };
-                return FullEncodeResult::SuccessWithVmaf {
-                    vmaf: vmaf.clone(),
-                    source_deleted,
-                };
+                    Err(e) => warn!("Failed to delete source file {input}: {e}"),
+                }
             }
 
             result
@@ -108,9 +110,8 @@ fn run_vmaf_check(
     hdr_type: HdrType,
     width: u32,
 ) -> FullEncodeResult {
-    let threshold = match threshold {
-        Some(t) => t,
-        None => return FullEncodeResult::Success,
+    let Some(threshold) = threshold else {
+        return FullEncodeResult::Success;
     };
 
     info!("Running VMAF quality check...");

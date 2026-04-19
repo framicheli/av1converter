@@ -12,7 +12,7 @@ impl TrackSelection {
             self.audio_indices.retain(|&i| i != index);
         } else {
             self.audio_indices.push(index);
-            self.audio_indices.sort();
+            self.audio_indices.sort_unstable();
         }
     }
 
@@ -22,7 +22,7 @@ impl TrackSelection {
             self.subtitle_indices.retain(|&i| i != index);
         } else {
             self.subtitle_indices.push(index);
-            self.subtitle_indices.sort();
+            self.subtitle_indices.sort_unstable();
         }
     }
 }

@@ -10,6 +10,7 @@ use ratatui::{
 };
 use std::path::PathBuf;
 
+#[allow(clippy::too_many_lines)]
 pub fn render_explorer(f: &mut Frame, app: &mut App) {
     let has_message = app.message.is_some();
     let chunks = Layout::default()

@@ -10,6 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
 };
 
+#[allow(clippy::too_many_lines)]
 pub fn render_queue(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -95,21 +96,18 @@ pub fn render_queue(f: &mut Frame, app: &App) {
 
     // Current file progress
     if let Some(job) = app.queue.jobs.get(app.queue.current_job_index) {
-        match &job.status {
-            JobStatus::Encoding { progress } => {
+        if let JobStatus::Encoding { progress } = &job.status {
                 let elapsed_str = app
                     .queue
                     .elapsed_time()
-                    .map(format_duration)
-                    .unwrap_or_else(|| "--:--".to_string());
+                    .map_or_else(|| "--:--".to_string(), format_duration);
 
                 let eta_str = app
                     .queue
                     .estimated_time_remaining()
-                    .map(format_duration)
-                    .unwrap_or_else(|| "--:--".to_string());
+                    .map_or_else(|| "--:--".to_string(), format_duration);
 
-                let crf_str = job.crf.map(|c| format!("  CRF: {}", c)).unwrap_or_default();
+                let crf_str = job.crf.map(|c| format!("  CRF: {c}")).unwrap_or_default();
 
                 let label = format!(
                     "{:.1}%  |  Elapsed: {}  |  ETA: {}{}",
@@ -124,28 +122,26 @@ pub fn render_queue(f: &mut Frame, app: &App) {
                             .title(format!(" {} ", job.filename())),
                     )
                     .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
-                    .percent(*progress as u16)
+                    .percent(u16::try_from(progress.round() as u64).unwrap_or(100))
                     .label(label);
                 f.render_widget(gauge, chunks[2]);
-            }
-            _ => {
-                let status_text = match &job.status {
-                    JobStatus::Pending => "Waiting...",
-                    JobStatus::Done => "Complete!",
-                    JobStatus::Skipped { reason } => reason.as_str(),
-                    JobStatus::Error { message } => message.as_str(),
-                    _ => "",
-                };
-                let status = Paragraph::new(status_text)
-                    .alignment(Alignment::Center)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::DarkGray))
-                            .title(" Status "),
-                    );
-                f.render_widget(status, chunks[2]);
-            }
+        } else {
+            let status_text = match &job.status {
+                JobStatus::Pending => "Waiting...",
+                JobStatus::Done => "Complete!",
+                JobStatus::Skipped { reason } => reason.as_str(),
+                JobStatus::Error { message } => message.as_str(),
+                _ => "",
+            };
+            let status = Paragraph::new(status_text)
+                .alignment(Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray))
+                        .title(" Status "),
+                );
+            f.render_widget(status, chunks[2]);
         }
     }
 

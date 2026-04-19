@@ -29,7 +29,7 @@ impl ResolutionTier {
         }
     }
 
-    pub fn display_name(&self) -> &'static str {
+    pub fn display_name(self) -> &'static str {
         match self {
             ResolutionTier::SD => "SD",
             ResolutionTier::HD => "HD 720p",
@@ -42,7 +42,7 @@ impl ResolutionTier {
 
 impl std::fmt::Display for ResolutionTier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.display_name())
+        write!(f, "{}", (*self).display_name())
     }
 }
 

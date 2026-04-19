@@ -7,6 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 
+#[allow(clippy::too_many_lines)]
 pub fn render_track_config(f: &mut Frame, app: &mut App) {
     let (filename, resolution_string, hdr_string, audio_data, subtitle_data) = {
         let job = match app.current_config_job() {

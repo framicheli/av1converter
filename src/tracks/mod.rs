@@ -20,7 +20,7 @@ impl AudioTrack {
         let title = self
             .title
             .as_ref()
-            .map(|t| format!(" - {}", t))
+            .map(|t| format!(" - {t}"))
             .unwrap_or_default();
         let channels_str = match self.channels {
             Some(1) => "Mono",
@@ -42,22 +42,26 @@ impl AudioTrack {
 
     /// Get bitrate display string
     pub fn bitrate_string(&self) -> String {
-        self.bitrate
-            .map(|b| {
+        self.bitrate.map_or_else(
+            || "N/A".to_string(),
+            |b| {
                 if b >= 1_000_000 {
-                    format!("{:.1} Mbps", b as f64 / 1_000_000.0)
+                    // Convert to kbps first (fits in u32 for any real-world bitrate)
+                    let kbps = u32::try_from(b / 1000).unwrap_or(u32::MAX);
+                    format!("{:.1} Mbps", f64::from(kbps) / 1000.0)
                 } else {
                     format!("{} kbps", b / 1000)
                 }
-            })
-            .unwrap_or_else(|| "N/A".to_string())
+            },
+        )
     }
 
     /// Get sample rate display string
     pub fn sample_rate_string(&self) -> String {
-        self.sample_rate
-            .map(|s| format!("{:.1} kHz", s as f64 / 1000.0))
-            .unwrap_or_else(|| "N/A".to_string())
+        self.sample_rate.map_or_else(
+            || "N/A".to_string(),
+            |s| format!("{:.1} kHz", f64::from(s) / 1000.0),
+        )
     }
 }
 
@@ -77,7 +81,7 @@ impl SubtitleTrack {
         let title = self
             .title
             .as_ref()
-            .map(|t| format!(" - {}", t))
+            .map(|t| format!(" - {t}"))
             .unwrap_or_default();
         let forced_str = if self.forced { " [Forced]" } else { "" };
         format!(

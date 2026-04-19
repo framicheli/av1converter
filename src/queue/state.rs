@@ -35,12 +35,11 @@ impl QueueState {
     pub fn elapsed_time(&self) -> Option<Duration> {
         self.start_time.map(|start| {
             self.end_time
-                .map(|end| end.duration_since(start))
-                .unwrap_or_else(|| start.elapsed())
+                .map_or_else(|| start.elapsed(), |end| end.duration_since(start))
         })
     }
 
-    pub fn overall_progress(&self) -> f32 {
+    pub fn overall_progress(&self) -> f64 {
         if self.total_jobs_to_encode == 0 {
             return 0.0;
         }
@@ -72,9 +71,10 @@ impl QueueState {
             })
             .unwrap_or(0.0);
 
-        let total_progress =
-            (completed as f32 * 100.0 + current_progress) / self.total_jobs_to_encode as f32;
-        total_progress.min(100.0)
+        // u32::try_from avoids usize→f64 precision lint; f64::from(u32) is lossless
+        let done = f64::from(u32::try_from(completed).unwrap_or(u32::MAX));
+        let total = f64::from(u32::try_from(self.total_jobs_to_encode).unwrap_or(u32::MAX));
+        ((done * 100.0 + current_progress) / total).min(100.0)
     }
 
     pub fn estimated_time_remaining(&self) -> Option<Duration> {
@@ -84,7 +84,7 @@ impl QueueState {
         }
         let elapsed = self.elapsed_time()?;
         let elapsed_secs = elapsed.as_secs_f64();
-        let total_estimated_secs = elapsed_secs / (progress as f64 / 100.0);
+        let total_estimated_secs = elapsed_secs / (progress / 100.0);
         let remaining_secs = total_estimated_secs - elapsed_secs;
         if remaining_secs > 0.0 {
             Some(Duration::from_secs_f64(remaining_secs))

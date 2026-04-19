@@ -8,6 +8,7 @@ use crate::utils::DependencyStatus;
 use ratatui::widgets::ListState;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -41,7 +42,7 @@ pub enum TrackFocus {
 }
 
 /// Confirmation dialog action
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConfirmAction {
     CancelEncoding,
     ExitApp,
@@ -56,6 +57,8 @@ pub const HOME_MENU: &[&str] = &[
 ];
 
 /// Main application state
+// TODO: consider grouping the bool fields into sub-structs once the UI stabilises
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub current_screen: Screen,
     pub should_quit: bool,
@@ -102,6 +105,7 @@ pub struct App {
 
     // UI state
     pub message: Option<String>,
+    pub message_expiry: Option<Instant>,
     pub confirm_dialog: Option<ConfirmAction>,
     pub confirm_selection: bool,
 
@@ -122,14 +126,16 @@ impl App {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| {
             std::env::var_os("HOME")
                 .or_else(|| std::env::var_os("USERPROFILE"))
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    if cfg!(windows) {
-                        PathBuf::from("C:\\")
-                    } else {
-                        PathBuf::from("/")
-                    }
-                })
+                .map_or_else(
+                    || {
+                        if cfg!(windows) {
+                            PathBuf::from("C:\\")
+                        } else {
+                            PathBuf::from("/")
+                        }
+                    },
+                    PathBuf::from,
+                )
         });
         let mut list_state = ListState::default();
         list_state.select(Some(0));
@@ -170,6 +176,7 @@ impl App {
             config,
             deps,
             message: None,
+            message_expiry: None,
             confirm_dialog: None,
             confirm_selection: false,
             config_selected: 0,
@@ -182,10 +189,26 @@ impl App {
 
     pub fn set_message(&mut self, msg: &str) {
         self.message = Some(msg.to_string());
+        self.message_expiry = None;
+    }
+
+    pub fn set_timed_message(&mut self, msg: &str, secs: u64) {
+        self.message = Some(msg.to_string());
+        self.message_expiry = Some(Instant::now() + std::time::Duration::from_secs(secs));
     }
 
     pub fn clear_message(&mut self) {
         self.message = None;
+        self.message_expiry = None;
+    }
+
+    pub fn tick_message(&mut self) {
+        if let Some(expiry) = self.message_expiry
+            && Instant::now() >= expiry
+        {
+            self.message = None;
+            self.message_expiry = None;
+        }
     }
 
     // Navigation
@@ -208,7 +231,15 @@ impl App {
     }
 
     pub fn navigate_to_track_config(&mut self) {
-        self.track_focus = TrackFocus::Audio;
+        let audio_count = self.current_config_job().map_or(0, |j| j.audio_tracks.len());
+        let subtitle_count = self.current_config_job().map_or(0, |j| j.subtitle_tracks.len());
+        self.track_focus = if audio_count > 0 {
+            TrackFocus::Audio
+        } else if subtitle_count > 0 {
+            TrackFocus::Subtitle
+        } else {
+            TrackFocus::Confirm
+        };
         self.audio_cursor = 0;
         self.subtitle_cursor = 0;
         self.current_screen = Screen::TrackConfig;
@@ -260,7 +291,7 @@ impl App {
         // Read directory contents
         if let Ok(entries) = std::fs::read_dir(&self.current_dir) {
             let mut paths: Vec<PathBuf> = entries
-                .filter_map(|e| e.ok())
+                .filter_map(Result::ok)
                 .map(|e| e.path())
                 .filter(|p| p.is_dir() || is_video_file(p))
                 .collect();
@@ -359,7 +390,7 @@ impl App {
                 } else if is_video_file(&selected) {
                     if self.selected_files.is_empty() {
                         // Single file
-                        self.queue.jobs.clear();
+                        self.queue.reset();
                         self.queue.jobs.push(EncodingJob::new(selected));
                         self.analyze_jobs();
                     } else {
@@ -367,7 +398,7 @@ impl App {
                         if !self.selected_files.contains(&selected) {
                             self.selected_files.push(selected);
                         }
-                        self.queue.jobs.clear();
+                        self.queue.reset();
                         for path in &self.selected_files {
                             self.queue.jobs.push(EncodingJob::new(path.clone()));
                         }
@@ -395,7 +426,7 @@ impl App {
     }
 
     pub fn scan_folder(&mut self, folder: &Path, recursive: bool) {
-        self.queue.jobs.clear();
+        self.queue.reset();
 
         if recursive {
             let mut paths: Vec<PathBuf> = Vec::new();
@@ -406,7 +437,7 @@ impl App {
             }
         } else if let Ok(entries) = std::fs::read_dir(folder) {
             let mut paths: Vec<PathBuf> = entries
-                .filter_map(|e| e.ok())
+                .filter_map(Result::ok)
                 .map(|e| e.path())
                 .filter(|p| is_video_file(p))
                 .collect();
@@ -574,7 +605,7 @@ impl App {
         self.analysis_cancel_flag.store(true, Ordering::Relaxed);
         self.analyzing = false;
         self.analysis_receiver = None;
-        self.queue.jobs.clear();
+        self.queue.reset();
         self.navigate_to_home();
     }
 
@@ -669,7 +700,7 @@ impl App {
         let config = self.config.clone();
 
         thread::spawn(move || {
-            run_worker(worker_jobs, config, cancel_flag, tx);
+            run_worker(worker_jobs, &config, &cancel_flag, &tx);
         });
     }
 
@@ -677,6 +708,7 @@ impl App {
         self.cancel_flag.store(true, Ordering::Relaxed);
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn process_progress_messages(&mut self) {
         let messages: Vec<WorkerMessage> = if let Some(ref rx) = self.progress_receiver {
             let mut msgs = Vec::new();
@@ -808,7 +840,7 @@ fn collect_video_files(dir: &Path, paths: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.filter_map(|e| e.ok()) {
+    for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
         if path.is_symlink() {
             continue;
@@ -830,13 +862,12 @@ fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig) {
         .filter(|t| {
             t.language
                 .as_deref()
-                .map(|l| {
+                .is_some_and(|l| {
                     config
                         .preferred_audio_languages
                         .iter()
                         .any(|p| p.eq_ignore_ascii_case(l))
                 })
-                .unwrap_or(false)
         })
         .map(|t| t.index)
         .collect();

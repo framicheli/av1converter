@@ -90,6 +90,21 @@ fn default_uhd_dv() -> EncodingPreset {
     }
 }
 
+impl EncodingPresetsConfig {
+    pub fn all_mut(&mut self) -> [&mut EncodingPreset; 8] {
+        [
+            &mut self.sd,
+            &mut self.hd,
+            &mut self.full_hd,
+            &mut self.full_hd_hdr,
+            &mut self.full_hd_dv,
+            &mut self.uhd,
+            &mut self.uhd_hdr,
+            &mut self.uhd_dv,
+        ]
+    }
+}
+
 impl Default for EncodingPresetsConfig {
     fn default() -> Self {
         Self {
@@ -150,7 +165,7 @@ pub struct OutputConfig {
     pub container: String,
     /// Whether to place output in same directory as source
     pub same_directory: bool,
-    /// Custom output directory (if same_directory is false)
+    /// Custom output directory (if `same_directory` is false)
     pub output_directory: Option<String>,
 }
 

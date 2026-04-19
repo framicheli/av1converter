@@ -17,8 +17,8 @@ pub enum Encoder {
 }
 
 impl Encoder {
-    /// FFmpeg encoder name
-    pub fn ffmpeg_name(&self) -> &'static str {
+    /// `FFmpeg` encoder name
+    pub fn ffmpeg_name(self) -> &'static str {
         match self {
             Encoder::Nvenc => "av1_nvenc",
             Encoder::Qsv => "av1_qsv",
@@ -28,12 +28,20 @@ impl Encoder {
     }
 
     /// Display name for UI
-    pub fn display_name(&self) -> &'static str {
+    pub fn display_name(self) -> &'static str {
         match self {
             Encoder::Nvenc => "NVENC (NVIDIA)",
             Encoder::Qsv => "Quick Sync (Intel)",
             Encoder::Amf => "AMF (AMD)",
             Encoder::SvtAv1 => "SVT-AV1 (Software)",
+        }
+    }
+
+    /// Maximum RF/CRF quality value for this encoder
+    pub const fn max_quality(self) -> u8 {
+        match self {
+            Self::SvtAv1 => 63,
+            Self::Nvenc | Self::Qsv | Self::Amf => 51,
         }
     }
 }
@@ -46,7 +54,7 @@ impl Default for Encoder {
 
 impl std::fmt::Display for Encoder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.display_name())
+        write!(f, "{}", (*self).display_name())
     }
 }
 

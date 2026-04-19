@@ -6,6 +6,8 @@ use ratatui::{
 
 /// Create a centered rectangle within a given area
 pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let percent_x = percent_x.min(100);
+    let percent_y = percent_y.min(100);
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -27,12 +29,16 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 
 /// Get color for VMAF score/threshold
 pub fn get_vmaf_color(score: f64) -> Color {
-    match score as u32 {
-        95..=100 => Color::Cyan,
-        90..=94 => Color::Green,
-        85..=89 => Color::Yellow,
-        80..=84 => Color::Rgb(255, 165, 0),
-        _ => Color::Red,
+    if score >= 95.0 {
+        Color::Cyan
+    } else if score >= 90.0 {
+        Color::Green
+    } else if score >= 85.0 {
+        Color::Yellow
+    } else if score >= 80.0 {
+        Color::Rgb(255, 165, 0)
+    } else {
+        Color::Red
     }
 }
 
@@ -47,17 +53,22 @@ pub fn create_menu_item(text: &str, index: usize, selected: usize) -> ListItem<'
     };
 
     let prefix = if index == selected { "> " } else { "  " };
-    ListItem::new(format!("{}{}", prefix, text)).style(style)
+    ListItem::new(format!("{prefix}{text}")).style(style)
 }
 
 /// Get quality description for VMAF score
 pub fn get_quality_description(score: f64) -> &'static str {
-    match score as u32 {
-        95..=100 => "Excellent",
-        90..=94 => "Very Good",
-        85..=89 => "Good",
-        80..=84 => "Fair",
-        70..=79 => "Poor",
-        _ => "Bad",
+    if score >= 95.0 {
+        "Excellent"
+    } else if score >= 90.0 {
+        "Very Good"
+    } else if score >= 85.0 {
+        "Good"
+    } else if score >= 80.0 {
+        "Fair"
+    } else if score >= 70.0 {
+        "Poor"
+    } else {
+        "Bad"
     }
 }

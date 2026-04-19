@@ -53,7 +53,7 @@ impl AppConfig {
                     return config;
                 }
                 Err(e) => {
-                    warn!("Failed to load config: {:?}. Using defaults.", e);
+                    warn!("Failed to load config: {e:?}. Using defaults.");
                 }
             }
         }
@@ -61,7 +61,7 @@ impl AppConfig {
         let config = Self::default();
         // Save default config for future editing
         if let Err(e) = config.save() {
-            warn!("Failed to save default config: {:?}", e);
+            warn!("Failed to save default config: {e:?}");
         }
         config
     }
@@ -72,13 +72,13 @@ impl AppConfig {
 
         if let Some(parent) = config_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                AppError::Config(format!("Failed to create config directory: {}", e))
+                AppError::Config(format!("Failed to create config directory: {e}"))
             })?;
         }
 
         let toml_string = toml::to_string_pretty(self)?;
         std::fs::write(&config_path, toml_string)
-            .map_err(|e| AppError::Config(format!("Failed to write config file: {}", e)))?;
+            .map_err(|e| AppError::Config(format!("Failed to write config file: {e}")))?;
 
         info!("Saved config to {}", config_path.display());
         Ok(())
@@ -87,7 +87,7 @@ impl AppConfig {
     /// Load configuration from a specific file
     fn load_from_file(path: &std::path::Path) -> Result<Self, AppError> {
         let content = std::fs::read_to_string(path)
-            .map_err(|e| AppError::Config(format!("Failed to read config file: {}", e)))?;
+            .map_err(|e| AppError::Config(format!("Failed to read config file: {e}")))?;
         let config: AppConfig = toml::from_str(&content)?;
         Ok(config)
     }
@@ -107,12 +107,20 @@ impl AppConfig {
     pub fn sanitize(&mut self) {
         self.quality.vmaf_threshold = self.quality.vmaf_threshold.clamp(0.0, 100.0);
         self.performance.svt_preset = self.performance.svt_preset.min(13);
+        for preset in self.presets.all_mut() {
+            preset.crf = preset.crf.min(Encoder::SvtAv1.max_quality());
+            let hw_max = Encoder::Nvenc.max_quality();
+            preset.nvenc_cq = preset.nvenc_cq.min(hw_max);
+            preset.qsv_quality = preset.qsv_quality.min(hw_max);
+            preset.amf_quality = preset.amf_quality.min(hw_max);
+            preset.film_grain = preset.film_grain.min(50);
+        }
     }
 
     /// Get the encoding preset for a given resolution tier and HDR type
     pub fn preset_for(
         &self,
-        tier: &crate::analyzer::ResolutionTier,
+        tier: crate::analyzer::ResolutionTier,
         hdr_type: crate::analyzer::HdrType,
     ) -> &EncodingPreset {
         use crate::analyzer::{HdrType, ResolutionTier};

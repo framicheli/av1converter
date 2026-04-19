@@ -1,6 +1,6 @@
 [package]
 name = "av1converter"
-version = "2.4.0"
+version = "2.4.1"
 edition = "2024"
 
 [dependencies]
@@ -13,4 +13,4 @@ toml = "1.1.2"
 # Logging
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-tracing-appender = "0.2.4"
+tracing-appender = "0.2.5"

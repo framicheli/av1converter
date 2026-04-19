@@ -27,13 +27,19 @@ impl VmafResult {
 
     /// Get human-readable quality grade
     pub fn quality_grade(&self) -> &'static str {
-        match self.score as u32 {
-            95..=100 => "Excellent",
-            90..=94 => "Very Good",
-            80..=89 => "Good",
-            70..=79 => "Fair",
-            60..=69 => "Poor",
-            _ => "Bad",
+        let s = self.score;
+        if s >= 95.0 {
+            "Excellent"
+        } else if s >= 90.0 {
+            "Very Good"
+        } else if s >= 80.0 {
+            "Good"
+        } else if s >= 70.0 {
+            "Fair"
+        } else if s >= 60.0 {
+            "Poor"
+        } else {
+            "Bad"
         }
     }
 }
@@ -108,7 +114,7 @@ pub fn calculate_vmaf(
             "-",
         ])
         .output()
-        .map_err(|e| AppError::CommandExecution(format!("Failed to run ffmpeg for VMAF: {}", e)))?;
+        .map_err(|e| AppError::CommandExecution(format!("Failed to run ffmpeg for VMAF: {e}")))?;
 
     if !output.status.success() {
         let _ = std::fs::remove_file(&json_output);
@@ -131,10 +137,10 @@ pub fn calculate_vmaf(
     let json_content = std::fs::read_to_string(&json_output);
     let _ = std::fs::remove_file(&json_output);
     let json_content =
-        json_content.map_err(|e| AppError::Vmaf(format!("Failed to read VMAF output: {}", e)))?;
+        json_content.map_err(|e| AppError::Vmaf(format!("Failed to read VMAF output: {e}")))?;
 
     let vmaf_data: VmafJson = serde_json::from_str(&json_content)
-        .map_err(|e| AppError::Vmaf(format!("Failed to parse VMAF JSON: {}", e)))?;
+        .map_err(|e| AppError::Vmaf(format!("Failed to parse VMAF JSON: {e}")))?;
 
     let result = VmafResult {
         score: vmaf_data.pooled_metrics.vmaf.mean,

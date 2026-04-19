@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, Encoder, EncodingPreset};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -21,7 +21,7 @@ pub enum ConfigItemKind {
     Text,
 }
 
-/// Which AppConfig field a row maps to.
+/// Which `AppConfig` field a row maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigField {
     Encoder,
@@ -30,6 +30,14 @@ pub enum ConfigField {
     DeleteSource,
     SvtPreset,
     NvencPreset,
+    RfSd,
+    RfHd,
+    RfFullHd,
+    RfFullHdHdr,
+    RfFullHdDv,
+    RfUhd,
+    RfUhdHdr,
+    RfUhdDv,
     OutputSuffix,
     OutputContainer,
     SameDirectory,
@@ -77,6 +85,46 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         field: ConfigField::NvencPreset,
     },
     ConfigItem {
+        label: "RF SD",
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::RfSd,
+    },
+    ConfigItem {
+        label: "RF HD (720p)",
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::RfHd,
+    },
+    ConfigItem {
+        label: "RF 1080p SDR",
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::RfFullHd,
+    },
+    ConfigItem {
+        label: "RF 1080p HDR",
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::RfFullHdHdr,
+    },
+    ConfigItem {
+        label: "RF 1080p DV",
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::RfFullHdDv,
+    },
+    ConfigItem {
+        label: "RF 4K SDR",
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::RfUhd,
+    },
+    ConfigItem {
+        label: "RF 4K HDR",
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::RfUhdHdr,
+    },
+    ConfigItem {
+        label: "RF 4K DV",
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::RfUhdDv,
+    },
+    ConfigItem {
         label: "Output Suffix",
         kind: ConfigItemKind::Text,
         field: ConfigField::OutputSuffix,
@@ -115,11 +163,28 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::DeleteSource => bool_display(config.quality.delete_source_on_success),
         ConfigField::SvtPreset => config.performance.svt_preset.to_string(),
         ConfigField::NvencPreset => config.performance.nvenc_preset.clone(),
+        ConfigField::RfSd => preset_rf(config.encoder, &config.presets.sd),
+        ConfigField::RfHd => preset_rf(config.encoder, &config.presets.hd),
+        ConfigField::RfFullHd => preset_rf(config.encoder, &config.presets.full_hd),
+        ConfigField::RfFullHdHdr => preset_rf(config.encoder, &config.presets.full_hd_hdr),
+        ConfigField::RfFullHdDv => preset_rf(config.encoder, &config.presets.full_hd_dv),
+        ConfigField::RfUhd => preset_rf(config.encoder, &config.presets.uhd),
+        ConfigField::RfUhdHdr => preset_rf(config.encoder, &config.presets.uhd_hdr),
+        ConfigField::RfUhdDv => preset_rf(config.encoder, &config.presets.uhd_dv),
         ConfigField::OutputSuffix => config.output.suffix.clone(),
         ConfigField::OutputContainer => config.output.container.clone(),
         ConfigField::SameDirectory => bool_display(config.output.same_directory),
         ConfigField::AudioLanguages => config.tracks.preferred_audio_languages.join(", "),
         ConfigField::SubtitleLanguages => config.tracks.preferred_subtitle_languages.join(", "),
+    }
+}
+
+fn preset_rf(encoder: Encoder, preset: &EncodingPreset) -> String {
+    match encoder {
+        Encoder::SvtAv1 => preset.crf.to_string(),
+        Encoder::Nvenc => preset.nvenc_cq.to_string(),
+        Encoder::Qsv => preset.qsv_quality.to_string(),
+        Encoder::Amf => preset.amf_quality.to_string(),
     }
 }
 
@@ -181,33 +246,44 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
 
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 
-    // Help line changes contextually when a text field is being edited
-    let help_text = if app.config_editing {
-        Line::from(vec![
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(" Confirm  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(" Cancel"),
-        ])
+    // Status bar: show save confirmation when present, otherwise show help
+    if let Some(ref msg) = app.message {
+        let status = Paragraph::new(msg.as_str())
+            .style(
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::NONE));
+        f.render_widget(status, chunks[2]);
     } else {
-        Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(" Navigate  "),
-            Span::styled("←→", Style::default().fg(Color::Yellow)),
-            Span::raw(" Adjust  "),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(" Edit text  "),
-            Span::styled("s", Style::default().fg(Color::Yellow)),
-            Span::raw(" Save  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(" Back"),
-        ])
-    };
-
-    let help = Paragraph::new(help_text)
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::NONE));
-    f.render_widget(help, chunks[2]);
+        let help_text = if app.config_editing {
+            Line::from(vec![
+                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(" Confirm  "),
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(" Cancel"),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+                Span::raw(" Navigate  "),
+                Span::styled("←→", Style::default().fg(Color::Yellow)),
+                Span::raw(" Adjust  "),
+                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(" Edit text  "),
+                Span::styled("s", Style::default().fg(Color::Yellow)),
+                Span::raw(" Save  "),
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(" Back"),
+            ])
+        };
+        let help = Paragraph::new(help_text)
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::NONE));
+        f.render_widget(help, chunks[2]);
+    }
 }
 
 fn build_config_items(
