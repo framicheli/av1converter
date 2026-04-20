@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
-    let Some(action) = &app.confirm_dialog else {
+    let Some((action, selected)) = &app.confirm_dialog else {
         return;
     };
 
@@ -58,7 +58,7 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
     f.render_widget(msg, chunks[1]);
 
     // Buttons
-    let yes_style = if app.confirm_selection {
+    let yes_style = if *selected {
         Style::default()
             .fg(Color::Black)
             .bg(Color::Red)
@@ -67,7 +67,7 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
         Style::default().fg(Color::Red)
     };
 
-    let no_style = if app.confirm_selection {
+    let no_style = if *selected {
         Style::default().fg(Color::Green)
     } else {
         Style::default()

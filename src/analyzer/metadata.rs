@@ -31,17 +31,14 @@ impl HdrType {
 
 /// Video metadata from analysis
 #[derive(Debug, Clone)]
-#[allow(unused)]
 pub struct VideoMetadata {
     pub width: u32,
     pub height: u32,
     pub hdr_type: HdrType,
     pub codec_name: String,
-    pub pixel_format: Option<String>,
     pub frame_rate_num: u32,
     pub frame_rate_den: u32,
     pub duration_secs: f64,
-    pub bitrate: Option<u64>,
 }
 
 impl VideoMetadata {

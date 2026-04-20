@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use tracing::{info, warn};
 
 /// Main application configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Selected encoder
     pub encoder: Encoder,
@@ -26,19 +26,6 @@ pub struct AppConfig {
     pub tracks: TrackPresetConfig,
 }
 
-#[allow(clippy::derivable_impls)]
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            encoder: Encoder::default(),
-            quality: QualityConfig::default(),
-            performance: PerformanceConfig::default(),
-            presets: EncodingPresetsConfig::default(),
-            output: OutputConfig::default(),
-            tracks: TrackPresetConfig::default(),
-        }
-    }
-}
 
 impl AppConfig {
     /// Load configuration from TOML file, or create default if not found.

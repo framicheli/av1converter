@@ -9,7 +9,7 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 - **Batch processing** — Convert a single file, a folder, or an entire directory tree recursively
 - **Smart preset selection** — Automatically picks encoding parameters based on resolution and HDR type
 - **VMAF quality verification** — Scores output quality after encoding; deletes source file if the threshold is met
-- **Track selection** — Choose which audio and subtitle tracks to include per file
+- **Track selection** — Auto-selects audio and subtitle tracks by preferred language; Selects all tracks or first track when no match is found
 - **Configurable** — All key settings adjustable through the built-in configuration screen or `~/.config/av1converter/config.toml`
 
 ## Prerequisites
@@ -69,11 +69,11 @@ Presets are selected automatically based on resolution and HDR format:
 | SD (≤480p) | No           | **SD**         | vmaf_v0.6.1        |
 | HD (720p)  | No           | **HD**         | vmaf_v0.6.1        |
 | 1080p      | No           | **1080p SDR**  | vmaf_v0.6.1        |
-| 1080p      | Yes          | **1080p HDR**  | vmaf_v0.6.1neg     |
-| 1080p      | Dolby Vision | **1080p DV**   | vmaf_v0.6.1neg     |
-| 4K         | No           | **4K SDR**     | vmaf_4k_v0.6.1     |
-| 4K         | Yes          | **4K HDR**     | vmaf_4k_v0.6.1     |
-| 4K         | Dolby Vision | **4K DV**      | vmaf_4k_v0.6.1     |
+| 1080p      | Yes (HDR10/HLG) | **1080p HDR**  | vmaf_v0.6.1neg     |
+| 1080p      | Dolby Vision    | **1080p DV**   | vmaf_v0.6.1neg     |
+| 4K         | No              | **4K SDR**     | vmaf_4k_v0.6.1     |
+| 4K         | Yes (HDR10/HLG) | **4K HDR**     | vmaf_4k_v0.6.1neg  |
+| 4K         | Dolby Vision    | **4K DV**      | vmaf_4k_v0.6.1neg  |
 
 Files already encoded in AV1 are automatically skipped.
 
@@ -92,12 +92,13 @@ Configuration is stored at `~/.config/av1converter/config.toml` and can be edite
 
 ```toml
 [Quality]
-vmaf_threshold = 90.0      # VMAF score required to delete the source file (0–100)
-vmaf_enabled = true        # Enable/disable VMAF verification
+vmaf_threshold = 90.0          # VMAF score required to consider encoding successful (0–100)
+vmaf_enabled = true            # Enable/disable VMAF verification after encoding
+delete_source_on_success = false  # Delete source file when VMAF score meets threshold
 
 [Performance]
 svt_preset = 4             # SVT-AV1 preset: 0 (slowest) – 13 (fastest)
-nvenc_preset = "p7"        # NVENC preset: p1 (best quality) – p7 (fastest)
+nvenc_preset = "p4"        # NVENC preset: p1 (best quality) – p7 (fastest)
 
 [Output]
 suffix = "_av1"            # Appended to output filenames

@@ -93,29 +93,15 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
         .and_then(|d| d.parse::<f64>().ok())
         .unwrap_or(0.0);
 
-    // Parse bitrate from format
-    let bitrate = data
-        .format
-        .as_ref()
-        .and_then(|f| f.bit_rate.as_deref())
-        .and_then(|b| b.parse::<u64>().ok())
-        .or_else(|| {
-            stream
-                .bit_rate
-                .as_deref()
-                .and_then(|b| b.parse::<u64>().ok())
-        });
 
     Ok(VideoMetadata {
         width: stream.width,
         height: stream.height,
         hdr_type,
         codec_name: stream.codec_name.unwrap_or_else(|| "unknown".to_string()),
-        pixel_format: stream.pix_fmt,
         frame_rate_num,
         frame_rate_den,
         duration_secs,
-        bitrate,
     })
 }
 
@@ -232,22 +218,16 @@ struct FfprobeOutput {
 #[derive(Debug, Deserialize)]
 struct FormatInfo {
     duration: Option<String>,
-    bit_rate: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(unused)]
 struct VideoStream {
     width: u32,
     height: u32,
     codec_name: Option<String>,
-    pix_fmt: Option<String>,
-    color_primaries: Option<String>,
     color_transfer: Option<String>,
-    color_space: Option<String>,
     r_frame_rate: Option<String>,
     avg_frame_rate: Option<String>,
-    bit_rate: Option<String>,
     side_data_list: Option<Vec<Value>>,
 }
 
@@ -257,10 +237,7 @@ struct AllStreamsOutput {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(unused)]
 struct RawStream {
-    index: Option<usize>,
-    codec_type: Option<String>,
     codec_name: Option<String>,
     channels: Option<u16>,
     bit_rate: Option<String>,

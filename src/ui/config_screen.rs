@@ -224,8 +224,8 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
     let items = build_config_items(
         &app.config,
         app.config_selected,
-        app.config_editing,
-        &app.config_input_buffer,
+        app.config_edit_buffer.is_some(),
+        app.config_edit_buffer.as_deref().unwrap_or(""),
     );
 
     // Use a ListState to handle scrolling automatically
@@ -258,7 +258,7 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
             .block(Block::default().borders(Borders::NONE));
         f.render_widget(status, chunks[2]);
     } else {
-        let help_text = if app.config_editing {
+        let help_text = if app.config_edit_buffer.is_some() {
             Line::from(vec![
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
                 Span::raw(" Confirm  "),
@@ -301,7 +301,7 @@ fn build_config_items(
 
             // While editing, show the live buffer with a text cursor
             let display_value = if is_selected && editing && is_text {
-                format!("{}|", input_buffer)
+                format!("{input_buffer}|")
             } else {
                 get_config_value(config, i)
             };

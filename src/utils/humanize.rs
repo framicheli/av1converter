@@ -8,9 +8,9 @@ pub fn format_duration(duration: Duration) -> String {
     let seconds = total_secs % 60;
 
     if hours > 0 {
-        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
     } else {
-        format!("{:02}:{:02}", minutes, seconds)
+        format!("{minutes:02}:{seconds:02}")
     }
 }
 
@@ -20,13 +20,16 @@ pub fn format_file_size(bytes: u64) -> String {
     const MB: u64 = 1024 * KB;
     const GB: u64 = 1024 * MB;
 
+    let b = u128::from(bytes);
     if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
+        let h = b * 100 / u128::from(GB);
+        format!("{}.{:02} GB", h / 100, h % 100)
     } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
+        let h = b * 10 / u128::from(MB);
+        format!("{}.{} MB", h / 10, h % 10)
     } else if bytes >= KB {
-        format!("{:.0} KB", bytes as f64 / KB as f64)
+        format!("{} KB", bytes / KB)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }

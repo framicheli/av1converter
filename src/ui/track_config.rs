@@ -10,10 +10,7 @@ use ratatui::{
 #[allow(clippy::too_many_lines)]
 pub fn render_track_config(f: &mut Frame, app: &mut App) {
     let (filename, resolution_string, hdr_string, audio_data, subtitle_data) = {
-        let job = match app.current_config_job() {
-            Some(j) => j,
-            None => return,
-        };
+        let Some(job) = app.current_config_job() else { return };
 
         let audio_data: Vec<(String, String, String, bool)> = job
             .audio_tracks
@@ -201,7 +198,7 @@ fn create_audio_track_item(
 ) -> ListItem<'static> {
     let checkbox = if selected { "[x]" } else { "[ ]" };
     let prefix = if is_cursor { "> " } else { "  " };
-    let extra = format!(" ({}, {})", bitrate, sample_rate);
+    let extra = format!(" ({bitrate}, {sample_rate})");
 
     let style = if is_cursor {
         Style::default().add_modifier(Modifier::BOLD)
@@ -211,7 +208,7 @@ fn create_audio_track_item(
         Style::default().fg(Color::DarkGray)
     };
 
-    ListItem::new(format!("{}{} {}{}", prefix, checkbox, name, extra)).style(style)
+    ListItem::new(format!("{prefix}{checkbox} {name}{extra}")).style(style)
 }
 
 fn create_subtitle_track_item(
@@ -232,5 +229,5 @@ fn create_subtitle_track_item(
         Style::default().fg(Color::DarkGray)
     };
 
-    ListItem::new(format!("{}{} {}{}", prefix, checkbox, name, forced_str)).style(style)
+    ListItem::new(format!("{prefix}{checkbox} {name}{forced_str}")).style(style)
 }

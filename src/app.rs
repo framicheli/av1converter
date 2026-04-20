@@ -31,6 +31,7 @@ pub enum Screen {
 pub enum SelectionMode {
     File,
     Folder,
+    FolderRecursive,
 }
 
 /// Track configuration focus
@@ -57,8 +58,6 @@ pub const HOME_MENU: &[&str] = &[
 ];
 
 /// Main application state
-// TODO: consider grouping the bool fields into sub-structs once the UI stabilises
-#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub current_screen: Screen,
     pub should_quit: bool,
@@ -69,8 +68,6 @@ pub struct App {
     pub dir_entries: Vec<PathBuf>,
     pub explorer_index: usize,
     pub explorer_list_state: ListState,
-    pub recursive_scan: bool,
-
     // Queue state (replaces Vec<VideoFile>)
     pub queue: QueueState,
 
@@ -94,7 +91,6 @@ pub struct App {
     pub cancel_flag: Arc<AtomicBool>,
 
     // Background analysis
-    pub analyzing: bool,
     pub analysis_receiver: Option<Receiver<Vec<Result<AnalysisResult, AppError>>>>,
     /// Ask the analysis thread to stop spawning new ffprobe calls
     pub analysis_cancel_flag: Arc<AtomicBool>,
@@ -106,13 +102,11 @@ pub struct App {
     // UI state
     pub message: Option<String>,
     pub message_expiry: Option<Instant>,
-    pub confirm_dialog: Option<ConfirmAction>,
-    pub confirm_selection: bool,
+    pub confirm_dialog: Option<(ConfirmAction, bool)>,
 
     // Config screen state
     pub config_selected: usize,
-    pub config_editing: bool,
-    pub config_input_buffer: String,
+    pub config_edit_buffer: Option<String>,
 }
 
 impl Default for App {
@@ -157,7 +151,6 @@ impl App {
             dir_entries: Vec::new(),
             explorer_index: 0,
             explorer_list_state: list_state,
-            recursive_scan: false,
             queue: QueueState::new(),
             track_focus: TrackFocus::Audio,
             audio_cursor: 0,
@@ -170,7 +163,6 @@ impl App {
             encoding_active: false,
             progress_receiver: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
-            analyzing: false,
             analysis_receiver: None,
             analysis_cancel_flag: Arc::new(AtomicBool::new(false)),
             config,
@@ -178,10 +170,8 @@ impl App {
             message: None,
             message_expiry: None,
             confirm_dialog: None,
-            confirm_selection: false,
             config_selected: 0,
-            config_editing: false,
-            config_input_buffer: String::new(),
+            config_edit_buffer: None,
         }
     }
 
@@ -220,12 +210,13 @@ impl App {
     }
 
     pub fn navigate_to_explorer(&mut self, select_folder: bool, recursive: bool) {
-        self.selection_mode = if select_folder {
-            SelectionMode::Folder
-        } else {
+        self.selection_mode = if !select_folder {
             SelectionMode::File
+        } else if recursive {
+            SelectionMode::FolderRecursive
+        } else {
+            SelectionMode::Folder
         };
-        self.recursive_scan = recursive;
         self.refresh_dir_entries();
         self.current_screen = Screen::FileExplorer { select_folder };
     }
@@ -406,11 +397,12 @@ impl App {
                     }
                 }
             }
-            SelectionMode::Folder => {
+            SelectionMode::Folder | SelectionMode::FolderRecursive => {
                 if selected == Path::new("..") || !selected.is_dir() {
                     self.enter_directory();
                 } else {
-                    self.scan_folder(&selected, self.recursive_scan);
+                    let recursive = self.selection_mode == SelectionMode::FolderRecursive;
+                    self.scan_folder(&selected, recursive);
                     if self.queue.jobs.is_empty() {
                         self.set_message("No video files found in this folder");
                     } else if self.queue.jobs.len() == 1 {
@@ -477,7 +469,6 @@ impl App {
 
         let (tx, rx) = mpsc::channel();
         self.analysis_receiver = Some(rx);
-        self.analyzing = true;
 
         thread::spawn(move || {
             let results: Vec<Result<AnalysisResult, AppError>> = std::thread::scope(|s| {
@@ -593,7 +584,6 @@ impl App {
         };
 
         if let Some(results) = results {
-            self.analyzing = false;
             self.analysis_receiver = None;
             self.apply_analysis_results(results);
         }
@@ -603,7 +593,6 @@ impl App {
     pub fn cancel_analysis(&mut self) {
         // Signal the analysis thread to stop spawning new ffprobe calls
         self.analysis_cancel_flag.store(true, Ordering::Relaxed);
-        self.analyzing = false;
         self.analysis_receiver = None;
         self.queue.reset();
         self.navigate_to_home();
@@ -890,13 +879,12 @@ fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig) {
         .filter(|t| {
             t.language
                 .as_deref()
-                .map(|l| {
+                .is_some_and(|l| {
                     config
                         .preferred_subtitle_languages
                         .iter()
                         .any(|p| p.eq_ignore_ascii_case(l))
                 })
-                .unwrap_or(false)
         })
         .map(|t| t.index)
         .collect();

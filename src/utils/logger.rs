@@ -1,6 +1,6 @@
 use tracing_appender::non_blocking::WorkerGuard;
 
-/// Initialize logging based on AV1_DEBUG environment variable
+/// Initialize logging based on `AV1_DEBUG` environment variable
 pub fn init_logging() -> Option<WorkerGuard> {
     if std::env::var("AV1_DEBUG").is_ok() {
         let log_dir = std::env::var_os("XDG_DATA_HOME")

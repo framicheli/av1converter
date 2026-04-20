@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-/// AV1Converter application error
+/// `AV1Converter` application error
 #[derive(Debug)]
 pub enum AppError {
     /// File I/O error

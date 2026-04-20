@@ -26,7 +26,7 @@ pub fn render_queue(f: &mut Frame, app: &App) {
     // Title with progress header
     let total_to_encode = app.queue.total_jobs_to_encode;
 
-    let title_text = if app.analyzing {
+    let title_text = if app.analysis_receiver.is_some() {
         let analyzed = app
             .queue
             .jobs
@@ -34,7 +34,7 @@ pub fn render_queue(f: &mut Frame, app: &App) {
             .filter(|j| !matches!(j.status, JobStatus::Analyzing))
             .count();
         let total = app.queue.jobs.len();
-        format!("Analyzing Files... ({}/{})", analyzed, total)
+        format!("Analyzing Files... ({analyzed}/{total})")
     } else if app.encoding_active {
         if let Some(job) = app.queue.jobs.get(app.queue.current_job_index) {
             if matches!(job.status, JobStatus::Encoding { .. }) {
@@ -52,12 +52,12 @@ pub fn render_queue(f: &mut Frame, app: &App) {
                 )
             }
         } else {
-            format!("Conversion Queue (0/{})", total_to_encode)
+            format!("Conversion Queue (0/{total_to_encode})")
         }
     } else {
         let done = app.queue.converted_count + app.queue.skipped_count + app.queue.error_count;
         let total = app.queue.jobs.len();
-        format!("Conversion Queue ({}/{})", done, total)
+        format!("Conversion Queue ({done}/{total})")
     };
 
     let title = Paragraph::new(title_text)
@@ -109,10 +109,7 @@ pub fn render_queue(f: &mut Frame, app: &App) {
 
                 let crf_str = job.crf.map(|c| format!("  CRF: {c}")).unwrap_or_default();
 
-                let label = format!(
-                    "{:.1}%  |  Elapsed: {}  |  ETA: {}{}",
-                    progress, elapsed_str, eta_str, crf_str
-                );
+                let label = format!("{progress:.1}%  |  Elapsed: {elapsed_str}  |  ETA: {eta_str}{crf_str}");
 
                 let gauge = Gauge::default()
                     .block(
@@ -122,7 +119,7 @@ pub fn render_queue(f: &mut Frame, app: &App) {
                             .title(format!(" {} ", job.filename())),
                     )
                     .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
-                    .percent(u16::try_from(progress.round() as u64).unwrap_or(100))
+                    .ratio(progress.clamp(0.0, 100.0) / 100.0)
                     .label(label);
                 f.render_widget(gauge, chunks[2]);
         } else {
@@ -146,7 +143,7 @@ pub fn render_queue(f: &mut Frame, app: &App) {
     }
 
     // Help
-    let help_text = if app.analyzing || app.encoding_active {
+    let help_text = if app.analysis_receiver.is_some() || app.encoding_active {
         Line::from(vec![
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" Cancel"),
@@ -176,32 +173,32 @@ fn create_queue_item(
         Modifier::empty()
     };
 
-    let crf_str = crf.map(|c| format!(" [CRF:{}]", c)).unwrap_or_default();
+    let crf_str = crf.map(|c| format!(" [CRF:{c}]")).unwrap_or_default();
 
     match status {
-        JobStatus::Pending => ListItem::new(format!("  ○ {}", name))
+        JobStatus::Pending => ListItem::new(format!("  ○ {name}"))
             .style(Style::default().fg(Color::DarkGray).add_modifier(bold_mod)),
-        JobStatus::Analyzing => ListItem::new(format!("  ◐ {} Analyzing...", name))
+        JobStatus::Analyzing => ListItem::new(format!("  ◐ {name} Analyzing..."))
             .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
-        JobStatus::AwaitingConfig => ListItem::new(format!("  ◑ {} Configuring...", name))
+        JobStatus::AwaitingConfig => ListItem::new(format!("  ◑ {name} Configuring..."))
             .style(Style::default().fg(Color::Blue).add_modifier(bold_mod)),
-        JobStatus::Ready => ListItem::new(format!("  ● {} Ready", name))
+        JobStatus::Ready => ListItem::new(format!("  ● {name} Ready"))
             .style(Style::default().fg(Color::Blue).add_modifier(bold_mod)),
         JobStatus::Encoding { progress } => {
-            ListItem::new(format!("  ▶ {} {:.1}%{}", name, progress, crf_str))
+            ListItem::new(format!("  ▶ {name} {progress:.1}%{crf_str}"))
                 .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod))
         }
-        JobStatus::Verifying => ListItem::new(format!("  ◈ {} Verifying quality...", name))
+        JobStatus::Verifying => ListItem::new(format!("  ◈ {name} Verifying quality..."))
             .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod)),
-        JobStatus::Done => ListItem::new(format!("  ✓ {} Done", name))
+        JobStatus::Done => ListItem::new(format!("  ✓ {name} Done"))
             .style(Style::default().fg(Color::Green).add_modifier(bold_mod)),
         JobStatus::DoneVmafFailed { reason } => ListItem::new(Line::from(vec![
             Span::styled(
-                format!("  ✓ {} Done ", name),
+                format!("  ✓ {name} Done "),
                 Style::default().fg(Color::Green).add_modifier(bold_mod),
             ),
             Span::styled(
-                format!("(VMAF: {})", reason),
+                format!("(VMAF: {reason})"),
                 Style::default().fg(Color::Yellow).add_modifier(bold_mod),
             ),
         ])),
@@ -209,32 +206,32 @@ fn create_queue_item(
             let vmaf_color = get_vmaf_color(*score);
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!("  ✓ {} Done ", name),
+                    format!("  ✓ {name} Done "),
                     Style::default().fg(Color::Green).add_modifier(bold_mod),
                 ),
                 Span::styled(
-                    format!("VMAF: {:.1}", score),
+                    format!("VMAF: {score:.1}"),
                     Style::default().fg(vmaf_color).add_modifier(bold_mod),
                 ),
             ]))
         }
-        JobStatus::Skipped { reason } => ListItem::new(format!("  ⊘ {} ({})", name, reason))
+        JobStatus::Skipped { reason } => ListItem::new(format!("  ⊘ {name} ({reason})"))
             .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
-        JobStatus::Error { message } => ListItem::new(format!("  ✗ {} Error: {}", name, message))
+        JobStatus::Error { message } => ListItem::new(format!("  ✗ {name} Error: {message}"))
             .style(Style::default().fg(Color::Red).add_modifier(bold_mod)),
         JobStatus::QualityWarning { vmaf, threshold } => {
             let vmaf_color = get_vmaf_color(*vmaf);
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!("  ⚠ {} ", name),
+                    format!("  ⚠ {name} "),
                     Style::default().fg(Color::Yellow).add_modifier(bold_mod),
                 ),
                 Span::styled(
-                    format!("VMAF: {:.1}", vmaf),
+                    format!("VMAF: {vmaf:.1}"),
                     Style::default().fg(vmaf_color).add_modifier(bold_mod),
                 ),
                 Span::styled(
-                    format!(" < {:.0}", threshold),
+                    format!(" < {threshold:.0}"),
                     Style::default().fg(Color::Red).add_modifier(bold_mod),
                 ),
             ]))

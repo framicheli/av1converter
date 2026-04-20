@@ -73,7 +73,7 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
 
     let title = match app.selection_mode {
         SelectionMode::File => " Select Video File ",
-        SelectionMode::Folder => " Select Folder ",
+        SelectionMode::Folder | SelectionMode::FolderRecursive => " Select Folder ",
     };
 
     let list = List::new(items)
@@ -114,7 +114,7 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
             }
             Line::from(spans)
         }
-        SelectionMode::Folder => Line::from(vec![
+        SelectionMode::Folder | SelectionMode::FolderRecursive => Line::from(vec![
             Span::styled("↑↓", Style::default().fg(Color::Yellow)),
             Span::raw(" Navigate  "),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
@@ -148,8 +148,7 @@ fn create_entry_item(
         "..".to_string()
     } else {
         path.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string_lossy().to_string())
+            .map_or_else(|| path.to_string_lossy().to_string(), |n| n.to_string_lossy().to_string())
     };
 
     // Add file metadata for video files
@@ -182,10 +181,10 @@ fn create_entry_item(
 
     // Dim non-selectable items in folder mode
     let style = match mode {
-        SelectionMode::Folder if is_video => style.add_modifier(Modifier::DIM),
+        SelectionMode::Folder | SelectionMode::FolderRecursive if is_video => style.add_modifier(Modifier::DIM),
         _ => style,
     };
 
     let prefix = if is_selected { "> " } else { "  " };
-    ListItem::new(format!("{}{}{}{}", prefix, icon, name, metadata_str)).style(style)
+    ListItem::new(format!("{prefix}{icon}{name}{metadata_str}")).style(style)
 }

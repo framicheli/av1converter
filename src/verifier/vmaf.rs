@@ -127,10 +127,7 @@ pub fn calculate_vmaf(
                 "VMAF not available. FFmpeg must be compiled with libvmaf support.".to_string(),
             ));
         }
-        return Err(AppError::Vmaf(format!(
-            "VMAF calculation failed: {}",
-            stderr
-        )));
+        return Err(AppError::Vmaf(format!("VMAF calculation failed: {stderr}")));
     }
 
     // Read result then remove

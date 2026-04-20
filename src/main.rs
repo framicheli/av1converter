@@ -15,7 +15,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{Terminal, backend::CrosstermBackend, widgets::Clear};
 use std::io;
 use std::time::Duration;
 
@@ -66,6 +66,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         app.tick_message();
 
         terminal.draw(|f| {
+            f.render_widget(Clear, f.area());
             match app.current_screen {
                 Screen::Home => ui::render_home(f, app),
                 Screen::FileExplorer { .. } => ui::render_explorer(f, app),
@@ -113,7 +114,7 @@ fn handle_key(app: &mut App, key: KeyCode) {
 fn handle_confirm_dialog_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('y' | 'Y') => {
-            if let Some(action) = app.confirm_dialog.take() {
+            if let Some((action, _)) = app.confirm_dialog.take() {
                 execute_confirm_action(app, action);
             }
         }
@@ -121,15 +122,13 @@ fn handle_confirm_dialog_key(app: &mut App, key: KeyCode) {
             app.confirm_dialog = None;
         }
         KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l') => {
-            app.confirm_selection = !app.confirm_selection;
+            if let Some((_, sel)) = &mut app.confirm_dialog {
+                *sel = !*sel;
+            }
         }
         KeyCode::Enter => {
-            if app.confirm_selection {
-                if let Some(action) = app.confirm_dialog.take() {
-                    execute_confirm_action(app, action);
-                }
-            } else {
-                app.confirm_dialog = None;
+            if let Some((action, true)) = app.confirm_dialog.take() {
+                execute_confirm_action(app, action);
             }
         }
         _ => {}
@@ -150,8 +149,7 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
 fn handle_home_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('q') => {
-            app.confirm_dialog = Some(ConfirmAction::ExitApp);
-            app.confirm_selection = false;
+            app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
         }
         KeyCode::Up | KeyCode::Char('k') if app.home_index > 0 => app.home_index -= 1,
         KeyCode::Down | KeyCode::Char('j') if app.home_index < HOME_MENU.len() - 1 => {
@@ -163,8 +161,7 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
             2 => app.navigate_to_explorer(true, true),   // Open folder recursive
             3 => app.navigate_to_configuration(),        // Configuration
             4 => {
-                app.confirm_dialog = Some(ConfirmAction::ExitApp);
-                app.confirm_selection = false;
+                app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
             }
             _ => {}
         },
@@ -181,11 +178,11 @@ fn handle_explorer_key(app: &mut App, key: KeyCode) {
         KeyCode::Down | KeyCode::Char('j') => app.explorer_move_down(),
         KeyCode::Enter => match app.selection_mode {
             app::SelectionMode::File => app.select_explorer_entry(),
-            app::SelectionMode::Folder => app.enter_directory(),
+            app::SelectionMode::Folder | app::SelectionMode::FolderRecursive => app.enter_directory(),
         },
         KeyCode::Char(' ') => match app.selection_mode {
             app::SelectionMode::File => app.toggle_file_selection(),
-            app::SelectionMode::Folder => app.select_explorer_entry(),
+            app::SelectionMode::Folder | app::SelectionMode::FolderRecursive => app.select_explorer_entry(),
         },
         _ => {}
     }
@@ -219,9 +216,8 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
         KeyCode::Esc => app.navigate_to_home(),
         KeyCode::Tab => {
             app.track_focus = match app.track_focus {
-                TrackFocus::Audio if subtitle_count > 0 => TrackFocus::Subtitle,
                 TrackFocus::Confirm if audio_count > 0 => TrackFocus::Audio,
-                TrackFocus::Confirm if subtitle_count > 0 => TrackFocus::Subtitle,
+                TrackFocus::Audio | TrackFocus::Confirm if subtitle_count > 0 => TrackFocus::Subtitle,
                 TrackFocus::Audio | TrackFocus::Subtitle | TrackFocus::Confirm => {
                     TrackFocus::Confirm
                 }
@@ -289,14 +285,13 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
 
 fn handle_queue_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Esc if app.analyzing => {
+        KeyCode::Esc if app.analysis_receiver.is_some() => {
             app.cancel_analysis();
         }
         KeyCode::Esc if app.encoding_active => {
-            app.confirm_dialog = Some(ConfirmAction::CancelEncoding);
-            app.confirm_selection = false;
+            app.confirm_dialog = Some((ConfirmAction::CancelEncoding, false));
         }
-        KeyCode::Enter if !app.encoding_active && !app.analyzing => {
+        KeyCode::Enter if !app.encoding_active && app.analysis_receiver.is_none() => {
             app.navigate_to_finish();
         }
         _ => {}
@@ -306,8 +301,7 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
 fn handle_finish_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('q') => {
-            app.confirm_dialog = Some(ConfirmAction::ExitApp);
-            app.confirm_selection = false;
+            app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
         }
         KeyCode::Enter => app.reset(),
         _ => {}
@@ -315,17 +309,22 @@ fn handle_finish_key(app: &mut App, key: KeyCode) {
 }
 
 fn handle_config_key(app: &mut App, key: KeyCode) {
-    if app.config_editing {
+    if app.config_edit_buffer.is_some() {
         match key {
             KeyCode::Enter => commit_config_edit(app),
             KeyCode::Esc => {
-                app.config_editing = false;
-                app.config_input_buffer.clear();
+                app.config_edit_buffer = None;
             }
             KeyCode::Backspace => {
-                app.config_input_buffer.pop();
+                if let Some(buf) = &mut app.config_edit_buffer {
+                    buf.pop();
+                }
             }
-            KeyCode::Char(c) => app.config_input_buffer.push(c),
+            KeyCode::Char(c) => {
+                if let Some(buf) = &mut app.config_edit_buffer {
+                    buf.push(c);
+                }
+            }
             _ => {}
         }
         return;
@@ -374,25 +373,25 @@ fn start_config_edit(app: &mut App) {
     let Some(item) = CONFIG_ITEMS.get(app.config_selected) else {
         return;
     };
-    app.config_input_buffer = match item.field {
+    app.config_edit_buffer = Some(match item.field {
         ConfigField::OutputSuffix => app.config.output.suffix.clone(),
         ConfigField::OutputContainer => app.config.output.container.clone(),
         ConfigField::AudioLanguages => app.config.tracks.preferred_audio_languages.join(", "),
         ConfigField::SubtitleLanguages => app.config.tracks.preferred_subtitle_languages.join(", "),
         _ => return,
-    };
-    app.config_editing = true;
+    });
 }
 
 /// Write the edit buffer back to the appropriate config field.
 fn commit_config_edit(app: &mut App) {
     use crate::ui::config_screen::{CONFIG_ITEMS, ConfigField};
-    let Some(item) = CONFIG_ITEMS.get(app.config_selected) else {
-        app.config_editing = false;
-        app.config_input_buffer.clear();
+    let Some(buf) = app.config_edit_buffer.take() else {
         return;
     };
-    let value = app.config_input_buffer.trim().to_string();
+    let Some(item) = CONFIG_ITEMS.get(app.config_selected) else {
+        return;
+    };
+    let value = buf.trim().to_string();
     match item.field {
         ConfigField::OutputSuffix => app.config.output.suffix = value,
         ConfigField::OutputContainer => app.config.output.container = value,
@@ -404,8 +403,6 @@ fn commit_config_edit(app: &mut App) {
         }
         _ => {}
     }
-    app.config_editing = false;
-    app.config_input_buffer.clear();
 }
 
 /// Parse a comma-separated language tag list like `"eng, ita"` into `["eng", "ita"]`.

@@ -351,9 +351,9 @@ fn create_result_item(job: &crate::queue::EncodingJob) -> ListItem<'static> {
             }
             ListItem::new(Line::from(spans))
         }
-        JobStatus::Skipped { reason } => ListItem::new(format!("  ⊘ {} ({})", name, reason))
+        JobStatus::Skipped { reason } => ListItem::new(format!("  ⊘ {name} ({reason})"))
             .style(Style::default().fg(Color::Yellow)),
-        JobStatus::Error { message } => ListItem::new(format!("  ✗ {}: {}", name, message))
+        JobStatus::Error { message } => ListItem::new(format!("  ✗ {name}: {message}"))
             .style(Style::default().fg(Color::Red)),
         JobStatus::QualityWarning { vmaf, threshold } => {
             let vmaf_color = get_vmaf_color(*vmaf);

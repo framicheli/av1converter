@@ -22,12 +22,11 @@ fn check_command(cmd: &str, args: &[&str]) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Check if VMAF is available in FFmpeg
+/// Check if VMAF is available in `FFmpeg`
 fn check_vmaf_available() -> bool {
     Command::new("ffmpeg")
         .args(["-filters"])
         .output()
         .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("libvmaf"))
-        .unwrap_or(false)
+        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("libvmaf"))
 }
