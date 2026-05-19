@@ -26,7 +26,6 @@ pub struct AppConfig {
     pub tracks: TrackPresetConfig,
 }
 
-
 impl AppConfig {
     /// Load configuration from TOML file, or create default if not found.
     pub fn load() -> Self {
@@ -58,9 +57,8 @@ impl AppConfig {
         let config_path = Self::config_path();
 
         if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                AppError::Config(format!("Failed to create config directory: {e}"))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| AppError::Config(format!("Failed to create config directory: {e}")))?;
         }
 
         let toml_string = toml::to_string_pretty(self)?;

@@ -147,8 +147,10 @@ fn create_entry_item(
     let name = if is_parent {
         "..".to_string()
     } else {
-        path.file_name()
-            .map_or_else(|| path.to_string_lossy().to_string(), |n| n.to_string_lossy().to_string())
+        path.file_name().map_or_else(
+            || path.to_string_lossy().to_string(),
+            |n| n.to_string_lossy().to_string(),
+        )
     };
 
     // Add file metadata for video files
@@ -181,7 +183,9 @@ fn create_entry_item(
 
     // Dim non-selectable items in folder mode
     let style = match mode {
-        SelectionMode::Folder | SelectionMode::FolderRecursive if is_video => style.add_modifier(Modifier::DIM),
+        SelectionMode::Folder | SelectionMode::FolderRecursive if is_video => {
+            style.add_modifier(Modifier::DIM)
+        }
         _ => style,
     };
 

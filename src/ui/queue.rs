@@ -97,31 +97,32 @@ pub fn render_queue(f: &mut Frame, app: &App) {
     // Current file progress
     if let Some(job) = app.queue.jobs.get(app.queue.current_job_index) {
         if let JobStatus::Encoding { progress } = &job.status {
-                let elapsed_str = app
-                    .queue
-                    .elapsed_time()
-                    .map_or_else(|| "--:--".to_string(), format_duration);
+            let elapsed_str = app
+                .queue
+                .elapsed_time()
+                .map_or_else(|| "--:--".to_string(), format_duration);
 
-                let eta_str = app
-                    .queue
-                    .estimated_time_remaining()
-                    .map_or_else(|| "--:--".to_string(), format_duration);
+            let eta_str = app
+                .queue
+                .estimated_time_remaining()
+                .map_or_else(|| "--:--".to_string(), format_duration);
 
-                let crf_str = job.crf.map(|c| format!("  CRF: {c}")).unwrap_or_default();
+            let crf_str = job.crf.map(|c| format!("  CRF: {c}")).unwrap_or_default();
 
-                let label = format!("{progress:.1}%  |  Elapsed: {elapsed_str}  |  ETA: {eta_str}{crf_str}");
+            let label =
+                format!("{progress:.1}%  |  Elapsed: {elapsed_str}  |  ETA: {eta_str}{crf_str}");
 
-                let gauge = Gauge::default()
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::DarkGray))
-                            .title(format!(" {} ", job.filename())),
-                    )
-                    .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
-                    .ratio(progress.clamp(0.0, 100.0) / 100.0)
-                    .label(label);
-                f.render_widget(gauge, chunks[2]);
+            let gauge = Gauge::default()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray))
+                        .title(format!(" {} ", job.filename())),
+                )
+                .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+                .ratio(progress.clamp(0.0, 100.0) / 100.0)
+                .label(label);
+            f.render_widget(gauge, chunks[2]);
         } else {
             let status_text = match &job.status {
                 JobStatus::Pending => "Waiting...",

@@ -8,10 +8,10 @@ use crate::utils::DependencyStatus;
 use ratatui::widgets::ListState;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+use std::time::Instant;
 use tracing::info;
 
 /// Application screens
@@ -222,8 +222,12 @@ impl App {
     }
 
     pub fn navigate_to_track_config(&mut self) {
-        let audio_count = self.current_config_job().map_or(0, |j| j.audio_tracks.len());
-        let subtitle_count = self.current_config_job().map_or(0, |j| j.subtitle_tracks.len());
+        let audio_count = self
+            .current_config_job()
+            .map_or(0, |j| j.audio_tracks.len());
+        let subtitle_count = self
+            .current_config_job()
+            .map_or(0, |j| j.subtitle_tracks.len());
         self.track_focus = if audio_count > 0 {
             TrackFocus::Audio
         } else if subtitle_count > 0 {
@@ -849,14 +853,12 @@ fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig) {
         .audio_tracks
         .iter()
         .filter(|t| {
-            t.language
-                .as_deref()
-                .is_some_and(|l| {
-                    config
-                        .preferred_audio_languages
-                        .iter()
-                        .any(|p| p.eq_ignore_ascii_case(l))
-                })
+            t.language.as_deref().is_some_and(|l| {
+                config
+                    .preferred_audio_languages
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(l))
+            })
         })
         .map(|t| t.index)
         .collect();
@@ -877,14 +879,12 @@ fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig) {
         .subtitle_tracks
         .iter()
         .filter(|t| {
-            t.language
-                .as_deref()
-                .is_some_and(|l| {
-                    config
-                        .preferred_subtitle_languages
-                        .iter()
-                        .any(|p| p.eq_ignore_ascii_case(l))
-                })
+            t.language.as_deref().is_some_and(|l| {
+                config
+                    .preferred_subtitle_languages
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(l))
+            })
         })
         .map(|t| t.index)
         .collect();
