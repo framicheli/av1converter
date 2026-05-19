@@ -179,13 +179,13 @@ fn handle_explorer_key(app: &mut App, key: KeyCode) {
         KeyCode::Enter => match app.selection_mode {
             app::SelectionMode::File => app.select_explorer_entry(),
             app::SelectionMode::Folder | app::SelectionMode::FolderRecursive => {
-                app.enter_directory()
+                app.enter_directory();
             }
         },
         KeyCode::Char(' ') => match app.selection_mode {
             app::SelectionMode::File => app.toggle_file_selection(),
             app::SelectionMode::Folder | app::SelectionMode::FolderRecursive => {
-                app.select_explorer_entry()
+                app.select_explorer_entry();
             }
         },
         _ => {}
@@ -479,10 +479,10 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             app.config.output.same_directory = !app.config.output.same_directory;
         }
         ConfigField::RfSd => {
-            adjust_preset_rf(&mut app.config.presets.sd, app.config.encoder, increase)
+            adjust_preset_rf(&mut app.config.presets.sd, app.config.encoder, increase);
         }
         ConfigField::RfHd => {
-            adjust_preset_rf(&mut app.config.presets.hd, app.config.encoder, increase)
+            adjust_preset_rf(&mut app.config.presets.hd, app.config.encoder, increase);
         }
         ConfigField::RfFullHd => adjust_preset_rf(
             &mut app.config.presets.full_hd,
@@ -500,7 +500,7 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             increase,
         ),
         ConfigField::RfUhd => {
-            adjust_preset_rf(&mut app.config.presets.uhd, app.config.encoder, increase)
+            adjust_preset_rf(&mut app.config.presets.uhd, app.config.encoder, increase);
         }
         ConfigField::RfUhdHdr => adjust_preset_rf(
             &mut app.config.presets.uhd_hdr,
@@ -508,7 +508,7 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             increase,
         ),
         ConfigField::RfUhdDv => {
-            adjust_preset_rf(&mut app.config.presets.uhd_dv, app.config.encoder, increase)
+            adjust_preset_rf(&mut app.config.presets.uhd_dv, app.config.encoder, increase);
         }
         // Text fields are edited via Enter, not ← →
         ConfigField::OutputSuffix

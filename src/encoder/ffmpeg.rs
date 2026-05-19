@@ -121,11 +121,14 @@ fn run_encode_loop(
 
             if let Some(time_us) = latest_time_us {
                 let time_secs = time_us / 1_000_000.0;
-                if duration > 0.0 {
-                    let progress = (time_secs / duration * 100.0).min(100.0);
-                    if let Some(ref mut cb) = progress_callback {
-                        cb(progress);
-                    }
+                let progress = if duration > 0.0 {
+                    (time_secs / duration * 100.0).min(100.0)
+                } else {
+                    // Duration unknown: advance slowly so UI shows activity (caps at 99%)
+                    (time_secs / 7200.0 * 100.0).min(99.0)
+                };
+                if let Some(ref mut cb) = progress_callback {
+                    cb(progress);
                 }
             }
         }
