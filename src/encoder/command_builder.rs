@@ -16,6 +16,7 @@ pub struct EncodingParams {
     pub frame_rate_den: u32,
     pub svt_preset: u8,
     pub nvenc_preset: String,
+    pub remux_only: bool,
 }
 
 impl EncodingParams {
@@ -26,6 +27,7 @@ impl EncodingParams {
         metadata: &VideoMetadata,
         config: &AppConfig,
         tracks: TrackSelection,
+        remux_only: bool,
     ) -> Self {
         let tier = ResolutionTier::from_dimensions(metadata.width, metadata.height);
         let preset = config.preset_for(tier, metadata.hdr_type);
@@ -49,6 +51,7 @@ impl EncodingParams {
             frame_rate_den: metadata.frame_rate_den,
             svt_preset: config.performance.svt_preset,
             nvenc_preset: config.performance.nvenc_preset.clone(),
+            remux_only,
         }
     }
 }
@@ -77,38 +80,50 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         }
     }
 
-    // Video encoder
-    args.extend(["-c:v".to_string(), params.encoder.ffmpeg_name().to_string()]);
-
-    // Build video filter chain (explicit filter graph is more robust than -pix_fmt auto-insertion)
-    let vf = build_video_filter(params.hdr_type);
-    args.extend(["-vf".to_string(), vf]);
-
-    // Explicit frame rate preservation
-    if params.frame_rate_num > 0 && params.frame_rate_den > 0 {
+    if params.remux_only {
+        // Remux mode: Copy all mapped streams without recompression
         args.extend([
-            "-r".to_string(),
-            format!("{}/{}", params.frame_rate_num, params.frame_rate_den),
+            "-c:v".to_string(),
+            "copy".to_string(),
+            "-c:a".to_string(),
+            "copy".to_string(),
+            "-c:s".to_string(),
+            "copy".to_string(),
         ]);
-    }
+    } else {
+        // Video encoder
+        args.extend(["-c:v".to_string(), params.encoder.ffmpeg_name().to_string()]);
 
-    // Copy audio and subtitles
-    args.extend([
-        "-c:a".to_string(),
-        "copy".to_string(),
-        "-c:s".to_string(),
-        "copy".to_string(),
-    ]);
+        // Build video filter chain (explicit filter graph is more robust than -pix_fmt auto-insertion)
+        let vf = build_video_filter(params.hdr_type);
+        args.extend(["-vf".to_string(), vf]);
 
-    // Encoder-specific quality parameters
-    args.extend(get_quality_params(params));
+        // Explicit frame rate preservation
+        if params.frame_rate_num > 0 && params.frame_rate_den > 0 {
+            args.extend([
+                "-r".to_string(),
+                format!("{}/{}", params.frame_rate_num, params.frame_rate_den),
+            ]);
+        }
 
-    // HDR/color parameters (metadata only, filter is handled above)
-    match params.hdr_type {
-        HdrType::DolbyVision => args.extend(get_dolby_vision_color_params()),
-        HdrType::Pq => args.extend(get_pq_params()),
-        HdrType::Hlg => args.extend(get_hlg_params()),
-        HdrType::Sdr => {}
+        // Copy audio and subtitles
+        args.extend([
+            "-c:a".to_string(),
+            "copy".to_string(),
+            "-c:s".to_string(),
+            "copy".to_string(),
+        ]);
+
+        // Encoder-specific quality parameters
+        args.extend(get_quality_params(params));
+
+        // HDR/color parameters (metadata only, filter is handled above)
+        match params.hdr_type {
+            HdrType::DolbyVision => args.extend(get_dolby_vision_color_params()),
+            HdrType::Pq => args.extend(get_pq_params()),
+            HdrType::Hlg => args.extend(get_hlg_params()),
+            HdrType::Sdr => {}
+        }
     }
 
     args.push(params.output.clone());

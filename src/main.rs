@@ -278,6 +278,13 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 }
             }
         }
+        KeyCode::Char('r' | 'R') => {
+            let output_config = app.config.output.clone();
+            if let Some(job) = app.current_config_job_mut() {
+                job.remux_only = !job.remux_only;
+                job.generate_output_path(&output_config);
+            }
+        }
         KeyCode::Enter => app.confirm_track_config(),
         _ => {}
     }

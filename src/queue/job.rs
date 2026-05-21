@@ -46,6 +46,7 @@ pub struct EncodingJob {
     pub output_size: Option<u64>,
     pub source_deleted: bool,
     pub source_kept_vmaf: Option<f64>,
+    pub remux_only: bool,
 }
 
 impl EncodingJob {
@@ -65,6 +66,7 @@ impl EncodingJob {
             output_size: None,
             source_deleted: false,
             source_kept_vmaf: None,
+            remux_only: false,
         }
     }
 
@@ -100,9 +102,25 @@ impl EncodingJob {
         } else {
             default_parent()
         };
+
+        let suffix = if self.remux_only {
+            "_remux".to_string()
+        } else {
+            output_config.suffix.clone()
+        };
+
+        let container = if self.remux_only {
+            self.path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or(&output_config.container)
+                .to_string()
+        } else {
+            output_config.container.clone()
+        };
+
         self.output_path = Some(parent.join(format!(
-            "{}{}.{}",
-            stem, output_config.suffix, output_config.container
+            "{stem}{suffix}.{container}"
         )));
     }
 

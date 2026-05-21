@@ -47,13 +47,14 @@ pub fn run_encoding_pipeline(
     output: &str,
     metadata: &VideoMetadata,
     tracks: TrackSelection,
+    remux_only: bool,
     config: &AppConfig,
     progress_callback: Option<ProgressCallback>,
     cancel_flag: &AtomicBool,
     on_before_vmaf: Option<Box<dyn FnOnce() + Send>>,
 ) -> FullEncodeResult {
     // Encoding parameters
-    let params = EncodingParams::from_metadata(input, output, metadata, config, tracks);
+    let params = EncodingParams::from_metadata(input, output, metadata, config, tracks, remux_only);
     let duration = metadata.duration_secs;
 
     // Encode
@@ -62,7 +63,7 @@ pub fn run_encoding_pipeline(
     match encode_result {
         EncodeResult::Success => {
             // Notify the UI for VMAF verification phase
-            let vmaf_threshold = if config.quality.vmaf_enabled {
+            let vmaf_threshold = if config.quality.vmaf_enabled && !remux_only {
                 if let Some(cb) = on_before_vmaf {
                     cb();
                 }

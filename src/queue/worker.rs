@@ -40,6 +40,7 @@ pub struct WorkerJob {
     pub output: PathBuf,
     pub metadata: VideoMetadata,
     pub tracks: TrackSelection,
+    pub remux_only: bool,
 }
 
 /// Run the encoding worker in a separate thread
@@ -71,6 +72,7 @@ pub fn run_worker(
             &output_str,
             &job.metadata,
             job.tracks,
+            job.remux_only,
             config,
             Some(Box::new(move |progress| {
                 let _ = tx_progress.send(WorkerMessage::Progress(idx, progress));
