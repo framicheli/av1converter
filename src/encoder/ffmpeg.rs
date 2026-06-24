@@ -79,6 +79,7 @@ pub fn encode_video(
         cancel_flag,
         &params.output,
         &stderr_path,
+        params.remux_only.then(|| params.input.clone()),
     );
 
     // Cleanup
@@ -89,6 +90,8 @@ pub fn encode_video(
 }
 
 /// Run the encoding loop with progress updates
+///
+#[allow(clippy::too_many_arguments)]
 fn run_encode_loop(
     child: &mut Child,
     progress_file: &Path,
@@ -97,7 +100,15 @@ fn run_encode_loop(
     cancel_flag: &AtomicBool,
     output: &str,
     stderr_path: &Path,
+    remux_input: Option<String>,
 ) -> EncodeResult {
+    // For remux jobs, estimate the final output size from the source file size.
+    let remux_input_size = remux_input
+        .as_deref()
+        .and_then(|input| std::fs::metadata(input).ok())
+        .map(|m| m.len())
+        .filter(|&len| len > 0);
+
     loop {
         // Check cancellation
         if cancel_flag.load(Ordering::Relaxed) {
@@ -107,8 +118,17 @@ fn run_encode_loop(
             return EncodeResult::Cancelled;
         }
 
-        // Read progress
-        if let Ok(content) = std::fs::read_to_string(progress_file) {
+        if let Some(input_size) = remux_input_size {
+            // Remux: derive progress from output-size growth vs. source size.
+            if let Ok(out_meta) = std::fs::metadata(output) {
+                #[allow(clippy::cast_precision_loss)]
+                let progress = (out_meta.len() as f64 / input_size as f64 * 100.0).min(99.0);
+                if let Some(ref mut cb) = progress_callback {
+                    cb(progress);
+                }
+            }
+        } else if let Ok(content) = std::fs::read_to_string(progress_file) {
+            // Encode: derive progress from the processed timestamp vs. duration.
             let mut latest_time_us: Option<f64> = None;
             for line in content.lines() {
                 if let Some(value) = line.strip_prefix("out_time_us=")
@@ -153,7 +173,10 @@ fn run_encode_loop(
                 return EncodeResult::Success;
             }
             Ok(None) => {
-                thread::sleep(Duration::from_millis(250));
+                // Remux copies finish quickly, so poll more often to collect
+                // enough progress samples for a meaningful ETA.
+                let poll_ms = if remux_input_size.is_some() { 100 } else { 250 };
+                thread::sleep(Duration::from_millis(poll_ms));
             }
             Err(e) => {
                 return EncodeResult::Error(format!("Failed to check ffmpeg status: {e}"));

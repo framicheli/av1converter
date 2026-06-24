@@ -52,19 +52,16 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
         .ok_or_else(|| AppError::Analysis("No video stream found".to_string()))?;
 
     // Check for Dolby Vision by inspecting the side_data_type field
-    let is_dolby_vision = stream
-        .side_data_list
-        .as_ref()
-        .is_some_and(|list| {
-            list.iter().any(|v| {
-                v.get("side_data_type")
-                    .and_then(|t| t.as_str())
-                    .is_some_and(|t| {
-                        t.eq_ignore_ascii_case("DOVI configuration record")
-                            || t.contains("Dolby Vision")
-                    })
-            })
-        });
+    let is_dolby_vision = stream.side_data_list.as_ref().is_some_and(|list| {
+        list.iter().any(|v| {
+            v.get("side_data_type")
+                .and_then(|t| t.as_str())
+                .is_some_and(|t| {
+                    t.eq_ignore_ascii_case("DOVI configuration record")
+                        || t.contains("Dolby Vision")
+                })
+        })
+    });
 
     // Determine HDR type
     let hdr_type = if is_dolby_vision {
@@ -92,7 +89,6 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
         .and_then(|f| f.duration.as_deref())
         .and_then(|d| d.parse::<f64>().ok())
         .unwrap_or(0.0);
-
 
     Ok(VideoMetadata {
         width: stream.width,
@@ -153,9 +149,8 @@ fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrac
     ];
 
     let output_sub = run_ffprobe(&args_sub)?;
-    let sub_data: AllStreamsOutput = serde_json::from_str(&output_sub).map_err(|e| {
-        AppError::Analysis(format!("Failed to parse ffprobe subtitle output: {e}"))
-    })?;
+    let sub_data: AllStreamsOutput = serde_json::from_str(&output_sub)
+        .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe subtitle output: {e}")))?;
 
     let mut audio_tracks = Vec::new();
     let mut subtitle_tracks = Vec::new();
