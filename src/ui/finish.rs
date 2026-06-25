@@ -104,10 +104,7 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
         JobStatus::Error { message } => {
             lines.push(Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format!("Error: {message}"),
-                    Style::default().fg(Color::Red),
-                ),
+                Span::styled(format!("Error: {message}"), Style::default().fg(Color::Red)),
             ]));
         }
         JobStatus::Skipped { reason } => {
@@ -353,8 +350,9 @@ fn create_result_item(job: &crate::queue::EncodingJob) -> ListItem<'static> {
         }
         JobStatus::Skipped { reason } => ListItem::new(format!("  ⊘ {name} ({reason})"))
             .style(Style::default().fg(Color::Yellow)),
-        JobStatus::Error { message } => ListItem::new(format!("  ✗ {name}: {message}"))
-            .style(Style::default().fg(Color::Red)),
+        JobStatus::Error { message } => {
+            ListItem::new(format!("  ✗ {name}: {message}")).style(Style::default().fg(Color::Red))
+        }
         JobStatus::QualityWarning { vmaf, threshold } => {
             let vmaf_color = get_vmaf_color(*vmaf);
             let mut spans = vec![

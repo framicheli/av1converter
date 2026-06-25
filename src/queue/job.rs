@@ -72,9 +72,10 @@ impl EncodingJob {
 
     /// Get the filename
     pub fn filename(&self) -> String {
-        self.path
-            .file_name()
-            .map_or_else(|| "Unknown".to_string(), |n| n.to_string_lossy().to_string())
+        self.path.file_name().map_or_else(
+            || "Unknown".to_string(),
+            |n| n.to_string_lossy().to_string(),
+        )
     }
 
     /// Get the resolution string
@@ -146,11 +147,9 @@ pub fn is_video_file(path: &Path) -> bool {
         "mp4", "mkv", "avi", "mov", "webm", "m4v", "ts", "m2ts", "wmv", "flv",
     ];
 
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| {
-            VIDEO_EXTENSIONS
-                .iter()
-                .any(|&ext| ext.eq_ignore_ascii_case(e))
-        })
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        VIDEO_EXTENSIONS
+            .iter()
+            .any(|&ext| ext.eq_ignore_ascii_case(e))
+    })
 }

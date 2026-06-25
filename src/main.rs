@@ -178,11 +178,15 @@ fn handle_explorer_key(app: &mut App, key: KeyCode) {
         KeyCode::Down | KeyCode::Char('j') => app.explorer_move_down(),
         KeyCode::Enter => match app.selection_mode {
             app::SelectionMode::File => app.select_explorer_entry(),
-            app::SelectionMode::Folder | app::SelectionMode::FolderRecursive => app.enter_directory(),
+            app::SelectionMode::Folder | app::SelectionMode::FolderRecursive => {
+                app.enter_directory();
+            }
         },
         KeyCode::Char(' ') => match app.selection_mode {
             app::SelectionMode::File => app.toggle_file_selection(),
-            app::SelectionMode::Folder | app::SelectionMode::FolderRecursive => app.select_explorer_entry(),
+            app::SelectionMode::Folder | app::SelectionMode::FolderRecursive => {
+                app.select_explorer_entry();
+            }
         },
         _ => {}
     }
@@ -217,7 +221,9 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
         KeyCode::Tab => {
             app.track_focus = match app.track_focus {
                 TrackFocus::Confirm if audio_count > 0 => TrackFocus::Audio,
-                TrackFocus::Audio | TrackFocus::Confirm if subtitle_count > 0 => TrackFocus::Subtitle,
+                TrackFocus::Audio | TrackFocus::Confirm if subtitle_count > 0 => {
+                    TrackFocus::Subtitle
+                }
                 TrackFocus::Audio | TrackFocus::Subtitle | TrackFocus::Confirm => {
                     TrackFocus::Confirm
                 }
@@ -479,14 +485,38 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         ConfigField::SameDirectory => {
             app.config.output.same_directory = !app.config.output.same_directory;
         }
-        ConfigField::RfSd => adjust_preset_rf(&mut app.config.presets.sd, app.config.encoder, increase),
-        ConfigField::RfHd => adjust_preset_rf(&mut app.config.presets.hd, app.config.encoder, increase),
-        ConfigField::RfFullHd => adjust_preset_rf(&mut app.config.presets.full_hd, app.config.encoder, increase),
-        ConfigField::RfFullHdHdr => adjust_preset_rf(&mut app.config.presets.full_hd_hdr, app.config.encoder, increase),
-        ConfigField::RfFullHdDv => adjust_preset_rf(&mut app.config.presets.full_hd_dv, app.config.encoder, increase),
-        ConfigField::RfUhd => adjust_preset_rf(&mut app.config.presets.uhd, app.config.encoder, increase),
-        ConfigField::RfUhdHdr => adjust_preset_rf(&mut app.config.presets.uhd_hdr, app.config.encoder, increase),
-        ConfigField::RfUhdDv => adjust_preset_rf(&mut app.config.presets.uhd_dv, app.config.encoder, increase),
+        ConfigField::RfSd => {
+            adjust_preset_rf(&mut app.config.presets.sd, app.config.encoder, increase);
+        }
+        ConfigField::RfHd => {
+            adjust_preset_rf(&mut app.config.presets.hd, app.config.encoder, increase);
+        }
+        ConfigField::RfFullHd => adjust_preset_rf(
+            &mut app.config.presets.full_hd,
+            app.config.encoder,
+            increase,
+        ),
+        ConfigField::RfFullHdHdr => adjust_preset_rf(
+            &mut app.config.presets.full_hd_hdr,
+            app.config.encoder,
+            increase,
+        ),
+        ConfigField::RfFullHdDv => adjust_preset_rf(
+            &mut app.config.presets.full_hd_dv,
+            app.config.encoder,
+            increase,
+        ),
+        ConfigField::RfUhd => {
+            adjust_preset_rf(&mut app.config.presets.uhd, app.config.encoder, increase);
+        }
+        ConfigField::RfUhdHdr => adjust_preset_rf(
+            &mut app.config.presets.uhd_hdr,
+            app.config.encoder,
+            increase,
+        ),
+        ConfigField::RfUhdDv => {
+            adjust_preset_rf(&mut app.config.presets.uhd_dv, app.config.encoder, increase);
+        }
         // Text fields are edited via Enter, not ← →
         ConfigField::OutputSuffix
         | ConfigField::OutputContainer

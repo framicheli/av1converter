@@ -33,7 +33,7 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height,pix_fmt,color_primaries,color_transfer,color_space,codec_name,r_frame_rate,avg_frame_rate,bit_rate,side_data_list",
+        "stream=width,height,pix_fmt,color_primaries,color_transfer,color_space,codec_name,r_frame_rate,avg_frame_rate,bit_rate,side_data_list,duration",
         "-show_entries",
         "format=duration,bit_rate",
         "-of",
@@ -82,12 +82,19 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
             .or(stream.avg_frame_rate.as_deref()),
     );
 
-    // Parse duration
+    // Parse duration — prefer format-level, fall back to stream-level
+    let stream_duration = stream
+        .duration
+        .as_deref()
+        .and_then(|d| d.parse::<f64>().ok())
+        .filter(|&d| d > 0.0);
     let duration_secs = data
         .format
         .as_ref()
         .and_then(|f| f.duration.as_deref())
         .and_then(|d| d.parse::<f64>().ok())
+        .filter(|&d| d > 0.0)
+        .or(stream_duration)
         .unwrap_or(0.0);
 
     Ok(VideoMetadata {
@@ -224,6 +231,7 @@ struct VideoStream {
     r_frame_rate: Option<String>,
     avg_frame_rate: Option<String>,
     side_data_list: Option<Vec<Value>>,
+    duration: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
