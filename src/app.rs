@@ -527,20 +527,14 @@ impl App {
         for (job, result) in self.queue.jobs.iter_mut().zip(results) {
             match result {
                 Ok(analysis) => {
-                    // Check if already AV1 - skip
-                    if is_av1_codec(&analysis.metadata.codec_name) {
-                        job.status = JobStatus::Skipped {
-                            reason: "Already AV1".to_string(),
-                        };
-                        self.queue.skipped_count += 1;
-                    } else {
-                        job.metadata = Some(analysis.metadata);
-                        job.audio_tracks = analysis.audio_tracks;
-                        job.subtitle_tracks = analysis.subtitle_tracks;
-                        auto_select_tracks(job, &track_config);
-                        job.generate_output_path(&output_config);
-                        job.status = JobStatus::AwaitingConfig;
-                    }
+                    let is_av1 = is_av1_codec(&analysis.metadata.codec_name);
+                    job.metadata = Some(analysis.metadata);
+                    job.audio_tracks = analysis.audio_tracks;
+                    job.subtitle_tracks = analysis.subtitle_tracks;
+                    job.remux_only = is_av1;
+                    auto_select_tracks(job, &track_config);
+                    job.generate_output_path(&output_config);
+                    job.status = JobStatus::AwaitingConfig;
                 }
                 Err(ref e) if e.to_string().contains("Cancelled") => {
                     if matches!(job.status, JobStatus::Analyzing) {
@@ -673,6 +667,7 @@ impl App {
                     output,
                     metadata,
                     tracks: j.track_selection.clone(),
+                    remux_only: j.remux_only,
                 })
             })
             .collect();

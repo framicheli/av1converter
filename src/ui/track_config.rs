@@ -9,10 +9,8 @@ use ratatui::{
 
 #[allow(clippy::too_many_lines)]
 pub fn render_track_config(f: &mut Frame, app: &mut App) {
-    let (filename, resolution_string, hdr_string, audio_data, subtitle_data) = {
-        let Some(job) = app.current_config_job() else {
-            return;
-        };
+    let (filename, resolution_string, hdr_string, audio_data, subtitle_data, remux_only, output_filename) = {
+        let Some(job) = app.current_config_job() else { return };
 
         let audio_data: Vec<(String, String, String, bool)> = job
             .audio_tracks
@@ -39,19 +37,27 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             })
             .collect();
 
+        let output_filename = job
+            .output_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map_or_else(|| "Unknown".to_string(), |f| f.to_string_lossy().into_owned());
+
         (
             job.filename(),
             job.resolution_string(),
             job.hdr_string().to_string(),
             audio_data,
             subtitle_data,
+            job.remux_only,
+            output_filename,
         )
     };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
+            Constraint::Length(6),
             Constraint::Min(5),
             Constraint::Length(3),
         ])
@@ -86,6 +92,18 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
                     _ => Color::White,
                 }),
             ),
+        ]),
+        Line::from(vec![
+            Span::styled("Mode: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                if remux_only { "Remux Only (Copy Video)" } else { "Encode Video (AV1)" },
+                Style::default()
+                    .fg(if remux_only { Color::Green } else { Color::Yellow })
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled("Output File: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(output_filename, Style::default().fg(Color::Cyan)),
         ]),
     ];
 
@@ -176,6 +194,8 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         Span::raw(" Navigate  "),
         Span::styled("Space", Style::default().fg(Color::Yellow)),
         Span::raw(" Toggle  "),
+        Span::styled("r", Style::default().fg(Color::Yellow)),
+        Span::raw(" Switch mode  "),
         Span::styled("a", Style::default().fg(Color::Yellow)),
         Span::raw(" All audio  "),
         Span::styled("s", Style::default().fg(Color::Yellow)),

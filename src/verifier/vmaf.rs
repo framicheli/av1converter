@@ -79,7 +79,8 @@ pub fn calculate_vmaf(
     };
 
     // Scale thread count to available cores, capped at 8
-    let n_threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    let n_threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get().min(8));
 
     // VMAF filter with quick settings (subsample=10 for speed)
     let filter = format!(
