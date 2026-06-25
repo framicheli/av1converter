@@ -5,6 +5,7 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 ## Features
 
 - **Interactive TUI** — Browse files, configure tracks, and monitor encoding progress in the terminal
+- **Two operating modes** — Re-encode to AV1, or demux/remux to repackage and strip tracks without recompression
 - **Hardware acceleration** — Automatically detects and uses NVIDIA NVENC, Intel QSV, or AMD AMF
 - **Batch processing** — Convert a single file, a folder, or an entire directory tree recursively
 - **Smart preset selection** — Automatically picks encoding parameters based on resolution and HDR type
@@ -39,11 +40,25 @@ No command-line arguments are needed. All interaction happens through the TUI.
 
 1. **Home menu** — Choose to open a single file, a folder, or a folder recursively
 2. **File selection** — Navigate with arrow keys; `Space` to toggle, `Enter` to confirm
-3. **Track configuration** — Select audio and subtitle tracks to include
+3. **Track configuration** — Select audio and subtitle tracks to include, and switch the per-file mode (encode or demux/remux) with `r`
 4. **File review** — Confirm the queue before encoding starts
 5. **Encoding** — Monitor per-file and overall progress; `Esc` to cancel
-6. **VMAF verification** — Quality score is computed after each file; source is deleted if the score meets the threshold
+6. **VMAF verification** — Quality score is computed after each file; source is deleted if the score meets the threshold (encode mode only)
 7. **Finish** — View a summary of conversions, skipped files, and space saved
+
+## Modes
+
+Each file in the queue is processed in one of two modes. The mode is chosen per file on the track configuration screen and can be toggled with `r`.
+
+### Encode Mode (Encode Video → AV1)
+
+The default mode for non-AV1 sources. The video stream is re-encoded to AV1 using the detected hardware or software encoder, with parameters chosen automatically from the resolution and HDR format (see [Encoding Presets](#encoding-presets)). Selected audio and subtitle tracks are copied into the output. Output is written to the configured container (e.g. `mkv`) with the configured suffix (default `_av1`), and the result is verified with VMAF before the source can be deleted.
+
+### Demux/Remux Mode (Remux Only → Copy Video)
+
+A fast, lossless repackaging mode that copies the video, audio, and subtitle streams without recompression (`-c copy`). Use it to change the container, drop unwanted audio/subtitle tracks, or clean up files that are already AV1 — no quality is lost and the operation is near-instant since nothing is re-encoded. The output keeps the source file's container extension and uses the `_remux` suffix. Because no encoding happens, VMAF verification is skipped.
+
+Files that are already encoded in AV1 default to demux/remux mode automatically; everything else defaults to encode mode.
 
 ### Keyboard Controls
 
@@ -54,6 +69,7 @@ No command-line arguments are needed. All interaction happens through the TUI.
 | `Space` | Toggle file selection |
 | `Esc` | Go back / Cancel |
 | `Tab` | Switch focus (track config screen) |
+| `r` | Switch mode: encode ↔ demux/remux (track config screen) |
 | `a` | Toggle all audio tracks |
 | `s` | Toggle all subtitle tracks |
 | `h` / `l` | Decrease / Increase config value |
