@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::i18n::{Msg, t};
 use crate::utils::format_file_size;
 use ratatui::{
     Frame,
@@ -9,6 +10,7 @@ use ratatui::{
 };
 
 pub fn render_file_confirm(f: &mut Frame, app: &App) {
+    let lang = app.config.language;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -23,8 +25,9 @@ pub fn render_file_confirm(f: &mut Frame, app: &App) {
     let total_size: u64 = app.queue.jobs.iter().filter_map(|j| j.source_size).sum();
 
     let title_text = format!(
-        "{} files selected  ({})",
+        "{} {}  ({})",
         app.queue.jobs.len(),
+        t(lang, Msg::FilesSelectedWord),
         format_file_size(total_size)
     );
 
@@ -39,7 +42,7 @@ pub fn render_file_confirm(f: &mut Frame, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Confirm Selection "),
+                .title(format!(" {} ", t(lang, Msg::ConfirmSelection))),
         );
     f.render_widget(title, chunks[0]);
 
@@ -73,16 +76,16 @@ pub fn render_file_confirm(f: &mut Frame, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
-            .title(" Files "),
+            .title(format!(" {} ", t(lang, Msg::Files))),
     );
     f.render_widget(list, chunks[1]);
 
     // Help
     let help_text = Line::from(vec![
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(" Proceed  "),
+        Span::raw(format!(" {}  ", t(lang, Msg::Proceed))),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
-        Span::raw(" Back"),
+        Span::raw(format!(" {}", t(lang, Msg::Back))),
     ]);
 
     let help = Paragraph::new(help_text)

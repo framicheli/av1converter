@@ -3,6 +3,7 @@ mod app;
 mod config;
 mod encoder;
 mod error;
+mod i18n;
 mod queue;
 mod tracks;
 mod ui;
@@ -20,6 +21,7 @@ use std::io;
 use std::time::Duration;
 
 use crate::app::HOME_MENU;
+use crate::i18n::{Msg, t};
 
 fn main() -> io::Result<()> {
     let _log_guard = utils::init_logging();
@@ -369,11 +371,12 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
             }
         }
         KeyCode::Char('s') => {
+            let lang = app.config.language;
             if let Err(e) = app.config.save() {
                 tracing::warn!("Failed to save config: {:?}", e);
-                app.set_timed_message(&format!("Save failed: {e}"), 3);
+                app.set_timed_message(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 3);
             } else {
-                app.set_timed_message("Saved!", 3);
+                app.set_timed_message(t(lang, Msg::SavedExclaim), 3);
             }
         }
         _ => {}
@@ -434,6 +437,13 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
     };
 
     match item.field {
+        ConfigField::Language => {
+            app.config.language = if increase {
+                app.config.language.next()
+            } else {
+                app.config.language.prev()
+            };
+        }
         ConfigField::Encoder => {
             use crate::config::Encoder;
             let encoders = [Encoder::SvtAv1, Encoder::Nvenc, Encoder::Qsv, Encoder::Amf];

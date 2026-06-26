@@ -1,5 +1,6 @@
 use super::common::centered_rect;
 use crate::app::{App, ConfirmAction};
+use crate::i18n::{Msg, t};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -13,12 +14,16 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
         return;
     };
 
+    let lang = app.config.language;
     let (title, message) = match action {
         ConfirmAction::CancelEncoding => (
-            " Cancel Encoding ",
-            "Are you sure you want to cancel the current encoding?",
+            format!(" {} ", t(lang, Msg::CancelEncodingTitle)),
+            t(lang, Msg::CancelEncodingPrompt),
         ),
-        ConfirmAction::ExitApp => (" Exit Application ", "Are you sure you want to exit?"),
+        ConfirmAction::ExitApp => (
+            format!(" {} ", t(lang, Msg::ExitAppTitle)),
+            t(lang, Msg::ExitAppPrompt),
+        ),
     };
 
     // Calculate dialog area
@@ -78,9 +83,9 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
 
     let buttons = Line::from(vec![
         Span::styled("  ", Style::default()),
-        Span::styled(" Yes ", yes_style),
+        Span::styled(format!(" {} ", t(lang, Msg::Yes)), yes_style),
         Span::raw("    "),
-        Span::styled(" No ", no_style),
+        Span::styled(format!(" {} ", t(lang, Msg::No)), no_style),
         Span::styled("  ", Style::default()),
     ]);
 

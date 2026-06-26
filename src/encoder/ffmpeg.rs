@@ -79,7 +79,7 @@ pub fn encode_video(
         cancel_flag,
         &params.output,
         &stderr_path,
-        params.remux_only.then(|| params.input.clone()),
+        params.remux_only.then(|| params.input.clone()).as_ref(),
     );
 
     // Cleanup
@@ -100,11 +100,10 @@ fn run_encode_loop(
     cancel_flag: &AtomicBool,
     output: &str,
     stderr_path: &Path,
-    remux_input: Option<String>,
+    remux_input: Option<&String>,
 ) -> EncodeResult {
     // For remux jobs, estimate the final output size from the source file size.
     let remux_input_size = remux_input
-        .as_deref()
         .and_then(|input| std::fs::metadata(input).ok())
         .map(|m| m.len())
         .filter(|&len| len > 0);

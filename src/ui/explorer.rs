@@ -1,4 +1,5 @@
 use crate::app::{App, SelectionMode};
+use crate::i18n::{Msg, t};
 use crate::queue::is_video_file;
 use crate::utils::format_file_size;
 use ratatui::{
@@ -12,6 +13,7 @@ use std::path::PathBuf;
 
 #[allow(clippy::too_many_lines)]
 pub fn render_explorer(f: &mut Frame, app: &mut App) {
+    let lang = app.config.language;
     let has_message = app.message.is_some();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -42,7 +44,7 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Current Directory "),
+                .title(format!(" {} ", t(lang, Msg::CurrentDirectory))),
         );
     f.render_widget(path, chunks[0]);
 
@@ -55,7 +57,7 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Yellow))
-                    .title(" Notice "),
+                    .title(format!(" {} ", t(lang, Msg::Notice))),
             );
         f.render_widget(message, chunks[1]);
     }
@@ -72,8 +74,8 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
         .collect();
 
     let title = match app.selection_mode {
-        SelectionMode::File => " Select Video File ",
-        SelectionMode::Folder | SelectionMode::FolderRecursive => " Select Folder ",
+        SelectionMode::File => t(lang, Msg::SelectVideoFile),
+        SelectionMode::Folder | SelectionMode::FolderRecursive => t(lang, Msg::SelectFolder),
     };
 
     let list = List::new(items)
@@ -81,7 +83,7 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(title),
+                .title(format!(" {title} ")),
         )
         .highlight_style(
             Style::default()
@@ -95,18 +97,22 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
         SelectionMode::File => {
             let mut spans = vec![
                 Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-                Span::raw(" Navigate  "),
+                Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
                 Span::styled("Space", Style::default().fg(Color::Yellow)),
-                Span::raw(" Toggle  "),
+                Span::raw(format!(" {}  ", t(lang, Msg::Toggle))),
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
-                Span::raw(" Proceed  "),
+                Span::raw(format!(" {}  ", t(lang, Msg::Proceed))),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(" Back"),
+                Span::raw(format!(" {}", t(lang, Msg::Back))),
             ];
             if !app.selected_files.is_empty() {
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(
-                    format!("[{} selected]", app.selected_files.len()),
+                    format!(
+                        "[{} {}]",
+                        app.selected_files.len(),
+                        t(lang, Msg::SelectedWord)
+                    ),
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
@@ -116,13 +122,13 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
         }
         SelectionMode::Folder | SelectionMode::FolderRecursive => Line::from(vec![
             Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(" Navigate  "),
+            Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(" Open folder  "),
+            Span::raw(format!(" {}  ", t(lang, Msg::OpenFolderAction))),
             Span::styled("Space", Style::default().fg(Color::Yellow)),
-            Span::raw(" Select this folder  "),
+            Span::raw(format!(" {}  ", t(lang, Msg::SelectThisFolder))),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(" Back"),
+            Span::raw(format!(" {}", t(lang, Msg::Back))),
         ]),
     };
 

@@ -1,5 +1,6 @@
 use super::common::create_menu_item;
 use crate::app::App;
+use crate::i18n::{Msg, t};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -33,13 +34,14 @@ pub fn render_home(f: &mut Frame, app: &App) {
     f.render_widget(title, chunks[0]);
 
     // Menu
+    let lang = app.config.language;
     let menu_area = centered_menu_area(chunks[1]);
     let menu_items: Vec<ListItem> = vec![
-        create_menu_item("Open video file", 0, app.home_index),
-        create_menu_item("Open folder", 1, app.home_index),
-        create_menu_item("Open folder (recursive)", 2, app.home_index),
-        create_menu_item("Configuration", 3, app.home_index),
-        create_menu_item("Quit", 4, app.home_index),
+        create_menu_item(t(lang, Msg::HomeOpenFile), 0, app.home_index),
+        create_menu_item(t(lang, Msg::HomeOpenFolder), 1, app.home_index),
+        create_menu_item(t(lang, Msg::HomeOpenFolderRecursive), 2, app.home_index),
+        create_menu_item(t(lang, Msg::Configuration), 3, app.home_index),
+        create_menu_item(t(lang, Msg::Quit), 4, app.home_index),
     ];
 
     let menu = List::new(menu_items)
@@ -47,7 +49,7 @@ pub fn render_home(f: &mut Frame, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Menu "),
+                .title(format!(" {} ", t(lang, Msg::MenuTitle))),
         )
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
@@ -70,11 +72,11 @@ pub fn render_home(f: &mut Frame, app: &App) {
     // Help
     let help_text = Line::from(vec![
         Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-        Span::raw(" Navigate  "),
+        Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(" Select  "),
+        Span::raw(format!(" {}  ", t(lang, Msg::Select))),
         Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(" Quit"),
+        Span::raw(format!(" {}", t(lang, Msg::Quit))),
     ]);
 
     let help = Paragraph::new(help_text)
@@ -85,7 +87,11 @@ pub fn render_home(f: &mut Frame, app: &App) {
 
 fn render_status_info(app: &App) -> Line<'static> {
     let encoder_span = Span::styled(
-        format!("Encoder: {}", app.config.encoder),
+        format!(
+            "{}: {}",
+            t(app.config.language, Msg::EncoderLabel),
+            app.config.encoder
+        ),
         Style::default().fg(Color::Cyan),
     );
 
@@ -93,9 +99,10 @@ fn render_status_info(app: &App) -> Line<'static> {
 }
 
 fn render_vmaf_info(app: &App) -> Line<'static> {
+    let lang = app.config.language;
     if !app.config.quality.vmaf_enabled {
         return Line::from(vec![Span::styled(
-            "VMAF quality validation disabled",
+            t(lang, Msg::VmafDisabled),
             Style::default().fg(Color::DarkGray),
         )]);
     }
@@ -103,7 +110,7 @@ fn render_vmaf_info(app: &App) -> Line<'static> {
     if app.deps {
         Line::from(vec![
             Span::styled("✓ ", Style::default().fg(Color::Green)),
-            Span::raw("VMAF quality validation enabled (threshold: "),
+            Span::raw(t(lang, Msg::VmafEnabledOpen)),
             Span::styled(
                 format!("{:.0}", app.config.quality.vmaf_threshold),
                 Style::default()
@@ -116,7 +123,7 @@ fn render_vmaf_info(app: &App) -> Line<'static> {
         Line::from(vec![
             Span::styled("⚠ ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                "Required Dependencies not available",
+                t(lang, Msg::DepsNotAvailable),
                 Style::default().fg(Color::Yellow),
             ),
         ])

@@ -5,6 +5,7 @@ pub use encoder_detect::Encoder;
 pub use types::*;
 
 use crate::error::AppError;
+pub use crate::i18n::Language;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::{info, warn};
@@ -12,6 +13,9 @@ use tracing::{info, warn};
 /// Main application configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
+    /// UI language
+    #[serde(default)]
+    pub language: Language,
     /// Selected encoder
     pub encoder: Encoder,
     /// Quality settings
@@ -123,5 +127,35 @@ impl AppConfig {
                 _ => &self.presets.uhd_hdr,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A config file written before the `language` field existed must still load,
+    /// defaulting to English, and the language must round-trip as a string key.
+    #[test]
+    fn language_defaults_and_round_trips() {
+        // Serialize a config without `language` to mimic an older file.
+        let mut cfg = AppConfig::default();
+        let full = toml::to_string_pretty(&cfg).unwrap();
+        let legacy: String = full
+            .lines()
+            .filter(|l| !l.starts_with("language"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let loaded: AppConfig = toml::from_str(&legacy).unwrap();
+        assert_eq!(loaded.language, Language::English);
+
+        // Chinese serializes to its short code and parses back.
+        cfg.language = Language::Chinese;
+        let s = toml::to_string_pretty(&cfg).unwrap();
+        assert!(s.contains("language = \"zh\""));
+        assert_eq!(
+            toml::from_str::<AppConfig>(&s).unwrap().language,
+            Language::Chinese
+        );
     }
 }
