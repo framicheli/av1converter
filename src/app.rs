@@ -408,7 +408,9 @@ impl App {
                     let recursive = self.selection_mode == SelectionMode::FolderRecursive;
                     self.scan_folder(&selected, recursive);
                     if self.queue.jobs.is_empty() {
-                        self.set_message("No video files found in this folder");
+                        let msg =
+                            crate::i18n::t(self.config.language, crate::i18n::Msg::NoVideoFiles);
+                        self.set_message(msg);
                     } else if self.queue.jobs.len() == 1 {
                         // Single file in folder — proceed directly
                         self.analyze_jobs();

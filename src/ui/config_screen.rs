@@ -1,5 +1,6 @@
 use crate::app::App;
 use crate::config::{AppConfig, Encoder, EncodingPreset};
+use crate::i18n::{Msg, t};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -24,6 +25,7 @@ pub enum ConfigItemKind {
 /// Which `AppConfig` field a row maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigField {
+    Language,
     Encoder,
     VmafThreshold,
     VmafEnabled,
@@ -47,7 +49,7 @@ pub enum ConfigField {
 
 /// Descriptor for a single row in the config screen.
 pub struct ConfigItem {
-    pub label: &'static str,
+    pub label: Msg,
     pub kind: ConfigItemKind,
     pub field: ConfigField,
 }
@@ -55,97 +57,102 @@ pub struct ConfigItem {
 /// Master list of every config item, in display order.
 pub const CONFIG_ITEMS: &[ConfigItem] = &[
     ConfigItem {
-        label: "Encoder",
+        label: Msg::CfgLanguage,
+        kind: ConfigItemKind::Cycle,
+        field: ConfigField::Language,
+    },
+    ConfigItem {
+        label: Msg::EncoderLabel,
         kind: ConfigItemKind::Cycle,
         field: ConfigField::Encoder,
     },
     ConfigItem {
-        label: "VMAF Threshold",
+        label: Msg::CfgVmafThreshold,
         kind: ConfigItemKind::Numeric,
         field: ConfigField::VmafThreshold,
     },
     ConfigItem {
-        label: "VMAF Enabled",
+        label: Msg::CfgVmafEnabled,
         kind: ConfigItemKind::Toggle,
         field: ConfigField::VmafEnabled,
     },
     ConfigItem {
-        label: "Delete Source on Success",
+        label: Msg::CfgDeleteSource,
         kind: ConfigItemKind::Toggle,
         field: ConfigField::DeleteSource,
     },
     ConfigItem {
-        label: "SVT-AV1 Preset",
+        label: Msg::CfgSvtPreset,
         kind: ConfigItemKind::Numeric,
         field: ConfigField::SvtPreset,
     },
     ConfigItem {
-        label: "NVENC Preset",
+        label: Msg::CfgNvencPreset,
         kind: ConfigItemKind::Cycle,
         field: ConfigField::NvencPreset,
     },
     ConfigItem {
-        label: "RF SD",
+        label: Msg::CfgRfSd,
         kind: ConfigItemKind::Numeric,
         field: ConfigField::RfSd,
     },
     ConfigItem {
-        label: "RF HD (720p)",
+        label: Msg::CfgRfHd,
         kind: ConfigItemKind::Numeric,
         field: ConfigField::RfHd,
     },
     ConfigItem {
-        label: "RF 1080p SDR",
+        label: Msg::CfgRfFullHd,
         kind: ConfigItemKind::Numeric,
         field: ConfigField::RfFullHd,
     },
     ConfigItem {
-        label: "RF 1080p HDR",
+        label: Msg::CfgRfFullHdHdr,
         kind: ConfigItemKind::Numeric,
         field: ConfigField::RfFullHdHdr,
     },
     ConfigItem {
-        label: "RF 1080p DV",
+        label: Msg::CfgRfFullHdDv,
         kind: ConfigItemKind::Numeric,
         field: ConfigField::RfFullHdDv,
     },
     ConfigItem {
-        label: "RF 4K SDR",
+        label: Msg::CfgRfUhd,
         kind: ConfigItemKind::Numeric,
         field: ConfigField::RfUhd,
     },
     ConfigItem {
-        label: "RF 4K HDR",
+        label: Msg::CfgRfUhdHdr,
         kind: ConfigItemKind::Numeric,
         field: ConfigField::RfUhdHdr,
     },
     ConfigItem {
-        label: "RF 4K DV",
+        label: Msg::CfgRfUhdDv,
         kind: ConfigItemKind::Numeric,
         field: ConfigField::RfUhdDv,
     },
     ConfigItem {
-        label: "Output Suffix",
+        label: Msg::CfgOutputSuffix,
         kind: ConfigItemKind::Text,
         field: ConfigField::OutputSuffix,
     },
     ConfigItem {
-        label: "Output Container",
+        label: Msg::CfgOutputContainer,
         kind: ConfigItemKind::Text,
         field: ConfigField::OutputContainer,
     },
     ConfigItem {
-        label: "Same Directory Output",
+        label: Msg::CfgSameDirectory,
         kind: ConfigItemKind::Toggle,
         field: ConfigField::SameDirectory,
     },
     ConfigItem {
-        label: "Preferred Audio Languages",
+        label: Msg::CfgAudioLanguages,
         kind: ConfigItemKind::Text,
         field: ConfigField::AudioLanguages,
     },
     ConfigItem {
-        label: "Preferred Subtitle Languages",
+        label: Msg::CfgSubtitleLanguages,
         kind: ConfigItemKind::Text,
         field: ConfigField::SubtitleLanguages,
     },
@@ -157,10 +164,13 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         return String::new();
     };
     match item.field {
+        ConfigField::Language => config.language.display_name().to_string(),
         ConfigField::Encoder => config.encoder.display_name().to_string(),
         ConfigField::VmafThreshold => format!("{:.0}", config.quality.vmaf_threshold),
-        ConfigField::VmafEnabled => bool_display(config.quality.vmaf_enabled),
-        ConfigField::DeleteSource => bool_display(config.quality.delete_source_on_success),
+        ConfigField::VmafEnabled => bool_display(config.language, config.quality.vmaf_enabled),
+        ConfigField::DeleteSource => {
+            bool_display(config.language, config.quality.delete_source_on_success)
+        }
         ConfigField::SvtPreset => config.performance.svt_preset.to_string(),
         ConfigField::NvencPreset => config.performance.nvenc_preset.clone(),
         ConfigField::RfSd => preset_rf(config.encoder, &config.presets.sd),
@@ -173,7 +183,7 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::RfUhdDv => preset_rf(config.encoder, &config.presets.uhd_dv),
         ConfigField::OutputSuffix => config.output.suffix.clone(),
         ConfigField::OutputContainer => config.output.container.clone(),
-        ConfigField::SameDirectory => bool_display(config.output.same_directory),
+        ConfigField::SameDirectory => bool_display(config.language, config.output.same_directory),
         ConfigField::AudioLanguages => config.tracks.preferred_audio_languages.join(", "),
         ConfigField::SubtitleLanguages => config.tracks.preferred_subtitle_languages.join(", "),
     }
@@ -188,8 +198,8 @@ fn preset_rf(encoder: Encoder, preset: &EncodingPreset) -> String {
     }
 }
 
-fn bool_display(v: bool) -> String {
-    if v { "Yes" } else { "No" }.to_string()
+fn bool_display(lang: crate::i18n::Language, v: bool) -> String {
+    t(lang, if v { Msg::Yes } else { Msg::No }).to_string()
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────
@@ -205,8 +215,10 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
         .margin(1)
         .split(f.area());
 
+    let lang = app.config.language;
+
     // Title
-    let title = Paragraph::new("Configuration")
+    let title = Paragraph::new(t(lang, Msg::Configuration))
         .style(
             Style::default()
                 .fg(Color::Cyan)
@@ -238,7 +250,8 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
                 .title(format!(
-                    " Settings (config: {}) ",
+                    " {} ({}) ",
+                    t(lang, Msg::Settings),
                     AppConfig::config_path().display()
                 )),
         )
@@ -261,22 +274,22 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
         let help_text = if app.config_edit_buffer.is_some() {
             Line::from(vec![
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
-                Span::raw(" Confirm  "),
+                Span::raw(format!(" {}  ", t(lang, Msg::Confirm))),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(" Cancel"),
+                Span::raw(format!(" {}", t(lang, Msg::Cancel))),
             ])
         } else {
             Line::from(vec![
                 Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-                Span::raw(" Navigate  "),
+                Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
                 Span::styled("←→", Style::default().fg(Color::Yellow)),
-                Span::raw(" Adjust  "),
+                Span::raw(format!(" {}  ", t(lang, Msg::Adjust))),
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
-                Span::raw(" Edit text  "),
+                Span::raw(format!(" {}  ", t(lang, Msg::EditText))),
                 Span::styled("s", Style::default().fg(Color::Yellow)),
-                Span::raw(" Save  "),
+                Span::raw(format!(" {}  ", t(lang, Msg::Save))),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(" Back"),
+                Span::raw(format!(" {}", t(lang, Msg::Back))),
             ])
         };
         let help = Paragraph::new(help_text)
@@ -308,7 +321,7 @@ fn build_config_items(
 
             // Prompt the user how to open the editor for text fields
             let hint = if is_text && is_selected && !editing {
-                " (Enter to edit)"
+                t(config.language, Msg::EnterToEdit)
             } else {
                 ""
             };
@@ -330,7 +343,10 @@ fn build_config_items(
 
             let prefix = if is_selected { "> " } else { "  " };
             ListItem::new(Line::from(vec![
-                Span::styled(format!("{}{}: ", prefix, item.label), label_style),
+                Span::styled(
+                    format!("{}{}: ", prefix, t(config.language, item.label)),
+                    label_style,
+                ),
                 Span::styled(display_value, value_style),
                 Span::styled(hint.to_string(), Style::default().fg(Color::DarkGray)),
             ]))

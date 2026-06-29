@@ -11,6 +11,7 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 - **Smart preset selection** — Automatically picks encoding parameters based on resolution and HDR type
 - **VMAF quality verification** — Scores output quality after encoding; deletes source file if the threshold is met
 - **Track selection** — Auto-selects audio and subtitle tracks by preferred language; Selects all tracks or first track when no match is found
+- **Multi-language UI** — Interface available in English (default), Italian, Spanish, French, German, and Chinese; selectable in Settings
 - **Configurable** — All key settings adjustable through the built-in configuration screen or `~/.config/av1converter/config.toml`
 
 ## Prerequisites
@@ -107,6 +108,8 @@ The tool detects available encoders at startup with the following priority:
 Configuration is stored at `~/.config/av1converter/config.toml` and can be edited directly or through the built-in configuration screen.
 
 ```toml
+language = "en"                # UI language: en, it, es, fr, de, zh (English if omitted)
+
 [Quality]
 vmaf_threshold = 90.0          # VMAF score required to consider encoding successful (0–100)
 vmaf_enabled = true            # Enable/disable VMAF verification after encoding

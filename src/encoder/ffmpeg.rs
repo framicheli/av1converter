@@ -28,6 +28,7 @@ pub fn encode_video(
     progress_callback: Option<ProgressCallback>,
     cancel_flag: &AtomicBool,
     duration: f64,
+    total_frames: f64,
 ) -> EncodeResult {
     let args = build_ffmpeg_args(params);
 
@@ -75,11 +76,12 @@ pub fn encode_video(
         &mut child,
         &progress_file,
         duration,
+        total_frames,
         progress_callback,
         cancel_flag,
         &params.output,
         &stderr_path,
-        params.remux_only.then(|| params.input.clone()),
+        params.remux_only.then(|| params.input.clone()).as_ref(),
     );
 
     // Cleanup
@@ -96,15 +98,15 @@ fn run_encode_loop(
     child: &mut Child,
     progress_file: &Path,
     duration: f64,
+    total_frames: f64,
     mut progress_callback: Option<ProgressCallback>,
     cancel_flag: &AtomicBool,
     output: &str,
     stderr_path: &Path,
-    remux_input: Option<String>,
+    remux_input: Option<&String>,
 ) -> EncodeResult {
     // For remux jobs, estimate the final output size from the source file size.
     let remux_input_size = remux_input
-        .as_deref()
         .and_then(|input| std::fs::metadata(input).ok())
         .map(|m| m.len())
         .filter(|&len| len > 0);
@@ -129,24 +131,24 @@ fn run_encode_loop(
             }
         } else if let Ok(content) = std::fs::read_to_string(progress_file) {
             // Encode: derive progress from the processed timestamp vs. duration.
-            let mut latest_time_us: Option<f64> = None;
-            for line in content.lines() {
-                if let Some(value) = line.strip_prefix("out_time_us=")
-                    && let Ok(time_us) = value.trim().parse::<f64>()
-                    && time_us > 0.0
-                {
-                    latest_time_us = Some(time_us);
-                }
-            }
-
-            if let Some(time_us) = latest_time_us {
-                let time_secs = time_us / 1_000_000.0;
-                let progress = if duration > 0.0 {
+            // FFmpeg versions differ in which out_time field they emit.
+            let progress = if let Some(time_secs) = latest_progress_time_secs(&content) {
+                Some(if duration > 0.0 {
                     (time_secs / duration * 100.0).min(100.0)
                 } else {
                     // Duration unknown: advance slowly so UI shows activity (caps at 99%)
                     (time_secs / 7200.0 * 100.0).min(99.0)
-                };
+                })
+            } else if total_frames > 0.0 {
+                // Some sources (e.g. Dolby Vision) make FFmpeg report out_time=N/A.
+                // Fall back to the processed frame count vs. the total frame count.
+                latest_progress_frame(&content)
+                    .map(|frame| (frame / total_frames * 100.0).min(99.0))
+            } else {
+                None
+            };
+
+            if let Some(progress) = progress {
                 if let Some(ref mut cb) = progress_callback {
                     cb(progress);
                 }
@@ -185,5 +187,97 @@ fn run_encode_loop(
                 return EncodeResult::Error(format!("Failed to check ffmpeg status: {e}"));
             }
         }
+    }
+}
+
+fn latest_progress_time_secs(content: &str) -> Option<f64> {
+    content
+        .lines()
+        .filter_map(parse_progress_time_secs)
+        .next_back()
+}
+
+fn latest_progress_frame(content: &str) -> Option<f64> {
+    content
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("frame=")?
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|frame| *frame > 0.0)
+        })
+        .next_back()
+}
+
+fn parse_progress_time_secs(line: &str) -> Option<f64> {
+    if let Some(value) = line
+        .strip_prefix("out_time_us=")
+        .or_else(|| line.strip_prefix("out_time_ms="))
+    {
+        return value
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|time_us| *time_us > 0.0)
+            .map(|time_us| time_us / 1_000_000.0);
+    }
+
+    parse_out_time_secs(line)
+}
+
+fn parse_out_time_secs(line: &str) -> Option<f64> {
+    let value = line.strip_prefix("out_time=")?.trim();
+    let mut parts = value.split(':');
+
+    let hours = parts.next()?.parse::<f64>().ok()?;
+    let minutes = parts.next()?.parse::<f64>().ok()?;
+    let seconds = parts.next()?.parse::<f64>().ok()?;
+
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let total = hours * 3600.0 + minutes * 60.0 + seconds;
+    (total > 0.0).then_some(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{latest_progress_frame, latest_progress_time_secs};
+
+    #[test]
+    fn parses_latest_frame_count() {
+        let progress = "frame=10\nout_time=N/A\nframe=42\nout_time=N/A\n";
+
+        assert_eq!(latest_progress_frame(progress), Some(42.0));
+    }
+
+    #[test]
+    fn ignores_zero_frame_count() {
+        let progress = "frame=0\nout_time=N/A\n";
+
+        assert_eq!(latest_progress_frame(progress), None);
+    }
+
+    #[test]
+    fn parses_latest_out_time_us() {
+        let progress = "out_time_us=1000000\nprogress=continue\nout_time_us=2500000\n";
+
+        assert_eq!(latest_progress_time_secs(progress), Some(2.5));
+    }
+
+    #[test]
+    fn parses_legacy_out_time_ms_as_microseconds() {
+        let progress = "out_time_ms=1500000\nprogress=continue\n";
+
+        assert_eq!(latest_progress_time_secs(progress), Some(1.5));
+    }
+
+    #[test]
+    fn parses_textual_out_time() {
+        let progress = "out_time=N/A\nout_time=01:02:03.500000\n";
+
+        assert_eq!(latest_progress_time_secs(progress), Some(3723.5));
     }
 }

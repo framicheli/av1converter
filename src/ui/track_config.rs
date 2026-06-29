@@ -1,4 +1,5 @@
 use crate::app::{App, TrackFocus};
+use crate::i18n::{Msg, t};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -9,8 +10,19 @@ use ratatui::{
 
 #[allow(clippy::too_many_lines)]
 pub fn render_track_config(f: &mut Frame, app: &mut App) {
-    let (filename, resolution_string, hdr_string, audio_data, subtitle_data, remux_only, output_filename) = {
-        let Some(job) = app.current_config_job() else { return };
+    let lang = app.config.language;
+    let (
+        filename,
+        resolution_string,
+        hdr_string,
+        audio_data,
+        subtitle_data,
+        remux_only,
+        output_filename,
+    ) = {
+        let Some(job) = app.current_config_job() else {
+            return;
+        };
 
         let audio_data: Vec<(String, String, String, bool)> = job
             .audio_tracks
@@ -41,7 +53,10 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             .output_path
             .as_ref()
             .and_then(|p| p.file_name())
-            .map_or_else(|| "Unknown".to_string(), |f| f.to_string_lossy().into_owned());
+            .map_or_else(
+                || t(lang, Msg::Unknown).to_string(),
+                |f| f.to_string_lossy().into_owned(),
+            );
 
         (
             job.filename(),
@@ -67,7 +82,10 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
     // File info header
     let info_lines = vec![
         Line::from(vec![
-            Span::styled("File: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{}: ", t(lang, Msg::FileLabel)),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(
                 filename,
                 Style::default()
@@ -76,10 +94,16 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("Resolution: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{}: ", t(lang, Msg::ResolutionLabel)),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(resolution_string, Style::default().fg(Color::White)),
             Span::raw("  "),
-            Span::styled("Type: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{}: ", t(lang, Msg::TypeLabel)),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(
                 match hdr_string.as_str() {
                     "Dolby Vision" => "Dolby Vision → HDR10".to_string(),
@@ -94,15 +118,32 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("Mode: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                if remux_only { "Remux Only (Copy Video)" } else { "Encode Video (AV1)" },
+                format!("{}: ", t(lang, Msg::ModeLabel)),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                t(
+                    lang,
+                    if remux_only {
+                        Msg::RemuxOnly
+                    } else {
+                        Msg::EncodeVideo
+                    },
+                ),
                 Style::default()
-                    .fg(if remux_only { Color::Green } else { Color::Yellow })
+                    .fg(if remux_only {
+                        Color::Green
+                    } else {
+                        Color::Yellow
+                    })
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled("Output File: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{}: ", t(lang, Msg::OutputFileLabel)),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(output_filename, Style::default().fg(Color::Cyan)),
         ]),
     ];
@@ -111,7 +152,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
-            .title(" Video Info "),
+            .title(format!(" {} ", t(lang, Msg::VideoInfo))),
     );
     f.render_widget(info, chunks[0]);
 
@@ -142,7 +183,11 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(audio_border_color))
-                .title(" Audio Tracks [Space to toggle] "),
+                .title(format!(
+                    " {} [{}] ",
+                    t(lang, Msg::AudioTracks),
+                    t(lang, Msg::SpaceToToggle)
+                )),
         )
         .highlight_style(Style::default());
 
@@ -155,7 +200,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         .enumerate()
         .map(|(i, (name, forced, selected))| {
             let is_cursor = app.track_focus == TrackFocus::Subtitle && i == app.subtitle_cursor;
-            create_subtitle_track_item(name, *forced, *selected, is_cursor)
+            create_subtitle_track_item(name, *forced, *selected, is_cursor, lang)
         })
         .collect();
 
@@ -170,7 +215,11 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(subtitle_border_color))
-                .title(" Subtitle Tracks [Space to toggle] "),
+                .title(format!(
+                    " {} [{}] ",
+                    t(lang, Msg::SubtitleTracks),
+                    t(lang, Msg::SpaceToToggle)
+                )),
         )
         .highlight_style(Style::default());
 
@@ -189,19 +238,19 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
 
     let help_text = Line::from(vec![
         Span::styled("Tab", Style::default().fg(Color::Yellow)),
-        Span::raw(" Switch panel  "),
+        Span::raw(format!(" {}  ", t(lang, Msg::SwitchPanel))),
         Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-        Span::raw(" Navigate  "),
+        Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
         Span::styled("Space", Style::default().fg(Color::Yellow)),
-        Span::raw(" Toggle  "),
+        Span::raw(format!(" {}  ", t(lang, Msg::Toggle))),
         Span::styled("r", Style::default().fg(Color::Yellow)),
-        Span::raw(" Switch mode  "),
+        Span::raw(format!(" {}  ", t(lang, Msg::SwitchMode))),
         Span::styled("a", Style::default().fg(Color::Yellow)),
-        Span::raw(" All audio  "),
+        Span::raw(format!(" {}  ", t(lang, Msg::AllAudio))),
         Span::styled("s", Style::default().fg(Color::Yellow)),
-        Span::raw(" All subs  "),
+        Span::raw(format!(" {}  ", t(lang, Msg::AllSubs))),
         Span::styled(" [", Style::default().fg(Color::DarkGray)),
-        Span::styled(" Continue ", confirm_style),
+        Span::styled(format!(" {} ", t(lang, Msg::Continue)), confirm_style),
         Span::styled("]", Style::default().fg(Color::DarkGray)),
     ]);
 
@@ -238,10 +287,15 @@ fn create_subtitle_track_item(
     forced: bool,
     selected: bool,
     is_cursor: bool,
+    lang: crate::i18n::Language,
 ) -> ListItem<'static> {
     let checkbox = if selected { "[x]" } else { "[ ]" };
     let prefix = if is_cursor { "> " } else { "  " };
-    let forced_str = if forced { " [Forced]" } else { "" };
+    let forced_str = if forced {
+        format!(" [{}]", t(lang, Msg::ForcedTag))
+    } else {
+        String::new()
+    };
 
     let style = if is_cursor {
         Style::default().add_modifier(Modifier::BOLD)

@@ -120,9 +120,7 @@ impl EncodingJob {
             output_config.container.clone()
         };
 
-        self.output_path = Some(parent.join(format!(
-            "{stem}{suffix}.{container}"
-        )));
+        self.output_path = Some(parent.join(format!("{stem}{suffix}.{container}")));
     }
 
     /// Calculate size reduction if both sizes are known
