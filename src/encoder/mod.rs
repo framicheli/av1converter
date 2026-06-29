@@ -57,8 +57,16 @@ pub fn run_encoding_pipeline(
     let params = EncodingParams::from_metadata(input, output, metadata, config, tracks, remux_only);
     let duration = metadata.duration_secs;
 
+    // Total frame count for frame-based progress fallback (some sources, e.g.
+    // Dolby Vision, make FFmpeg report out_time=N/A but still emit frame counts).
+    let total_frames = if metadata.frame_rate_den > 0 {
+        duration * f64::from(metadata.frame_rate_num) / f64::from(metadata.frame_rate_den)
+    } else {
+        0.0
+    };
+
     // Encode
-    let encode_result = encode_video(&params, progress_callback, cancel_flag, duration);
+    let encode_result = encode_video(&params, progress_callback, cancel_flag, duration, total_frames);
 
     match encode_result {
         EncodeResult::Success => {
