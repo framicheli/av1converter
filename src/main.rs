@@ -345,7 +345,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         return;
     }
 
-    let config_item_count = crate::ui::config_screen::CONFIG_ITEMS.len();
+    let config_item_count = crate::ui::config_screen::visible_config_items(&app.config).len();
 
     match key {
         KeyCode::Esc => app.navigate_to_home(),
@@ -362,8 +362,8 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
             adjust_config_value(app, app.config_selected, true);
         }
         KeyCode::Enter => {
-            use crate::ui::config_screen::{CONFIG_ITEMS, ConfigItemKind};
-            if CONFIG_ITEMS
+            use crate::ui::config_screen::{ConfigItemKind, visible_config_items};
+            if visible_config_items(&app.config)
                 .get(app.config_selected)
                 .is_some_and(|item| item.kind == ConfigItemKind::Text)
             {
@@ -385,8 +385,11 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
 
 /// Begin editing the currently selected text-editable config field.
 fn start_config_edit(app: &mut App) {
-    use crate::ui::config_screen::{CONFIG_ITEMS, ConfigField};
-    let Some(item) = CONFIG_ITEMS.get(app.config_selected) else {
+    use crate::ui::config_screen::{ConfigField, visible_config_items};
+    let Some(item) = visible_config_items(&app.config)
+        .get(app.config_selected)
+        .copied()
+    else {
         return;
     };
     app.config_edit_buffer = Some(match item.field {
@@ -400,11 +403,14 @@ fn start_config_edit(app: &mut App) {
 
 /// Write the edit buffer back to the appropriate config field.
 fn commit_config_edit(app: &mut App) {
-    use crate::ui::config_screen::{CONFIG_ITEMS, ConfigField};
+    use crate::ui::config_screen::{ConfigField, visible_config_items};
     let Some(buf) = app.config_edit_buffer.take() else {
         return;
     };
-    let Some(item) = CONFIG_ITEMS.get(app.config_selected) else {
+    let Some(item) = visible_config_items(&app.config)
+        .get(app.config_selected)
+        .copied()
+    else {
         return;
     };
     let value = buf.trim().to_string();
@@ -430,13 +436,16 @@ fn parse_lang_list(s: &str) -> Vec<String> {
 }
 
 fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
-    use crate::ui::config_screen::{CONFIG_ITEMS, ConfigField};
+    use crate::ui::config_screen::{ConfigField, visible_config_items};
 
-    let Some(item) = CONFIG_ITEMS.get(index) else {
+    let Some(field) = visible_config_items(&app.config)
+        .get(index)
+        .map(|item| item.field)
+    else {
         return;
     };
 
-    match item.field {
+    match field {
         ConfigField::Language => {
             app.config.language = if increase {
                 app.config.language.next()
@@ -491,6 +500,23 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
                 (current + presets.len() - 1) % presets.len()
             };
             app.config.performance.nvenc_preset = presets[next].to_string();
+        }
+        ConfigField::QualityPreset => {
+            let next = if increase {
+                app.config.quality_preset.next()
+            } else {
+                app.config.quality_preset.prev()
+            };
+            app.config.quality_preset = next;
+            // Low/Medium/High overwrite the per-tier presets; Custom keeps them.
+            if let Some(presets) = next.presets() {
+                app.config.presets = presets;
+            }
+            // Hiding/showing the RF rows can shrink the list under the cursor.
+            let count = crate::ui::config_screen::visible_config_items(&app.config).len();
+            if app.config_selected >= count {
+                app.config_selected = count.saturating_sub(1);
+            }
         }
         ConfigField::SameDirectory => {
             app.config.output.same_directory = !app.config.output.same_directory;

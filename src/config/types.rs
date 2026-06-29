@@ -1,5 +1,55 @@
 use serde::{Deserialize, Serialize};
 
+/// Overall quality preset that drives the per-tier encoding settings.
+///
+/// `Low`, `Medium` and `High` apply a fixed set of per-resolution values,
+/// while `Custom` leaves the user's hand-tuned values untouched and editable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum QualityPreset {
+    #[serde(rename = "low")]
+    Low,
+    #[default]
+    #[serde(rename = "medium")]
+    Medium,
+    #[serde(rename = "high")]
+    High,
+    #[serde(rename = "custom")]
+    Custom,
+}
+
+impl QualityPreset {
+    /// All presets, in display/cycle order.
+    pub const ALL: [QualityPreset; 4] = [
+        QualityPreset::Low,
+        QualityPreset::Medium,
+        QualityPreset::High,
+        QualityPreset::Custom,
+    ];
+
+    /// The next preset in [`QualityPreset::ALL`], wrapping around.
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|&p| p == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    /// The previous preset in [`QualityPreset::ALL`], wrapping around.
+    pub fn prev(self) -> Self {
+        let i = Self::ALL.iter().position(|&p| p == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+    /// The per-tier encoding presets for this quality level, or `None` for
+    /// [`QualityPreset::Custom`] (which keeps the user's own values).
+    pub fn presets(self) -> Option<EncodingPresetsConfig> {
+        match self {
+            QualityPreset::Low => Some(EncodingPresetsConfig::low()),
+            QualityPreset::Medium => Some(EncodingPresetsConfig::medium()),
+            QualityPreset::High => Some(EncodingPresetsConfig::high()),
+            QualityPreset::Custom => None,
+        }
+    }
+}
+
 /// Quality configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QualityConfig {
@@ -55,6 +105,23 @@ pub struct EncodingPreset {
     pub amf_quality: u8,
 }
 
+impl EncodingPreset {
+    /// Shift every quality value by `delta` (a higher value means lower quality
+    /// and smaller files). Film grain synthesis is left untouched.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn shifted(&self, delta: i16) -> EncodingPreset {
+        // clamp(0, 63) keeps the result well within u8 range before the cast.
+        let adj = |v: u8| -> u8 { (i16::from(v) + delta).clamp(0, 63) as u8 };
+        EncodingPreset {
+            crf: adj(self.crf),
+            film_grain: self.film_grain,
+            nvenc_cq: adj(self.nvenc_cq),
+            qsv_quality: adj(self.qsv_quality),
+            amf_quality: adj(self.amf_quality),
+        }
+    }
+}
+
 /// Encoding presets per resolution tier
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncodingPresetsConfig {
@@ -91,6 +158,35 @@ fn default_uhd_dv() -> EncodingPreset {
 }
 
 impl EncodingPresetsConfig {
+    /// Balanced presets — identical to the built-in defaults.
+    pub fn medium() -> Self {
+        Self::default()
+    }
+
+    /// Smaller-file presets (higher CRF/CQ across every tier).
+    pub fn low() -> Self {
+        Self::default().shifted(4)
+    }
+
+    /// Higher-quality presets (lower CRF/CQ across every tier).
+    pub fn high() -> Self {
+        Self::default().shifted(-4)
+    }
+
+    /// Apply a quality shift to every resolution tier.
+    fn shifted(self, delta: i16) -> Self {
+        Self {
+            sd: self.sd.shifted(delta),
+            hd: self.hd.shifted(delta),
+            full_hd: self.full_hd.shifted(delta),
+            full_hd_hdr: self.full_hd_hdr.shifted(delta),
+            full_hd_dv: self.full_hd_dv.shifted(delta),
+            uhd: self.uhd.shifted(delta),
+            uhd_hdr: self.uhd_hdr.shifted(delta),
+            uhd_dv: self.uhd_dv.shifted(delta),
+        }
+    }
+
     pub fn all_mut(&mut self) -> [&mut EncodingPreset; 8] {
         [
             &mut self.sd,

@@ -1,12 +1,12 @@
 [package]
 name = "av1converter"
-version = "2.5.1"
+version = "2.5.2"
 edition = "2024"
 
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-ratatui = "0.30"
+serde_json = "1.0.150"
+ratatui = "0.30.2"
 crossterm = "0.29"
 toml = "1.1.2"
 
