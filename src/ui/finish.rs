@@ -8,10 +8,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
-pub fn render_finish(f: &mut Frame, app: &App) {
+pub fn render_finish(f: &mut Frame, app: &mut App) {
     let is_single_file = app.queue.jobs.len() == 1;
 
     if is_single_file {
@@ -211,12 +211,15 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
         ]));
     }
 
-    let summary = Paragraph::new(lines).alignment(Alignment::Center).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(format!(" {} ", t(lang, Msg::ResultTitle))),
-    );
+    let summary = Paragraph::new(lines)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(format!(" {} ", t(lang, Msg::ResultTitle))),
+        );
     f.render_widget(summary, chunks[0]);
 
     // Help
@@ -229,12 +232,13 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
 
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::NONE));
+        .block(Block::default().borders(Borders::NONE))
+        .wrap(Wrap { trim: true });
     f.render_widget(help, chunks[1]);
 }
 
 #[allow(clippy::too_many_lines)]
-fn render_multi_file_finish(f: &mut Frame, app: &App) {
+fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -326,7 +330,8 @@ fn render_multi_file_finish(f: &mut Frame, app: &App) {
         .queue
         .jobs
         .iter()
-        .map(|job| create_result_item(job, lang))
+        .enumerate()
+        .map(|(i, job)| create_result_item(job, i == app.finish_cursor, lang))
         .collect();
 
     let list = List::new(items).block(
@@ -335,10 +340,13 @@ fn render_multi_file_finish(f: &mut Frame, app: &App) {
             .border_style(Style::default().fg(Color::DarkGray))
             .title(format!(" {} ", t(lang, Msg::Results))),
     );
-    f.render_widget(list, chunks[1]);
+    app.finish_list_state.select(Some(app.finish_cursor));
+    f.render_stateful_widget(list, chunks[1], &mut app.finish_list_state);
 
     // Help
     let help_text = Line::from(vec![
+        Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+        Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(format!(" {}  ", t(lang, Msg::NewConversion))),
         Span::styled("q", Style::default().fg(Color::Yellow)),
@@ -347,12 +355,23 @@ fn render_multi_file_finish(f: &mut Frame, app: &App) {
 
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::NONE));
+        .block(Block::default().borders(Borders::NONE))
+        .wrap(Wrap { trim: true });
     f.render_widget(help, chunks[2]);
 }
 
-fn create_result_item(job: &crate::queue::EncodingJob, lang: Language) -> ListItem<'static> {
+fn create_result_item(
+    job: &crate::queue::EncodingJob,
+    is_cursor: bool,
+    lang: Language,
+) -> ListItem<'static> {
     let name = job.filename();
+    let prefix = if is_cursor { "> " } else { "  " };
+    let bold_mod = if is_cursor {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
 
     // Output size and compression ratio
     let output_info = match (job.output_size, job.size_reduction()) {
@@ -372,26 +391,26 @@ fn create_result_item(job: &crate::queue::EncodingJob, lang: Language) -> ListIt
         String::new()
     };
 
+    // `ListItem`/`Line::style` replace rather than patch, so `bold_mod` is
+    // folded into each arm's single outermost `.style()` call below rather
+    // than layered on afterwards.
     match &job.status {
         JobStatus::Done => {
             let mut spans = vec![
-                Span::styled("  ✓ ", Style::default().fg(Color::Green)),
+                Span::styled(format!("{prefix}✓ "), Style::default().fg(Color::Green)),
                 Span::raw(name),
                 Span::styled(output_info, Style::default().fg(Color::DarkGray)),
             ];
             if !source_info.is_empty() {
-                spans.push(Span::styled(
-                    source_info.clone(),
-                    Style::default().fg(Color::Yellow),
-                ));
+                spans.push(Span::styled(source_info, Style::default().fg(Color::Yellow)));
             }
-            ListItem::new(Line::from(spans))
+            ListItem::new(Line::from(spans)).style(Style::default().add_modifier(bold_mod))
         }
         JobStatus::DoneWithVmaf { score } => {
             let vmaf_color = get_vmaf_color(*score);
             let quality_desc = get_quality_description(lang, *score);
             let mut spans = vec![
-                Span::styled("  ✓ ", Style::default().fg(Color::Green)),
+                Span::styled(format!("{prefix}✓ "), Style::default().fg(Color::Green)),
                 Span::raw(name),
                 Span::styled(output_info, Style::default().fg(Color::DarkGray)),
                 Span::raw(" "),
@@ -405,25 +424,21 @@ fn create_result_item(job: &crate::queue::EncodingJob, lang: Language) -> ListIt
                 ),
             ];
             if !source_info.is_empty() {
-                spans.push(Span::styled(
-                    source_info.clone(),
-                    Style::default().fg(Color::Yellow),
-                ));
+                spans.push(Span::styled(source_info, Style::default().fg(Color::Yellow)));
             }
-            ListItem::new(Line::from(spans))
+            ListItem::new(Line::from(spans)).style(Style::default().add_modifier(bold_mod))
         }
         JobStatus::Skipped { reason } => ListItem::new(format!(
-            "  ⊘ {name} ({})",
+            "{prefix}⊘ {name} ({})",
             super::common::translate_reason(lang, reason)
         ))
-        .style(Style::default().fg(Color::Yellow)),
-        JobStatus::Error { message } => {
-            ListItem::new(format!("  ✗ {name}: {message}")).style(Style::default().fg(Color::Red))
-        }
+        .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
+        JobStatus::Error { message } => ListItem::new(format!("{prefix}✗ {name}: {message}"))
+            .style(Style::default().fg(Color::Red).add_modifier(bold_mod)),
         JobStatus::QualityWarning { vmaf, threshold } => {
             let vmaf_color = get_vmaf_color(*vmaf);
             let mut spans = vec![
-                Span::styled("  ⚠ ", Style::default().fg(Color::Yellow)),
+                Span::styled(format!("{prefix}⚠ "), Style::default().fg(Color::Yellow)),
                 Span::raw(name),
                 Span::styled(output_info, Style::default().fg(Color::DarkGray)),
                 Span::raw(" "),
@@ -437,13 +452,11 @@ fn create_result_item(job: &crate::queue::EncodingJob, lang: Language) -> ListIt
                 ),
             ];
             if !source_info.is_empty() {
-                spans.push(Span::styled(
-                    source_info.clone(),
-                    Style::default().fg(Color::Yellow),
-                ));
+                spans.push(Span::styled(source_info, Style::default().fg(Color::Yellow)));
             }
-            ListItem::new(Line::from(spans))
+            ListItem::new(Line::from(spans)).style(Style::default().add_modifier(bold_mod))
         }
-        _ => ListItem::new(format!("  ? {name}")).style(Style::default().fg(Color::DarkGray)),
+        _ => ListItem::new(format!("{prefix}? {name}"))
+            .style(Style::default().fg(Color::DarkGray).add_modifier(bold_mod)),
     }
 }

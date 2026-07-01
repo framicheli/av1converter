@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
 pub fn render_file_confirm(f: &mut Frame, app: &mut App) {
@@ -93,6 +93,7 @@ pub fn render_file_confirm(f: &mut Frame, app: &mut App) {
 
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::NONE));
+        .block(Block::default().borders(Borders::NONE))
+        .wrap(Wrap { trim: true });
     f.render_widget(help, chunks[2]);
 }

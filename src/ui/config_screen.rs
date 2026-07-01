@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 /// How a config item's value is changed.
@@ -318,6 +318,7 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
                     .add_modifier(Modifier::BOLD),
             )
             .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
             .block(Block::default().borders(Borders::NONE));
         f.render_widget(status, chunks[2]);
     } else {
@@ -346,7 +347,8 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
         };
         let help = Paragraph::new(help_text)
             .alignment(Alignment::Center)
-            .block(Block::default().borders(Borders::NONE));
+            .block(Block::default().borders(Borders::NONE))
+            .wrap(Wrap { trim: true });
         f.render_widget(help, chunks[2]);
     }
 }

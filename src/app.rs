@@ -49,6 +49,7 @@ pub enum ConfirmAction {
     ExitApp,
     AbandonTrackConfig,
     DiscardConfigChanges,
+    CancelAnalysis,
 }
 
 pub const HOME_MENU: &[&str] = &[
@@ -113,6 +114,10 @@ pub struct App {
     pub config_selected: usize,
     pub config_edit_buffer: Option<String>,
     pub config_snapshot: Option<AppConfig>,
+
+    // Finish screen
+    pub finish_cursor: usize,
+    pub finish_list_state: ListState,
 }
 
 impl Default for App {
@@ -147,6 +152,8 @@ impl App {
         queue_list_state.select(Some(0));
         let mut file_confirm_list_state = ListState::default();
         file_confirm_list_state.select(Some(0));
+        let mut finish_list_state = ListState::default();
+        finish_list_state.select(Some(0));
 
         let config = AppConfig::load();
         let deps = DependencyStatus::check();
@@ -186,6 +193,8 @@ impl App {
             config_selected: 0,
             config_edit_buffer: None,
             config_snapshot: None,
+            finish_cursor: 0,
+            finish_list_state,
         }
     }
 
@@ -278,6 +287,7 @@ impl App {
                 job.output_size = std::fs::metadata(output_path).ok().map(|m| m.len());
             }
         }
+        self.finish_cursor = 0;
         self.current_screen = Screen::Finish;
     }
 
@@ -309,6 +319,18 @@ impl App {
             }
         } else if self.queue_cursor > 0 {
             self.queue_cursor -= 1;
+        }
+    }
+
+    /// Move the Finish screen results-list cursor up (`forward = false`) or
+    /// down (`forward = true`), clamped within the job list bounds.
+    pub fn finish_move_cursor(&mut self, forward: bool) {
+        if forward {
+            if self.finish_cursor < self.queue.jobs.len().saturating_sub(1) {
+                self.finish_cursor += 1;
+            }
+        } else if self.finish_cursor > 0 {
+            self.finish_cursor -= 1;
         }
     }
 
@@ -797,6 +819,11 @@ impl App {
                 WorkerMessage::Progress(idx, progress) => {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
                         job.status = JobStatus::Encoding { progress };
+                        // Keep the cursor following the active job unless the
+                        // user has manually scrolled it elsewhere.
+                        if self.queue_cursor == self.queue.current_job_index {
+                            self.queue_cursor = idx;
+                        }
                         self.queue.current_job_index = idx;
                     }
                 }

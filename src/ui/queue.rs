@@ -8,18 +8,30 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
 };
 
 #[allow(clippy::too_many_lines)]
 pub fn render_queue(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
+
+    // The detail panel below the list always reflects the job at the cursor,
+    // not necessarily the one actively encoding. Give it extra height when
+    // showing static status text, since an `Error` can span several lines
+    // (ffmpeg's last few stderr lines) — the live gauge only ever needs one.
+    let detail_job = app.queue.jobs.get(app.queue_cursor);
+    let is_live_gauge = matches!(
+        detail_job.map(|j| &j.status),
+        Some(JobStatus::Encoding { .. })
+    );
+    let detail_height = if is_live_gauge { 3 } else { 7 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(3),
+            Constraint::Length(detail_height),
             Constraint::Length(3),
         ])
         .margin(1)
@@ -108,8 +120,8 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
     app.queue_list_state.select(Some(app.queue_cursor));
     f.render_stateful_widget(list, chunks[1], &mut app.queue_list_state);
 
-    // Current file progress
-    if let Some(job) = app.queue.jobs.get(app.queue.current_job_index) {
+    // Detail panel for the job at the cursor
+    if let Some(job) = detail_job {
         if let JobStatus::Encoding { progress } = &job.status {
             let elapsed_str = app
                 .queue
@@ -142,14 +154,31 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
             f.render_widget(gauge, chunks[2]);
         } else {
             let status_text = match &job.status {
+                JobStatus::Analyzing => t(lang, Msg::StatusAnalyzing).to_string(),
+                JobStatus::AwaitingConfig => t(lang, Msg::StatusConfiguring).to_string(),
+                JobStatus::Ready => t(lang, Msg::StatusReady).to_string(),
                 JobStatus::Pending => t(lang, Msg::Waiting).to_string(),
+                JobStatus::Verifying => t(lang, Msg::StatusVerifying).to_string(),
                 JobStatus::Done => t(lang, Msg::Complete).to_string(),
+                JobStatus::DoneWithVmaf { score } => {
+                    format!("{} — VMAF: {score:.1}", t(lang, Msg::Complete))
+                }
+                JobStatus::DoneVmafFailed { reason } => {
+                    format!("{} (VMAF: {reason})", t(lang, Msg::Complete))
+                }
+                JobStatus::QualityWarning { vmaf, threshold } => format!(
+                    "{}: VMAF {vmaf:.1} < {threshold:.0} {}",
+                    t(lang, Msg::QualityWarning),
+                    t(lang, Msg::ThresholdLabel)
+                ),
                 JobStatus::Skipped { reason } => translate_reason(lang, reason),
                 JobStatus::Error { message } => message.clone(),
-                _ => String::new(),
+                // Handled by the `if let Encoding` branch above; unreachable here.
+                JobStatus::Encoding { .. } => String::new(),
             };
             let status = Paragraph::new(status_text)
                 .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true })
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
@@ -183,7 +212,8 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
 
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::NONE));
+        .block(Block::default().borders(Borders::NONE))
+        .wrap(Wrap { trim: true });
     f.render_widget(help, chunks[3]);
 }
 

@@ -161,6 +161,9 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
             }
             app.navigate_to_home();
         }
+        ConfirmAction::CancelAnalysis => {
+            app.cancel_analysis();
+        }
     }
 }
 
@@ -318,7 +321,7 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
 fn handle_queue_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc if app.analysis_receiver.is_some() => {
-            app.cancel_analysis();
+            app.confirm_dialog = Some((ConfirmAction::CancelAnalysis, false));
         }
         KeyCode::Esc if app.encoding_active => {
             app.confirm_dialog = Some((ConfirmAction::CancelEncoding, false));
@@ -333,8 +336,11 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
 }
 
 fn handle_finish_key(app: &mut App, key: KeyCode) {
-    if key == KeyCode::Enter {
-        app.reset();
+    match key {
+        KeyCode::Up | KeyCode::Char('k') => app.finish_move_cursor(false),
+        KeyCode::Down | KeyCode::Char('j') => app.finish_move_cursor(true),
+        KeyCode::Enter => app.reset(),
+        _ => {}
     }
 }
 

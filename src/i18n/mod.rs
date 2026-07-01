@@ -181,6 +181,8 @@ pub enum Msg {
     AbandonTrackConfigPrompt,
     DiscardConfigTitle,
     DiscardConfigPrompt,
+    CancelAnalysisTitle,
+    CancelAnalysisPrompt,
     Yes,
     No,
 
@@ -1024,6 +1026,22 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             }
             De => "Es gibt ungespeicherte Änderungen. Verwerfen und zum Hauptmenü zurückkehren?",
             Zh => "有未保存的更改。是否放弃并返回主页？",
+        },
+        Msg::CancelAnalysisTitle => match lang {
+            En => "Cancel Analysis",
+            It => "Annulla analisi",
+            Es => "Cancelar análisis",
+            Fr => "Annuler l'analyse",
+            De => "Analyse abbrechen",
+            Zh => "取消分析",
+        },
+        Msg::CancelAnalysisPrompt => match lang {
+            En => "Are you sure you want to cancel the analysis and return home?",
+            It => "Vuoi davvero annullare l'analisi e tornare al menu principale?",
+            Es => "¿Seguro que quieres cancelar el análisis y volver al inicio?",
+            Fr => "Voulez-vous vraiment annuler l'analyse et revenir à l'accueil ?",
+            De => "Möchten Sie die Analyse wirklich abbrechen und zum Hauptmenü zurückkehren?",
+            Zh => "确定要取消分析并返回主页吗？",
         },
         Msg::Yes => match lang {
             En => "Yes",
