@@ -24,6 +24,14 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
             format!(" {} ", t(lang, Msg::ExitAppTitle)),
             t(lang, Msg::ExitAppPrompt),
         ),
+        ConfirmAction::AbandonTrackConfig => (
+            format!(" {} ", t(lang, Msg::AbandonTrackConfigTitle)),
+            t(lang, Msg::AbandonTrackConfigPrompt),
+        ),
+        ConfirmAction::DiscardConfigChanges => (
+            format!(" {} ", t(lang, Msg::DiscardConfigTitle)),
+            t(lang, Msg::DiscardConfigPrompt),
+        ),
     };
 
     // Calculate dialog area

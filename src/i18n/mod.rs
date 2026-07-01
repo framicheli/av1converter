@@ -84,6 +84,7 @@ pub enum Msg {
     AllSubs,
     OpenFolderAction,
     SelectThisFolder,
+    SwitchFile,
 
     // ── Home ─────────────────────────────────────────────────────────────────
     MenuTitle,
@@ -176,6 +177,10 @@ pub enum Msg {
     CancelEncodingPrompt,
     ExitAppTitle,
     ExitAppPrompt,
+    AbandonTrackConfigTitle,
+    AbandonTrackConfigPrompt,
+    DiscardConfigTitle,
+    DiscardConfigPrompt,
     Yes,
     No,
 
@@ -369,6 +374,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Sélectionner ce dossier",
             De => "Diesen Ordner wählen",
             Zh => "选择此文件夹",
+        },
+        Msg::SwitchFile => match lang {
+            En => "Switch file",
+            It => "Cambia file",
+            Es => "Cambiar archivo",
+            Fr => "Changer de fichier",
+            De => "Datei wechseln",
+            Zh => "切换文件",
         },
 
         // ── Home ─────────────────────────────────────────────────────────────
@@ -977,6 +990,40 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Voulez-vous vraiment quitter ?",
             De => "Möchten Sie wirklich beenden?",
             Zh => "确定要退出吗？",
+        },
+        Msg::AbandonTrackConfigTitle => match lang {
+            En => "Discard Batch",
+            It => "Annulla lotto",
+            Es => "Descartar lote",
+            Fr => "Abandonner le lot",
+            De => "Stapel verwerfen",
+            Zh => "放弃批次",
+        },
+        Msg::AbandonTrackConfigPrompt => match lang {
+            En => "Are you sure you want to discard this batch and return home?",
+            It => "Vuoi davvero annullare questo lotto e tornare al menu principale?",
+            Es => "¿Seguro que quieres descartar este lote y volver al inicio?",
+            Fr => "Voulez-vous vraiment abandonner ce lot et revenir à l'accueil ?",
+            De => "Möchten Sie diesen Stapel wirklich verwerfen und zum Hauptmenü zurückkehren?",
+            Zh => "确定要放弃此批次并返回主页吗？",
+        },
+        Msg::DiscardConfigTitle => match lang {
+            En => "Discard Changes",
+            It => "Annulla modifiche",
+            Es => "Descartar cambios",
+            Fr => "Annuler les modifications",
+            De => "Änderungen verwerfen",
+            Zh => "放弃更改",
+        },
+        Msg::DiscardConfigPrompt => match lang {
+            En => "You have unsaved changes. Discard them and return home?",
+            It => "Ci sono modifiche non salvate. Vuoi scartarle e tornare al menu principale?",
+            Es => "Hay cambios sin guardar. ¿Descartarlos y volver al inicio?",
+            Fr => {
+                "Des modifications ne sont pas enregistrées. Les annuler et revenir à l'accueil ?"
+            }
+            De => "Es gibt ungespeicherte Änderungen. Verwerfen und zum Hauptmenü zurückkehren?",
+            Zh => "有未保存的更改。是否放弃并返回主页？",
         },
         Msg::Yes => match lang {
             En => "Yes",

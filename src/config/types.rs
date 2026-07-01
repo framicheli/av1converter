@@ -51,7 +51,7 @@ impl QualityPreset {
 }
 
 /// Quality configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QualityConfig {
     /// VMAF quality threshold (0-100)
     pub vmaf_threshold: f64,
@@ -73,7 +73,7 @@ impl Default for QualityConfig {
 }
 
 /// Performance configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PerformanceConfig {
     /// SVT-AV1 preset (0-13, lower = slower/better)
     pub svt_preset: u8,
@@ -91,7 +91,7 @@ impl Default for PerformanceConfig {
 }
 
 /// Encoding preset for a specific resolution tier
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EncodingPreset {
     /// CRF value for software encoding
     pub crf: u8,
@@ -123,7 +123,7 @@ impl EncodingPreset {
 }
 
 /// Encoding presets per resolution tier
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EncodingPresetsConfig {
     pub sd: EncodingPreset,
     pub hd: EncodingPreset,
@@ -253,7 +253,7 @@ impl Default for EncodingPresetsConfig {
 }
 
 /// Output configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutputConfig {
     /// Output file suffix
     pub suffix: String,
@@ -277,7 +277,7 @@ impl Default for OutputConfig {
 }
 
 /// Track selection preset configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackPresetConfig {
     /// Preferred audio languages
     pub preferred_audio_languages: Vec<String>,

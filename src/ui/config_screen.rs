@@ -339,7 +339,9 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
                 Span::styled("s", Style::default().fg(Color::Yellow)),
                 Span::raw(format!(" {}  ", t(lang, Msg::Save))),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}", t(lang, Msg::Back))),
+                Span::raw(format!(" {}  ", t(lang, Msg::Back))),
+                Span::styled("q", Style::default().fg(Color::Yellow)),
+                Span::raw(format!(" {}", t(lang, Msg::Quit))),
             ])
         };
         let help = Paragraph::new(help_text)

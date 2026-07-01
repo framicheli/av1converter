@@ -102,6 +102,13 @@ fn handle_key(app: &mut App, key: KeyCode) {
         return;
     }
 
+    // Global quit shortcut, available on every screen. Suppressed while typing
+    // in a Configuration text field so 'q' can still be entered as a character.
+    if key == KeyCode::Char('q') && app.config_edit_buffer.is_none() {
+        app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+        return;
+    }
+
     match &app.current_screen {
         Screen::Home => handle_home_key(app, key),
         Screen::FileExplorer { .. } => handle_explorer_key(app, key),
@@ -145,14 +152,20 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
         ConfirmAction::ExitApp => {
             app.should_quit = true;
         }
+        ConfirmAction::AbandonTrackConfig => {
+            app.cancel_track_config();
+        }
+        ConfirmAction::DiscardConfigChanges => {
+            if let Some(snapshot) = app.config_snapshot.take() {
+                app.config = snapshot;
+            }
+            app.navigate_to_home();
+        }
     }
 }
 
 fn handle_home_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Char('q') => {
-            app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
-        }
         KeyCode::Up | KeyCode::Char('k') if app.home_index > 0 => app.home_index -= 1,
         KeyCode::Down | KeyCode::Char('j') if app.home_index < HOME_MENU.len() - 1 => {
             app.home_index += 1;
@@ -219,7 +232,11 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
     let subtitle_count = job.subtitle_tracks.len();
 
     match key {
-        KeyCode::Esc => app.navigate_to_home(),
+        KeyCode::Esc => {
+            app.confirm_dialog = Some((ConfirmAction::AbandonTrackConfig, false));
+        }
+        KeyCode::Left | KeyCode::Char('h') => app.step_track_config_job(false),
+        KeyCode::Right | KeyCode::Char('l') => app.step_track_config_job(true),
         KeyCode::Tab => {
             app.track_focus = match app.track_focus {
                 TrackFocus::Confirm if audio_count > 0 => TrackFocus::Audio,
@@ -306,6 +323,8 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
         KeyCode::Esc if app.encoding_active => {
             app.confirm_dialog = Some((ConfirmAction::CancelEncoding, false));
         }
+        KeyCode::Up | KeyCode::Char('k') => app.queue_move_cursor(false),
+        KeyCode::Down | KeyCode::Char('j') => app.queue_move_cursor(true),
         KeyCode::Enter if !app.encoding_active && app.analysis_receiver.is_none() => {
             app.navigate_to_finish();
         }
@@ -314,12 +333,8 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
 }
 
 fn handle_finish_key(app: &mut App, key: KeyCode) {
-    match key {
-        KeyCode::Char('q') => {
-            app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
-        }
-        KeyCode::Enter => app.reset(),
-        _ => {}
+    if key == KeyCode::Enter {
+        app.reset();
     }
 }
 
@@ -348,7 +363,13 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
     let config_item_count = crate::ui::config_screen::visible_config_items(&app.config).len();
 
     match key {
-        KeyCode::Esc => app.navigate_to_home(),
+        KeyCode::Esc => {
+            if app.config_is_dirty() {
+                app.confirm_dialog = Some((ConfirmAction::DiscardConfigChanges, false));
+            } else {
+                app.navigate_to_home();
+            }
+        }
         KeyCode::Up | KeyCode::Char('k') if app.config_selected > 0 => {
             app.config_selected -= 1;
         }
@@ -376,6 +397,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                 tracing::warn!("Failed to save config: {:?}", e);
                 app.set_timed_message(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 3);
             } else {
+                app.config_snapshot = Some(app.config.clone());
                 app.set_timed_message(t(lang, Msg::SavedExclaim), 3);
             }
         }

@@ -47,6 +47,8 @@ pub enum TrackFocus {
 pub enum ConfirmAction {
     CancelEncoding,
     ExitApp,
+    AbandonTrackConfig,
+    DiscardConfigChanges,
 }
 
 pub const HOME_MENU: &[&str] = &[
@@ -70,6 +72,8 @@ pub struct App {
     pub explorer_list_state: ListState,
     // Queue state (replaces Vec<VideoFile>)
     pub queue: QueueState,
+    pub queue_cursor: usize,
+    pub queue_list_state: ListState,
 
     // Track config
     pub track_focus: TrackFocus,
@@ -84,6 +88,7 @@ pub struct App {
     // Multi-file selection
     pub selected_files: Vec<PathBuf>,
     pub file_confirm_scroll: usize,
+    pub file_confirm_list_state: ListState,
 
     // Encoding
     pub encoding_active: bool,
@@ -107,6 +112,7 @@ pub struct App {
     // Config screen state
     pub config_selected: usize,
     pub config_edit_buffer: Option<String>,
+    pub config_snapshot: Option<AppConfig>,
 }
 
 impl Default for App {
@@ -137,6 +143,10 @@ impl App {
         audio_list_state.select(Some(0));
         let mut subtitle_list_state = ListState::default();
         subtitle_list_state.select(Some(0));
+        let mut queue_list_state = ListState::default();
+        queue_list_state.select(Some(0));
+        let mut file_confirm_list_state = ListState::default();
+        file_confirm_list_state.select(Some(0));
 
         let config = AppConfig::load();
         let deps = DependencyStatus::check();
@@ -152,6 +162,8 @@ impl App {
             explorer_index: 0,
             explorer_list_state: list_state,
             queue: QueueState::new(),
+            queue_cursor: 0,
+            queue_list_state,
             track_focus: TrackFocus::Audio,
             audio_cursor: 0,
             subtitle_cursor: 0,
@@ -160,6 +172,7 @@ impl App {
             home_index: 0,
             selected_files: Vec::new(),
             file_confirm_scroll: 0,
+            file_confirm_list_state,
             encoding_active: false,
             progress_receiver: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
@@ -172,6 +185,7 @@ impl App {
             confirm_dialog: None,
             config_selected: 0,
             config_edit_buffer: None,
+            config_snapshot: None,
         }
     }
 
@@ -222,6 +236,12 @@ impl App {
     }
 
     pub fn navigate_to_track_config(&mut self) {
+        self.reset_track_config_cursor();
+        self.current_screen = Screen::TrackConfig;
+    }
+
+    /// Reset track focus/cursors to match the job now at `config_job_index`.
+    fn reset_track_config_cursor(&mut self) {
         let audio_count = self
             .current_config_job()
             .map_or(0, |j| j.audio_tracks.len());
@@ -237,10 +257,10 @@ impl App {
         };
         self.audio_cursor = 0;
         self.subtitle_cursor = 0;
-        self.current_screen = Screen::TrackConfig;
     }
 
     pub fn navigate_to_queue(&mut self) {
+        self.queue_cursor = 0;
         self.current_screen = Screen::Queue;
     }
 
@@ -263,12 +283,33 @@ impl App {
 
     pub fn navigate_to_configuration(&mut self) {
         self.config_selected = 0;
+        self.config_snapshot = Some(self.config.clone());
         self.current_screen = Screen::Configuration;
+    }
+
+    /// Whether the live config has diverged from the snapshot taken on entry
+    /// to the Configuration screen
+    pub fn config_is_dirty(&self) -> bool {
+        self.config_snapshot
+            .as_ref()
+            .is_some_and(|s| *s != self.config)
     }
 
     pub fn navigate_to_file_confirm(&mut self) {
         self.file_confirm_scroll = 0;
         self.current_screen = Screen::FileConfirm;
+    }
+
+    /// Move the queue list cursor up (`forward = false`) or down (`forward =
+    /// true`), clamped within the job list bounds.
+    pub fn queue_move_cursor(&mut self, forward: bool) {
+        if forward {
+            if self.queue_cursor < self.queue.jobs.len().saturating_sub(1) {
+                self.queue_cursor += 1;
+            }
+        } else if self.queue_cursor > 0 {
+            self.queue_cursor -= 1;
+        }
     }
 
     // File explorer
@@ -624,11 +665,50 @@ impl App {
 
         if let Some(idx) = next_index {
             self.queue.config_job_index = idx;
-            self.track_focus = TrackFocus::Audio;
-            self.audio_cursor = 0;
-            self.subtitle_cursor = 0;
+            self.reset_track_config_cursor();
         } else {
             self.start_encoding();
+        }
+    }
+
+    /// Abandon the whole batch and return to Home, discarding the queue.
+    pub fn cancel_track_config(&mut self) {
+        self.queue.reset();
+        self.navigate_to_home();
+    }
+
+    /// Move to the previous (`forward = false`) or next (`forward = true`)
+    /// configurable job in the batch, skipping jobs that never get a track
+    /// config step (errored or skipped during analysis). No-op at either end.
+    pub fn step_track_config_job(&mut self, forward: bool) {
+        let len = self.queue.jobs.len();
+        if len == 0 {
+            return;
+        }
+
+        let mut idx = self.queue.config_job_index;
+        loop {
+            let next = if forward {
+                idx.checked_add(1)
+            } else {
+                idx.checked_sub(1)
+            };
+            let Some(next) = next.filter(|&i| i < len) else {
+                return;
+            };
+            idx = next;
+
+            let configurable = self.queue.jobs.get(idx).is_some_and(|j| {
+                !matches!(
+                    j.status,
+                    JobStatus::Error { .. } | JobStatus::Skipped { .. }
+                )
+            });
+            if configurable {
+                self.queue.config_job_index = idx;
+                self.reset_track_config_cursor();
+                return;
+            }
         }
     }
 

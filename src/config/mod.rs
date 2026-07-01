@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use tracing::{info, warn};
 
 /// Main application configuration
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     /// UI language
     #[serde(default)]

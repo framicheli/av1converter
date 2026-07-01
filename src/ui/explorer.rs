@@ -103,7 +103,9 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
                 Span::raw(format!(" {}  ", t(lang, Msg::Proceed))),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}", t(lang, Msg::Back))),
+                Span::raw(format!(" {}  ", t(lang, Msg::Back))),
+                Span::styled("q", Style::default().fg(Color::Yellow)),
+                Span::raw(format!(" {}", t(lang, Msg::Quit))),
             ];
             if !app.selected_files.is_empty() {
                 spans.push(Span::raw("  "));
@@ -128,7 +130,9 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
             Span::styled("Space", Style::default().fg(Color::Yellow)),
             Span::raw(format!(" {}  ", t(lang, Msg::SelectThisFolder))),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}", t(lang, Msg::Back))),
+            Span::raw(format!(" {}  ", t(lang, Msg::Back))),
+            Span::styled("q", Style::default().fg(Color::Yellow)),
+            Span::raw(format!(" {}", t(lang, Msg::Quit))),
         ]),
     };
 
