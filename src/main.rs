@@ -501,57 +501,22 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             };
             app.config.performance.nvenc_preset = presets[next].to_string();
         }
-        ConfigField::QualityPreset => {
-            let next = if increase {
-                app.config.quality_preset.next()
-            } else {
-                app.config.quality_preset.prev()
-            };
-            app.config.quality_preset = next;
-            // Low/Medium/High overwrite the per-tier presets; Custom keeps them.
-            if let Some(presets) = next.presets() {
-                app.config.presets = presets;
-            }
-            // Hiding/showing the RF rows can shrink the list under the cursor.
-            let count = crate::ui::config_screen::visible_config_items(&app.config).len();
-            if app.config_selected >= count {
-                app.config_selected = count.saturating_sub(1);
-            }
-        }
+        ConfigField::QualityPreset => cycle_quality_preset(app, increase),
         ConfigField::SameDirectory => {
             app.config.output.same_directory = !app.config.output.same_directory;
         }
-        ConfigField::RfSd => {
-            adjust_preset_rf(&mut app.config.presets.sd, app.config.encoder, increase);
-        }
-        ConfigField::RfHd => {
-            adjust_preset_rf(&mut app.config.presets.hd, app.config.encoder, increase);
-        }
-        ConfigField::RfFullHd => adjust_preset_rf(
-            &mut app.config.presets.full_hd,
-            app.config.encoder,
-            increase,
-        ),
-        ConfigField::RfFullHdHdr => adjust_preset_rf(
-            &mut app.config.presets.full_hd_hdr,
-            app.config.encoder,
-            increase,
-        ),
-        ConfigField::RfFullHdDv => adjust_preset_rf(
-            &mut app.config.presets.full_hd_dv,
-            app.config.encoder,
-            increase,
-        ),
-        ConfigField::RfUhd => {
-            adjust_preset_rf(&mut app.config.presets.uhd, app.config.encoder, increase);
-        }
-        ConfigField::RfUhdHdr => adjust_preset_rf(
-            &mut app.config.presets.uhd_hdr,
-            app.config.encoder,
-            increase,
-        ),
-        ConfigField::RfUhdDv => {
-            adjust_preset_rf(&mut app.config.presets.uhd_dv, app.config.encoder, increase);
+        ConfigField::RfSd
+        | ConfigField::RfHd
+        | ConfigField::RfFullHd
+        | ConfigField::RfFullHdHdr
+        | ConfigField::RfFullHdDv
+        | ConfigField::RfUhd
+        | ConfigField::RfUhdHdr
+        | ConfigField::RfUhdDv => {
+            let encoder = app.config.encoder;
+            if let Some(preset) = preset_for_rf_field(&mut app.config.presets, field) {
+                adjust_preset_rf(preset, encoder, increase);
+            }
         }
         // Text fields are edited via Enter, not ← →
         ConfigField::OutputSuffix
@@ -559,6 +524,46 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         | ConfigField::AudioLanguages
         | ConfigField::SubtitleLanguages => {}
     }
+}
+
+/// Cycle the overall quality preset and apply its per-tier values.
+///
+/// `Low`/`Medium`/`High` overwrite the per-tier presets; `Custom` keeps the
+/// user's own values. Toggling visibility of the RF rows can shrink the list,
+/// so the selection index is clamped afterwards.
+fn cycle_quality_preset(app: &mut App, increase: bool) {
+    let next = if increase {
+        app.config.quality_preset.next()
+    } else {
+        app.config.quality_preset.prev()
+    };
+    app.config.quality_preset = next;
+    if let Some(presets) = next.presets() {
+        app.config.presets = presets;
+    }
+    let count = crate::ui::config_screen::visible_config_items(&app.config).len();
+    if app.config_selected >= count {
+        app.config_selected = count.saturating_sub(1);
+    }
+}
+
+/// Map a per-resolution rate-factor field to its mutable preset, if any.
+fn preset_for_rf_field(
+    presets: &mut crate::config::EncodingPresetsConfig,
+    field: crate::ui::config_screen::ConfigField,
+) -> Option<&mut crate::config::EncodingPreset> {
+    use crate::ui::config_screen::ConfigField;
+    Some(match field {
+        ConfigField::RfSd => &mut presets.sd,
+        ConfigField::RfHd => &mut presets.hd,
+        ConfigField::RfFullHd => &mut presets.full_hd,
+        ConfigField::RfFullHdHdr => &mut presets.full_hd_hdr,
+        ConfigField::RfFullHdDv => &mut presets.full_hd_dv,
+        ConfigField::RfUhd => &mut presets.uhd,
+        ConfigField::RfUhdHdr => &mut presets.uhd_hdr,
+        ConfigField::RfUhdDv => &mut presets.uhd_dv,
+        _ => return None,
+    })
 }
 
 fn adjust_preset_rf(

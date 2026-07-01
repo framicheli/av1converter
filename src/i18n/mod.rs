@@ -1084,16 +1084,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         },
         Msg::QpMedium => match lang {
             En => "Medium",
-            It => "Media",
-            Es => "Media",
+            It | Es => "Media",
             Fr => "Moyenne",
             De => "Mittel",
             Zh => "中",
         },
         Msg::QpHigh => match lang {
             En => "High",
-            It => "Alta",
-            Es => "Alta",
+            It | Es => "Alta",
             Fr => "Haute",
             De => "Hoch",
             Zh => "高",

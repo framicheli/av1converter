@@ -148,10 +148,10 @@ fn run_encode_loop(
                 None
             };
 
-            if let Some(progress) = progress {
-                if let Some(ref mut cb) = progress_callback {
-                    cb(progress);
-                }
+            if let Some(progress) = progress
+                && let Some(ref mut cb) = progress_callback
+            {
+                cb(progress);
             }
         }
 
