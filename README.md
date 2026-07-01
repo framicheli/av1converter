@@ -6,9 +6,10 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 
 - **Interactive TUI** — Browse files, configure tracks, and monitor encoding progress in the terminal
 - **Two operating modes** — Re-encode to AV1, or demux/remux to repackage and strip tracks without recompression
-- **Hardware acceleration** — Automatically detects and uses NVIDIA NVENC, Intel QSV, or AMD AMF
+- **Hardware acceleration** — Automatically detects and uses NVIDIA NVENC, Intel QSV, or AMD AMF; the choice can be overridden manually in Settings
 - **Batch processing** — Convert a single file, a folder, or an entire directory tree recursively
 - **Smart preset selection** — Automatically picks encoding parameters based on resolution and HDR type
+- **Quality presets** — Low, Medium, or High shifts CRF/CQ values across every resolution tier at once; Custom leaves each tier's values manually editable
 - **VMAF quality verification** — Scores output quality after encoding; deletes source file if the threshold is met
 - **Track selection** — Auto-selects audio and subtitle tracks by preferred language; Selects all tracks or first track when no match is found
 - **Multi-language UI** — Interface available in English (default), Italian, Spanish, French, German, and Chinese; selectable in Settings
@@ -109,6 +110,8 @@ Configuration is stored at `~/.config/av1converter/config.toml` and can be edite
 
 ```toml
 language = "en"                # UI language: en, it, es, fr, de, zh (English if omitted)
+encoder = "SvtAv1"             # Selected encoder: Nvenc, Qsv, Amf, SvtAv1 (auto-detected on first run, then overridable)
+quality_preset = "medium"      # Quality preset: low, medium, high, custom
 
 [Quality]
 vmaf_threshold = 90.0          # VMAF score required to consider encoding successful (0–100)
@@ -132,6 +135,10 @@ select_all_fallback = true # Select all tracks if no preferred language is found
 ```
 
 Each resolution preset also exposes per-encoder quality values (`crf`, `nvenc_cq`, `qsv_quality`, `amf_quality`) and `film_grain` synthesis strength.
+
+`quality_preset` controls how those per-resolution values are managed: `low`, `medium`, and `high` apply built-in CRF/CQ values shifted across every tier at once (overwriting the `presets` table), while `custom` leaves the `presets` table untouched and editable, either directly in the file or via the RF fields on the configuration screen.
+
+`output_directory` can only be set by editing the file directly; the configuration screen exposes `same_directory` but not a path picker.
 
 ## Debugging
 
