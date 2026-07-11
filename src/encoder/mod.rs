@@ -66,7 +66,13 @@ pub fn run_encoding_pipeline(
     };
 
     // Encode
-    let encode_result = encode_video(&params, progress_callback, cancel_flag, duration, total_frames);
+    let encode_result = encode_video(
+        &params,
+        progress_callback,
+        cancel_flag,
+        duration,
+        total_frames,
+    );
 
     match encode_result {
         EncodeResult::Success => {

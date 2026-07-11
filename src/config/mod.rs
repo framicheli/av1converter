@@ -11,13 +11,18 @@ use std::path::PathBuf;
 use tracing::{info, warn};
 
 /// Main application configuration
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     /// UI language
     #[serde(default)]
     pub language: Language,
     /// Selected encoder
     pub encoder: Encoder,
+    /// Overall quality preset driving the per-tier encoding presets.
+    /// Existing config files (written before this field existed) default to
+    /// `Custom` so their hand-tuned presets stay visible and editable.
+    #[serde(default = "default_quality_preset")]
+    pub quality_preset: QualityPreset,
     /// Quality settings
     pub quality: QualityConfig,
     /// Performance settings
@@ -28,6 +33,11 @@ pub struct AppConfig {
     pub output: OutputConfig,
     /// Track selection presets
     pub tracks: TrackPresetConfig,
+}
+
+/// Serde default for [`AppConfig::quality_preset`] on legacy config files.
+fn default_quality_preset() -> QualityPreset {
+    QualityPreset::Custom
 }
 
 impl AppConfig {

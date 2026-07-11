@@ -1,12 +1,12 @@
 use crate::app::App;
-use crate::config::{AppConfig, Encoder, EncodingPreset};
+use crate::config::{AppConfig, Encoder, EncodingPreset, QualityPreset};
 use crate::i18n::{Msg, t};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 /// How a config item's value is changed.
@@ -32,6 +32,7 @@ pub enum ConfigField {
     DeleteSource,
     SvtPreset,
     NvencPreset,
+    QualityPreset,
     RfSd,
     RfHd,
     RfFullHd,
@@ -90,6 +91,11 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         label: Msg::CfgNvencPreset,
         kind: ConfigItemKind::Cycle,
         field: ConfigField::NvencPreset,
+    },
+    ConfigItem {
+        label: Msg::CfgQualityPreset,
+        kind: ConfigItemKind::Cycle,
+        field: ConfigField::QualityPreset,
     },
     ConfigItem {
         label: Msg::CfgRfSd,
@@ -158,14 +164,58 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
     },
 ];
 
-/// Read the current display value for config item `index` from `config`.
+/// Whether a field is one of the per-resolution rate-factor rows.
+fn is_rf_field(field: ConfigField) -> bool {
+    matches!(
+        field,
+        ConfigField::RfSd
+            | ConfigField::RfHd
+            | ConfigField::RfFullHd
+            | ConfigField::RfFullHdHdr
+            | ConfigField::RfFullHdDv
+            | ConfigField::RfUhd
+            | ConfigField::RfUhdHdr
+            | ConfigField::RfUhdDv
+    )
+}
+
+/// The config rows actually shown for the current config.
+///
+/// The per-tier rate-factor rows are only visible when the quality preset is
+/// [`QualityPreset::Custom`]; otherwise their values are driven by the preset.
+pub fn visible_config_items(config: &AppConfig) -> Vec<&'static ConfigItem> {
+    let show_rf = config.quality_preset == QualityPreset::Custom;
+    CONFIG_ITEMS
+        .iter()
+        .filter(|item| show_rf || !is_rf_field(item.field))
+        .collect()
+}
+
+/// Localized display name for a quality preset.
+fn quality_preset_name(lang: crate::i18n::Language, preset: QualityPreset) -> &'static str {
+    t(
+        lang,
+        match preset {
+            QualityPreset::Low => Msg::QpLow,
+            QualityPreset::Medium => Msg::QpMedium,
+            QualityPreset::High => Msg::QpHigh,
+            QualityPreset::Custom => Msg::QpCustom,
+        },
+    )
+}
+
+/// Read the current display value for visible config item `index` from `config`.
 pub fn get_config_value(config: &AppConfig, index: usize) -> String {
-    let Some(item) = CONFIG_ITEMS.get(index) else {
+    let items = visible_config_items(config);
+    let Some(item) = items.get(index) else {
         return String::new();
     };
     match item.field {
         ConfigField::Language => config.language.display_name().to_string(),
         ConfigField::Encoder => config.encoder.display_name().to_string(),
+        ConfigField::QualityPreset => {
+            quality_preset_name(config.language, config.quality_preset).to_string()
+        }
         ConfigField::VmafThreshold => format!("{:.0}", config.quality.vmaf_threshold),
         ConfigField::VmafEnabled => bool_display(config.language, config.quality.vmaf_enabled),
         ConfigField::DeleteSource => {
@@ -268,6 +318,7 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
                     .add_modifier(Modifier::BOLD),
             )
             .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
             .block(Block::default().borders(Borders::NONE));
         f.render_widget(status, chunks[2]);
     } else {
@@ -289,12 +340,15 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
                 Span::styled("s", Style::default().fg(Color::Yellow)),
                 Span::raw(format!(" {}  ", t(lang, Msg::Save))),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}", t(lang, Msg::Back))),
+                Span::raw(format!(" {}  ", t(lang, Msg::Back))),
+                Span::styled("q", Style::default().fg(Color::Yellow)),
+                Span::raw(format!(" {}", t(lang, Msg::Quit))),
             ])
         };
         let help = Paragraph::new(help_text)
             .alignment(Alignment::Center)
-            .block(Block::default().borders(Borders::NONE));
+            .block(Block::default().borders(Borders::NONE))
+            .wrap(Wrap { trim: true });
         f.render_widget(help, chunks[2]);
     }
 }
@@ -305,7 +359,7 @@ fn build_config_items(
     editing: bool,
     input_buffer: &str,
 ) -> Vec<ListItem<'static>> {
-    CONFIG_ITEMS
+    visible_config_items(config)
         .iter()
         .enumerate()
         .map(|(i, item)| {

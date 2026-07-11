@@ -7,7 +7,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 use std::path::PathBuf;
 
@@ -35,9 +35,11 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
         .margin(1)
         .split(f.area());
 
-    // Current path
+    // Current path (truncated from the start so the current folder, at the
+    // end of the path, always stays visible even on narrow terminals)
     let path_text = app.current_dir.to_string_lossy();
-    let path = Paragraph::new(path_text.as_ref())
+    let available_width = chunks[0].width.saturating_sub(2) as usize; // minus borders
+    let path = Paragraph::new(truncate_path_start(&path_text, available_width))
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Left)
         .block(
@@ -53,6 +55,7 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
         let message = Paragraph::new(msg.as_str())
             .style(Style::default().fg(Color::Yellow))
             .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -103,7 +106,9 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
                 Span::raw(format!(" {}  ", t(lang, Msg::Proceed))),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}", t(lang, Msg::Back))),
+                Span::raw(format!(" {}  ", t(lang, Msg::Back))),
+                Span::styled("q", Style::default().fg(Color::Yellow)),
+                Span::raw(format!(" {}", t(lang, Msg::Quit))),
             ];
             if !app.selected_files.is_empty() {
                 spans.push(Span::raw("  "));
@@ -128,14 +133,39 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
             Span::styled("Space", Style::default().fg(Color::Yellow)),
             Span::raw(format!(" {}  ", t(lang, Msg::SelectThisFolder))),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}", t(lang, Msg::Back))),
+            Span::raw(format!(" {}  ", t(lang, Msg::Back))),
+            Span::styled("q", Style::default().fg(Color::Yellow)),
+            Span::raw(format!(" {}", t(lang, Msg::Quit))),
         ]),
     };
 
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::NONE));
+        .block(Block::default().borders(Borders::NONE))
+        .wrap(Wrap { trim: true });
     f.render_widget(help, chunks[3]);
+}
+
+/// Truncate `path` to `max_width` characters, keeping the *end* of the path
+/// (the current folder, which is the most relevant part) and prefixing an
+/// ellipsis when characters were dropped from the start.
+fn truncate_path_start(path: &str, max_width: usize) -> String {
+    let char_count = path.chars().count();
+    if max_width == 0 || char_count <= max_width {
+        return path.to_string();
+    }
+
+    let ellipsis = '…';
+    let keep = max_width.saturating_sub(1);
+    let tail: String = path
+        .chars()
+        .rev()
+        .take(keep)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{ellipsis}{tail}")
 }
 
 fn create_entry_item(

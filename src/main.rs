@@ -102,6 +102,13 @@ fn handle_key(app: &mut App, key: KeyCode) {
         return;
     }
 
+    // Global quit shortcut, available on every screen. Suppressed while typing
+    // in a Configuration text field so 'q' can still be entered as a character.
+    if key == KeyCode::Char('q') && app.config_edit_buffer.is_none() {
+        app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+        return;
+    }
+
     match &app.current_screen {
         Screen::Home => handle_home_key(app, key),
         Screen::FileExplorer { .. } => handle_explorer_key(app, key),
@@ -145,14 +152,23 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
         ConfirmAction::ExitApp => {
             app.should_quit = true;
         }
+        ConfirmAction::AbandonTrackConfig => {
+            app.cancel_track_config();
+        }
+        ConfirmAction::DiscardConfigChanges => {
+            if let Some(snapshot) = app.config_snapshot.take() {
+                app.config = snapshot;
+            }
+            app.navigate_to_home();
+        }
+        ConfirmAction::CancelAnalysis => {
+            app.cancel_analysis();
+        }
     }
 }
 
 fn handle_home_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Char('q') => {
-            app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
-        }
         KeyCode::Up | KeyCode::Char('k') if app.home_index > 0 => app.home_index -= 1,
         KeyCode::Down | KeyCode::Char('j') if app.home_index < HOME_MENU.len() - 1 => {
             app.home_index += 1;
@@ -219,7 +235,11 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
     let subtitle_count = job.subtitle_tracks.len();
 
     match key {
-        KeyCode::Esc => app.navigate_to_home(),
+        KeyCode::Esc => {
+            app.confirm_dialog = Some((ConfirmAction::AbandonTrackConfig, false));
+        }
+        KeyCode::Left | KeyCode::Char('h') => app.step_track_config_job(false),
+        KeyCode::Right | KeyCode::Char('l') => app.step_track_config_job(true),
         KeyCode::Tab => {
             app.track_focus = match app.track_focus {
                 TrackFocus::Confirm if audio_count > 0 => TrackFocus::Audio,
@@ -301,11 +321,13 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
 fn handle_queue_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc if app.analysis_receiver.is_some() => {
-            app.cancel_analysis();
+            app.confirm_dialog = Some((ConfirmAction::CancelAnalysis, false));
         }
         KeyCode::Esc if app.encoding_active => {
             app.confirm_dialog = Some((ConfirmAction::CancelEncoding, false));
         }
+        KeyCode::Up | KeyCode::Char('k') => app.queue_move_cursor(false),
+        KeyCode::Down | KeyCode::Char('j') => app.queue_move_cursor(true),
         KeyCode::Enter if !app.encoding_active && app.analysis_receiver.is_none() => {
             app.navigate_to_finish();
         }
@@ -315,9 +337,8 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
 
 fn handle_finish_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Char('q') => {
-            app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
-        }
+        KeyCode::Up | KeyCode::Char('k') => app.finish_move_cursor(false),
+        KeyCode::Down | KeyCode::Char('j') => app.finish_move_cursor(true),
         KeyCode::Enter => app.reset(),
         _ => {}
     }
@@ -345,10 +366,16 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         return;
     }
 
-    let config_item_count = crate::ui::config_screen::CONFIG_ITEMS.len();
+    let config_item_count = crate::ui::config_screen::visible_config_items(&app.config).len();
 
     match key {
-        KeyCode::Esc => app.navigate_to_home(),
+        KeyCode::Esc => {
+            if app.config_is_dirty() {
+                app.confirm_dialog = Some((ConfirmAction::DiscardConfigChanges, false));
+            } else {
+                app.navigate_to_home();
+            }
+        }
         KeyCode::Up | KeyCode::Char('k') if app.config_selected > 0 => {
             app.config_selected -= 1;
         }
@@ -362,8 +389,8 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
             adjust_config_value(app, app.config_selected, true);
         }
         KeyCode::Enter => {
-            use crate::ui::config_screen::{CONFIG_ITEMS, ConfigItemKind};
-            if CONFIG_ITEMS
+            use crate::ui::config_screen::{ConfigItemKind, visible_config_items};
+            if visible_config_items(&app.config)
                 .get(app.config_selected)
                 .is_some_and(|item| item.kind == ConfigItemKind::Text)
             {
@@ -376,6 +403,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                 tracing::warn!("Failed to save config: {:?}", e);
                 app.set_timed_message(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 3);
             } else {
+                app.config_snapshot = Some(app.config.clone());
                 app.set_timed_message(t(lang, Msg::SavedExclaim), 3);
             }
         }
@@ -385,8 +413,11 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
 
 /// Begin editing the currently selected text-editable config field.
 fn start_config_edit(app: &mut App) {
-    use crate::ui::config_screen::{CONFIG_ITEMS, ConfigField};
-    let Some(item) = CONFIG_ITEMS.get(app.config_selected) else {
+    use crate::ui::config_screen::{ConfigField, visible_config_items};
+    let Some(item) = visible_config_items(&app.config)
+        .get(app.config_selected)
+        .copied()
+    else {
         return;
     };
     app.config_edit_buffer = Some(match item.field {
@@ -400,11 +431,14 @@ fn start_config_edit(app: &mut App) {
 
 /// Write the edit buffer back to the appropriate config field.
 fn commit_config_edit(app: &mut App) {
-    use crate::ui::config_screen::{CONFIG_ITEMS, ConfigField};
+    use crate::ui::config_screen::{ConfigField, visible_config_items};
     let Some(buf) = app.config_edit_buffer.take() else {
         return;
     };
-    let Some(item) = CONFIG_ITEMS.get(app.config_selected) else {
+    let Some(item) = visible_config_items(&app.config)
+        .get(app.config_selected)
+        .copied()
+    else {
         return;
     };
     let value = buf.trim().to_string();
@@ -430,13 +464,16 @@ fn parse_lang_list(s: &str) -> Vec<String> {
 }
 
 fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
-    use crate::ui::config_screen::{CONFIG_ITEMS, ConfigField};
+    use crate::ui::config_screen::{ConfigField, visible_config_items};
 
-    let Some(item) = CONFIG_ITEMS.get(index) else {
+    let Some(field) = visible_config_items(&app.config)
+        .get(index)
+        .map(|item| item.field)
+    else {
         return;
     };
 
-    match item.field {
+    match field {
         ConfigField::Language => {
             app.config.language = if increase {
                 app.config.language.next()
@@ -492,40 +529,22 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             };
             app.config.performance.nvenc_preset = presets[next].to_string();
         }
+        ConfigField::QualityPreset => cycle_quality_preset(app, increase),
         ConfigField::SameDirectory => {
             app.config.output.same_directory = !app.config.output.same_directory;
         }
-        ConfigField::RfSd => {
-            adjust_preset_rf(&mut app.config.presets.sd, app.config.encoder, increase);
-        }
-        ConfigField::RfHd => {
-            adjust_preset_rf(&mut app.config.presets.hd, app.config.encoder, increase);
-        }
-        ConfigField::RfFullHd => adjust_preset_rf(
-            &mut app.config.presets.full_hd,
-            app.config.encoder,
-            increase,
-        ),
-        ConfigField::RfFullHdHdr => adjust_preset_rf(
-            &mut app.config.presets.full_hd_hdr,
-            app.config.encoder,
-            increase,
-        ),
-        ConfigField::RfFullHdDv => adjust_preset_rf(
-            &mut app.config.presets.full_hd_dv,
-            app.config.encoder,
-            increase,
-        ),
-        ConfigField::RfUhd => {
-            adjust_preset_rf(&mut app.config.presets.uhd, app.config.encoder, increase);
-        }
-        ConfigField::RfUhdHdr => adjust_preset_rf(
-            &mut app.config.presets.uhd_hdr,
-            app.config.encoder,
-            increase,
-        ),
-        ConfigField::RfUhdDv => {
-            adjust_preset_rf(&mut app.config.presets.uhd_dv, app.config.encoder, increase);
+        ConfigField::RfSd
+        | ConfigField::RfHd
+        | ConfigField::RfFullHd
+        | ConfigField::RfFullHdHdr
+        | ConfigField::RfFullHdDv
+        | ConfigField::RfUhd
+        | ConfigField::RfUhdHdr
+        | ConfigField::RfUhdDv => {
+            let encoder = app.config.encoder;
+            if let Some(preset) = preset_for_rf_field(&mut app.config.presets, field) {
+                adjust_preset_rf(preset, encoder, increase);
+            }
         }
         // Text fields are edited via Enter, not ← →
         ConfigField::OutputSuffix
@@ -533,6 +552,46 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         | ConfigField::AudioLanguages
         | ConfigField::SubtitleLanguages => {}
     }
+}
+
+/// Cycle the overall quality preset and apply its per-tier values.
+///
+/// `Low`/`Medium`/`High` overwrite the per-tier presets; `Custom` keeps the
+/// user's own values. Toggling visibility of the RF rows can shrink the list,
+/// so the selection index is clamped afterwards.
+fn cycle_quality_preset(app: &mut App, increase: bool) {
+    let next = if increase {
+        app.config.quality_preset.next()
+    } else {
+        app.config.quality_preset.prev()
+    };
+    app.config.quality_preset = next;
+    if let Some(presets) = next.presets() {
+        app.config.presets = presets;
+    }
+    let count = crate::ui::config_screen::visible_config_items(&app.config).len();
+    if app.config_selected >= count {
+        app.config_selected = count.saturating_sub(1);
+    }
+}
+
+/// Map a per-resolution rate-factor field to its mutable preset, if any.
+fn preset_for_rf_field(
+    presets: &mut crate::config::EncodingPresetsConfig,
+    field: crate::ui::config_screen::ConfigField,
+) -> Option<&mut crate::config::EncodingPreset> {
+    use crate::ui::config_screen::ConfigField;
+    Some(match field {
+        ConfigField::RfSd => &mut presets.sd,
+        ConfigField::RfHd => &mut presets.hd,
+        ConfigField::RfFullHd => &mut presets.full_hd,
+        ConfigField::RfFullHdHdr => &mut presets.full_hd_hdr,
+        ConfigField::RfFullHdDv => &mut presets.full_hd_dv,
+        ConfigField::RfUhd => &mut presets.uhd,
+        ConfigField::RfUhdHdr => &mut presets.uhd_hdr,
+        ConfigField::RfUhdDv => &mut presets.uhd_dv,
+        _ => return None,
+    })
 }
 
 fn adjust_preset_rf(

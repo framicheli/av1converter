@@ -6,10 +6,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
-pub fn render_file_confirm(f: &mut Frame, app: &App) {
+pub fn render_file_confirm(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -78,18 +78,22 @@ pub fn render_file_confirm(f: &mut Frame, app: &App) {
             .border_style(Style::default().fg(Color::DarkGray))
             .title(format!(" {} ", t(lang, Msg::Files))),
     );
-    f.render_widget(list, chunks[1]);
+    app.file_confirm_list_state.select(Some(app.file_confirm_scroll));
+    f.render_stateful_widget(list, chunks[1], &mut app.file_confirm_list_state);
 
     // Help
     let help_text = Line::from(vec![
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(format!(" {}  ", t(lang, Msg::Proceed))),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}", t(lang, Msg::Back))),
+        Span::raw(format!(" {}  ", t(lang, Msg::Back))),
+        Span::styled("q", Style::default().fg(Color::Yellow)),
+        Span::raw(format!(" {}", t(lang, Msg::Quit))),
     ]);
 
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::NONE));
+        .block(Block::default().borders(Borders::NONE))
+        .wrap(Wrap { trim: true });
     f.render_widget(help, chunks[2]);
 }

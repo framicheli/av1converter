@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
@@ -24,10 +24,22 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
             format!(" {} ", t(lang, Msg::ExitAppTitle)),
             t(lang, Msg::ExitAppPrompt),
         ),
+        ConfirmAction::AbandonTrackConfig => (
+            format!(" {} ", t(lang, Msg::AbandonTrackConfigTitle)),
+            t(lang, Msg::AbandonTrackConfigPrompt),
+        ),
+        ConfirmAction::DiscardConfigChanges => (
+            format!(" {} ", t(lang, Msg::DiscardConfigTitle)),
+            t(lang, Msg::DiscardConfigPrompt),
+        ),
+        ConfirmAction::CancelAnalysis => (
+            format!(" {} ", t(lang, Msg::CancelAnalysisTitle)),
+            t(lang, Msg::CancelAnalysisPrompt),
+        ),
     };
 
-    // Calculate dialog area
-    let area = centered_rect(50, 30, f.area());
+    // Calculate dialog area (wide/tall enough for longer, wrapped prompts)
+    let area = centered_rect(70, 40, f.area());
 
     // Clear area behind the dialog
     f.render_widget(Clear, area);
@@ -37,8 +49,7 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(2),
-            Constraint::Min(1),
+            Constraint::Min(3),
             Constraint::Length(2),
         ])
         .margin(1)
@@ -59,7 +70,8 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
     // Message
     let msg = Paragraph::new(message)
         .style(Style::default().fg(Color::White))
-        .alignment(Alignment::Center);
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
     f.render_widget(msg, chunks[1]);
 
     // Buttons
@@ -90,5 +102,5 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
     ]);
 
     let buttons_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
-    f.render_widget(buttons_paragraph, chunks[3]);
+    f.render_widget(buttons_paragraph, chunks[2]);
 }

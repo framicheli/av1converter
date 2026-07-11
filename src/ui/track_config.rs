@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
 #[allow(clippy::too_many_lines)]
@@ -148,11 +148,23 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         ]),
     ];
 
+    let total_jobs = app.queue.jobs.len();
+    let info_title = if total_jobs > 1 {
+        format!(
+            " {} ({}/{}) ",
+            t(lang, Msg::VideoInfo),
+            app.queue.config_job_index + 1,
+            total_jobs
+        )
+    } else {
+        format!(" {} ", t(lang, Msg::VideoInfo))
+    };
+
     let info = Paragraph::new(info_lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
-            .title(format!(" {} ", t(lang, Msg::VideoInfo))),
+            .title(info_title),
     );
     f.render_widget(info, chunks[0]);
 
@@ -236,7 +248,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         Style::default().fg(Color::Cyan)
     };
 
-    let help_text = Line::from(vec![
+    let mut help_spans = vec![
         Span::styled("Tab", Style::default().fg(Color::Yellow)),
         Span::raw(format!(" {}  ", t(lang, Msg::SwitchPanel))),
         Span::styled("↑↓", Style::default().fg(Color::Yellow)),
@@ -249,14 +261,26 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         Span::raw(format!(" {}  ", t(lang, Msg::AllAudio))),
         Span::styled("s", Style::default().fg(Color::Yellow)),
         Span::raw(format!(" {}  ", t(lang, Msg::AllSubs))),
-        Span::styled(" [", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!(" {} ", t(lang, Msg::Continue)), confirm_style),
-        Span::styled("]", Style::default().fg(Color::DarkGray)),
-    ]);
+    ];
+    if total_jobs > 1 {
+        help_spans.push(Span::styled("←→", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(" {}  ", t(lang, Msg::SwitchFile))));
+    }
+    help_spans.push(Span::styled(" [", Style::default().fg(Color::DarkGray)));
+    help_spans.push(Span::styled(
+        format!(" {} ", t(lang, Msg::Continue)),
+        confirm_style,
+    ));
+    help_spans.push(Span::styled("]  ", Style::default().fg(Color::DarkGray)));
+    help_spans.push(Span::styled("q", Style::default().fg(Color::Yellow)));
+    help_spans.push(Span::raw(format!(" {}", t(lang, Msg::Quit))));
+
+    let help_text = Line::from(help_spans);
 
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::NONE));
+        .block(Block::default().borders(Borders::NONE))
+        .wrap(Wrap { trim: true });
     f.render_widget(help, chunks[2]);
 }
 
