@@ -78,6 +78,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 Screen::Finish => ui::render_finish(f, app),
                 Screen::Configuration => ui::render_config_screen(f, app),
             }
+            if app.dv_dialog.is_some() && app.current_screen == Screen::TrackConfig {
+                ui::render_dv_dialog(f, app);
+            }
             if app.confirm_dialog.is_some() {
                 ui::render_confirm_dialog(f, app);
             }
@@ -99,6 +102,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 fn handle_key(app: &mut App, key: KeyCode) {
     if app.confirm_dialog.is_some() {
         handle_confirm_dialog_key(app, key);
+        return;
+    }
+
+    if app.dv_dialog.is_some() && app.current_screen == Screen::TrackConfig {
+        handle_dv_dialog_key(app, key);
         return;
     }
 
@@ -140,6 +148,32 @@ fn handle_confirm_dialog_key(app: &mut App, key: KeyCode) {
                 execute_confirm_action(app, action);
             }
         }
+        _ => {}
+    }
+}
+
+fn handle_dv_dialog_key(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Up
+        | KeyCode::Down
+        | KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Tab
+        | KeyCode::Char('h' | 'j' | 'k' | 'l') => {
+            if let Some(sel) = &mut app.dv_dialog {
+                *sel = 1 - *sel;
+            }
+        }
+        KeyCode::Char('1') => {
+            app.dv_dialog = Some(0);
+            app.confirm_dv_dialog();
+        }
+        KeyCode::Char('2') => {
+            app.dv_dialog = Some(1);
+            app.confirm_dv_dialog();
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => app.confirm_dv_dialog(),
+        KeyCode::Esc => app.dismiss_dv_dialog(),
         _ => {}
     }
 }
@@ -312,7 +346,10 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 job.remux_only = !job.remux_only;
                 job.generate_output_path(&output_config);
             }
+            // Switching a DV job from remux to encode needs a DV decision
+            app.maybe_open_dv_dialog();
         }
+        KeyCode::Char('d' | 'D') => app.reopen_dv_dialog(),
         KeyCode::Enter => app.confirm_track_config(),
         _ => {}
     }

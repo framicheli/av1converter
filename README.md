@@ -62,6 +62,15 @@ A fast, lossless repackaging mode that copies the video, audio, and subtitle str
 
 Files that are already encoded in AV1 default to demux/remux mode automatically; everything else defaults to encode mode.
 
+### Dolby Vision Handling
+
+When a Dolby Vision source is queued for encoding, a dialog asks how to convert it (reopen it anytime with `d`):
+
+1. **AV1 with Dolby Vision (profile 10)** — the DV dynamic metadata (RPU) is carried into the AV1 stream. Requires the SVT-AV1 encoder; hardware encoders (NVENC/QSV/AMF) cannot write the RPU and always produce HDR10. For cross-compatible profiles (7/8) the HDR10 base layer is preserved, so players without DV support still get correct HDR10 playback.
+2. **AV1 with true HDR10** — the DV layer is dropped and the HDR10 static metadata (mastering display, MaxCLL/MaxFALL) from the source is written into the AV1 stream.
+
+**Profile 5** sources (IPT-PQ-c2, no HDR10-compatible base layer) are special: converting to HDR10 tone-maps the video on the GPU via `libplacebo` (requires Vulkan), while keeping DV produces output that only plays correctly on DV-capable players. HDR10 conversion is the recommended default for profile 5; keeping DV is recommended for profiles 7/8. VMAF verification is skipped for tone-mapped profile 5 output, since the pixels are intentionally changed.
+
 ### Keyboard Controls
 
 | Key | Action |
@@ -72,6 +81,7 @@ Files that are already encoded in AV1 default to demux/remux mode automatically;
 | `Esc` | Go back / Cancel |
 | `Tab` | Switch focus (track config screen) |
 | `r` | Switch mode: encode ↔ demux/remux (track config screen) |
+| `d` | Change Dolby Vision handling (track config screen, DV sources) |
 | `a` | Toggle all audio tracks |
 | `s` | Toggle all subtitle tracks |
 | `h` / `l` | Decrease / Increase config value |

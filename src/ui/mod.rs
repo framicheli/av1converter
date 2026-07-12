@@ -1,6 +1,7 @@
 pub mod common;
 pub mod config_screen;
 mod confirm_dialog;
+mod dv_dialog;
 mod explorer;
 mod file_confirm;
 mod finish;
@@ -10,6 +11,7 @@ mod track_config;
 
 pub use config_screen::render_config_screen;
 pub use confirm_dialog::render_confirm_dialog;
+pub use dv_dialog::render_dv_dialog;
 pub use explorer::render_explorer;
 pub use file_confirm::render_file_confirm;
 pub use finish::render_finish;

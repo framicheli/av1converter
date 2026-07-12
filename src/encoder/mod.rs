@@ -4,7 +4,7 @@ pub mod ffmpeg;
 pub use command_builder::EncodingParams;
 pub use ffmpeg::{EncodeResult, ProgressCallback, encode_video};
 
-use crate::analyzer::{HdrType, VideoMetadata};
+use crate::analyzer::{DvMode, HdrType, VideoMetadata};
 use crate::config::AppConfig;
 use crate::tracks::TrackSelection;
 use crate::verifier;
@@ -47,6 +47,7 @@ pub fn run_encoding_pipeline(
     output: &str,
     metadata: &VideoMetadata,
     tracks: TrackSelection,
+    dv_mode: DvMode,
     remux_only: bool,
     config: &AppConfig,
     progress_callback: Option<ProgressCallback>,
@@ -54,7 +55,9 @@ pub fn run_encoding_pipeline(
     on_before_vmaf: Option<Box<dyn FnOnce() + Send>>,
 ) -> FullEncodeResult {
     // Encoding parameters
-    let params = EncodingParams::from_metadata(input, output, metadata, config, tracks, remux_only);
+    let params = EncodingParams::from_metadata(
+        input, output, metadata, config, tracks, dv_mode, remux_only,
+    );
     let duration = metadata.duration_secs;
 
     // Total frame count for frame-based progress fallback (some sources, e.g.
@@ -76,8 +79,17 @@ pub fn run_encoding_pipeline(
 
     match encode_result {
         EncodeResult::Success => {
+            // DV profile 5 → HDR10 is a tone-mapping pass: output pixels are
+            // intentionally different from the source, so VMAF is meaningless.
+            let tone_mapped = metadata.hdr_type == HdrType::DolbyVision
+                && metadata.dv_profile == Some(5)
+                && dv_mode == DvMode::ToHdr10;
+            if tone_mapped && config.quality.vmaf_enabled {
+                info!("Skipping VMAF: DV profile 5 tone-mapped output is not comparable");
+            }
+
             // Notify the UI for VMAF verification phase
-            let vmaf_threshold = if config.quality.vmaf_enabled && !remux_only {
+            let vmaf_threshold = if config.quality.vmaf_enabled && !remux_only && !tone_mapped {
                 if let Some(cb) = on_before_vmaf {
                     cb();
                 }

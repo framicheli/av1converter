@@ -1,4 +1,4 @@
-use crate::analyzer::VideoMetadata;
+use crate::analyzer::{DvMode, VideoMetadata};
 use crate::tracks::{AudioTrack, SubtitleTrack, TrackSelection};
 use std::path::{Path, PathBuf};
 
@@ -47,6 +47,8 @@ pub struct EncodingJob {
     pub source_deleted: bool,
     pub source_kept_vmaf: Option<f64>,
     pub remux_only: bool,
+    /// Dolby Vision handling; `None` until the user has chosen (DV sources only)
+    pub dv_mode: Option<DvMode>,
 }
 
 impl EncodingJob {
@@ -67,6 +69,7 @@ impl EncodingJob {
             source_deleted: false,
             source_kept_vmaf: None,
             remux_only: false,
+            dv_mode: None,
         }
     }
 

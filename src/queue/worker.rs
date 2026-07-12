@@ -1,4 +1,4 @@
-use crate::analyzer::VideoMetadata;
+use crate::analyzer::{DvMode, VideoMetadata};
 use crate::config::AppConfig;
 use crate::encoder::{self, FullEncodeResult};
 use crate::tracks::TrackSelection;
@@ -40,6 +40,7 @@ pub struct WorkerJob {
     pub output: PathBuf,
     pub metadata: VideoMetadata,
     pub tracks: TrackSelection,
+    pub dv_mode: DvMode,
     pub remux_only: bool,
 }
 
@@ -72,6 +73,7 @@ pub fn run_worker(
             &output_str,
             &job.metadata,
             job.tracks,
+            job.dv_mode,
             job.remux_only,
             config,
             Some(Box::new(move |progress| {

@@ -1,5 +1,5 @@
-use crate::analyzer::{self, AnalysisResult, is_av1_codec};
-use crate::config::{AppConfig, TrackPresetConfig};
+use crate::analyzer::{self, AnalysisResult, DvMode, HdrType, is_av1_codec};
+use crate::config::{AppConfig, Encoder, TrackPresetConfig};
 use crate::error::AppError;
 use crate::queue::{
     EncodingJob, JobStatus, QueueState, WorkerJob, WorkerMessage, is_video_file, run_worker,
@@ -109,6 +109,8 @@ pub struct App {
     pub message: Option<String>,
     pub message_expiry: Option<Instant>,
     pub confirm_dialog: Option<(ConfirmAction, bool)>,
+    /// Dolby Vision mode dialog: selected option (0 = keep DV, 1 = HDR10)
+    pub dv_dialog: Option<usize>,
 
     // Config screen state
     pub config_selected: usize,
@@ -190,6 +192,7 @@ impl App {
             message: None,
             message_expiry: None,
             confirm_dialog: None,
+            dv_dialog: None,
             config_selected: 0,
             config_edit_buffer: None,
             config_snapshot: None,
@@ -249,6 +252,78 @@ impl App {
         self.current_screen = Screen::TrackConfig;
     }
 
+    // Dolby Vision dialog
+
+    /// Open the DV-mode dialog if the job at `config_job_index` is a Dolby
+    /// Vision source that still needs a decision. Hardware encoders cannot
+    /// write the DV RPU, so those jobs are silently resolved to HDR10.
+    pub fn maybe_open_dv_dialog(&mut self) {
+        self.dv_dialog = None;
+
+        let Some(job) = self.current_config_job() else {
+            return;
+        };
+        let Some(meta) = job.metadata.as_ref() else {
+            return;
+        };
+        if job.remux_only || job.dv_mode.is_some() || meta.hdr_type != HdrType::DolbyVision {
+            return;
+        }
+
+        if self.config.encoder == Encoder::SvtAv1 {
+            let recommended = DvMode::recommended_for(meta.dv_profile);
+            self.dv_dialog = Some(dv_mode_index(recommended));
+        } else if let Some(job) = self.current_config_job_mut() {
+            job.dv_mode = Some(DvMode::ToHdr10);
+        }
+    }
+
+    /// Re-open the DV-mode dialog from the track config screen ('d' key).
+    pub fn reopen_dv_dialog(&mut self) {
+        let Some(meta) = self.current_config_job().and_then(|j| j.metadata.as_ref()) else {
+            return;
+        };
+        if meta.hdr_type != HdrType::DolbyVision {
+            return;
+        }
+        if self.config.encoder != Encoder::SvtAv1 {
+            let msg = crate::i18n::t(self.config.language, crate::i18n::Msg::DvRequiresSvt);
+            self.set_timed_message(msg, 3);
+            return;
+        }
+        let current = self
+            .current_config_job()
+            .and_then(|j| j.dv_mode)
+            .unwrap_or_else(|| DvMode::recommended_for(meta.dv_profile));
+        self.dv_dialog = Some(dv_mode_index(current));
+    }
+
+    /// Apply the selected DV mode to the current job and close the dialog.
+    pub fn confirm_dv_dialog(&mut self) {
+        if let Some(sel) = self.dv_dialog.take()
+            && let Some(job) = self.current_config_job_mut()
+        {
+            job.dv_mode = Some(if sel == 0 {
+                DvMode::KeepDolbyVision
+            } else {
+                DvMode::ToHdr10
+            });
+        }
+    }
+
+    /// Close the dialog with the recommended default (Esc).
+    pub fn dismiss_dv_dialog(&mut self) {
+        if self.dv_dialog.take().is_some() {
+            let profile = self
+                .current_config_job()
+                .and_then(|j| j.metadata.as_ref())
+                .and_then(|m| m.dv_profile);
+            if let Some(job) = self.current_config_job_mut() {
+                job.dv_mode.get_or_insert(DvMode::recommended_for(profile));
+            }
+        }
+    }
+
     /// Reset track focus/cursors to match the job now at `config_job_index`.
     fn reset_track_config_cursor(&mut self) {
         let audio_count = self
@@ -266,6 +341,7 @@ impl App {
         };
         self.audio_cursor = 0;
         self.subtitle_cursor = 0;
+        self.maybe_open_dv_dialog();
     }
 
     pub fn navigate_to_queue(&mut self) {
@@ -771,6 +847,7 @@ impl App {
                     output,
                     metadata,
                     tracks: j.track_selection.clone(),
+                    dv_mode: j.dv_mode.unwrap_or_default(),
                     remux_only: j.remux_only,
                 })
             })
@@ -930,6 +1007,14 @@ impl App {
         self.selected_files.clear();
         self.progress_receiver = None;
         self.navigate_to_home();
+    }
+}
+
+/// Dialog option index for a DV mode (0 = keep DV, 1 = HDR10)
+fn dv_mode_index(mode: DvMode) -> usize {
+    match mode {
+        DvMode::KeepDolbyVision => 0,
+        DvMode::ToHdr10 => 1,
     }
 }
 

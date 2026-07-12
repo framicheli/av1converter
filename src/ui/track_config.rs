@@ -1,3 +1,4 @@
+use crate::analyzer::{DvMode, HdrType};
 use crate::app::{App, TrackFocus};
 use crate::i18n::{Msg, t};
 use ratatui::{
@@ -15,6 +16,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         filename,
         resolution_string,
         hdr_string,
+        hdr_display,
         audio_data,
         subtitle_data,
         remux_only,
@@ -58,10 +60,30 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
                 |f| f.to_string_lossy().into_owned(),
             );
 
+        // Dolby Vision sources show profile and the chosen conversion mode
+        let hdr_display = {
+            let meta = job.metadata.as_ref();
+            if meta.is_some_and(|m| m.hdr_type == HdrType::DolbyVision) {
+                let profile = meta
+                    .and_then(|m| m.dv_profile)
+                    .map_or_else(String::new, |p| format!(" P{p}"));
+                match job.dv_mode {
+                    Some(DvMode::KeepDolbyVision) => {
+                        format!("Dolby Vision{profile} ({})", t(lang, Msg::DvKeptTag))
+                    }
+                    Some(DvMode::ToHdr10) => format!("Dolby Vision{profile} → HDR10"),
+                    None => format!("Dolby Vision{profile}"),
+                }
+            } else {
+                job.hdr_string().to_string()
+            }
+        };
+
         (
             job.filename(),
             job.resolution_string(),
             job.hdr_string().to_string(),
+            hdr_display,
             audio_data,
             subtitle_data,
             job.remux_only,
@@ -105,10 +127,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                match hdr_string.as_str() {
-                    "Dolby Vision" => "Dolby Vision → HDR10".to_string(),
-                    _ => hdr_string.clone(),
-                },
+                hdr_display,
                 Style::default().fg(match hdr_string.as_str() {
                     "HDR10" => Color::Yellow,
                     "HLG" => Color::Green,
@@ -262,6 +281,10 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         Span::styled("s", Style::default().fg(Color::Yellow)),
         Span::raw(format!(" {}  ", t(lang, Msg::AllSubs))),
     ];
+    if hdr_string == "Dolby Vision" {
+        help_spans.push(Span::styled("d", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(" {}  ", t(lang, Msg::DvModeHelp))));
+    }
     if total_jobs > 1 {
         help_spans.push(Span::styled("←→", Style::default().fg(Color::Yellow)));
         help_spans.push(Span::raw(format!(" {}  ", t(lang, Msg::SwitchFile))));
