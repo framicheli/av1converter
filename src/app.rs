@@ -1,8 +1,9 @@
 use crate::analyzer::{self, AnalysisResult, DvMode, HdrType, is_av1_codec};
-use crate::config::{AppConfig, Encoder, TrackPresetConfig};
+use crate::config::{AppConfig, Encoder};
 use crate::error::AppError;
 use crate::queue::{
-    EncodingJob, JobStatus, QueueState, WorkerJob, WorkerMessage, is_video_file, run_worker,
+    EncodingJob, JobStatus, QueueState, WorkerJob, WorkerMessage, auto_select_tracks,
+    collect_video_files, is_video_file, run_worker,
 };
 use crate::utils::DependencyStatus;
 use ratatui::widgets::ListState;
@@ -1018,71 +1019,3 @@ fn dv_mode_index(mode: DvMode) -> usize {
     }
 }
 
-fn collect_video_files(dir: &Path, paths: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        if path.is_symlink() {
-            continue;
-        }
-        if path.is_dir() {
-            collect_video_files(&path, paths);
-        } else if is_video_file(&path) {
-            paths.push(path);
-        }
-    }
-}
-
-/// Select audio and subtitle tracks based on configured language preferences.
-fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig) {
-    // Audio tracks
-    let preferred_audio: Vec<usize> = job
-        .audio_tracks
-        .iter()
-        .filter(|t| {
-            t.language.as_deref().is_some_and(|l| {
-                config
-                    .preferred_audio_languages
-                    .iter()
-                    .any(|p| p.eq_ignore_ascii_case(l))
-            })
-        })
-        .map(|t| t.index)
-        .collect();
-
-    job.track_selection.audio_indices = if !preferred_audio.is_empty() {
-        preferred_audio
-    } else if config.select_all_fallback || config.preferred_audio_languages.is_empty() {
-        job.audio_tracks.iter().map(|t| t.index).collect()
-    } else {
-        job.audio_tracks
-            .first()
-            .map(|t| vec![t.index])
-            .unwrap_or_default()
-    };
-
-    // Subtitle tracks
-    let preferred_subs: Vec<usize> = job
-        .subtitle_tracks
-        .iter()
-        .filter(|t| {
-            t.language.as_deref().is_some_and(|l| {
-                config
-                    .preferred_subtitle_languages
-                    .iter()
-                    .any(|p| p.eq_ignore_ascii_case(l))
-            })
-        })
-        .map(|t| t.index)
-        .collect();
-
-    job.track_selection.subtitle_indices = if !preferred_subs.is_empty() {
-        preferred_subs
-    } else if config.select_all_fallback || config.preferred_subtitle_languages.is_empty() {
-        job.subtitle_tracks.iter().map(|t| t.index).collect()
-    } else {
-        Vec::new()
-    };
-}

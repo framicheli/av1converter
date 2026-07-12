@@ -1,6 +1,7 @@
 mod analyzer;
 mod app;
 mod config;
+mod daemon;
 mod encoder;
 mod error;
 mod i18n;
@@ -23,7 +24,62 @@ use std::time::Duration;
 use crate::app::HOME_MENU;
 use crate::i18n::{Msg, t};
 
+const USAGE: &str = "\
+Usage: av1converter [OPTION]
+
+  (no option)   start the interactive TUI
+  --daemon      run headless with the web UI (must be enabled in Settings)
+  --help        show this help
+  --version     show the version
+";
+
+enum Cli {
+    Tui,
+    Daemon,
+    Help,
+    Version,
+    Unknown(String),
+}
+
+fn parse_cli() -> Cli {
+    match std::env::args().nth(1).as_deref() {
+        None => Cli::Tui,
+        Some("--daemon") => Cli::Daemon,
+        Some("--help" | "-h") => Cli::Help,
+        Some("--version" | "-V") => Cli::Version,
+        Some(other) => Cli::Unknown(other.to_string()),
+    }
+}
+
+/// Headless daemon entry: refuses to start unless enabled in the config.
+fn run_daemon_entry() -> io::Result<()> {
+    let config = config::AppConfig::load();
+    if !config.daemon.enabled {
+        eprintln!("{}", t(config.language, Msg::DaemonDisabledError));
+        std::process::exit(1);
+    }
+    utils::init_daemon_logging();
+    daemon::run_daemon(config).map_err(io::Error::other)
+}
+
 fn main() -> io::Result<()> {
+    match parse_cli() {
+        Cli::Tui => {}
+        Cli::Daemon => return run_daemon_entry(),
+        Cli::Help => {
+            print!("{USAGE}");
+            return Ok(());
+        }
+        Cli::Version => {
+            println!("av1converter {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Cli::Unknown(arg) => {
+            eprintln!("Unknown argument: {arg}\n{USAGE}");
+            std::process::exit(2);
+        }
+    }
+
     let _log_guard = utils::init_logging();
 
     // Restore the terminal even if panic
@@ -462,6 +518,8 @@ fn start_config_edit(app: &mut App) {
         ConfigField::OutputContainer => app.config.output.container.clone(),
         ConfigField::AudioLanguages => app.config.tracks.preferred_audio_languages.join(", "),
         ConfigField::SubtitleLanguages => app.config.tracks.preferred_subtitle_languages.join(", "),
+        ConfigField::DaemonBindAddress => app.config.daemon.bind_address.clone(),
+        ConfigField::DaemonPort => app.config.daemon.port.to_string(),
         _ => return,
     });
 }
@@ -487,6 +545,19 @@ fn commit_config_edit(app: &mut App) {
         }
         ConfigField::SubtitleLanguages => {
             app.config.tracks.preferred_subtitle_languages = parse_lang_list(&value);
+        }
+        // Invalid addresses/ports keep the previous value
+        ConfigField::DaemonBindAddress => {
+            if value.parse::<std::net::IpAddr>().is_ok() {
+                app.config.daemon.bind_address = value;
+            }
+        }
+        ConfigField::DaemonPort => {
+            if let Ok(port) = value.parse::<u16>()
+                && port != 0
+            {
+                app.config.daemon.port = port;
+            }
         }
         _ => {}
     }
@@ -570,6 +641,9 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         ConfigField::SameDirectory => {
             app.config.output.same_directory = !app.config.output.same_directory;
         }
+        ConfigField::DaemonEnabled => {
+            app.config.daemon.enabled = !app.config.daemon.enabled;
+        }
         ConfigField::RfSd
         | ConfigField::RfHd
         | ConfigField::RfFullHd
@@ -587,7 +661,9 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         ConfigField::OutputSuffix
         | ConfigField::OutputContainer
         | ConfigField::AudioLanguages
-        | ConfigField::SubtitleLanguages => {}
+        | ConfigField::SubtitleLanguages
+        | ConfigField::DaemonBindAddress
+        | ConfigField::DaemonPort => {}
     }
 }
 

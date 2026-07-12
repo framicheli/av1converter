@@ -1,4 +1,5 @@
 use crate::analyzer::{DvMode, VideoMetadata};
+use crate::config::TrackPresetConfig;
 use crate::tracks::{AudioTrack, SubtitleTrack, TrackSelection};
 use std::path::{Path, PathBuf};
 
@@ -140,6 +141,76 @@ impl EncodingJob {
             _ => None,
         }
     }
+}
+
+/// Recursively collect video files under `dir`, skipping symlinks.
+pub fn collect_video_files(dir: &Path, paths: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_symlink() {
+            continue;
+        }
+        if path.is_dir() {
+            collect_video_files(&path, paths);
+        } else if is_video_file(&path) {
+            paths.push(path);
+        }
+    }
+}
+
+/// Select audio and subtitle tracks based on configured language preferences.
+pub fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig) {
+    // Audio tracks
+    let preferred_audio: Vec<usize> = job
+        .audio_tracks
+        .iter()
+        .filter(|t| {
+            t.language.as_deref().is_some_and(|l| {
+                config
+                    .preferred_audio_languages
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(l))
+            })
+        })
+        .map(|t| t.index)
+        .collect();
+
+    job.track_selection.audio_indices = if !preferred_audio.is_empty() {
+        preferred_audio
+    } else if config.select_all_fallback || config.preferred_audio_languages.is_empty() {
+        job.audio_tracks.iter().map(|t| t.index).collect()
+    } else {
+        job.audio_tracks
+            .first()
+            .map(|t| vec![t.index])
+            .unwrap_or_default()
+    };
+
+    // Subtitle tracks
+    let preferred_subs: Vec<usize> = job
+        .subtitle_tracks
+        .iter()
+        .filter(|t| {
+            t.language.as_deref().is_some_and(|l| {
+                config
+                    .preferred_subtitle_languages
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(l))
+            })
+        })
+        .map(|t| t.index)
+        .collect();
+
+    job.track_selection.subtitle_indices = if !preferred_subs.is_empty() {
+        preferred_subs
+    } else if config.select_all_fallback || config.preferred_subtitle_languages.is_empty() {
+        job.subtitle_tracks.iter().map(|t| t.index).collect()
+    } else {
+        Vec::new()
+    };
 }
 
 /// Check if a path is a video file

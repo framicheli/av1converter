@@ -33,6 +33,9 @@ pub struct AppConfig {
     pub output: OutputConfig,
     /// Track selection presets
     pub tracks: TrackPresetConfig,
+    /// Daemon / web UI settings
+    #[serde(default)]
+    pub daemon: DaemonConfig,
 }
 
 /// Serde default for [`AppConfig::quality_preset`] on legacy config files.
@@ -114,6 +117,12 @@ impl AppConfig {
             preset.amf_quality = preset.amf_quality.min(hw_max);
             preset.film_grain = preset.film_grain.min(50);
         }
+        if self.daemon.port == 0 {
+            self.daemon.port = DaemonConfig::default().port;
+        }
+        if self.daemon.bind_address.parse::<std::net::IpAddr>().is_err() {
+            self.daemon.bind_address = DaemonConfig::default().bind_address;
+        }
     }
 
     /// Get the encoding preset for a given resolution tier and HDR type
@@ -167,5 +176,27 @@ mod tests {
             toml::from_str::<AppConfig>(&s).unwrap().language,
             Language::Chinese
         );
+    }
+
+    /// A config file written before the `[daemon]` section existed must still
+    /// load, with the daemon disabled and default bind address/port.
+    #[test]
+    fn daemon_defaults_on_legacy_config() {
+        let full = toml::to_string_pretty(&AppConfig::default()).unwrap();
+        let legacy = full.split("[daemon]").next().unwrap();
+        let loaded: AppConfig = toml::from_str(legacy).unwrap();
+        assert!(!loaded.daemon.enabled);
+        assert_eq!(loaded.daemon, DaemonConfig::default());
+    }
+
+    /// Invalid daemon values are repaired by `sanitize`.
+    #[test]
+    fn daemon_sanitize_repairs_invalid_values() {
+        let mut cfg = AppConfig::default();
+        cfg.daemon.port = 0;
+        cfg.daemon.bind_address = "not-an-ip".to_string();
+        cfg.sanitize();
+        assert_eq!(cfg.daemon.port, 8399);
+        assert_eq!(cfg.daemon.bind_address, "0.0.0.0");
     }
 }

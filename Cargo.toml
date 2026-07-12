@@ -10,6 +10,10 @@ ratatui = "0.30.2"
 crossterm = "0.29"
 toml = "1.1.2"
 
+# Daemon / web UI
+tiny_http = "0.12"
+ctrlc = { version = "3.4", features = ["termination"] }
+
 # Logging
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

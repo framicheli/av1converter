@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AV1Converter</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="offline-banner" class="banner hidden">Daemon unreachable — retrying…</div>
+
+<header>
+  <div class="brand">AV1<span>Converter</span></div>
+  <span id="status-pill" class="pill">…</span>
+  <nav>
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="queue">Queue</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ── Dashboard ─────────────────────────────────────────────── -->
+  <section id="tab-dashboard">
+    <div class="panel">
+      <div class="panel-title">Current file</div>
+      <div id="current-file" class="filename">Idle — nothing encoding</div>
+      <div class="bar"><div id="current-bar" class="bar-fill" style="width:0%"></div></div>
+      <div class="bar-meta">
+        <span id="current-pct"></span>
+        <span id="current-stage" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Overall progress</div>
+      <div class="bar"><div id="overall-bar" class="bar-fill" style="width:0%"></div></div>
+      <div class="bar-meta">
+        <span id="overall-pct">0%</span>
+        <span id="eta" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="tiles">
+      <div class="tile"><div class="tile-label">In queue</div><div class="tile-value" id="stat-total">0</div></div>
+      <div class="tile"><div class="tile-label">Converted</div><div class="tile-value" id="stat-converted">0</div></div>
+      <div class="tile"><div class="tile-label">Skipped</div><div class="tile-value" id="stat-skipped">0</div></div>
+      <div class="tile"><div class="tile-label">Errors</div><div class="tile-value" id="stat-errors">0</div></div>
+      <div class="tile"><div class="tile-label">Space saved</div><div class="tile-value" id="stat-saved">0 B</div></div>
+      <div class="tile"><div class="tile-label">Elapsed</div><div class="tile-value" id="stat-elapsed">—</div></div>
+    </div>
+
+    <div class="meta-row">
+      <span id="meta-encoder"></span>
+      <span id="meta-version"></span>
+      <span id="meta-uptime"></span>
+    </div>
+  </section>
+
+  <!-- ── Queue ─────────────────────────────────────────────────── -->
+  <section id="tab-queue" class="hidden">
+    <div class="toolbar">
+      <button id="btn-add-file">+ File</button>
+      <button id="btn-add-folder">+ Folder</button>
+      <button id="btn-add-recursive">+ Folder (recursive)</button>
+      <span class="spacer"></span>
+      <button id="btn-pause">Pause</button>
+      <button id="btn-cancel" class="danger">Cancel encoding</button>
+      <button id="btn-clear">Clear finished</button>
+    </div>
+    <div class="table-wrap">
+      <table id="queue-table">
+        <thead>
+          <tr><th>File</th><th>Source</th><th>Status</th><th>Size</th><th>Saved</th><th></th></tr>
+        </thead>
+        <tbody id="queue-body">
+          <tr><td colspan="6" class="muted center">Queue is empty — add files to start encoding</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Settings ──────────────────────────────────────────────── -->
+  <section id="tab-settings" class="hidden">
+    <form id="settings-form" autocomplete="off"></form>
+    <div class="toolbar">
+      <button id="btn-save-settings" type="button">Save settings</button>
+      <span class="muted">Changes apply to the next encode; daemon address/port need a restart.</span>
+    </div>
+  </section>
+</main>
+
+<!-- ── Server-side file browser ────────────────────────────────── -->
+<dialog id="browser">
+  <div class="browser-head">
+    <span id="browser-title">Select a file</span>
+    <span id="browser-path" class="muted"></span>
+  </div>
+  <ul id="browser-list"></ul>
+  <div class="browser-foot">
+    <label class="muted"><input type="checkbox" id="browser-hidden"> Hidden files</label>
+    <span class="spacer"></span>
+    <button id="browser-choose" class="hidden">Add this folder</button>
+    <button id="browser-close">Cancel</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

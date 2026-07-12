@@ -46,6 +46,9 @@ pub enum ConfigField {
     SameDirectory,
     AudioLanguages,
     SubtitleLanguages,
+    DaemonEnabled,
+    DaemonBindAddress,
+    DaemonPort,
 }
 
 /// Descriptor for a single row in the config screen.
@@ -162,6 +165,21 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         kind: ConfigItemKind::Text,
         field: ConfigField::SubtitleLanguages,
     },
+    ConfigItem {
+        label: Msg::CfgDaemonEnabled,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::DaemonEnabled,
+    },
+    ConfigItem {
+        label: Msg::CfgDaemonBindAddress,
+        kind: ConfigItemKind::Text,
+        field: ConfigField::DaemonBindAddress,
+    },
+    ConfigItem {
+        label: Msg::CfgDaemonPort,
+        kind: ConfigItemKind::Text,
+        field: ConfigField::DaemonPort,
+    },
 ];
 
 /// Whether a field is one of the per-resolution rate-factor rows.
@@ -236,6 +254,9 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::SameDirectory => bool_display(config.language, config.output.same_directory),
         ConfigField::AudioLanguages => config.tracks.preferred_audio_languages.join(", "),
         ConfigField::SubtitleLanguages => config.tracks.preferred_subtitle_languages.join(", "),
+        ConfigField::DaemonEnabled => bool_display(config.language, config.daemon.enabled),
+        ConfigField::DaemonBindAddress => config.daemon.bind_address.clone(),
+        ConfigField::DaemonPort => config.daemon.port.to_string(),
     }
 }
 

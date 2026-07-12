@@ -276,6 +276,27 @@ impl Default for OutputConfig {
     }
 }
 
+/// Daemon / web UI configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DaemonConfig {
+    /// Whether `--daemon` is allowed to start
+    pub enabled: bool,
+    /// Bind address for the web server
+    pub bind_address: String,
+    /// TCP port for the web server
+    pub port: u16,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind_address: "0.0.0.0".to_string(),
+            port: 8399,
+        }
+    }
+}
+
 /// Track selection preset configuration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackPresetConfig {

@@ -228,6 +228,14 @@ pub enum Msg {
     CfgAudioLanguages,
     CfgSubtitleLanguages,
     CfgLanguage,
+    CfgDaemonEnabled,
+    CfgDaemonBindAddress,
+    CfgDaemonPort,
+
+    // ── Daemon mode ──────────────────────────────────────────────────────────
+    DaemonDisabledError,
+    DaemonListening,
+    DaemonShuttingDown,
 }
 
 /// Resolve a message key for the given language.
@@ -1327,6 +1335,64 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Langue",
             De => "Sprache",
             Zh => "语言",
+        },
+        Msg::CfgDaemonEnabled => match lang {
+            En => "Web Daemon Enabled",
+            It => "Daemon web abilitato",
+            Es => "Daemon web habilitado",
+            Fr => "Daemon web activé",
+            De => "Web-Daemon aktiviert",
+            Zh => "启用 Web 守护进程",
+        },
+        Msg::CfgDaemonBindAddress => match lang {
+            En => "Daemon Bind Address",
+            It => "Indirizzo di ascolto daemon",
+            Es => "Dirección de escucha del daemon",
+            Fr => "Adresse d'écoute du daemon",
+            De => "Daemon-Bindungsadresse",
+            Zh => "守护进程监听地址",
+        },
+        Msg::CfgDaemonPort => match lang {
+            En => "Daemon Port",
+            It => "Porta daemon",
+            Es => "Puerto del daemon",
+            Fr => "Port du daemon",
+            De => "Daemon-Port",
+            Zh => "守护进程端口",
+        },
+        Msg::DaemonDisabledError => match lang {
+            En => {
+                "Daemon mode is disabled. Enable it in Settings or set enabled = true under [daemon] in config.toml."
+            }
+            It => {
+                "La modalità daemon è disabilitata. Abilitala nelle Impostazioni o imposta enabled = true sotto [daemon] in config.toml."
+            }
+            Es => {
+                "El modo daemon está deshabilitado. Habilítalo en Configuración o establece enabled = true bajo [daemon] en config.toml."
+            }
+            Fr => {
+                "Le mode daemon est désactivé. Activez-le dans les Paramètres ou définissez enabled = true sous [daemon] dans config.toml."
+            }
+            De => {
+                "Der Daemon-Modus ist deaktiviert. Aktiviere ihn in den Einstellungen oder setze enabled = true unter [daemon] in config.toml."
+            }
+            Zh => "守护进程模式已禁用。请在设置中启用，或在 config.toml 的 [daemon] 下设置 enabled = true。",
+        },
+        Msg::DaemonListening => match lang {
+            En => "Web UI listening on",
+            It => "Interfaccia web in ascolto su",
+            Es => "Interfaz web escuchando en",
+            Fr => "Interface web à l'écoute sur",
+            De => "Web-UI lauscht auf",
+            Zh => "Web 界面监听于",
+        },
+        Msg::DaemonShuttingDown => match lang {
+            En => "Shutting down, stopping current encode...",
+            It => "Arresto in corso, interruzione della codifica corrente...",
+            Es => "Apagando, deteniendo la codificación actual...",
+            Fr => "Arrêt en cours, interruption de l'encodage actuel...",
+            De => "Wird beendet, aktuelle Kodierung wird gestoppt...",
+            Zh => "正在关闭，停止当前编码...",
         },
     }
 }
