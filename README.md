@@ -9,6 +9,7 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 - **Hardware acceleration** — Automatically detects and uses NVIDIA NVENC, Intel QSV, or AMD AMF; the choice can be overridden manually in Settings
 - **Batch processing** — Convert a single file, a folder, or an entire directory tree recursively
 - **Smart preset selection** — Automatically picks encoding parameters based on resolution and HDR type
+- **Dolby Vision support** — Keep Dolby Vision in the AV1 output (profile 10) or convert to true HDR10 with static metadata; profile 5 sources are tone-mapped on the GPU
 - **Quality presets** — Low, Medium, or High shifts CRF/CQ values across every resolution tier at once; Custom leaves each tier's values manually editable
 - **VMAF quality verification** — Scores output quality after encoding; deletes source file if the threshold is met
 - **Track selection** — Auto-selects audio and subtitle tracks by preferred language; Selects all tracks or first track when no match is found
@@ -17,8 +18,34 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 
 ## Prerequisites
 
-- `ffmpeg` (with `libsvtav1` and `libvmaf` support)
-- `ffprobe`
+`ffmpeg` and `ffprobe` must be on your `PATH`. **FFmpeg 7.1 or newer is required** for Dolby Vision passthrough (8.x recommended — the tool is developed and tested against 8.1).
+
+Not every FFmpeg build includes every feature this tool uses. What you need depends on which features you use:
+
+| FFmpeg capability | Needed for | Required? |
+|-------------------|-----------|-----------|
+| `libsvtav1` | Software AV1 encoding; Dolby Vision passthrough (AV1 profile 10) | Yes, unless you only use hardware encoders |
+| `libvmaf` | VMAF quality verification (and source auto-deletion, which depends on it) | Optional |
+| `libplacebo` + a working Vulkan driver | Dolby Vision **profile 5** → HDR10 tone-mapping | Optional — only for DV profile 5 conversion |
+| `av1_nvenc` / `av1_qsv` / `av1_amf` | Hardware encoding (needs a matching GPU driver: NVIDIA driver, Intel media driver + libvpl, or AMD AMF runtime) | Optional |
+
+Check what your build supports:
+
+```bash
+ffmpeg -version                                  # 7.1+ required, 8.x recommended
+ffmpeg -h encoder=libsvtav1 | grep dolbyvision   # DV passthrough
+ffmpeg -filters | grep libvmaf                   # VMAF verification
+ffmpeg -filters | grep libplacebo                # DV profile 5 tone-mapping
+vulkaninfo --summary                             # Vulkan driver (DV profile 5 only)
+```
+
+Platform notes:
+
+- **Arch Linux** — `pacman -S ffmpeg` includes all of the above. For DV profile 5 tone-mapping also install your GPU's Vulkan driver (`vulkan-radeon`, `vulkan-intel`, or `nvidia-utils`).
+- **Debian/Ubuntu** — the distro `ffmpeg` includes `libsvtav1`; `libvmaf` and `libplacebo` vary by release, so verify with the commands above.
+- **Fedora** — use the FFmpeg from RPM Fusion; the freeworld build includes `libsvtav1` and `libvmaf`.
+- **macOS** — `brew install ffmpeg` includes `libsvtav1` and `libvmaf` but **not** `libplacebo`/Vulkan: everything works except DV profile 5 → HDR10 tone-mapping (keeping DV still works for profile 5).
+- **Windows** — the full builds from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) or [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) (GPL variant) include everything.
 
 ## Installation
 
