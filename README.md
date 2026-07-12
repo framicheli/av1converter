@@ -18,7 +18,7 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 
 ## Prerequisites
 
-`ffmpeg` and `ffprobe` must be on your `PATH`. **FFmpeg 7.1 or newer is required** for Dolby Vision passthrough (8.x recommended — the tool is developed and tested against 8.1).
+`ffmpeg` and `ffprobe` must be on your `PATH`. **FFmpeg 8.0 or newer is required** for Dolby Vision passthrough ("Dolby Vision profile 10 support in AV1" landed in 8.0; the tool is developed and tested against 8.1).
 
 Not every FFmpeg build includes every feature this tool uses. What you need depends on which features you use:
 
@@ -32,7 +32,7 @@ Not every FFmpeg build includes every feature this tool uses. What you need depe
 Check what your build supports:
 
 ```bash
-ffmpeg -version                                  # 7.1+ required, 8.x recommended
+ffmpeg -version                                  # 8.0+ required for DV passthrough
 ffmpeg -h encoder=libsvtav1 | grep dolbyvision   # DV passthrough
 ffmpeg -filters | grep libvmaf                   # VMAF verification
 ffmpeg -filters | grep libplacebo                # DV profile 5 tone-mapping
@@ -42,7 +42,7 @@ vulkaninfo --summary                             # Vulkan driver (DV profile 5 o
 Platform notes:
 
 - **Arch Linux** — `pacman -S ffmpeg` includes all of the above. For DV profile 5 tone-mapping also install your GPU's Vulkan driver (`vulkan-radeon`, `vulkan-intel`, or `nvidia-utils`).
-- **Debian/Ubuntu** — the distro `ffmpeg` includes `libsvtav1`; `libvmaf` and `libplacebo` vary by release, so verify with the commands above.
+- **Debian/Ubuntu** — the distro `ffmpeg` includes `libsvtav1`, but is often older than 8.0 (no DV passthrough — selecting "keep Dolby Vision" will fail); `libvmaf` and `libplacebo` also vary by release. Verify with the commands above.
 - **Fedora** — use the FFmpeg from RPM Fusion; the freeworld build includes `libsvtav1` and `libvmaf`.
 - **macOS** — `brew install ffmpeg` includes `libsvtav1` and `libvmaf` but **not** `libplacebo`/Vulkan: everything works except DV profile 5 → HDR10 tone-mapping (keeping DV still works for profile 5).
 - **Windows** — the full builds from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) or [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) (GPL variant) include everything.
