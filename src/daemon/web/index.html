@@ -19,6 +19,23 @@
   </nav>
 </header>
 
+<div class="layout">
+
+<!-- ── Server-side file browser ────────────────────────────────── -->
+<aside id="browser">
+  <div class="browser-head">
+    <span id="browser-title">Select a video file</span>
+    <span id="browser-path" class="muted"></span>
+  </div>
+  <ul id="browser-list"></ul>
+  <div class="browser-foot">
+    <label class="muted"><input type="checkbox" id="browser-hidden"> Hidden files</label>
+    <span class="spacer"></span>
+    <button id="browser-choose" class="hidden">Add this folder</button>
+    <button id="browser-close" class="hidden">Cancel</button>
+  </div>
+</aside>
+
 <main>
   <!-- ── Dashboard ─────────────────────────────────────────────── -->
   <section id="tab-dashboard">
@@ -90,20 +107,7 @@
   </section>
 </main>
 
-<!-- ── Server-side file browser ────────────────────────────────── -->
-<dialog id="browser">
-  <div class="browser-head">
-    <span id="browser-title">Select a file</span>
-    <span id="browser-path" class="muted"></span>
-  </div>
-  <ul id="browser-list"></ul>
-  <div class="browser-foot">
-    <label class="muted"><input type="checkbox" id="browser-hidden"> Hidden files</label>
-    <span class="spacer"></span>
-    <button id="browser-choose" class="hidden">Add this folder</button>
-    <button id="browser-close">Cancel</button>
-  </div>
-</dialog>
+</div>
 
 <div id="toast" class="toast hidden"></div>
 

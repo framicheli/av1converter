@@ -131,7 +131,12 @@ function badgeText(st) {
 }
 
 async function refreshQueue() {
-  const data = await api("/api/queue");
+  let data;
+  try {
+    data = await api("/api/queue");
+  } catch {
+    return; // offline banner is handled by the status poll
+  }
   const tbody = $("queue-body");
   tbody.textContent = "";
 
@@ -223,19 +228,26 @@ const browser = { mode: "file", path: "" };
 $("btn-add-file").addEventListener("click", () => openBrowser("file"));
 $("btn-add-folder").addEventListener("click", () => openBrowser("folder"));
 $("btn-add-recursive").addEventListener("click", () => openBrowser("folder_recursive"));
-$("browser-close").addEventListener("click", () => $("browser").close());
+$("browser-close").addEventListener("click", () => setBrowserMode("file"));
 $("browser-hidden").addEventListener("change", () => loadDir(browser.path));
 $("browser-choose").addEventListener("click", () => addToQueue(browser.path, browser.mode));
 
-function openBrowser(mode) {
+function setBrowserMode(mode) {
   browser.mode = mode;
   $("browser-title").textContent =
     mode === "file" ? "Select a video file" :
     mode === "folder" ? "Select a folder" : "Select a folder (recursive)";
   $("browser-choose").classList.toggle("hidden", mode === "file");
-  $("browser").showModal();
-  loadDir(browser.path);
+  $("browser-close").classList.toggle("hidden", mode === "file");
 }
+
+function openBrowser(mode) {
+  setBrowserMode(mode);
+  loadDir(browser.path);
+  $("browser").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+loadDir(browser.path);
 
 async function loadDir(path) {
   let data;
@@ -281,7 +293,7 @@ async function loadDir(path) {
 async function addToQueue(path, mode) {
   try {
     const r = await post("/api/queue/add", { path, mode });
-    $("browser").close();
+    setBrowserMode("file");
     toast(`Added ${r.added} file(s) to the queue`);
     refreshQueue();
   } catch (e) { toast(e.message, true); }

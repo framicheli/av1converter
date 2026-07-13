@@ -72,7 +72,16 @@ nav { margin-left: auto; display: flex; gap: 4px; }
 .tab:hover { color: var(--ink); }
 .tab.active { color: var(--accent); border-color: var(--border); background: var(--panel); }
 
-main { max-width: 960px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }
+.layout {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 20px;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+main { display: grid; gap: 16px; min-width: 0; }
 section { display: grid; gap: 16px; }
 
 /* ── Panels, bars, tiles ────────────────────────────────────────── */
@@ -195,20 +204,17 @@ td .subline { font-size: 11px; color: var(--ink-2); }
   .field { grid-template-columns: 1fr; gap: 4px; }
 }
 
-/* ── File browser dialog ────────────────────────────────────────── */
-dialog {
+/* ── File browser sidebar ───────────────────────────────────────── */
+#browser {
   background: var(--panel);
-  color: var(--ink);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 0;
-  width: min(560px, 92vw);
-  max-height: 80vh;
   display: flex;
   flex-direction: column;
+  position: sticky;
+  top: 20px;
+  max-height: calc(100vh - 40px);
 }
-dialog[open] { display: flex; }
-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 
 .browser-head {
   padding: 12px 16px;
@@ -241,6 +247,12 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
   align-items: center;
   padding: 10px 16px;
   border-top: 1px solid var(--border);
+}
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  #browser { order: 2; position: static; max-height: none; }
+  #browser-list { max-height: 45vh; }
 }
 
 /* ── Toast ──────────────────────────────────────────────────────── */
