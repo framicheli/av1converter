@@ -59,6 +59,7 @@ version = "2.6.0"
 dependencies = [
  "crossterm",
  "ctrlc",
+ "libc",
  "ratatui",
  "serde",
  "serde_json",

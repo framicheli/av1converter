@@ -27,15 +27,21 @@ use crate::i18n::{Msg, t};
 const USAGE: &str = "\
 Usage: av1converter [OPTION]
 
-  (no option)   start the interactive TUI
-  --daemon      run headless with the web UI (must be enabled in Settings)
-  --help        show this help
-  --version     show the version
+  (no option)          start the interactive TUI
+  --daemon             run the web-UI daemon in the background (must be enabled in Settings)
+  --daemon-foreground  run the daemon in the foreground, logging to stdout
+  --stop               stop the background daemon
+  --status             show whether the daemon is running
+  --help               show this help
+  --version            show the version
 ";
 
 enum Cli {
     Tui,
     Daemon,
+    DaemonForeground,
+    Stop,
+    Status,
     Help,
     Version,
     Unknown(String),
@@ -45,27 +51,109 @@ fn parse_cli() -> Cli {
     match std::env::args().nth(1).as_deref() {
         None => Cli::Tui,
         Some("--daemon") => Cli::Daemon,
+        Some("--daemon-foreground") => Cli::DaemonForeground,
+        Some("--stop") => Cli::Stop,
+        Some("--status") => Cli::Status,
         Some("--help" | "-h") => Cli::Help,
         Some("--version" | "-V") => Cli::Version,
         Some(other) => Cli::Unknown(other.to_string()),
     }
 }
 
-/// Headless daemon entry: refuses to start unless enabled in the config.
-fn run_daemon_entry() -> io::Result<()> {
+/// Headless daemon entry: refuses to start unless enabled in the config or if
+/// an instance is already running. In background mode the process re-execs
+/// itself detached and the parent only reports the outcome.
+fn run_daemon_entry(foreground: bool) -> io::Result<()> {
     let config = config::AppConfig::load();
+    let lang = config.language;
     if !config.daemon.enabled {
-        eprintln!("{}", t(config.language, Msg::DaemonDisabledError));
+        eprintln!("{}", t(lang, Msg::DaemonDisabledError));
         std::process::exit(1);
     }
+    if let Some(pid) = daemon::lifecycle::running_pid() {
+        eprintln!("{} (PID {pid})", t(lang, Msg::DaemonAlreadyRunning));
+        std::process::exit(1);
+    }
+
+    if !foreground {
+        match daemon::lifecycle::spawn_background() {
+            Ok(pid) => {
+                println!("{} (PID {pid})", t(lang, Msg::DaemonStarted));
+                println!(
+                    "{} http://{}:{}",
+                    t(lang, Msg::DaemonListening),
+                    config.daemon.bind_address,
+                    config.daemon.port
+                );
+                println!("{}", t(lang, Msg::DaemonStopHint));
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!(
+                    "{} {} ({e})",
+                    t(lang, Msg::DaemonStartFailed),
+                    daemon::lifecycle::log_file().display()
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
     utils::init_daemon_logging();
-    daemon::run_daemon(config).map_err(io::Error::other)
+    daemon::lifecycle::write_pid_file()?;
+    let result = daemon::run_daemon(config).map_err(io::Error::other);
+    daemon::lifecycle::remove_pid_file();
+    result
+}
+
+/// `--stop`: signal the background daemon and wait for it to exit.
+fn stop_daemon_entry() -> io::Result<()> {
+    let lang = config::AppConfig::load().language;
+    let Some(pid) = daemon::lifecycle::running_pid() else {
+        daemon::lifecycle::remove_pid_file(); // clear a stale file, if any
+        println!("{}", t(lang, Msg::DaemonNotRunning));
+        return Ok(());
+    };
+    match daemon::lifecycle::stop(pid) {
+        Ok(()) => {
+            println!("{} (PID {pid})", t(lang, Msg::DaemonStopped));
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("{} {e}", t(lang, Msg::DaemonStopFailed));
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `--status`: report whether the background daemon is running.
+fn daemon_status_entry() {
+    let config = config::AppConfig::load();
+    let lang = config.language;
+    match daemon::lifecycle::running_pid() {
+        Some(pid) => {
+            println!("{} (PID {pid})", t(lang, Msg::DaemonRunning));
+            println!(
+                "{} http://{}:{}",
+                t(lang, Msg::DaemonListening),
+                config.daemon.bind_address,
+                config.daemon.port
+            );
+        }
+        None => println!("{}", t(lang, Msg::DaemonNotRunning)),
+    }
 }
 
 fn main() -> io::Result<()> {
     match parse_cli() {
         Cli::Tui => {}
-        Cli::Daemon => return run_daemon_entry(),
+        Cli::Daemon => return run_daemon_entry(false),
+        Cli::DaemonForeground => return run_daemon_entry(true),
+        Cli::Stop => return stop_daemon_entry(),
+        Cli::Status => {
+            daemon_status_entry();
+            return Ok(());
+        }
         Cli::Help => {
             print!("{USAGE}");
             return Ok(());
