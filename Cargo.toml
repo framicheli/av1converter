@@ -2,6 +2,12 @@
 name = "av1converter"
 version = "2.6.0"
 edition = "2024"
+description = "A terminal-based interactive tool to batch convert video files to the AV1 codec using FFmpeg"
+license = "MIT"
+repository = "https://github.com/framicheli/av1converter"
+readme = "README.md"
+keywords = ["av1", "video", "ffmpeg", "encoding", "tui"]
+categories = ["command-line-utilities", "multimedia::video"]
 
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
