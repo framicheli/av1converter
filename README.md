@@ -11,7 +11,7 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 - **Smart preset selection** — Automatically picks encoding parameters based on resolution and HDR type
 - **Dolby Vision support** — Keep Dolby Vision in the AV1 output (profile 10) or convert to true HDR10 with static metadata; profile 5 sources are tone-mapped on the GPU
 - **Quality presets** — Low, Medium, or High shifts CRF/CQ values across every resolution tier at once; Custom leaves each tier's values manually editable
-- **VMAF quality verification** — Scores output quality after encoding; deletes source file if the threshold is met
+- **VMAF quality verification** — Scores output quality after encoding; deletes the source only when a VMAF score actually met the threshold (never for remuxes, disabled VMAF, or tone-mapped DV profile 5)
 - **Track selection** — Auto-selects audio and subtitle tracks by preferred language; Selects all tracks or first track when no match is found
 - **Daemon mode with web UI** — Run headless and manage the queue from a browser (see [Daemon Mode](#daemon-mode-and-web-ui))
 - **Multi-language UI** — Interface available in English (default), Italian, Spanish, French, German, and Chinese; selectable in Settings
@@ -51,7 +51,14 @@ Platform notes:
 ## Installation
 
 ```bash
-git clone https://github.com/your-username/av1converter.git
+cargo install av1converter          # from crates.io
+nix run github:framicheli/av1converter   # or with Nix (flake)
+```
+
+From source:
+
+```bash
+git clone https://github.com/framicheli/av1converter.git
 cd av1converter
 cargo build --release
 ```
@@ -168,7 +175,7 @@ Presets are selected automatically based on resolution and HDR format:
 | 4K         | Yes (HDR10/HLG) | **4K HDR**     | vmaf_4k_v0.6.1neg  |
 | 4K         | Dolby Vision    | **4K DV**      | vmaf_4k_v0.6.1neg  |
 
-Files already encoded in AV1 are automatically skipped.
+Files already encoded in AV1 default to demux/remux mode instead of being re-encoded.
 
 ## Encoder Detection
 
