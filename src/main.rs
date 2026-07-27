@@ -607,6 +607,8 @@ fn start_config_edit(app: &mut App) {
         ConfigField::SubtitleLanguages => app.config.tracks.preferred_subtitle_languages.join(", "),
         ConfigField::DaemonBindAddress => app.config.daemon.bind_address.clone(),
         ConfigField::DaemonPort => app.config.daemon.port.to_string(),
+        ConfigField::DaemonBrowseRoot => app.config.daemon.browse_root.clone(),
+        ConfigField::DaemonAuthToken => app.config.daemon.auth_token.clone(),
         _ => return,
     });
 }
@@ -646,6 +648,9 @@ fn commit_config_edit(app: &mut App) {
                 app.config.daemon.port = port;
             }
         }
+        // Both accept an empty value, which turns the feature off
+        ConfigField::DaemonBrowseRoot => app.config.daemon.browse_root = value,
+        ConfigField::DaemonAuthToken => app.config.daemon.auth_token = value,
         _ => {}
     }
 }
@@ -750,7 +755,9 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         | ConfigField::AudioLanguages
         | ConfigField::SubtitleLanguages
         | ConfigField::DaemonBindAddress
-        | ConfigField::DaemonPort => {}
+        | ConfigField::DaemonPort
+        | ConfigField::DaemonBrowseRoot
+        | ConfigField::DaemonAuthToken => {}
     }
 }
 

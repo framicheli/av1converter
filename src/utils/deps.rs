@@ -5,10 +5,16 @@ use std::process::Command;
 pub struct DependencyStatus;
 
 impl DependencyStatus {
+    /// Whether everything needed to encode is present. `libvmaf` is deliberately
+    /// not part of this: it is only needed for quality verification, and a build
+    /// without it works fine for anyone who does not use VMAF.
     pub fn check() -> bool {
-        check_command("ffmpeg", &["-version"])
-            && check_command("ffprobe", &["-version"])
-            && check_vmaf_available()
+        check_command("ffmpeg", &["-version"]) && check_command("ffprobe", &["-version"])
+    }
+
+    /// Whether this `FFmpeg` build can run VMAF verification.
+    pub fn vmaf_available() -> bool {
+        check_vmaf_available()
     }
 }
 

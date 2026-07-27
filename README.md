@@ -13,6 +13,7 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 - **Quality presets** — Low, Medium, or High shifts CRF/CQ values across every resolution tier at once; Custom leaves each tier's values manually editable
 - **VMAF quality verification** — Scores output quality after encoding; deletes source file if the threshold is met
 - **Track selection** — Auto-selects audio and subtitle tracks by preferred language; Selects all tracks or first track when no match is found
+- **Daemon mode with web UI** — Run headless and manage the queue from a browser (see [Daemon Mode](#daemon-mode-and-web-ui))
 - **Multi-language UI** — Interface available in English (default), Italian, Spanish, French, German, and Chinese; selectable in Settings
 - **Configurable** — All key settings adjustable through the built-in configuration screen or `~/.config/av1converter/config.toml`
 
@@ -65,6 +66,18 @@ The compiled binary will be at `target/release/av1converter`.
 
 No command-line arguments are needed. All interaction happens through the TUI.
 
+```
+Usage: av1converter [OPTION]
+
+  (no option)          start the interactive TUI
+  --daemon             run the web-UI daemon in the background (must be enabled in Settings)
+  --daemon-foreground  run the daemon in the foreground, logging to stdout
+  --stop               stop the background daemon
+  --status             show whether the daemon is running
+  --help               show this help
+  --version            show the version
+```
+
 ### Workflow
 
 1. **Home menu** — Choose to open a single file, a folder, or a folder recursively
@@ -114,6 +127,31 @@ When a Dolby Vision source is queued for encoding, a dialog asks how to convert 
 | `h` / `l` | Decrease / Increase config value |
 | `s` | Save configuration (config screen) |
 | `q` | Quit (with confirmation) |
+
+## Daemon Mode and Web UI
+
+The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, pause, cancel, remove), and a settings page. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder.
+
+Enable it in Settings (or set `enabled = true` under `[daemon]`), then:
+
+```bash
+av1converter --daemon      # start in the background
+av1converter --status      # is it running, and where
+av1converter --stop        # stop it, cancelling any encode cleanly
+```
+
+Background mode is Unix-only; elsewhere use `--daemon-foreground`. Logs go to `~/.local/share/av1converter/daemon.log`.
+
+### Security
+
+The web UI can browse the filesystem, start encodes and rewrite the configuration, and there is no authentication by default. It binds to `127.0.0.1` so that only this machine can reach it.
+
+Before exposing it to a network, set both:
+
+- `auth_token` — a shared secret required by every `/api` request. Open the UI once as `http://host:8399/?token=YOUR_TOKEN`; the browser keeps it for the session.
+- `browse_root` — the only directory the file browser and the queue will accept paths under.
+
+The daemon prints a warning at startup if it is bound to a non-loopback address with no token set.
 
 ## Encoding Presets
 
@@ -169,7 +207,16 @@ output_directory = null    # Custom output path (used when same_directory = fals
 preferred_audio_languages = ["eng", "ita"]
 preferred_subtitle_languages = ["eng"]
 select_all_fallback = true # Select all tracks if no preferred language is found
+
+[daemon]
+enabled = false            # Required before `--daemon` will start
+bind_address = "127.0.0.1" # Loopback by default; see the security note below
+port = 8399
+browse_root = ""           # Confine the web file browser to this directory ("" = whole filesystem)
+auth_token = ""            # Shared secret required by /api ("" = no authentication)
 ```
+
+If `config.toml` cannot be parsed it is kept as `config.toml.bak` and defaults are used for that run, so a typo never costs you your settings.
 
 Each resolution preset also exposes per-encoder quality values (`crf`, `nvenc_cq`, `qsv_quality`, `amf_quality`) and `film_grain` synthesis strength.
 

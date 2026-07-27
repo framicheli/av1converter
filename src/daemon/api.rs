@@ -1,13 +1,13 @@
-use super::state::{Command, SharedState, is_terminal};
+use super::state::{Command, SharedState, is_terminal, lock};
 use crate::config::AppConfig;
-use crate::queue::{JobStatus, collect_video_files, is_video_file};
+use crate::queue::{JobStatus, collect_video_files, is_own_output, is_video_file};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
 /// Dashboard poll: overall daemon and encode-session status.
 pub fn status(shared: &SharedState) -> Value {
-    let state = shared.lock().unwrap();
+    let state = lock(shared);
     let queue = &state.queue.state;
 
     let current = queue
@@ -57,7 +57,7 @@ pub fn status(shared: &SharedState) -> Value {
 
 /// Full job list for the queue tab.
 pub fn queue(shared: &SharedState) -> Value {
-    let state = shared.lock().unwrap();
+    let state = lock(shared);
     let jobs: Vec<Value> = state
         .queue
         .jobs_with_ids()
@@ -82,8 +82,20 @@ pub fn queue(shared: &SharedState) -> Value {
     json!({ "jobs": jobs })
 }
 
+/// Whether `path` sits inside `root`, comparing resolved paths so that `..`
+/// segments and symlinks cannot step outside. An empty root allows everything.
+pub fn within_root(path: &Path, root: &str) -> bool {
+    if root.is_empty() {
+        return true;
+    }
+    let (Ok(path), Ok(root)) = (path.canonicalize(), PathBuf::from(root).canonicalize()) else {
+        return false;
+    };
+    path.starts_with(root)
+}
+
 /// Expand an add request into concrete video files and queue them.
-pub fn queue_add(cmd_tx: &Sender<Command>, body: &Value) -> (u16, Value) {
+pub fn queue_add(shared: &SharedState, cmd_tx: &Sender<Command>, body: &Value) -> (u16, Value) {
     let Some(path) = body.get("path").and_then(Value::as_str) else {
         return (400, json!({"error": "missing 'path'"}));
     };
@@ -92,9 +104,20 @@ pub fn queue_add(cmd_tx: &Sender<Command>, body: &Value) -> (u16, Value) {
     if !path.exists() {
         return (400, json!({"error": "path does not exist"}));
     }
+    let browse_root = lock(shared).config.daemon.browse_root.clone();
+    if !within_root(&path, &browse_root) {
+        return (
+            403,
+            json!({"error": "path is outside the configured browse root"}),
+        );
+    }
+
+    let output_config = lock(shared).config.output.clone();
 
     let mut files: Vec<PathBuf> = Vec::new();
     match mode {
+        // An explicitly chosen file is queued as asked, even if it looks like
+        // one of our own outputs — the user pointed straight at it.
         "file" => {
             if !path.is_file() || !is_video_file(&path) {
                 return (400, json!({"error": "not a video file"}));
@@ -113,25 +136,54 @@ pub fn queue_add(cmd_tx: &Sender<Command>, body: &Value) -> (u16, Value) {
                         .filter(|p| is_video_file(p)),
                 );
             }
+            files.retain(|p| !is_own_output(p, &output_config));
         }
         "folder_recursive" => {
             if !path.is_dir() {
                 return (400, json!({"error": "not a directory"}));
             }
             collect_video_files(&path, &mut files);
+            files.retain(|p| !is_own_output(p, &output_config));
         }
         other => return (400, json!({"error": format!("unknown mode '{other}'")})),
     }
+
+    // Symlinks are followed while scanning, so a link can lead back out of the
+    // browse root even when the folder given was inside it.
+    files.retain(|p| within_root(p, &browse_root));
 
     if files.is_empty() {
         return (400, json!({"error": "no video files found"}));
     }
     files.sort();
-    let added = files.len();
+
+    // Report what will actually be queued rather than what was found: the
+    // orchestrator drops paths that are already waiting or encoding.
+    let already_queued = {
+        let state = lock(shared);
+        let pending: Vec<PathBuf> = state
+            .queue
+            .jobs_with_ids()
+            .filter(|(_, job)| !is_terminal(&job.status))
+            .map(|(_, job)| job.path.canonicalize().unwrap_or_else(|_| job.path.clone()))
+            .collect();
+        files
+            .iter()
+            .filter(|p| {
+                let canonical = p.canonicalize().unwrap_or_else(|_| (*p).clone());
+                pending.contains(&canonical)
+            })
+            .count()
+    };
+    let added = files.len() - already_queued;
+
     if cmd_tx.send(Command::AddPaths(files)).is_err() {
         return (500, json!({"error": "daemon is shutting down"}));
     }
-    (200, json!({"added": added}))
+    (
+        200,
+        json!({"added": added, "already_queued": already_queued}),
+    )
 }
 
 /// Remove a job unless it belongs to the running encode session.
@@ -140,7 +192,7 @@ pub fn queue_remove(shared: &SharedState, cmd_tx: &Sender<Command>, body: &Value
         return (400, json!({"error": "missing 'id'"}));
     };
     {
-        let state = shared.lock().unwrap();
+        let state = lock(shared);
         if state.queue.job_by_id(id).is_none() {
             return (404, json!({"error": "unknown job id"}));
         }
@@ -173,7 +225,7 @@ pub fn queue_cancel(cmd_tx: &Sender<Command>) -> (u16, Value) {
 /// Drop all jobs in terminal states.
 pub fn queue_clear_finished(shared: &SharedState, cmd_tx: &Sender<Command>) -> (u16, Value) {
     let removed = {
-        let state = shared.lock().unwrap();
+        let state = lock(shared);
         state
             .queue
             .jobs_with_ids()
@@ -185,12 +237,25 @@ pub fn queue_clear_finished(shared: &SharedState, cmd_tx: &Sender<Command>) -> (
 }
 
 /// Server-side file browser: list one directory level.
-pub fn fs_browse(path: &str, show_hidden: bool) -> (u16, Value) {
+pub fn fs_browse(shared: &SharedState, path: &str, show_hidden: bool) -> (u16, Value) {
+    let browse_root = lock(shared).config.daemon.browse_root.clone();
     let dir = if path.is_empty() {
-        std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
+        // With a root configured, that is where browsing starts.
+        if browse_root.is_empty() {
+            std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
+        } else {
+            PathBuf::from(&browse_root)
+        }
     } else {
         PathBuf::from(path)
     };
+
+    if !within_root(&dir, &browse_root) {
+        return (
+            403,
+            json!({"error": "path is outside the configured browse root"}),
+        );
+    }
 
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return (400, json!({"error": "cannot read directory"}));
@@ -204,9 +269,12 @@ pub fn fs_browse(path: &str, show_hidden: bool) -> (u16, Value) {
             continue;
         }
         let entry_path = entry.path();
+        // is_dir/is_file follow symlinks: media libraries are routinely
+        // assembled out of them, so they are listed like anything else. A
+        // symlink escaping the browse root is rejected on the way in.
         if entry_path.is_dir() {
-            if !entry_path.is_symlink() {
-                dirs.push(json!({"name": name}));
+            if within_root(&entry_path, &browse_root) {
+                dirs.push(json!({"name": name, "symlink": entry_path.is_symlink()}));
             }
         } else if entry_path.is_file() {
             let size = entry.metadata().ok().map(|m| m.len());
@@ -229,7 +297,11 @@ pub fn fs_browse(path: &str, show_hidden: bool) -> (u16, Value) {
         200,
         json!({
             "path": dir.to_string_lossy(),
-            "parent": dir.parent().map(Path::to_string_lossy),
+            // No ".." out of the browse root.
+            "parent": dir
+                .parent()
+                .filter(|parent| within_root(parent, &browse_root))
+                .map(Path::to_string_lossy),
             "dirs": dirs,
             "files": files,
         }),
@@ -238,7 +310,7 @@ pub fn fs_browse(path: &str, show_hidden: bool) -> (u16, Value) {
 
 /// Read the full configuration.
 pub fn settings_get(shared: &SharedState) -> Value {
-    let state = shared.lock().unwrap();
+    let state = lock(shared);
     serde_json::to_value(&state.config).unwrap_or_else(|_| json!({}))
 }
 
@@ -278,5 +350,37 @@ fn status_json(status: &JobStatus) -> Value {
         JobStatus::QualityWarning { vmaf, threshold } => {
             json!({"kind": "quality_warning", "vmaf": vmaf, "threshold": threshold})
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::within_root;
+    use std::path::Path;
+
+    /// An empty root is unrestricted; a configured one is escape-proof.
+    #[test]
+    fn browse_root_confines_paths() {
+        let dir = std::env::temp_dir();
+        let root = dir.join("av1c_root_test");
+        let inside = root.join("inside");
+        std::fs::create_dir_all(&inside).unwrap();
+
+        let root_str = root.to_string_lossy().into_owned();
+        assert!(within_root(&inside, &root_str));
+        assert!(within_root(&root, &root_str));
+        assert!(within_root(&inside, ""));
+
+        // Traversal is resolved before the comparison, so it cannot escape.
+        assert!(!within_root(&dir, &root_str));
+        assert!(!within_root(&root.join("..").join(".."), &root_str));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A path that cannot be resolved is refused rather than assumed safe.
+    #[test]
+    fn unresolvable_paths_are_refused_under_a_root() {
+        assert!(!within_root(Path::new("/nonexistent/x.mkv"), "/tmp"));
     }
 }

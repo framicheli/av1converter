@@ -43,14 +43,23 @@ pub fn run_encoding_pipeline(
     tracks: TrackSelection,
     dv_mode: DvMode,
     remux_only: bool,
+    subtitle_codec: &'static str,
     config: &AppConfig,
     progress_callback: Option<ProgressCallback>,
     cancel_flag: &AtomicBool,
     on_before_vmaf: Option<Box<dyn FnOnce() + Send>>,
 ) -> FullEncodeResult {
     // Encoding parameters
-    let params =
-        EncodingParams::from_metadata(input, output, metadata, config, tracks, dv_mode, remux_only);
+    let params = EncodingParams::from_metadata(
+        input,
+        output,
+        metadata,
+        config,
+        tracks,
+        dv_mode,
+        remux_only,
+        subtitle_codec,
+    );
     let duration = metadata.duration_secs;
 
     // Total frame count for frame-based progress fallback (some sources, e.g.
@@ -96,6 +105,7 @@ pub fn run_encoding_pipeline(
                 vmaf_threshold,
                 metadata.hdr_type,
                 metadata.width,
+                cancel_flag,
             );
 
             // The source is only ever deleted against a VMAF score that met the
@@ -134,6 +144,7 @@ fn run_vmaf_check(
     threshold: Option<f64>,
     hdr_type: HdrType,
     width: u32,
+    cancel_flag: &AtomicBool,
 ) -> FullEncodeResult {
     let Some(threshold) = threshold else {
         return FullEncodeResult::Success;
@@ -144,8 +155,11 @@ fn run_vmaf_check(
     let input_path = std::path::Path::new(input);
     let output_path = std::path::Path::new(output);
 
-    match verifier::calculate_vmaf(input_path, output_path, hdr_type, width) {
-        Ok(vmaf) => {
+    match verifier::calculate_vmaf(input_path, output_path, hdr_type, width, cancel_flag) {
+        // The encode itself finished, so the output stays; only the quality
+        // check was interrupted.
+        Ok(verifier::VmafOutcome::Cancelled) => FullEncodeResult::Cancelled,
+        Ok(verifier::VmafOutcome::Scored(vmaf)) => {
             info!("VMAF score: {:.2} ({})", vmaf.score, vmaf.quality_grade());
 
             if !vmaf.meets_threshold(threshold) {

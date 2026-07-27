@@ -60,9 +60,12 @@ fn alive(pid: u32) -> bool {
     unsafe { libc::kill(pid.cast_signed(), 0) == 0 }
 }
 
+/// Liveness cannot be probed without a signal API, so a recorded PID is taken
+/// at face value: reporting "not running" for a daemon that is up would be
+/// worse than occasionally trusting a stale PID file.
 #[cfg(not(unix))]
 fn alive(_pid: u32) -> bool {
-    false
+    true
 }
 
 /// Re-exec ourselves as `--daemon-foreground`, detached in a new session with

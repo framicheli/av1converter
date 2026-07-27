@@ -281,18 +281,39 @@ impl Default for OutputConfig {
 pub struct DaemonConfig {
     /// Whether `--daemon` is allowed to start
     pub enabled: bool,
-    /// Bind address for the web server
+    /// Bind address for the web server. Defaults to loopback: the web UI can
+    /// queue encodes and delete sources, so reaching the network is opt-in.
     pub bind_address: String,
     /// TCP port for the web server
     pub port: u16,
+    /// Directory the web file browser is confined to. Empty means the whole
+    /// filesystem, which is only reasonable while bound to loopback.
+    #[serde(default)]
+    pub browse_root: String,
+    /// Shared secret required by the `/api` endpoints. Empty disables the
+    /// check; set it whenever the daemon is reachable from the network.
+    #[serde(default)]
+    pub auth_token: String,
+}
+
+impl DaemonConfig {
+    /// Bind addresses that expose the daemon beyond this machine.
+    pub fn binds_publicly(&self) -> bool {
+        match self.bind_address.parse::<std::net::IpAddr>() {
+            Ok(ip) => !ip.is_loopback(),
+            Err(_) => false,
+        }
+    }
 }
 
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            bind_address: "0.0.0.0".to_string(),
+            bind_address: "127.0.0.1".to_string(),
             port: 8399,
+            browse_root: String::new(),
+            auth_token: String::new(),
         }
     }
 }

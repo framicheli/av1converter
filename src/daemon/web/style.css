@@ -164,6 +164,8 @@ td .subline { font-size: 11px; color: var(--ink-2); }
 .badge.warn { color: var(--warn); border-color: var(--warn); }
 .badge.error { color: var(--bad); border-color: var(--bad); }
 
+td.grew { color: var(--warn); }
+
 .row-bar { margin-top: 4px; width: 140px; }
 .row-bar .bar { height: 5px; }
 

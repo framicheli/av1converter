@@ -27,9 +27,28 @@ function toast(message, isError) {
   toast.timer = setTimeout(() => el.classList.add("hidden"), 3000);
 }
 
+// When the daemon requires a token, it can be handed over once as ?token=… in
+// the URL. It is kept for the session and stripped from the address bar so it
+// does not linger in history or get copied into a shared link.
+const token = (() => {
+  const fromUrl = new URLSearchParams(location.search).get("token");
+  if (fromUrl) {
+    sessionStorage.setItem("av1c_token", fromUrl);
+    history.replaceState(null, "", location.pathname);
+    return fromUrl;
+  }
+  return sessionStorage.getItem("av1c_token") || "";
+})();
+
 async function api(path, options) {
-  const response = await fetch(path, options);
+  const init = { ...options, headers: { ...(options && options.headers) } };
+  if (token) init.headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(path, init);
   const body = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    sessionStorage.removeItem("av1c_token");
+    throw new Error("Unauthorized — open the UI with ?token=… from your config");
+  }
   if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
   return body;
 }
@@ -105,7 +124,13 @@ async function poll() {
   }
 }
 
-setInterval(poll, 1000);
+// No point polling a tab nobody is looking at; refresh as soon as it is again.
+setInterval(() => {
+  if (document.visibilityState === "visible") poll();
+}, 1000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") poll();
+});
 poll();
 
 // ── Queue table ─────────────────────────────────────────────────────
@@ -130,6 +155,82 @@ function badgeText(st) {
   }
 }
 
+// Rows are kept and updated in place, keyed by job id. Rebuilding the table on
+// every poll would throw away hover, focus and any text the user has selected,
+// once a second, for the whole length of an encode.
+const rows = new Map();
+
+function createRow(job) {
+  const tr = document.createElement("tr");
+
+  const file = tr.insertCell();
+  file.className = "filecell";
+  const name = document.createElement("div");
+  const sub = document.createElement("div");
+  sub.className = "subline";
+  file.append(name, sub);
+
+  const source = tr.insertCell();
+  const statusCell = tr.insertCell();
+  const badge = document.createElement("span");
+  const bar = document.createElement("div");
+  bar.className = "row-bar hidden";
+  const fill = document.createElement("div");
+  fill.className = "bar-fill";
+  const track = document.createElement("div");
+  track.className = "bar";
+  track.appendChild(fill);
+  bar.appendChild(track);
+  statusCell.append(badge, bar);
+
+  const size = tr.insertCell();
+  const saved = tr.insertCell();
+
+  const remove = document.createElement("button");
+  remove.className = "iconbtn";
+  remove.textContent = "✕";
+  remove.title = "Remove from queue";
+  remove.addEventListener("click", async () => {
+    try {
+      await post("/api/queue/remove", { id: job.id });
+      refreshQueue();
+    } catch (e) { toast(e.message, true); }
+  });
+  tr.insertCell().appendChild(remove);
+
+  return { tr, name, sub, source, badge, fill, bar, size, saved, remove };
+}
+
+function updateRow(row, job) {
+  row.name.textContent = job.filename;
+  row.sub.textContent = [job.remux_only ? "remux" : "", job.source_deleted ? "source deleted" : ""]
+    .filter(Boolean).join(" · ");
+  row.source.textContent = `${job.resolution} ${job.hdr}`;
+
+  row.badge.className = `badge ${BADGE_CLASS[job.status.kind] || ""}`;
+  row.badge.textContent = badgeText(job.status);
+  row.badge.title = job.status.kind === "error" ? job.status.message : "";
+
+  const encoding = job.status.kind === "encoding";
+  row.bar.classList.toggle("hidden", !encoding);
+  if (encoding) row.fill.style.width = `${job.status.progress}%`;
+
+  row.size.textContent = job.output_size != null
+    ? `${fmtBytes(job.source_size)} → ${fmtBytes(job.output_size)}`
+    : fmtBytes(job.source_size);
+
+  // Negative means the output grew, so show the direction rather than "−0%".
+  if (job.saved_percent == null) {
+    row.saved.textContent = "";
+    row.saved.className = "";
+  } else {
+    row.saved.textContent = `${job.saved_percent < 0 ? "+" : "−"}${Math.abs(job.saved_percent).toFixed(0)}%`;
+    row.saved.className = job.saved_percent < 0 ? "grew" : "";
+  }
+
+  row.remove.disabled = ["encoding", "verifying"].includes(job.status.kind);
+}
+
 async function refreshQueue() {
   let data;
   try {
@@ -138,67 +239,24 @@ async function refreshQueue() {
     return; // offline banner is handled by the status poll
   }
   const tbody = $("queue-body");
-  tbody.textContent = "";
+  $("queue-empty").classList.toggle("hidden", data.jobs.length > 0);
 
-  if (data.jobs.length === 0) {
-    const tr = tbody.insertRow();
-    const td = tr.insertCell();
-    td.colSpan = 6;
-    td.className = "muted center";
-    td.textContent = "Queue is empty — add files to start encoding";
-    return;
-  }
-
+  const seen = new Set();
   for (const job of data.jobs) {
-    const tr = tbody.insertRow();
-
-    const file = tr.insertCell();
-    file.className = "filecell";
-    file.textContent = job.filename;
-    if (job.remux_only || job.source_deleted) {
-      const sub = document.createElement("div");
-      sub.className = "subline";
-      sub.textContent = [job.remux_only ? "remux" : "", job.source_deleted ? "source deleted" : ""]
-        .filter(Boolean).join(" · ");
-      file.appendChild(sub);
+    seen.add(job.id);
+    let row = rows.get(job.id);
+    if (!row) {
+      row = createRow(job);
+      rows.set(job.id, row);
+      tbody.appendChild(row.tr);
     }
-
-    tr.insertCell().textContent = `${job.resolution} ${job.hdr}`;
-
-    const statusCell = tr.insertCell();
-    const badge = document.createElement("span");
-    badge.className = `badge ${BADGE_CLASS[job.status.kind] || ""}`;
-    badge.textContent = badgeText(job.status);
-    if (job.status.kind === "error") badge.title = job.status.message;
-    statusCell.appendChild(badge);
-    if (job.status.kind === "encoding") {
-      const wrap = document.createElement("div");
-      wrap.className = "row-bar";
-      wrap.innerHTML = '<div class="bar"><div class="bar-fill"></div></div>';
-      wrap.querySelector(".bar-fill").style.width = `${job.status.progress}%`;
-      statusCell.appendChild(wrap);
+    updateRow(row, job);
+  }
+  for (const [id, row] of rows) {
+    if (!seen.has(id)) {
+      row.tr.remove();
+      rows.delete(id);
     }
-
-    const size = tr.insertCell();
-    size.textContent = job.output_size != null
-      ? `${fmtBytes(job.source_size)} → ${fmtBytes(job.output_size)}`
-      : fmtBytes(job.source_size);
-
-    tr.insertCell().textContent = job.saved_percent != null ? `−${job.saved_percent.toFixed(0)}%` : "";
-
-    const actions = tr.insertCell();
-    const remove = document.createElement("button");
-    remove.className = "iconbtn";
-    remove.textContent = "✕";
-    remove.title = "Remove from queue";
-    remove.disabled = ["encoding", "verifying"].includes(job.status.kind);
-    remove.addEventListener("click", async () => {
-      try {
-        await post("/api/queue/remove", { id: job.id });
-        refreshQueue();
-      } catch (e) { toast(e.message, true); }
-    });
-    actions.appendChild(remove);
   }
 }
 
@@ -224,6 +282,9 @@ $("btn-clear").addEventListener("click", async () => {
 // ── File browser ────────────────────────────────────────────────────
 
 const browser = { mode: "file", path: "" };
+
+// Join a directory and an entry name without doubling the separator at root.
+const joinPath = (dir, name) => (dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`);
 
 $("btn-add-file").addEventListener("click", () => openBrowser("file"));
 $("btn-add-folder").addEventListener("click", () => openBrowser("folder"));
@@ -278,10 +339,10 @@ async function loadDir(path) {
 
   if (data.parent) addEntry("📁 ..", "", () => loadDir(data.parent));
   for (const d of data.dirs) {
-    addEntry(`📁 ${d.name}`, "", () => loadDir(`${data.path}/${d.name}`.replace("//", "/")));
+    addEntry(`📁 ${d.name}${d.symlink ? " ↗" : ""}`, "", () => loadDir(joinPath(data.path, d.name)));
   }
   for (const f of data.files) {
-    const filePath = `${data.path}/${f.name}`.replace("//", "/");
+    const filePath = joinPath(data.path, f.name);
     if (f.is_video && browser.mode === "file") {
       addEntry(`🎬 ${f.name}`, "", () => addToQueue(filePath, "file"), fmtBytes(f.size));
     } else {
@@ -294,7 +355,10 @@ async function addToQueue(path, mode) {
   try {
     const r = await post("/api/queue/add", { path, mode });
     setBrowserMode("file");
-    toast(`Added ${r.added} file(s) to the queue`);
+    const skipped = r.already_queued ? `, ${r.already_queued} already queued` : "";
+    toast(r.added > 0
+      ? `Added ${r.added} file(s) to the queue${skipped}`
+      : `Nothing added — ${r.already_queued} file(s) already queued`);
     refreshQueue();
   } catch (e) { toast(e.message, true); }
 }
@@ -347,6 +411,8 @@ function settingsFields(cfg) {
     { path: "daemon.enabled", label: "Web daemon enabled", type: "checkbox" },
     { path: "daemon.bind_address", label: "Bind address", type: "text" },
     { path: "daemon.port", label: "Port", type: "number", min: 1, max: 65535 },
+    { path: "daemon.browse_root", label: "Browse root (blank = whole filesystem)", type: "text" },
+    { path: "daemon.auth_token", label: "Access token (blank = no auth)", type: "text" },
   );
   return fields;
 }

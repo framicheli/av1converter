@@ -1,5 +1,6 @@
 use crate::encoder::command_builder::{EncodingParams, build_ffmpeg_args};
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -183,7 +184,7 @@ fn run_encode_loop(
                     cb(progress);
                 }
             }
-        } else if let Ok(content) = std::fs::read_to_string(progress_file) {
+        } else if let Some(content) = read_progress_tail(progress_file) {
             // Encode: derive progress from the processed timestamp vs. duration.
             // FFmpeg versions differ in which out_time field they emit.
             let progress = if let Some(time_secs) = latest_progress_time_secs(&content) {
@@ -242,6 +243,28 @@ fn run_encode_loop(
             }
         }
     }
+}
+
+/// Read the last few progress blocks from `-progress` output.
+///
+/// `FFmpeg` appends a block roughly twice a second and never truncates, so a
+/// feature-length encode leaves megabytes behind. Only the most recent block
+/// matters, and re-reading and re-parsing the whole file four times a second
+/// would cost more as the encode goes on.
+fn read_progress_tail(path: &Path) -> Option<String> {
+    /// Comfortably more than one block, so a full block is always in view.
+    const WINDOW: usize = 8192;
+
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(WINDOW as u64)))
+        .ok()?;
+
+    let mut buf = Vec::with_capacity(WINDOW);
+    file.read_to_end(&mut buf).ok()?;
+    // The window can start mid-line; parsing is per-line, so a partial first
+    // line is simply ignored by the callers.
+    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 fn latest_progress_time_secs(content: &str) -> Option<f64> {

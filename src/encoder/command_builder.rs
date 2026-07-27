@@ -20,10 +20,14 @@ pub struct EncodingParams {
     pub svt_preset: u8,
     pub nvenc_preset: String,
     pub remux_only: bool,
+    /// Subtitle codec for the output container: `copy` unless the source's
+    /// subtitles cannot live there.
+    pub subtitle_codec: &'static str,
 }
 
 impl EncodingParams {
     /// Create encoding params from video metadata and config
+    #[allow(clippy::too_many_arguments)]
     pub fn from_metadata(
         input: &str,
         output: &str,
@@ -32,6 +36,7 @@ impl EncodingParams {
         tracks: TrackSelection,
         dv_mode: DvMode,
         remux_only: bool,
+        subtitle_codec: &'static str,
     ) -> Self {
         let tier = ResolutionTier::from_dimensions(metadata.width, metadata.height);
         let preset = config.preset_for(tier, metadata.hdr_type);
@@ -66,6 +71,7 @@ impl EncodingParams {
             svt_preset: config.performance.svt_preset,
             nvenc_preset: config.performance.nvenc_preset.clone(),
             remux_only,
+            subtitle_codec,
         }
     }
 
@@ -120,7 +126,7 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
             "-c:a".to_string(),
             "copy".to_string(),
             "-c:s".to_string(),
-            "copy".to_string(),
+            params.subtitle_codec.to_string(),
         ]);
     } else {
         // Video encoder
@@ -138,12 +144,12 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
             ]);
         }
 
-        // Copy audio and subtitles
+        // Audio is always copied; subtitles only when the container allows it
         args.extend([
             "-c:a".to_string(),
             "copy".to_string(),
             "-c:s".to_string(),
-            "copy".to_string(),
+            params.subtitle_codec.to_string(),
         ]);
 
         // Encoder-specific quality parameters
@@ -360,6 +366,7 @@ mod tests {
             svt_preset: 6,
             nvenc_preset: "p4".to_string(),
             remux_only: false,
+            subtitle_codec: "copy",
         }
     }
 
@@ -437,6 +444,7 @@ mod tests {
             TrackSelection::default(),
             DvMode::KeepDolbyVision,
             false,
+            "copy",
         );
         assert_eq!(params.dv_mode, DvMode::ToHdr10);
         let args = build_ffmpeg_args(&params);

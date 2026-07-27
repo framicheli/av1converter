@@ -58,7 +58,12 @@ impl DaemonQueue {
             return false;
         };
         self.ids.remove(index);
-        self.state.jobs.remove(index);
+        let job = self.state.jobs.remove(index);
+        // The dashboard's running total is cumulative, so a job leaving the
+        // queue hands its savings over rather than taking them with it.
+        if let Some((saved, _)) = job.size_reduction() {
+            self.state.cleared_saved_bytes = self.state.cleared_saved_bytes.saturating_add(saved);
+        }
         // Keep the "currently encoding" pointer aimed at the same job
         if index < self.state.current_job_index && self.state.current_job_index > 0 {
             self.state.current_job_index -= 1;
@@ -138,6 +143,18 @@ pub enum Command {
 }
 
 pub type SharedState = Arc<Mutex<DaemonState>>;
+
+/// Lock the shared state, recovering from a poisoned mutex.
+///
+/// A panic in one HTTP handler must not turn the daemon into a process that
+/// answers nothing for the rest of its life. What the mutex guards is plain
+/// data with no invariant a partial mutation could break, so carrying on with
+/// the recovered state is safer than taking the whole daemon down with it.
+pub fn lock(shared: &SharedState) -> std::sync::MutexGuard<'_, DaemonState> {
+    shared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[cfg(test)]
 mod tests {

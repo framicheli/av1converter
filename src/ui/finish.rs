@@ -375,8 +375,10 @@ fn create_result_item(
 
     // Output size and compression ratio
     let output_info = match (job.output_size, job.size_reduction()) {
+        // A negative percentage means the output grew, so the sign is printed
+        // rather than assumed.
         (Some(output), Some((_, percent))) => {
-            format!(" → {} (-{:.1}%)", format_file_size(output), percent)
+            format!(" → {} ({:+.1}%)", format_file_size(output), -percent)
         }
         (Some(output), None) => format!(" → {}", format_file_size(output)),
         _ => String::new(),

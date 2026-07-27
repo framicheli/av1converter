@@ -11,7 +11,7 @@ use crate::queue::{
     EncodingJob, JobStatus, WorkerJob, WorkerMessage, auto_select_tracks, run_worker,
 };
 use crate::utils::DependencyStatus;
-use state::{Command, DaemonState, EncodeSession, SharedState, is_terminal};
+use state::{Command, DaemonState, EncodeSession, SharedState, is_terminal, lock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -28,11 +28,21 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// Blocks until SIGINT/SIGTERM.
 pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     if !DependencyStatus::check() {
-        warn!("ffmpeg/ffprobe/libvmaf check failed; some features may not work");
+        warn!("ffmpeg or ffprobe was not found on PATH; encoding will fail");
+    }
+    if config.quality.vmaf_enabled && !DependencyStatus::vmaf_available() {
+        warn!("VMAF is enabled but this FFmpeg build has no libvmaf; verification will fail");
     }
 
     let lang = config.language;
     let listen = format!("{}:{}", config.daemon.bind_address, config.daemon.port);
+
+    // Anyone who can reach the port can queue encodes, rewrite the settings and
+    // browse the filesystem, so say so plainly when that is more than this host.
+    if config.daemon.binds_publicly() && config.daemon.auth_token.is_empty() {
+        println!("{}", t(lang, Msg::DaemonPublicNoToken));
+        warn!("Daemon is reachable from the network with no auth_token set");
+    }
 
     let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(config)));
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
@@ -87,7 +97,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     // Graceful shutdown: cancel any running encode and wait for the worker
     // to kill ffmpeg and acknowledge.
     let cancelling = {
-        let state = shared.lock().unwrap();
+        let state = lock(&shared);
         if let Some(session) = state.session.as_ref().filter(|_| state.encoding_active) {
             session.cancel_flag.store(true, Ordering::Relaxed);
             true
@@ -125,16 +135,16 @@ fn handle_command(
     match cmd {
         Command::AddPaths(paths) => add_paths(shared, analysis_tx, paths),
         Command::RemoveJob(id) => {
-            let mut state = shared.lock().unwrap();
+            let mut state = lock(shared);
             if !state.in_active_session(id) {
                 state.queue.remove(id);
             }
         }
         Command::SetPaused(paused) => {
-            shared.lock().unwrap().paused = paused;
+            lock(shared).paused = paused;
         }
         Command::CancelEncoding => {
-            let state = shared.lock().unwrap();
+            let state = lock(shared);
             if let Some(session) = state.session.as_ref().filter(|_| state.encoding_active) {
                 session.cancel_flag.store(true, Ordering::Relaxed);
             }
@@ -142,10 +152,10 @@ fn handle_command(
         Command::UpdateConfig(config) => {
             // Takes effect for subsequent analysis/sessions; a running
             // worker already cloned its config.
-            shared.lock().unwrap().config = *config;
+            lock(shared).config = *config;
         }
         Command::ClearFinished => {
-            let mut state = shared.lock().unwrap();
+            let mut state = lock(shared);
             let finished: Vec<u64> = state
                 .queue
                 .jobs_with_ids()
@@ -167,7 +177,7 @@ fn add_paths(
 ) {
     let mut to_analyze: Vec<(u64, String)> = Vec::new();
     {
-        let mut state = shared.lock().unwrap();
+        let mut state = lock(shared);
         // Paths already queued and not yet finished are skipped
         let existing: Vec<std::path::PathBuf> = state
             .queue
@@ -215,7 +225,7 @@ fn add_paths(
 /// then resolve the Dolby Vision mode non-interactively and mark the job
 /// ready to encode.
 fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisResult, AppError>) {
-    let mut state = shared.lock().unwrap();
+    let mut state = lock(shared);
     let output_config = state.config.output.clone();
     let track_config = state.config.tracks.clone();
     let encoder = state.config.encoder;
@@ -259,7 +269,7 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
 
 /// Start a new encode session if idle, not paused, and jobs are ready.
 fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) {
-    let mut state = shared.lock().unwrap();
+    let mut state = lock(shared);
     if state.encoding_active || state.paused {
         return;
     }
@@ -282,8 +292,15 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
                 stem, output_config.suffix, output_config.container
             ))
         });
+        let selected_subs: Vec<crate::tracks::SubtitleTrack> = job
+            .subtitle_tracks
+            .iter()
+            .filter(|t| job.track_selection.subtitle_indices.contains(&t.index))
+            .cloned()
+            .collect();
         worker_jobs.push(WorkerJob {
             index: worker_jobs.len(),
+            subtitle_codec: crate::tracks::subtitle_codec_for(&output, &selected_subs),
             input: job.path.clone(),
             output,
             metadata,
@@ -305,12 +322,13 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         }
     }
 
-    // total_jobs_to_encode accumulates across sessions so overall_progress()
-    // stays meaningful for the dashboard
-    state.queue.state.total_jobs_to_encode += worker_jobs.len();
-    if state.queue.state.start_time.is_none() {
-        state.queue.state.start_time = Some(Instant::now());
-    }
+    // Progress and ETA are reported for the session that is actually running.
+    // Carrying totals or a start time across sessions would leave the dashboard
+    // measuring against jobs that finished hours ago, with all the idle time in
+    // between counted as encoding time.
+    state.queue.state.total_jobs_to_encode = worker_jobs.len();
+    state.queue.state.encoding_progress_done = 0;
+    state.queue.state.start_time = Some(Instant::now());
     state.queue.state.end_time = None;
 
     let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -330,7 +348,7 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
 /// Apply one worker message: mirrors the TUI's `process_progress_messages`,
 /// but translates the session-local index to a stable job id first.
 fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
-    let mut state = shared.lock().unwrap();
+    let mut state = lock(shared);
     let Some(session_ids) = state.session.as_ref().map(|s| s.job_ids.clone()) else {
         return; // Late message from an already-finished session
     };
@@ -398,6 +416,9 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
                         reason: "Cancelled".to_string(),
                     };
                     state.queue.state.skipped_count += 1;
+                    // A cancelled job is done as far as the session goes, so
+                    // progress still reaches 100% instead of stalling short.
+                    state.queue.state.encoding_progress_done += 1;
                 }
             }
         }

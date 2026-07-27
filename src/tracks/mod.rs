@@ -1,6 +1,56 @@
 pub mod selection;
 
+/// The subtitle codec to write for a given output container.
+///
+/// `mov_text` is MP4's own text format and Matroska has no place for it, so
+/// copying it into an `.mkv` fails the entire encode. Converting to `SubRip`
+/// keeps the track instead of losing the job.
+pub fn subtitle_codec_for(output: &std::path::Path, selected: &[SubtitleTrack]) -> &'static str {
+    let matroska = output
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("mkv") || e.eq_ignore_ascii_case("webm"));
+    let has_mov_text = selected
+        .iter()
+        .any(|t| t.codec.eq_ignore_ascii_case("mov_text"));
+
+    if matroska && has_mov_text {
+        "srt"
+    } else {
+        "copy"
+    }
+}
+
 pub use selection::TrackSelection;
+
+#[cfg(test)]
+mod tests {
+    use super::{SubtitleTrack, subtitle_codec_for};
+    use std::path::Path;
+
+    fn sub(codec: &str) -> SubtitleTrack {
+        SubtitleTrack {
+            index: 0,
+            language: None,
+            codec: codec.to_string(),
+            title: None,
+            forced: false,
+        }
+    }
+
+    #[test]
+    fn mov_text_is_converted_only_when_matroska_cannot_hold_it() {
+        let mov_text = [sub("mov_text")];
+        let subrip = [sub("subrip")];
+
+        assert_eq!(subtitle_codec_for(Path::new("out.mkv"), &mov_text), "srt");
+        assert_eq!(subtitle_codec_for(Path::new("out.MKV"), &mov_text), "srt");
+        // MP4 keeps its own format, and other codecs are copied as they are.
+        assert_eq!(subtitle_codec_for(Path::new("out.mp4"), &mov_text), "copy");
+        assert_eq!(subtitle_codec_for(Path::new("out.mkv"), &subrip), "copy");
+        assert_eq!(subtitle_codec_for(Path::new("out.mkv"), &[]), "copy");
+    }
+}
 
 /// Audio track information
 #[derive(Debug, Clone)]

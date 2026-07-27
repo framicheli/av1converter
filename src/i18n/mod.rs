@@ -231,10 +231,13 @@ pub enum Msg {
     CfgDaemonEnabled,
     CfgDaemonBindAddress,
     CfgDaemonPort,
+    CfgDaemonBrowseRoot,
+    CfgDaemonAuthToken,
 
     // ── Daemon mode ──────────────────────────────────────────────────────────
     DaemonDisabledError,
     DaemonListening,
+    DaemonPublicNoToken,
     DaemonShuttingDown,
     DaemonStarted,
     DaemonStartFailed,
@@ -1380,6 +1383,22 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Daemon-Port",
             Zh => "守护进程端口",
         },
+        Msg::CfgDaemonBrowseRoot => match lang {
+            En => "Daemon Browse Root",
+            It => "Cartella base daemon",
+            Es => "Carpeta base del daemon",
+            Fr => "Dossier racine du daemon",
+            De => "Daemon-Basisordner",
+            Zh => "守护进程浏览根目录",
+        },
+        Msg::CfgDaemonAuthToken => match lang {
+            En => "Daemon Access Token",
+            It => "Token di accesso daemon",
+            Es => "Token de acceso del daemon",
+            Fr => "Jeton d'accès du daemon",
+            De => "Daemon-Zugriffstoken",
+            Zh => "守护进程访问令牌",
+        },
         Msg::DaemonDisabledError => match lang {
             En => {
                 "Daemon mode is disabled. Enable it in Settings or set enabled = true under [daemon] in config.toml."
@@ -1407,6 +1426,26 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Interface web à l'écoute sur",
             De => "Web-UI lauscht auf",
             Zh => "Web 界面监听于",
+        },
+        Msg::DaemonPublicNoToken => match lang {
+            En => {
+                "Warning: the daemon is reachable from the network and no access token is set. Anyone who can reach the port can browse files and start encodes."
+            }
+            It => {
+                "Attenzione: il daemon è raggiungibile dalla rete e non è impostato alcun token di accesso. Chiunque raggiunga la porta può sfogliare i file e avviare conversioni."
+            }
+            Es => {
+                "Aviso: el daemon es accesible desde la red y no hay ningún token de acceso configurado. Cualquiera que alcance el puerto puede explorar archivos e iniciar conversiones."
+            }
+            Fr => {
+                "Attention : le daemon est accessible depuis le réseau et aucun jeton d'accès n'est défini. Quiconque atteint le port peut parcourir les fichiers et lancer des encodages."
+            }
+            De => {
+                "Warnung: Der Daemon ist aus dem Netzwerk erreichbar und es ist kein Zugriffstoken gesetzt. Wer den Port erreicht, kann Dateien durchsuchen und Kodierungen starten."
+            }
+            Zh => {
+                "警告：守护进程可从网络访问且未设置访问令牌。任何能连接该端口的人都可以浏览文件并启动转换。"
+            }
         },
         Msg::DaemonShuttingDown => match lang {
             En => "Shutting down, stopping current encode...",

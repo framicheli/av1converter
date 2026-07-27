@@ -38,9 +38,39 @@ pub fn serve(
     }
 }
 
+/// Whether a request carries the configured shared secret.
+///
+/// Accepted as `Authorization: Bearer <token>` or a `token=` query parameter,
+/// so a plain URL is enough to open the UI. Only `/api` paths are guarded: the
+/// page itself has to load before it can send anything.
+fn authorized(request: &Request, query: &str, token: &str) -> bool {
+    if token.is_empty() {
+        return true;
+    }
+    let header = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Authorization"))
+        .map(|h| h.value.as_str().to_string())
+        .unwrap_or_default();
+    header.strip_prefix("Bearer ").map(str::trim) == Some(token)
+        || query_param(query, "token").as_deref() == Some(token)
+}
+
 fn handle_request(mut request: Request, shared: &SharedState, cmd_tx: &Sender<Command>) {
     let url = request.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
+
+    if path.starts_with("/api") {
+        let token = super::state::lock(shared).config.daemon.auth_token.clone();
+        if !authorized(&request, query, &token) {
+            return respond_json(
+                request,
+                401,
+                &serde_json::json!({"error": "missing or invalid token"}),
+            );
+        }
+    }
 
     let (status, body) = match (request.method(), path) {
         (Method::Get, "/") => {
@@ -55,12 +85,13 @@ fn handle_request(mut request: Request, shared: &SharedState, cmd_tx: &Sender<Co
         (Method::Get, "/api/status") => (200, api::status(shared)),
         (Method::Get, "/api/queue") => (200, api::queue(shared)),
         (Method::Get, "/api/fs") => api::fs_browse(
+            shared,
             &query_param(query, "path").unwrap_or_default(),
             query_param(query, "hidden").as_deref() == Some("1"),
         ),
         (Method::Get, "/api/settings") => (200, api::settings_get(shared)),
         (Method::Post, "/api/queue/add") => match read_json_body(&mut request) {
-            Ok(body) => api::queue_add(cmd_tx, &body),
+            Ok(body) => api::queue_add(shared, cmd_tx, &body),
             Err(resp) => resp,
         },
         (Method::Post, "/api/queue/remove") => match read_json_body(&mut request) {

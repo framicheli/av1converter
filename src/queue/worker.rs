@@ -42,6 +42,8 @@ pub struct WorkerJob {
     pub tracks: TrackSelection,
     pub dv_mode: DvMode,
     pub remux_only: bool,
+    /// `copy`, or a codec the target container can actually hold
+    pub subtitle_codec: &'static str,
 }
 
 /// Run the encoding worker in a separate thread
@@ -75,6 +77,7 @@ pub fn run_worker(
             job.tracks,
             job.dv_mode,
             job.remux_only,
+            job.subtitle_codec,
             config,
             Some(Box::new(move |progress| {
                 let _ = tx_progress.send(WorkerMessage::Progress(idx, progress));

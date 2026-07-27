@@ -66,7 +66,26 @@ impl AppConfig {
                     return config;
                 }
                 Err(e) => {
+                    // Never overwrite a file that failed to parse: a hand-edited
+                    // config with one typo would otherwise be silently replaced
+                    // by defaults, losing every setting in it.
                     warn!("Failed to load config: {e:?}. Using defaults.");
+                    let backup = config_path.with_extension("toml.bak");
+                    match std::fs::rename(&config_path, &backup) {
+                        Ok(()) => eprintln!(
+                            "Could not parse {}: {e}\nIt has been kept as {} and defaults are in use.",
+                            config_path.display(),
+                            backup.display()
+                        ),
+                        Err(rename_err) => {
+                            warn!("Could not preserve the unreadable config: {rename_err}");
+                            eprintln!(
+                                "Could not parse {}: {e}\nUsing defaults; the file was left untouched.",
+                                config_path.display()
+                            );
+                            return Self::default();
+                        }
+                    }
                 }
             }
         }
@@ -143,6 +162,8 @@ impl AppConfig {
         if self.daemon.port == 0 {
             self.daemon.port = DaemonConfig::default().port;
         }
+        // An address that cannot be parsed falls back to loopback rather than
+        // to a wildcard: a typo must never widen who can reach the daemon.
         if self
             .daemon
             .bind_address
@@ -151,6 +172,8 @@ impl AppConfig {
         {
             self.daemon.bind_address = DaemonConfig::default().bind_address;
         }
+        self.daemon.browse_root = self.daemon.browse_root.trim().to_string();
+        self.daemon.auth_token = self.daemon.auth_token.trim().to_string();
     }
 
     /// Get the encoding preset for a given resolution tier and HDR type
@@ -251,7 +274,9 @@ mod tests {
         assert_eq!(cfg.output.container, "mkv");
     }
 
-    /// Invalid daemon values are repaired by `sanitize`.
+    /// Invalid daemon values are repaired by `sanitize`. An unparseable bind
+    /// address falls back to loopback, never to a wildcard: a typo must not
+    /// widen who can reach the daemon.
     #[test]
     fn daemon_sanitize_repairs_invalid_values() {
         let mut cfg = AppConfig::default();
@@ -259,6 +284,20 @@ mod tests {
         cfg.daemon.bind_address = "not-an-ip".to_string();
         cfg.sanitize();
         assert_eq!(cfg.daemon.port, 8399);
-        assert_eq!(cfg.daemon.bind_address, "0.0.0.0");
+        assert_eq!(cfg.daemon.bind_address, "127.0.0.1");
+        assert!(!cfg.daemon.binds_publicly());
+    }
+
+    /// Only a non-loopback bind address counts as reaching the network.
+    #[test]
+    fn public_bind_addresses_are_recognised() {
+        let mut cfg = AppConfig::default();
+        assert!(!cfg.daemon.binds_publicly());
+        cfg.daemon.bind_address = "0.0.0.0".to_string();
+        assert!(cfg.daemon.binds_publicly());
+        cfg.daemon.bind_address = "192.168.1.10".to_string();
+        assert!(cfg.daemon.binds_publicly());
+        cfg.daemon.bind_address = "::1".to_string();
+        assert!(!cfg.daemon.binds_publicly());
     }
 }

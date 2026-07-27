@@ -1,6 +1,7 @@
 use crate::analyzer::{DvMode, VideoMetadata};
 use crate::config::TrackPresetConfig;
 use crate::tracks::{AudioTrack, SubtitleTrack, TrackSelection};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Status of a job in the encoding queue
@@ -135,15 +136,27 @@ impl EncodingJob {
         self.output_path = Some(output);
     }
 
-    /// Calculate size reduction if both sizes are known
+    /// Bytes saved and the size change as a percentage, if both sizes are known.
+    ///
+    /// The percentage is negative when the encode came out *larger* than the
+    /// source, which does happen on already-efficient input; reporting it as a
+    /// flat 0% would quietly hide that.
     pub fn size_reduction(&self) -> Option<(u64, f64)> {
         match (self.source_size, self.output_size) {
             (Some(source), Some(output)) if source > 0 => {
                 let saved = source.saturating_sub(output);
-                // Use u128 to avoid u64→f64 precision lint: (saved*100)/source is in [0,100]
-                let percent_int =
-                    u32::try_from(u128::from(saved) * 100 / u128::from(source)).unwrap_or(100);
-                let percent = f64::from(percent_int);
+                // u128 keeps the ratio exact and avoids the u64→f64 precision
+                // lint; the result is a percentage, so it stays small.
+                let percent = if output > source {
+                    let grown = output - source;
+                    let pct =
+                        u32::try_from(u128::from(grown) * 100 / u128::from(source)).unwrap_or(100);
+                    -f64::from(pct)
+                } else {
+                    let pct =
+                        u32::try_from(u128::from(saved) * 100 / u128::from(source)).unwrap_or(100);
+                    f64::from(pct)
+                };
                 Some((saved, percent))
             }
             _ => None,
@@ -151,22 +164,57 @@ impl EncodingJob {
     }
 }
 
-/// Recursively collect video files under `dir`, skipping symlinks.
+/// Recursively collect video files under `dir`.
+///
+/// Symlinks are followed — media libraries are routinely assembled out of them
+/// — so directories and files are both tracked by their resolved path to keep a
+/// link cycle from recursing forever and to list a file reachable by two routes
+/// only once.
 pub fn collect_video_files(dir: &Path, paths: &mut Vec<PathBuf>) {
+    let mut seen_dirs = HashSet::new();
+    let mut seen_files = HashSet::new();
+    collect_video_files_inner(dir, paths, &mut seen_dirs, &mut seen_files);
+}
+
+fn collect_video_files_inner(
+    dir: &Path,
+    paths: &mut Vec<PathBuf>,
+    seen_dirs: &mut HashSet<PathBuf>,
+    seen_files: &mut HashSet<PathBuf>,
+) {
+    let Ok(real_dir) = dir.canonicalize() else {
+        return;
+    };
+    if !seen_dirs.insert(real_dir) {
+        return;
+    }
+
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
-        if path.is_symlink() {
-            continue;
-        }
         if path.is_dir() {
-            collect_video_files(&path, paths);
+            collect_video_files_inner(&path, paths, seen_dirs, seen_files);
         } else if is_video_file(&path) {
-            paths.push(path);
+            let real = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if seen_files.insert(real) {
+                paths.push(path);
+            }
         }
     }
+}
+
+/// Whether a file looks like something this tool produced.
+///
+/// Re-scanning a folder would otherwise queue the previous run's outputs for
+/// another pass, re-encoding already-converted video.
+pub fn is_own_output(path: &Path, output: &crate::config::OutputConfig) -> bool {
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    // "_remux" is fixed by the remux path; the encode suffix is configurable.
+    stem.ends_with("_remux") || (!output.suffix.is_empty() && stem.ends_with(&output.suffix))
 }
 
 /// Select audio and subtitle tracks based on configured language preferences.
@@ -223,8 +271,9 @@ pub fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig) {
 
 /// Check if a path is a video file
 pub fn is_video_file(path: &Path) -> bool {
-    const VIDEO_EXTENSIONS: [&str; 10] = [
-        "mp4", "mkv", "avi", "mov", "webm", "m4v", "ts", "m2ts", "wmv", "flv",
+    const VIDEO_EXTENSIONS: [&str; 17] = [
+        "mp4", "mkv", "avi", "mov", "webm", "m4v", "ts", "m2ts", "mts", "wmv", "flv", "mpg",
+        "mpeg", "m2v", "vob", "ogv", "3gp",
     ];
 
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
@@ -273,6 +322,48 @@ mod tests {
             job.output_path.unwrap(),
             PathBuf::from("/tmp/movie_av1_av1.mkv")
         );
+    }
+
+    /// Outputs from an earlier run must not be re-queued by a folder rescan.
+    #[test]
+    fn own_outputs_are_recognised() {
+        let output = OutputConfig::default();
+        assert!(is_own_output(Path::new("/m/movie_av1.mkv"), &output));
+        assert!(is_own_output(Path::new("/m/movie_remux.mkv"), &output));
+        assert!(!is_own_output(Path::new("/m/movie.mkv"), &output));
+
+        // An empty suffix would otherwise match every file.
+        let no_suffix = OutputConfig {
+            suffix: String::new(),
+            ..OutputConfig::default()
+        };
+        assert!(!is_own_output(Path::new("/m/movie.mkv"), &no_suffix));
+        assert!(is_own_output(Path::new("/m/movie_remux.mkv"), &no_suffix));
+    }
+
+    /// A symlink loop must not hang the scan, and a file reachable by two
+    /// routes is collected once.
+    #[test]
+    fn recursive_collection_survives_symlink_cycles() {
+        let root = std::env::temp_dir().join("av1c_scan_test");
+        let _ = std::fs::remove_dir_all(&root);
+        let inner = root.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("clip.mkv"), b"x").unwrap();
+
+        #[cfg(unix)]
+        {
+            // inner/loop -> root, and a second route to the same file
+            std::os::unix::fs::symlink(&root, inner.join("loop")).unwrap();
+            std::os::unix::fs::symlink(&inner, root.join("alias")).unwrap();
+        }
+
+        let mut found = Vec::new();
+        collect_video_files(&root, &mut found);
+        assert_eq!(found.len(), 1, "one file, whatever route reaches it");
+        assert!(found[0].ends_with("clip.mkv"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Remux keeps the source container, so it needs its own distinct suffix.

@@ -49,6 +49,8 @@ pub enum ConfigField {
     DaemonEnabled,
     DaemonBindAddress,
     DaemonPort,
+    DaemonBrowseRoot,
+    DaemonAuthToken,
 }
 
 /// Descriptor for a single row in the config screen.
@@ -180,6 +182,16 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         kind: ConfigItemKind::Text,
         field: ConfigField::DaemonPort,
     },
+    ConfigItem {
+        label: Msg::CfgDaemonBrowseRoot,
+        kind: ConfigItemKind::Text,
+        field: ConfigField::DaemonBrowseRoot,
+    },
+    ConfigItem {
+        label: Msg::CfgDaemonAuthToken,
+        kind: ConfigItemKind::Text,
+        field: ConfigField::DaemonAuthToken,
+    },
 ];
 
 /// Whether a field is one of the per-resolution rate-factor rows.
@@ -257,6 +269,24 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::DaemonEnabled => bool_display(config.language, config.daemon.enabled),
         ConfigField::DaemonBindAddress => config.daemon.bind_address.clone(),
         ConfigField::DaemonPort => config.daemon.port.to_string(),
+        ConfigField::DaemonBrowseRoot => empty_as_dash(&config.daemon.browse_root),
+        // Shown as a placeholder rather than the secret itself.
+        ConfigField::DaemonAuthToken => {
+            if config.daemon.auth_token.is_empty() {
+                "—".to_string()
+            } else {
+                "••••••••".to_string()
+            }
+        }
+    }
+}
+
+/// Render an unset optional text field as a dash rather than as blank.
+fn empty_as_dash(value: &str) -> String {
+    if value.is_empty() {
+        "—".to_string()
+    } else {
+        value.to_string()
     }
 }
 

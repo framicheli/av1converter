@@ -108,7 +108,8 @@ fn render_vmaf_info(app: &App) -> Line<'static> {
         )]);
     }
 
-    if app.deps {
+    // Only libvmaf decides whether the configured verification can run
+    if app.deps && app.vmaf_deps {
         Line::from(vec![
             Span::styled("✓ ", Style::default().fg(Color::Green)),
             Span::raw(t(lang, Msg::VmafEnabledOpen)),
