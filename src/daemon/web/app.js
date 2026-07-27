@@ -322,7 +322,7 @@ function settingsFields(cfg) {
     { group: "Quality" },
     { path: "quality.vmaf_threshold", label: "VMAF threshold", type: "number", min: 0, max: 100 },
     { path: "quality.vmaf_enabled", label: "VMAF verification", type: "checkbox" },
-    { path: "quality.delete_source_on_success", label: "Delete source on success", type: "checkbox" },
+    { path: "quality.delete_source_on_success", label: "Delete source if VMAF passes", type: "checkbox" },
     { group: "Performance" },
     { path: "performance.svt_preset", label: "SVT-AV1 preset (0–13)", type: "number", min: 0, max: 13 },
     { path: "performance.nvenc_preset", label: "NVENC preset", type: "select", options: NVENC_PRESETS },

@@ -107,17 +107,16 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
 }
 
 /// `--stop`: signal the background daemon and wait for it to exit.
-fn stop_daemon_entry() -> io::Result<()> {
+fn stop_daemon_entry() {
     let lang = config::AppConfig::load().language;
     let Some(pid) = daemon::lifecycle::running_pid() else {
         daemon::lifecycle::remove_pid_file(); // clear a stale file, if any
         println!("{}", t(lang, Msg::DaemonNotRunning));
-        return Ok(());
+        return;
     };
     match daemon::lifecycle::stop(pid) {
         Ok(()) => {
             println!("{} (PID {pid})", t(lang, Msg::DaemonStopped));
-            Ok(())
         }
         Err(e) => {
             eprintln!("{} {e}", t(lang, Msg::DaemonStopFailed));
@@ -149,7 +148,7 @@ fn main() -> io::Result<()> {
         Cli::Tui => {}
         Cli::Daemon => return run_daemon_entry(false),
         Cli::DaemonForeground => return run_daemon_entry(true),
-        Cli::Stop => return stop_daemon_entry(),
+        Cli::Stop => stop_daemon_entry(),
         Cli::Status => {
             daemon_status_entry();
             return Ok(());
@@ -547,7 +546,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         return;
     }
 
-    let config_item_count = crate::ui::config_screen::visible_config_items(&app.config).len();
+    let config_item_count = ui::config_screen::visible_config_items(&app.config).len();
 
     match key {
         KeyCode::Esc => {
@@ -759,7 +758,7 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
 ///
 /// `Low`/`Medium`/`High` overwrite the per-tier presets; `Custom` keeps the
 /// user's own values. Toggling visibility of the RF rows can shrink the list,
-/// so the selection index is clamped afterwards.
+/// so the selection index is clamped afterward.
 fn cycle_quality_preset(app: &mut App, increase: bool) {
     let next = if increase {
         app.config.quality_preset.next()
@@ -770,7 +769,7 @@ fn cycle_quality_preset(app: &mut App, increase: bool) {
     if let Some(presets) = next.presets() {
         app.config.presets = presets;
     }
-    let count = crate::ui::config_screen::visible_config_items(&app.config).len();
+    let count = ui::config_screen::visible_config_items(&app.config).len();
     if app.config_selected >= count {
         app.config_selected = count.saturating_sub(1);
     }
@@ -778,9 +777,9 @@ fn cycle_quality_preset(app: &mut App, increase: bool) {
 
 /// Map a per-resolution rate-factor field to its mutable preset, if any.
 fn preset_for_rf_field(
-    presets: &mut crate::config::EncodingPresetsConfig,
-    field: crate::ui::config_screen::ConfigField,
-) -> Option<&mut crate::config::EncodingPreset> {
+    presets: &mut config::EncodingPresetsConfig,
+    field: ui::config_screen::ConfigField,
+) -> Option<&mut config::EncodingPreset> {
     use crate::ui::config_screen::ConfigField;
     Some(match field {
         ConfigField::RfSd => &mut presets.sd,
@@ -795,11 +794,7 @@ fn preset_for_rf_field(
     })
 }
 
-fn adjust_preset_rf(
-    preset: &mut crate::config::EncodingPreset,
-    encoder: crate::config::Encoder,
-    increase: bool,
-) {
+fn adjust_preset_rf(preset: &mut config::EncodingPreset, encoder: config::Encoder, increase: bool) {
     use crate::config::Encoder;
     let val = match encoder {
         Encoder::SvtAv1 => &mut preset.crf,

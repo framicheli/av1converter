@@ -1018,4 +1018,3 @@ fn dv_mode_index(mode: DvMode) -> usize {
         DvMode::ToHdr10 => 1,
     }
 }
-

@@ -43,6 +43,16 @@ fn default_quality_preset() -> QualityPreset {
     QualityPreset::Custom
 }
 
+/// Trim a filename fragment down to characters that are safe inside one path
+/// component (no separators, no control characters).
+fn strip_path_separators(value: &mut String) {
+    *value = value
+        .trim()
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\') && !c.is_control())
+        .collect();
+}
+
 impl AppConfig {
     /// Load configuration from TOML file, or create default if not found.
     pub fn load() -> Self {
@@ -105,7 +115,7 @@ impl AppConfig {
             .join("config.toml")
     }
 
-    /// Clamp all numeric fields to their valid ranges.
+    /// Clamp all numeric fields to their valid ranges and repair output naming.
     pub fn sanitize(&mut self) {
         self.quality.vmaf_threshold = self.quality.vmaf_threshold.clamp(0.0, 100.0);
         self.performance.svt_preset = self.performance.svt_preset.min(13);
@@ -117,10 +127,28 @@ impl AppConfig {
             preset.amf_quality = preset.amf_quality.min(hw_max);
             preset.film_grain = preset.film_grain.min(50);
         }
+        // The suffix and container become part of the output filename, so a
+        // stray path separator would write outside the intended directory and
+        // an empty suffix would aim the output at the source file itself.
+        strip_path_separators(&mut self.output.suffix);
+        strip_path_separators(&mut self.output.container);
+        self.output.container = self.output.container.trim_matches('.').to_string();
+        if self.output.container.is_empty() {
+            self.output.container = OutputConfig::default().container;
+        }
+        // Writing next to the source with no suffix would collide with it.
+        if self.output.same_directory && self.output.suffix.is_empty() {
+            self.output.suffix = OutputConfig::default().suffix;
+        }
         if self.daemon.port == 0 {
             self.daemon.port = DaemonConfig::default().port;
         }
-        if self.daemon.bind_address.parse::<std::net::IpAddr>().is_err() {
+        if self
+            .daemon
+            .bind_address
+            .parse::<std::net::IpAddr>()
+            .is_err()
+        {
             self.daemon.bind_address = DaemonConfig::default().bind_address;
         }
     }
@@ -187,6 +215,40 @@ mod tests {
         let loaded: AppConfig = toml::from_str(legacy).unwrap();
         assert!(!loaded.daemon.enabled);
         assert_eq!(loaded.daemon, DaemonConfig::default());
+    }
+
+    /// An empty suffix next to the source would make the output path collide
+    /// with the input file, so `sanitize` restores the default.
+    #[test]
+    fn empty_suffix_is_repaired_when_writing_next_to_the_source() {
+        let mut cfg = AppConfig::default();
+        cfg.output.suffix = "   ".to_string();
+        cfg.output.same_directory = true;
+        cfg.sanitize();
+        assert_eq!(cfg.output.suffix, "_av1");
+
+        // Writing to a separate directory has no collision, so "" is kept.
+        let mut cfg = AppConfig::default();
+        cfg.output.suffix = String::new();
+        cfg.output.same_directory = false;
+        cfg.sanitize();
+        assert_eq!(cfg.output.suffix, "");
+    }
+
+    /// Suffix and container are single path components, never paths.
+    #[test]
+    fn path_separators_are_stripped_from_output_naming() {
+        let mut cfg = AppConfig::default();
+        cfg.output.suffix = "../../evil".to_string();
+        cfg.output.container = "/mkv".to_string();
+        cfg.sanitize();
+        assert_eq!(cfg.output.suffix, "....evil");
+        assert_eq!(cfg.output.container, "mkv");
+
+        let mut cfg = AppConfig::default();
+        cfg.output.container = "///".to_string();
+        cfg.sanitize();
+        assert_eq!(cfg.output.container, "mkv");
     }
 
     /// Invalid daemon values are repaired by `sanitize`.

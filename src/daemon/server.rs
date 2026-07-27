@@ -43,7 +43,9 @@ fn handle_request(mut request: Request, shared: &SharedState, cmd_tx: &Sender<Co
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
 
     let (status, body) = match (request.method(), path) {
-        (Method::Get, "/") => return respond_asset(request, INDEX_HTML, "text/html; charset=utf-8"),
+        (Method::Get, "/") => {
+            return respond_asset(request, INDEX_HTML, "text/html; charset=utf-8");
+        }
         (Method::Get, "/style.css") => {
             return respond_asset(request, STYLE_CSS, "text/css; charset=utf-8");
         }
@@ -109,8 +111,12 @@ fn read_json_body(request: &mut Request) -> Result<serde_json::Value, (u16, serd
         .take(MAX_BODY)
         .read_to_string(&mut body)
         .map_err(|e| (400, serde_json::json!({"error": format!("bad body: {e}")})))?;
-    serde_json::from_str(&body)
-        .map_err(|e| (400, serde_json::json!({"error": format!("invalid JSON: {e}")})))
+    serde_json::from_str(&body).map_err(|e| {
+        (
+            400,
+            serde_json::json!({"error": format!("invalid JSON: {e}")}),
+        )
+    })
 }
 
 /// Extract and percent-decode a query-string parameter.
@@ -156,7 +162,10 @@ mod tests {
 
     #[test]
     fn percent_decoding() {
-        assert_eq!(percent_decode("/home/user/My%20Videos"), "/home/user/My Videos");
+        assert_eq!(
+            percent_decode("/home/user/My%20Videos"),
+            "/home/user/My Videos"
+        );
         assert_eq!(percent_decode("a+b%2Fc"), "a b/c");
         assert_eq!(percent_decode("plain"), "plain");
         assert_eq!(percent_decode("bad%2"), "bad%2");

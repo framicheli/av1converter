@@ -212,7 +212,11 @@ fn get_svtav1_params(params: &EncodingParams) -> Vec<String> {
     // "auto", which would silently pass the RPU through even when the user
     // chose plain HDR10 output.
     if params.hdr_type == HdrType::DolbyVision {
-        let dovi = if params.keeps_dolby_vision() { "1" } else { "0" };
+        let dovi = if params.keeps_dolby_vision() {
+            "1"
+        } else {
+            "0"
+        };
         args.extend(["-dolbyvision".to_string(), dovi.to_string()]);
     }
 

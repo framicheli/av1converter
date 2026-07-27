@@ -37,7 +37,11 @@ pub fn log_file() -> PathBuf {
 /// PID recorded in the PID file, if that process is still alive.
 /// A stale file (process gone) is treated as "not running".
 pub fn running_pid() -> Option<u32> {
-    let pid = std::fs::read_to_string(pid_file()).ok()?.trim().parse().ok()?;
+    let pid = std::fs::read_to_string(pid_file())
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
     alive(pid).then_some(pid)
 }
 
@@ -53,7 +57,7 @@ pub fn remove_pid_file() {
 #[cfg(unix)]
 fn alive(pid: u32) -> bool {
     // Signal 0 performs the permission/existence check without signalling
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    unsafe { libc::kill(pid.cast_signed(), 0) == 0 }
 }
 
 #[cfg(not(unix))]
@@ -113,7 +117,7 @@ pub fn spawn_background() -> io::Result<u32> {
 /// shutdown grace period cancelling a running encode).
 #[cfg(unix)]
 pub fn stop(pid: u32) -> io::Result<()> {
-    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } != 0 {
+    if unsafe { libc::kill(pid.cast_signed(), libc::SIGTERM) } != 0 {
         return Err(io::Error::last_os_error());
     }
     let deadline = Instant::now() + STOP_TIMEOUT;

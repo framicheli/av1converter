@@ -145,7 +145,10 @@ pub fn queue_remove(shared: &SharedState, cmd_tx: &Sender<Command>, body: &Value
             return (404, json!({"error": "unknown job id"}));
         }
         if state.in_active_session(id) {
-            return (409, json!({"error": "job is part of the active encode session"}));
+            return (
+                409,
+                json!({"error": "job is part of the active encode session"}),
+            );
         }
     }
     let _ = cmd_tx.send(Command::RemoveJob(id));

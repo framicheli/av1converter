@@ -663,12 +663,24 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Zh => "移除 DV 层，保留 HDR10 静态元数据",
         },
         Msg::DvP5Warning => match lang {
-            En => "Profile 5 has no HDR10 base layer: keeping DV needs a DV-capable player; HDR10 tone-maps on the GPU (Vulkan).",
-            It => "Il profilo 5 non ha un livello base HDR10: mantenere DV richiede un lettore compatibile DV; HDR10 usa tone mapping su GPU (Vulkan).",
-            Es => "El perfil 5 no tiene capa base HDR10: mantener DV requiere un reproductor compatible con DV; HDR10 usa tone mapping en GPU (Vulkan).",
-            Fr => "Le profil 5 n'a pas de couche de base HDR10 : garder le DV exige un lecteur compatible DV ; HDR10 applique un tone mapping GPU (Vulkan).",
-            De => "Profil 5 hat keine HDR10-Basisebene: DV behalten erfordert einen DV-fähigen Player; HDR10 nutzt GPU-Tone-Mapping (Vulkan).",
-            Zh => "Profile 5 没有 HDR10 基础层：保留 DV 需要支持 DV 的播放器；转 HDR10 将使用 GPU 色调映射（Vulkan）。",
+            En => {
+                "Profile 5 has no HDR10 base layer: keeping DV needs a DV-capable player; HDR10 tone-maps on the GPU (Vulkan)."
+            }
+            It => {
+                "Il profilo 5 non ha un livello base HDR10: mantenere DV richiede un lettore compatibile DV; HDR10 usa tone mapping su GPU (Vulkan)."
+            }
+            Es => {
+                "El perfil 5 no tiene capa base HDR10: mantener DV requiere un reproductor compatible con DV; HDR10 usa tone mapping en GPU (Vulkan)."
+            }
+            Fr => {
+                "Le profil 5 n'a pas de couche de base HDR10 : garder le DV exige un lecteur compatible DV ; HDR10 applique un tone mapping GPU (Vulkan)."
+            }
+            De => {
+                "Profil 5 hat keine HDR10-Basisebene: DV behalten erfordert einen DV-fähigen Player; HDR10 nutzt GPU-Tone-Mapping (Vulkan)."
+            }
+            Zh => {
+                "Profile 5 没有 HDR10 基础层：保留 DV 需要支持 DV 的播放器；转 HDR10 将使用 GPU 色调映射（Vulkan）。"
+            }
         },
         Msg::DvRecommended => match lang {
             En => "recommended",
@@ -1226,12 +1238,12 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Zh => "启用 VMAF",
         },
         Msg::CfgDeleteSource => match lang {
-            En => "Delete Source on Success",
-            It => "Elimina origine se riuscito",
-            Es => "Eliminar origen si tiene éxito",
-            Fr => "Supprimer la source si réussi",
-            De => "Quelle bei Erfolg löschen",
-            Zh => "成功后删除源文件",
+            En => "Delete Source if VMAF Passes",
+            It => "Elimina origine se VMAF OK",
+            Es => "Eliminar origen si VMAF OK",
+            Fr => "Supprimer la source si VMAF OK",
+            De => "Quelle löschen bei VMAF-Erfolg",
+            Zh => "VMAF 达标后删除源文件",
         },
         Msg::CfgSvtPreset => match lang {
             En => "SVT-AV1 Preset",
@@ -1384,7 +1396,9 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => {
                 "Der Daemon-Modus ist deaktiviert. Aktiviere ihn in den Einstellungen oder setze enabled = true unter [daemon] in config.toml."
             }
-            Zh => "守护进程模式已禁用。请在设置中启用，或在 config.toml 的 [daemon] 下设置 enabled = true。",
+            Zh => {
+                "守护进程模式已禁用。请在设置中启用，或在 config.toml 的 [daemon] 下设置 enabled = true。"
+            }
         },
         Msg::DaemonListening => match lang {
             En => "Web UI listening on",

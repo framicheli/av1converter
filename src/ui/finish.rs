@@ -402,7 +402,10 @@ fn create_result_item(
                 Span::styled(output_info, Style::default().fg(Color::DarkGray)),
             ];
             if !source_info.is_empty() {
-                spans.push(Span::styled(source_info, Style::default().fg(Color::Yellow)));
+                spans.push(Span::styled(
+                    source_info,
+                    Style::default().fg(Color::Yellow),
+                ));
             }
             ListItem::new(Line::from(spans)).style(Style::default().add_modifier(bold_mod))
         }
@@ -424,7 +427,10 @@ fn create_result_item(
                 ),
             ];
             if !source_info.is_empty() {
-                spans.push(Span::styled(source_info, Style::default().fg(Color::Yellow)));
+                spans.push(Span::styled(
+                    source_info,
+                    Style::default().fg(Color::Yellow),
+                ));
             }
             ListItem::new(Line::from(spans)).style(Style::default().add_modifier(bold_mod))
         }
@@ -452,7 +458,10 @@ fn create_result_item(
                 ),
             ];
             if !source_info.is_empty() {
-                spans.push(Span::styled(source_info, Style::default().fg(Color::Yellow)));
+                spans.push(Span::styled(
+                    source_info,
+                    Style::default().fg(Color::Yellow),
+                ));
             }
             ListItem::new(Line::from(spans)).style(Style::default().add_modifier(bold_mod))
         }

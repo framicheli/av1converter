@@ -34,12 +34,6 @@ pub enum FullEncodeResult {
     },
 }
 
-impl FullEncodeResult {
-    pub fn is_success(&self) -> bool {
-        matches!(self, Self::Success | Self::SuccessWithVmaf { .. })
-    }
-}
-
 /// Orchestrate the full encoding pipeline: encode -> verify
 #[allow(clippy::too_many_arguments)]
 pub fn run_encoding_pipeline(
@@ -55,9 +49,8 @@ pub fn run_encoding_pipeline(
     on_before_vmaf: Option<Box<dyn FnOnce() + Send>>,
 ) -> FullEncodeResult {
     // Encoding parameters
-    let params = EncodingParams::from_metadata(
-        input, output, metadata, config, tracks, dv_mode, remux_only,
-    );
+    let params =
+        EncodingParams::from_metadata(input, output, metadata, config, tracks, dv_mode, remux_only);
     let duration = metadata.duration_secs;
 
     // Total frame count for frame-based progress fallback (some sources, e.g.
@@ -105,20 +98,25 @@ pub fn run_encoding_pipeline(
                 metadata.width,
             );
 
-            // Optionally delete source after any successful encode
-            if config.quality.delete_source_on_success && result.is_success() {
-                match std::fs::remove_file(input) {
-                    Ok(()) => {
-                        info!("Deleted source file: {input}");
-                        if let FullEncodeResult::SuccessWithVmaf {
-                            ref mut source_deleted,
-                            ..
-                        } = result
-                        {
+            // The source is only ever deleted against a VMAF score that met the
+            // threshold. A plain `Success` means no comparison ran at all (VMAF
+            // disabled, a remux, or a tone-mapped DV profile 5 output), which is
+            // no evidence that the encode is good enough to discard the original.
+            if config.quality.delete_source_on_success {
+                if let FullEncodeResult::SuccessWithVmaf {
+                    ref mut source_deleted,
+                    ..
+                } = result
+                {
+                    match std::fs::remove_file(input) {
+                        Ok(()) => {
+                            info!("Deleted source file: {input}");
                             *source_deleted = true;
                         }
+                        Err(e) => warn!("Failed to delete source file {input}: {e}"),
                     }
-                    Err(e) => warn!("Failed to delete source file {input}: {e}"),
+                } else if matches!(result, FullEncodeResult::Success) {
+                    info!("Keeping source file {input}: no VMAF verification ran for this job");
                 }
             }
 

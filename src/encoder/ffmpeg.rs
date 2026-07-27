@@ -8,6 +8,35 @@ use std::time::Duration;
 
 static JOB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Scratch path an in-progress encode is written to, alongside the real output.
+///
+/// The final extension is preserved so `FFmpeg` still infers the container from
+/// it. Encoding here and renaming on success means the destination file is only
+/// ever touched by an encode that actually finished.
+fn partial_output_path(output: &str) -> String {
+    let path = Path::new(output);
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
+    let name = match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => format!("{stem}.part.{ext}"),
+        None => format!("{stem}.part"),
+    };
+    parent.join(name).to_string_lossy().into_owned()
+}
+
+/// Whether both paths designate the same file: literally equal, or resolving to
+/// the same canonical target when both already exist.
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    a == b
+        || match (a.canonicalize(), b.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+}
+
 /// Progress callback type
 pub type ProgressCallback = Box<dyn FnMut(f64) + Send>;
 
@@ -30,7 +59,23 @@ pub fn encode_video(
     duration: f64,
     total_frames: f64,
 ) -> EncodeResult {
-    let args = build_ffmpeg_args(params);
+    // FFmpeg cannot edit a file in place, and a run that started anyway would
+    // end up renaming its own output over the source. Refuse before spawning.
+    if is_same_file(Path::new(&params.input), Path::new(&params.output)) {
+        return EncodeResult::Error(
+            "Output path is the same as the input file; check the output suffix and container"
+                .to_string(),
+        );
+    }
+
+    // FFmpeg's -y truncates the output the moment it opens it, so encoding
+    // straight to the destination destroys whatever is already there even when
+    // the encode then fails. Write to a sibling scratch file and move it into
+    // place only once FFmpeg has exited successfully.
+    let partial = partial_output_path(&params.output);
+    let mut encode_params = params.clone();
+    encode_params.output.clone_from(&partial);
+    let args = build_ffmpeg_args(&encode_params);
 
     let uid = JOB_COUNTER.fetch_add(1, Ordering::Relaxed);
     let tag = format!("{}_{}", std::process::id(), uid);
@@ -79,7 +124,7 @@ pub fn encode_video(
         total_frames,
         progress_callback,
         cancel_flag,
-        &params.output,
+        &partial,
         &stderr_path,
         params.remux_only.then(|| params.input.clone()).as_ref(),
     );
@@ -87,6 +132,15 @@ pub fn encode_video(
     // Cleanup
     let _ = std::fs::remove_file(&progress_file);
     let _ = std::fs::remove_file(&stderr_path);
+
+    // The scratch file becomes the output only now, when the encode is known to
+    // have succeeded. Failure and cancellation already removed it.
+    if matches!(result, EncodeResult::Success)
+        && let Err(e) = std::fs::rename(&partial, &params.output)
+    {
+        let _ = std::fs::remove_file(&partial);
+        return EncodeResult::Error(format!("Failed to move the encoded file into place: {e}"));
+    }
 
     result
 }
@@ -244,7 +298,53 @@ fn parse_out_time_secs(line: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{latest_progress_frame, latest_progress_time_secs};
+    use super::{
+        is_same_file, latest_progress_frame, latest_progress_time_secs, partial_output_path,
+    };
+    use std::path::Path;
+
+    /// The scratch file sits next to the real output and keeps its extension,
+    /// so `FFmpeg` still picks the right muxer and the rename stays on one
+    /// filesystem. Crucially it is never the destination path itself.
+    #[test]
+    fn partial_path_is_a_distinct_sibling_with_the_same_extension() {
+        let output = "/media/films/movie_av1.mkv";
+        let partial = partial_output_path(output);
+
+        assert_eq!(partial, "/media/films/movie_av1.part.mkv");
+        assert_ne!(partial, output);
+        assert_eq!(Path::new(&partial).parent(), Path::new(output).parent());
+        assert_eq!(Path::new(&partial).extension().unwrap(), "mkv");
+    }
+
+    #[test]
+    fn partial_path_handles_an_extensionless_output() {
+        assert_eq!(partial_output_path("/tmp/movie"), "/tmp/movie.part");
+    }
+
+    #[test]
+    fn same_file_detects_identical_paths() {
+        assert!(is_same_file(
+            Path::new("/tmp/a.mkv"),
+            Path::new("/tmp/a.mkv")
+        ));
+        assert!(!is_same_file(
+            Path::new("/tmp/a.mkv"),
+            Path::new("/tmp/a_av1.mkv")
+        ));
+    }
+
+    /// Two spellings of one existing file resolve to the same target.
+    #[test]
+    fn same_file_resolves_equivalent_spellings() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("av1c_test_same_file.mkv");
+        std::fs::write(&path, b"x").unwrap();
+        let indirect = dir.join(".").join("av1c_test_same_file.mkv");
+
+        assert!(is_same_file(&path, &indirect));
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn parses_latest_frame_count() {

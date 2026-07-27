@@ -128,8 +128,5 @@ pub fn render_dv_dialog(f: &mut Frame, app: &App) {
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(format!(" {}", t(lang, Msg::Confirm))),
     ]);
-    f.render_widget(
-        Paragraph::new(help).alignment(Alignment::Center),
-        chunks[4],
-    );
+    f.render_widget(Paragraph::new(help).alignment(Alignment::Center), chunks[4]);
 }

@@ -124,7 +124,15 @@ impl EncodingJob {
             output_config.container.clone()
         };
 
-        self.output_path = Some(parent.join(format!("{stem}{suffix}.{container}")));
+        let mut output = parent.join(format!("{stem}{suffix}.{container}"));
+        if output == self.path {
+            // A misconfigured suffix must never aim the output at the source:
+            // FFmpeg refuses to edit in place, and the failed-encode cleanup
+            // would then be pointed at the user's original file.
+            let fallback = crate::config::OutputConfig::default().suffix;
+            output = parent.join(format!("{stem}{fallback}.{container}"));
+        }
+        self.output_path = Some(output);
     }
 
     /// Calculate size reduction if both sizes are known
@@ -224,4 +232,58 @@ pub fn is_video_file(path: &Path) -> bool {
             .iter()
             .any(|&ext| ext.eq_ignore_ascii_case(e))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::OutputConfig;
+
+    /// The output must never land on the source file, whatever the suffix and
+    /// container add up to: the failed-encode cleanup would delete it.
+    #[test]
+    fn output_path_never_collides_with_the_source() {
+        let mut job = EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
+        let config = OutputConfig {
+            suffix: String::new(),
+            container: "mkv".to_string(),
+            same_directory: true,
+            output_directory: None,
+        };
+
+        job.generate_output_path(&config);
+        let output = job.output_path.clone().unwrap();
+        assert_ne!(output, job.path);
+        assert_eq!(output, PathBuf::from("/tmp/movie_av1.mkv"));
+    }
+
+    /// A source already named like an output still gets a distinct path.
+    #[test]
+    fn output_path_disambiguates_an_already_suffixed_source() {
+        let mut job = EncodingJob::new(PathBuf::from("/tmp/movie_av1.mkv"));
+        let config = OutputConfig {
+            suffix: String::new(),
+            container: "mkv".to_string(),
+            same_directory: true,
+            output_directory: None,
+        };
+
+        job.generate_output_path(&config);
+        assert_eq!(
+            job.output_path.unwrap(),
+            PathBuf::from("/tmp/movie_av1_av1.mkv")
+        );
+    }
+
+    /// Remux keeps the source container, so it needs its own distinct suffix.
+    #[test]
+    fn remux_output_differs_from_the_source() {
+        let mut job = EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
+        job.remux_only = true;
+        job.generate_output_path(&OutputConfig::default());
+        assert_eq!(
+            job.output_path.unwrap(),
+            PathBuf::from("/tmp/movie_remux.mkv")
+        );
+    }
 }

@@ -359,7 +359,11 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
             finish_job(&mut state, id_for(idx), JobStatus::DoneWithVmaf { score });
         }
         WorkerMessage::DoneVmafFailed(idx, reason) => {
-            finish_job(&mut state, id_for(idx), JobStatus::DoneVmafFailed { reason });
+            finish_job(
+                &mut state,
+                id_for(idx),
+                JobStatus::DoneVmafFailed { reason },
+            );
         }
         WorkerMessage::QualityWarning(idx, vmaf, threshold) => {
             finish_job(
