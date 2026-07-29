@@ -4,7 +4,8 @@
 //! Daemonization is Unix-only; on other platforms `--daemon` falls back to
 //! running in the foreground.
 
-use std::io;
+use std::fs::File;
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -34,24 +35,78 @@ pub fn log_file() -> PathBuf {
     data_dir().join("daemon.log")
 }
 
-/// PID recorded in the PID file, if that process is still alive.
-/// A stale file (process gone) is treated as "not running".
-pub fn running_pid() -> Option<u32> {
-    let pid = std::fs::read_to_string(pid_file())
-        .ok()?
-        .trim()
-        .parse()
+/// PID recorded in the file while another process holds its daemon lock.
+#[cfg(unix)]
+fn locked_pid(path: &std::path::Path) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
         .ok()?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+        return None;
+    }
+    let error = io::Error::last_os_error();
+    if !error
+        .raw_os_error()
+        .is_some_and(|code| code == libc::EAGAIN || code == libc::EWOULDBLOCK)
+    {
+        return None;
+    }
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).ok()?;
+    contents.trim().parse().ok()
+}
+
+#[cfg(not(unix))]
+fn locked_pid(path: &std::path::Path) -> Option<u32> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// PID recorded in the locked PID file, if that process is still alive.
+/// An unlocked file is stale even if its old PID has since been reused.
+pub fn running_pid() -> Option<u32> {
+    let pid = locked_pid(&pid_file())?;
     alive(pid).then_some(pid)
 }
 
-pub fn write_pid_file() -> io::Result<()> {
-    std::fs::create_dir_all(data_dir())?;
-    std::fs::write(pid_file(), std::process::id().to_string())
+#[cfg(unix)]
+fn lock_pid_file(path: &std::path::Path, pid: u32) -> io::Result<File> {
+    use std::os::fd::AsRawFd;
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "another daemon owns the PID file",
+        ));
+    }
+    file.set_len(0)?;
+    file.write_all(pid.to_string().as_bytes())?;
+    file.sync_all()?;
+    Ok(file)
 }
 
-pub fn remove_pid_file() {
-    let _ = std::fs::remove_file(pid_file());
+#[cfg(not(unix))]
+fn lock_pid_file(path: &std::path::Path, pid: u32) -> io::Result<File> {
+    let mut file = File::create(path)?;
+    file.write_all(pid.to_string().as_bytes())?;
+    file.sync_all()?;
+    Ok(file)
+}
+
+/// Write and exclusively hold the PID file for the lifetime of the daemon.
+pub fn write_pid_file() -> io::Result<File> {
+    std::fs::create_dir_all(data_dir())?;
+    lock_pid_file(&pid_file(), std::process::id())
 }
 
 #[cfg(unix)]
@@ -126,7 +181,6 @@ pub fn stop(pid: u32) -> io::Result<()> {
     let deadline = Instant::now() + STOP_TIMEOUT;
     while Instant::now() < deadline {
         if !alive(pid) {
-            remove_pid_file();
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -137,4 +191,21 @@ pub fn stop(pid: u32) -> io::Result<()> {
 #[cfg(not(unix))]
 pub fn stop(_pid: u32) -> io::Result<()> {
     Err(io::Error::other("--stop is only supported on Unix"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn unlocked_pid_file_is_stale_even_for_a_live_pid() {
+        let path = std::env::temp_dir().join(format!("av1c_pid_lock_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let guard = lock_pid_file(&path, std::process::id()).unwrap();
+        assert_eq!(locked_pid(&path), Some(std::process::id()));
+        drop(guard);
+        assert_eq!(locked_pid(&path), None);
+        let _ = std::fs::remove_file(path);
+    }
 }

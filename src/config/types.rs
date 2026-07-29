@@ -297,6 +297,13 @@ pub struct DaemonConfig {
 }
 
 impl DaemonConfig {
+    pub fn listen_address(&self) -> String {
+        self.bind_address.parse::<std::net::IpAddr>().map_or_else(
+            |_| format!("{}:{}", self.bind_address, self.port),
+            |ip| std::net::SocketAddr::new(ip, self.port).to_string(),
+        )
+    }
+
     /// Bind addresses that expose the daemon beyond this machine.
     pub fn binds_publicly(&self) -> bool {
         match self.bind_address.parse::<std::net::IpAddr>() {

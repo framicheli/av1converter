@@ -8,10 +8,11 @@ use crate::config::{AppConfig, AudioMode, Encoder};
 use crate::error::AppError;
 use crate::i18n::{Msg, t};
 use crate::queue::{
-    EncodingJob, JobStatus, WorkerJob, WorkerMessage, auto_select_tracks, run_worker,
+    EncodingJob, JobStatus, WorkerJob, WorkerMessage, auto_select_tracks, make_output_paths_unique,
+    run_worker,
 };
 use crate::utils::DependencyStatus;
-use state::{Command, DaemonState, EncodeSession, SharedState, is_terminal, lock};
+use state::{DaemonState, EncodeSession, SharedState, is_terminal, lock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -19,7 +20,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
-/// How often the orchestrator wakes up when no commands arrive.
+/// How often the orchestrator wakes up when no analysis result arrives.
 const TICK: Duration = Duration::from_millis(250);
 /// How long shutdown waits for the worker to acknowledge cancellation.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
@@ -38,7 +39,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     }
 
     let lang = config.language;
-    let listen = format!("{}:{}", config.daemon.bind_address, config.daemon.port);
+    let listen = config.daemon.listen_address();
 
     // Anyone who can reach the port can queue encodes, rewrite the settings and
     // browse the filesystem, so say so plainly when that is more than this host.
@@ -48,7 +49,6 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     }
 
     let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(config)));
-    let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
     let (analysis_tx, analysis_rx) = mpsc::channel::<(u64, Result<AnalysisResult, AppError>)>();
     let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>();
 
@@ -66,26 +66,22 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
 
     let server_handle = {
         let shared = shared.clone();
-        let cmd_tx = cmd_tx.clone();
+        let analysis_tx = analysis_tx.clone();
         let shutdown = shutdown.clone();
         let listen = listen.clone();
         let server = server::bind(&listen)?;
         println!("{} http://{listen}", t(lang, Msg::DaemonListening));
         info!("Web UI listening on http://{listen}");
-        thread::spawn(move || server::serve(&server, &shared, &cmd_tx, &shutdown))
+        thread::spawn(move || server::serve(&server, &shared, &analysis_tx, &shutdown))
     };
 
-    // Main orchestrator loop: sole owner of all receivers, sole mutator of jobs.
+    // Main orchestrator loop: owns analysis and worker result application.
     while !shutdown.load(Ordering::SeqCst) {
-        match cmd_rx.recv_timeout(TICK) {
-            Ok(cmd) => handle_command(&shared, &analysis_tx, cmd),
+        match analysis_rx.recv_timeout(TICK) {
+            Ok((id, result)) => apply_analysis_result(&shared, id, result),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        while let Ok(cmd) = cmd_rx.try_recv() {
-            handle_command(&shared, &analysis_tx, cmd);
-        }
-
         while let Ok((id, result)) = analysis_rx.try_recv() {
             apply_analysis_result(&shared, id, result);
         }
@@ -130,73 +126,19 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     Ok(())
 }
 
-fn handle_command(
-    shared: &SharedState,
-    analysis_tx: &Sender<(u64, Result<AnalysisResult, AppError>)>,
-    cmd: Command,
-) {
-    match cmd {
-        Command::AddPaths(paths) => add_paths(shared, analysis_tx, paths),
-        Command::RemoveJob(id) => {
-            let mut state = lock(shared);
-            if !state.in_active_session(id) {
-                state.queue.remove(id);
-            }
-        }
-        Command::SetPaused(paused) => {
-            lock(shared).paused = paused;
-        }
-        Command::CancelEncoding => {
-            let state = lock(shared);
-            if let Some(session) = state.session.as_ref().filter(|_| state.encoding_active) {
-                session.cancel_flag.store(true, Ordering::Relaxed);
-            }
-        }
-        Command::UpdateConfig(config) => {
-            // Takes effect for subsequent analysis/sessions; a running
-            // worker already cloned its config.
-            lock(shared).config = *config;
-        }
-        Command::SetTracks(id, selection) => {
-            let mut state = lock(shared);
-            // The job may have started encoding between the handler's check
-            // and this point, and its tracks are already baked into the
-            // running FFmpeg command by then.
-            if state.in_active_session(id) {
-                return;
-            }
-            if let Some(job) = state.queue.job_by_id_mut(id)
-                && matches!(job.status, JobStatus::Ready | JobStatus::AwaitingConfig)
-            {
-                job.track_selection = selection;
-            }
-        }
-        Command::ClearFinished => {
-            let mut state = lock(shared);
-            let finished: Vec<u64> = state
-                .queue
-                .jobs_with_ids()
-                .filter(|(_, job)| is_terminal(&job.status))
-                .map(|(id, _)| id)
-                .collect();
-            for id in finished {
-                state.queue.remove(id);
-            }
-        }
-    }
-}
-
 /// Queue new files and spawn a batch analysis thread for them.
 fn add_paths(
     shared: &SharedState,
     analysis_tx: &Sender<(u64, Result<AnalysisResult, AppError>)>,
     paths: Vec<std::path::PathBuf>,
-) {
+) -> (usize, usize) {
+    let requested = paths.len();
+    let mut added = 0;
     let mut to_analyze: Vec<(u64, String)> = Vec::new();
     {
         let mut state = lock(shared);
         // Paths already queued and not yet finished are skipped
-        let existing: Vec<std::path::PathBuf> = state
+        let mut existing: std::collections::HashSet<std::path::PathBuf> = state
             .queue
             .jobs_with_ids()
             .filter(|(_, job)| !is_terminal(&job.status))
@@ -205,7 +147,7 @@ fn add_paths(
 
         for path in paths {
             let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-            if existing.contains(&canonical) {
+            if !existing.insert(canonical) {
                 continue;
             }
             let mut job = EncodingJob::new(path);
@@ -214,18 +156,20 @@ fn add_paths(
                 job.status = JobStatus::Analyzing;
                 let id = state.queue.push(job);
                 to_analyze.push((id, p));
+                added += 1;
             } else {
                 job.status = JobStatus::Error {
                     message: "File path contains non-UTF-8 characters".to_string(),
                 };
                 state.queue.state.error_count += 1;
                 state.queue.push(job);
+                added += 1;
             }
         }
     }
 
     if to_analyze.is_empty() {
-        return;
+        return (added, requested - added);
     }
     let tx = analysis_tx.clone();
     thread::spawn(move || {
@@ -236,6 +180,7 @@ fn add_paths(
             }
         }
     });
+    (added, requested - added)
 }
 
 /// Apply one finished analysis: mirror the TUI's `apply_analysis_results`,
@@ -275,6 +220,7 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
             }
             job.status = JobStatus::Ready;
             info!("Analyzed {}", job.path.display());
+            make_output_paths_unique(&mut state.queue.state.jobs);
         }
         Err(e) => {
             job.status = JobStatus::Error {
@@ -319,7 +265,7 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
             .collect();
         worker_jobs.push(WorkerJob {
             index: worker_jobs.len(),
-            subtitle_codec: crate::tracks::subtitle_codec_for(&output, &selected_subs),
+            subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
             input: job.path.clone(),
             output,
             metadata,
@@ -471,4 +417,33 @@ fn finish_job(state: &mut DaemonState, id: Option<u64>, status: JobStatus) {
     }
     state.queue.state.converted_count += 1;
     state.queue.state.encoding_progress_done += 1;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_paths_reserves_each_source_once() {
+        let dir = std::env::temp_dir().join(format!("av1c_daemon_add_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("movie.mkv");
+        std::fs::write(&path, b"not a real video").unwrap();
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (tx, _rx) = mpsc::channel();
+        assert_eq!(
+            add_paths(
+                &shared,
+                &tx,
+                vec![path.clone(), dir.join(".").join("movie.mkv")]
+            ),
+            (1, 1)
+        );
+        assert_eq!(add_paths(&shared, &tx, vec![path]), (0, 1));
+        assert_eq!(lock(&shared).queue.state.jobs.len(), 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

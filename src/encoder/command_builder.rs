@@ -20,9 +20,8 @@ pub struct EncodingParams {
     pub svt_preset: u8,
     pub nvenc_preset: String,
     pub remux_only: bool,
-    /// Subtitle codec for the output container: `copy` unless the source's
-    /// subtitles cannot live there.
-    pub subtitle_codec: &'static str,
+    /// Subtitle codecs in output stream order.
+    pub subtitle_codecs: Vec<&'static str>,
 }
 
 impl EncodingParams {
@@ -36,7 +35,7 @@ impl EncodingParams {
         tracks: OutputTracks,
         dv_mode: DvMode,
         remux_only: bool,
-        subtitle_codec: &'static str,
+        subtitle_codecs: Vec<&'static str>,
     ) -> Self {
         let tier = ResolutionTier::from_dimensions(metadata.width, metadata.height);
         let preset = config.preset_for(tier, metadata.hdr_type);
@@ -71,7 +70,7 @@ impl EncodingParams {
             svt_preset: config.performance.svt_preset,
             nvenc_preset: config.performance.nvenc_preset.clone(),
             remux_only,
-            subtitle_codec,
+            subtitle_codecs,
         }
     }
 
@@ -105,17 +104,13 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         "0:v:0".to_string(),
     ]);
 
-    // Track mapping
-    if params.tracks.audio.is_empty() && params.tracks.subtitle_indices.is_empty() {
-        args.extend(["-map".to_string(), "0:a?".to_string()]);
-        args.extend(["-map".to_string(), "0:s?".to_string()]);
-    } else {
-        for plan in &params.tracks.audio {
-            args.extend(["-map".to_string(), format!("0:a:{}", plan.source_index)]);
-        }
-        for idx in &params.tracks.subtitle_indices {
-            args.extend(["-map".to_string(), format!("0:s:{idx}")]);
-        }
+    // Track mapping. Empty selections are intentional: auto-selection resolves
+    // defaults before this point, so adding fallback maps would undo deselection.
+    for plan in &params.tracks.audio {
+        args.extend(["-map".to_string(), format!("0:a:{}", plan.source_index)]);
+    }
+    for idx in &params.tracks.subtitle_indices {
+        args.extend(["-map".to_string(), format!("0:s:{idx}")]);
     }
 
     if params.remux_only {
@@ -124,7 +119,7 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         // shrinking even when the video needs no work.
         args.extend(["-c:v".to_string(), "copy".to_string()]);
         args.extend(build_audio_args(&params.tracks.audio));
-        args.extend(["-c:s".to_string(), params.subtitle_codec.to_string()]);
+        args.extend(build_subtitle_args(&params.subtitle_codecs));
     } else {
         // Video encoder
         args.extend(["-c:v".to_string(), params.encoder.ffmpeg_name().to_string()]);
@@ -144,7 +139,7 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         // Audio follows the per-track choice; subtitles only when the
         // container can hold them
         args.extend(build_audio_args(&params.tracks.audio));
-        args.extend(["-c:s".to_string(), params.subtitle_codec.to_string()]);
+        args.extend(build_subtitle_args(&params.subtitle_codecs));
 
         // Encoder-specific quality parameters
         args.extend(get_quality_params(params));
@@ -162,17 +157,6 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     args
 }
 
-/// Channel layouts libopus accepts, in `aformat` syntax.
-///
-/// libopus only takes layouts in Vorbis channel order and rejects everything
-/// else outright — `5.1(side)`, which is what most `DTS` and `TrueHD` sources
-/// decode to, fails the encode with "Invalid channel layout". Naming the
-/// layouts it does accept makes `FFmpeg` insert a remap to the nearest one,
-/// which reorders the channels without dropping any: 5.1(side) becomes 5.1,
-/// still six channels. Setting `-mapping_family` does *not* help here; the
-/// check runs before the mapping family is consulted.
-const OPUS_CHANNEL_LAYOUTS: &str = "mono|stereo|3.0|quad|5.0|5.1|6.1(back)|7.1";
-
 /// Per-stream audio codec options, in output stream order.
 ///
 /// Every mapped stream gets an explicit `-c:a:N`. Leaning on a global
@@ -181,9 +165,7 @@ const OPUS_CHANNEL_LAYOUTS: &str = "mono|stereo|3.0|quad|5.0|5.1|6.1(back)|7.1";
 /// means silently re-encoding or copying the wrong track.
 fn build_audio_args(plan: &[AudioStreamPlan]) -> Vec<String> {
     if plan.is_empty() {
-        // No explicit selection: `-map 0:a?` took everything, so a global
-        // copy is the only thing that can address it.
-        return vec!["-c:a".to_string(), "copy".to_string()];
+        return Vec::new();
     }
 
     let mut args = Vec::new();
@@ -193,14 +175,21 @@ fn build_audio_args(plan: &[AudioStreamPlan]) -> Vec<String> {
             Some(kbps) => {
                 args.extend([format!("-c:a:{n}"), "libopus".to_string()]);
                 args.extend([format!("-b:a:{n}"), format!("{kbps}k")]);
-                args.extend([
-                    format!("-filter:a:{n}"),
-                    format!("aformat=channel_layouts={OPUS_CHANNEL_LAYOUTS}"),
-                ]);
+                if stream.independent_mapping {
+                    args.extend([format!("-mapping_family:a:{n}"), "255".to_string()]);
+                }
             }
         }
     }
     args
+}
+
+fn build_subtitle_args(codecs: &[&str]) -> Vec<String> {
+    codecs
+        .iter()
+        .enumerate()
+        .flat_map(|(n, codec)| [format!("-c:s:{n}"), (*codec).to_string()])
+        .collect()
 }
 
 /// Get encoder-specific quality parameters
@@ -401,7 +390,7 @@ mod tests {
             svt_preset: 6,
             nvenc_preset: "p4".to_string(),
             remux_only: false,
-            subtitle_codec: "copy",
+            subtitle_codecs: Vec::new(),
         }
     }
 
@@ -479,7 +468,7 @@ mod tests {
             OutputTracks::default(),
             DvMode::KeepDolbyVision,
             false,
-            "copy",
+            Vec::new(),
         );
         assert_eq!(params.dv_mode, DvMode::ToHdr10);
         let args = build_ffmpeg_args(&params);
@@ -490,6 +479,7 @@ mod tests {
         AudioStreamPlan {
             source_index,
             opus_kbps,
+            independent_mapping: false,
         }
     }
 
@@ -519,28 +509,30 @@ mod tests {
         assert_eq!(arg_after(&args, "-b:a:1"), Some("384k".to_string()));
         assert_eq!(arg_after(&args, "-c:a:2"), Some("copy".to_string()));
 
-        // Only the transcoded stream is filtered, and only it carries a bitrate.
-        assert!(arg_after(&args, "-filter:a:1").is_some_and(|f| f.contains("channel_layouts")));
-        assert!(!args.contains(&"-filter:a:0".to_string()));
+        // Only the transcoded stream carries a bitrate.
         assert!(!args.contains(&"-b:a:0".to_string()));
         // A bare `-c:a` would override the per-stream choices.
         assert!(!args.contains(&"-c:a".to_string()));
     }
 
-    /// libopus rejects `5.1(side)` outright, so every Opus stream is routed
-    /// through a layout the encoder accepts. The channel count is preserved.
+    /// Unsupported standard mappings use independent streams; no filter may
+    /// silently downmix or add channels to make the layout fit.
     #[test]
-    fn opus_streams_normalise_the_channel_layout() {
+    fn uncommon_opus_layout_preserves_channels() {
         let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
         params.tracks = OutputTracks {
-            audio: vec![audio(0, Some(384))],
+            audio: vec![AudioStreamPlan {
+                independent_mapping: true,
+                ..audio(0, Some(384))
+            }],
             subtitle_indices: Vec::new(),
         };
-        let filter = arg_after(&build_ffmpeg_args(&params), "-filter:a:0").unwrap();
+        let args = build_ffmpeg_args(&params);
         assert_eq!(
-            filter,
-            "aformat=channel_layouts=mono|stereo|3.0|quad|5.0|5.1|6.1(back)|7.1"
+            arg_after(&args, "-mapping_family:a:0").as_deref(),
+            Some("255")
         );
+        assert!(!args.iter().any(|arg| arg.starts_with("-filter:a:")));
     }
 
     /// Remuxing leaves the video untouched but still honours the audio choice:
@@ -563,14 +555,22 @@ mod tests {
         assert!(!args.contains(&"-crf".to_string()));
     }
 
-    /// With nothing selected, `-map 0:a?` takes every stream, which only a
-    /// global copy can address.
+    /// Empty means the user excluded every optional track.
     #[test]
-    fn unselected_audio_falls_back_to_a_global_copy() {
+    fn empty_selection_maps_no_optional_tracks() {
         let args = build_ffmpeg_args(&dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8)));
-        assert!(args.contains(&"0:a?".to_string()));
-        assert_eq!(arg_after(&args, "-c:a"), Some("copy".to_string()));
+        assert!(!args.iter().any(|arg| arg.starts_with("0:a")));
+        assert!(!args.iter().any(|arg| arg.starts_with("0:s")));
+        assert!(!args.contains(&"-c:a".to_string()));
         assert!(!args.contains(&"-c:a:0".to_string()));
+    }
+
+    #[test]
+    fn mixed_subtitles_keep_per_stream_codecs() {
+        assert_eq!(
+            build_subtitle_args(&["srt", "copy"]),
+            ["-c:s:0", "srt", "-c:s:1", "copy"]
+        );
     }
 
     #[test]

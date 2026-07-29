@@ -205,16 +205,32 @@ fn collect_video_files_inner(
     }
 }
 
-/// Whether a file looks like something this tool produced.
-///
-/// Re-scanning a folder would otherwise queue the previous run's outputs for
-/// another pass, re-encoding already-converted video.
-pub fn is_own_output(path: &Path, output: &crate::config::OutputConfig) -> bool {
-    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-        return false;
-    };
-    // "_remux" is fixed by the remux path; the encode suffix is configurable.
-    stem.ends_with("_remux") || (!output.suffix.is_empty() && stem.ends_with(&output.suffix))
+/// Make every generated output distinct from every queued source and output.
+pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
+    let mut used: HashSet<PathBuf> = jobs.iter().map(|job| job.path.clone()).collect();
+
+    for job in jobs {
+        let Some(output) = job.output_path.clone() else {
+            continue;
+        };
+        if used.insert(output.clone()) && std::fs::symlink_metadata(&output).is_err() {
+            continue;
+        }
+
+        let parent = output.parent().unwrap_or(Path::new("."));
+        let stem = output.file_stem().unwrap_or_default().to_string_lossy();
+        let extension = output.extension().map(|ext| ext.to_string_lossy());
+        for n in 2.. {
+            let name = extension
+                .as_ref()
+                .map_or_else(|| format!("{stem}_{n}"), |ext| format!("{stem}_{n}.{ext}"));
+            let candidate = parent.join(name);
+            if std::fs::symlink_metadata(&candidate).is_err() && used.insert(candidate.clone()) {
+                job.output_path = Some(candidate);
+                break;
+            }
+        }
+    }
 }
 
 /// Select audio and subtitle tracks based on configured language preferences,
@@ -327,21 +343,55 @@ mod tests {
         );
     }
 
-    /// Outputs from an earlier run must not be re-queued by a folder rescan.
+    /// Same-named sources in a shared output directory must not overwrite one
+    /// another, and no output may overwrite another queued source.
     #[test]
-    fn own_outputs_are_recognised() {
-        let output = OutputConfig::default();
-        assert!(is_own_output(Path::new("/m/movie_av1.mkv"), &output));
-        assert!(is_own_output(Path::new("/m/movie_remux.mkv"), &output));
-        assert!(!is_own_output(Path::new("/m/movie.mkv"), &output));
-
-        // An empty suffix would otherwise match every file.
-        let no_suffix = OutputConfig {
-            suffix: String::new(),
+    fn output_paths_are_unique_across_the_queue() {
+        let config = OutputConfig {
+            same_directory: false,
+            output_directory: Some("/out".to_string()),
             ..OutputConfig::default()
         };
-        assert!(!is_own_output(Path::new("/m/movie.mkv"), &no_suffix));
-        assert!(is_own_output(Path::new("/m/movie_remux.mkv"), &no_suffix));
+        let mut jobs = vec![
+            EncodingJob::new(PathBuf::from("/a/movie.mkv")),
+            EncodingJob::new(PathBuf::from("/b/movie.mkv")),
+            EncodingJob::new(PathBuf::from("/out/movie_av1.mkv")),
+        ];
+        for job in &mut jobs {
+            job.generate_output_path(&config);
+        }
+
+        make_output_paths_unique(&mut jobs);
+
+        assert_eq!(
+            jobs[0].output_path,
+            Some(PathBuf::from("/out/movie_av1_2.mkv"))
+        );
+        assert_eq!(
+            jobs[1].output_path,
+            Some(PathBuf::from("/out/movie_av1_3.mkv"))
+        );
+        assert_eq!(
+            jobs[2].output_path,
+            Some(PathBuf::from("/out/movie_av1_av1.mkv"))
+        );
+    }
+
+    #[test]
+    fn existing_outputs_are_not_overwritten() {
+        let dir = std::env::temp_dir().join(format!("av1c_output_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let existing = dir.join("movie_av1.mkv");
+        std::fs::write(&existing, b"keep").unwrap();
+
+        let mut jobs = vec![EncodingJob::new(dir.join("movie.mkv"))];
+        jobs[0].output_path = Some(existing);
+        make_output_paths_unique(&mut jobs);
+
+        assert_eq!(jobs[0].output_path, Some(dir.join("movie_av1_2.mkv")));
+        assert_eq!(std::fs::read(dir.join("movie_av1.mkv")).unwrap(), b"keep");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A symlink loop must not hang the scan, and a file reachable by two

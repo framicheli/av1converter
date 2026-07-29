@@ -1,5 +1,5 @@
 use crate::encoder::command_builder::{EncodingParams, build_ffmpeg_args};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -14,7 +14,7 @@ static JOB_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// The final extension is preserved so `FFmpeg` still infers the container from
 /// it. Encoding here and renaming on success means the destination file is only
 /// ever touched by an encode that actually finished.
-fn partial_output_path(output: &str) -> String {
+fn partial_output_path(output: &str, tag: &str) -> String {
     let path = Path::new(output);
     let parent = path.parent().unwrap_or(Path::new("."));
     let stem = path
@@ -22,8 +22,8 @@ fn partial_output_path(output: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("output");
     let name = match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) => format!("{stem}.part.{ext}"),
-        None => format!("{stem}.part"),
+        Some(ext) => format!("{stem}.part.{tag}.{ext}"),
+        None => format!("{stem}.part.{tag}"),
     };
     parent.join(name).to_string_lossy().into_owned()
 }
@@ -36,6 +36,10 @@ fn is_same_file(a: &Path, b: &Path) -> bool {
             (Ok(a), Ok(b)) => a == b,
             _ => false,
         }
+}
+
+fn path_occupied(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
 }
 
 /// Progress callback type
@@ -68,22 +72,36 @@ pub fn encode_video(
                 .to_string(),
         );
     }
+    if path_occupied(Path::new(&params.output)) {
+        return EncodeResult::Error("Output already exists; refusing to overwrite it".to_string());
+    }
 
-    // FFmpeg's -y truncates the output the moment it opens it, so encoding
-    // straight to the destination destroys whatever is already there even when
-    // the encode then fails. Write to a sibling scratch file and move it into
-    // place only once FFmpeg has exited successfully.
-    let partial = partial_output_path(&params.output);
+    // Reserve a unique sibling before giving it to FFmpeg. A predictable
+    // `.part` name could itself be a real source file, which `-y` would erase.
+    let (partial, tag) = loop {
+        let uid = JOB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tag = format!("{}_{}", std::process::id(), uid);
+        let partial = partial_output_path(&params.output, &tag);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)
+        {
+            Ok(_) => break (partial, tag),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                return EncodeResult::Error(format!("Failed to reserve temporary output: {e}"));
+            }
+        }
+    };
     let mut encode_params = params.clone();
     encode_params.output.clone_from(&partial);
     let args = build_ffmpeg_args(&encode_params);
 
-    let uid = JOB_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tag = format!("{}_{}", std::process::id(), uid);
-
     // Create progress file
     let progress_file = std::env::temp_dir().join(format!("av1c_progress_{tag}.txt"));
     if File::create(&progress_file).is_err() {
+        let _ = std::fs::remove_file(&partial);
         return EncodeResult::Error("Failed to create progress file".to_string());
     }
 
@@ -98,6 +116,7 @@ pub fn encode_video(
         Ok(f) => f,
         Err(e) => {
             let _ = std::fs::remove_file(&progress_file);
+            let _ = std::fs::remove_file(&partial);
             return EncodeResult::Error(format!("Failed to create stderr file: {e}"));
         }
     };
@@ -113,6 +132,7 @@ pub fn encode_video(
         Err(e) => {
             let _ = std::fs::remove_file(&progress_file);
             let _ = std::fs::remove_file(&stderr_path);
+            let _ = std::fs::remove_file(&partial);
             return EncodeResult::Error(format!("Failed to start ffmpeg: {e}"));
         }
     };
@@ -136,11 +156,17 @@ pub fn encode_video(
 
     // The scratch file becomes the output only now, when the encode is known to
     // have succeeded. Failure and cancellation already removed it.
-    if matches!(result, EncodeResult::Success)
-        && let Err(e) = std::fs::rename(&partial, &params.output)
-    {
-        let _ = std::fs::remove_file(&partial);
-        return EncodeResult::Error(format!("Failed to move the encoded file into place: {e}"));
+    if matches!(result, EncodeResult::Success) {
+        if path_occupied(Path::new(&params.output)) {
+            let _ = std::fs::remove_file(&partial);
+            return EncodeResult::Error(
+                "Output appeared while encoding; refusing to overwrite it".to_string(),
+            );
+        }
+        if let Err(e) = std::fs::rename(&partial, &params.output) {
+            let _ = std::fs::remove_file(&partial);
+            return EncodeResult::Error(format!("Failed to move the encoded file into place: {e}"));
+        }
     }
 
     result
@@ -332,9 +358,9 @@ mod tests {
     #[test]
     fn partial_path_is_a_distinct_sibling_with_the_same_extension() {
         let output = "/media/films/movie_av1.mkv";
-        let partial = partial_output_path(output);
+        let partial = partial_output_path(output, "123_4");
 
-        assert_eq!(partial, "/media/films/movie_av1.part.mkv");
+        assert_eq!(partial, "/media/films/movie_av1.part.123_4.mkv");
         assert_ne!(partial, output);
         assert_eq!(Path::new(&partial).parent(), Path::new(output).parent());
         assert_eq!(Path::new(&partial).extension().unwrap(), "mkv");
@@ -342,7 +368,10 @@ mod tests {
 
     #[test]
     fn partial_path_handles_an_extensionless_output() {
-        assert_eq!(partial_output_path("/tmp/movie"), "/tmp/movie.part");
+        assert_eq!(
+            partial_output_path("/tmp/movie", "123_4"),
+            "/tmp/movie.part.123_4"
+        );
     }
 
     #[test]

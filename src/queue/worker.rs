@@ -44,8 +44,8 @@ pub struct WorkerJob {
     pub tracks: OutputTracks,
     pub dv_mode: DvMode,
     pub remux_only: bool,
-    /// `copy`, or a codec the target container can actually hold
-    pub subtitle_codec: &'static str,
+    /// Per-output-stream subtitle codecs (`copy`, or a compatible conversion).
+    pub subtitle_codecs: Vec<&'static str>,
 }
 
 /// Run the encoding worker in a separate thread
@@ -79,7 +79,7 @@ pub fn run_worker(
             job.tracks,
             job.dv_mode,
             job.remux_only,
-            job.subtitle_codec,
+            job.subtitle_codecs,
             config,
             Some(Box::new(move |progress| {
                 let _ = tx_progress.send(WorkerMessage::Progress(idx, progress));

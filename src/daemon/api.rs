@@ -1,6 +1,8 @@
-use super::state::{Command, SharedState, is_terminal, lock};
+use super::state::{SharedState, is_terminal, lock};
+use crate::analyzer::AnalysisResult;
 use crate::config::AppConfig;
-use crate::queue::{JobStatus, collect_video_files, is_own_output, is_video_file};
+use crate::error::AppError;
+use crate::queue::{JobStatus, collect_video_files, is_video_file};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -173,17 +175,13 @@ fn valid_indices(body: &Value, key: &str, known: &[usize]) -> Vec<usize> {
 }
 
 /// Replace one job's track selection.
-pub fn job_tracks_set(
-    shared: &SharedState,
-    cmd_tx: &Sender<Command>,
-    body: &Value,
-) -> (u16, Value) {
+pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
     let Some(id) = body.get("id").and_then(Value::as_u64) else {
         return (400, json!({"error": "missing 'id'"}));
     };
 
+    let mut state = lock(shared);
     let selection = {
-        let state = lock(shared);
         let Some(job) = state.queue.job_by_id(id) else {
             return (404, json!({"error": "unknown job id"}));
         };
@@ -214,9 +212,11 @@ pub fn job_tracks_set(
         "audio_to_opus": selection.audio_to_opus,
         "subtitle_indices": selection.subtitle_indices,
     });
-    if cmd_tx.send(Command::SetTracks(id, selection)).is_err() {
-        return (500, json!({"error": "daemon is shutting down"}));
-    }
+    state
+        .queue
+        .job_by_id_mut(id)
+        .expect("job checked above")
+        .track_selection = selection;
     (200, applied)
 }
 
@@ -233,7 +233,11 @@ pub fn within_root(path: &Path, root: &str) -> bool {
 }
 
 /// Expand an add request into concrete video files and queue them.
-pub fn queue_add(shared: &SharedState, cmd_tx: &Sender<Command>, body: &Value) -> (u16, Value) {
+pub fn queue_add(
+    shared: &SharedState,
+    analysis_tx: &Sender<(u64, Result<AnalysisResult, AppError>)>,
+    body: &Value,
+) -> (u16, Value) {
     let Some(path) = body.get("path").and_then(Value::as_str) else {
         return (400, json!({"error": "missing 'path'"}));
     };
@@ -249,8 +253,6 @@ pub fn queue_add(shared: &SharedState, cmd_tx: &Sender<Command>, body: &Value) -
             json!({"error": "path is outside the configured browse root"}),
         );
     }
-
-    let output_config = lock(shared).config.output.clone();
 
     let mut files: Vec<PathBuf> = Vec::new();
     match mode {
@@ -274,14 +276,12 @@ pub fn queue_add(shared: &SharedState, cmd_tx: &Sender<Command>, body: &Value) -
                         .filter(|p| is_video_file(p)),
                 );
             }
-            files.retain(|p| !is_own_output(p, &output_config));
         }
         "folder_recursive" => {
             if !path.is_dir() {
                 return (400, json!({"error": "not a directory"}));
             }
             collect_video_files(&path, &mut files);
-            files.retain(|p| !is_own_output(p, &output_config));
         }
         other => return (400, json!({"error": format!("unknown mode '{other}'")})),
     }
@@ -295,29 +295,7 @@ pub fn queue_add(shared: &SharedState, cmd_tx: &Sender<Command>, body: &Value) -
     }
     files.sort();
 
-    // Report what will actually be queued rather than what was found: the
-    // orchestrator drops paths that are already waiting or encoding.
-    let already_queued = {
-        let state = lock(shared);
-        let pending: Vec<PathBuf> = state
-            .queue
-            .jobs_with_ids()
-            .filter(|(_, job)| !is_terminal(&job.status))
-            .map(|(_, job)| job.path.canonicalize().unwrap_or_else(|_| job.path.clone()))
-            .collect();
-        files
-            .iter()
-            .filter(|p| {
-                let canonical = p.canonicalize().unwrap_or_else(|_| (*p).clone());
-                pending.contains(&canonical)
-            })
-            .count()
-    };
-    let added = files.len() - already_queued;
-
-    if cmd_tx.send(Command::AddPaths(files)).is_err() {
-        return (500, json!({"error": "daemon is shutting down"}));
-    }
+    let (added, already_queued) = super::add_paths(shared, analysis_tx, files);
     (
         200,
         json!({"added": added, "already_queued": already_queued}),
@@ -325,52 +303,57 @@ pub fn queue_add(shared: &SharedState, cmd_tx: &Sender<Command>, body: &Value) -
 }
 
 /// Remove a job unless it belongs to the running encode session.
-pub fn queue_remove(shared: &SharedState, cmd_tx: &Sender<Command>, body: &Value) -> (u16, Value) {
+pub fn queue_remove(shared: &SharedState, body: &Value) -> (u16, Value) {
     let Some(id) = body.get("id").and_then(Value::as_u64) else {
         return (400, json!({"error": "missing 'id'"}));
     };
-    {
-        let state = lock(shared);
-        if state.queue.job_by_id(id).is_none() {
-            return (404, json!({"error": "unknown job id"}));
-        }
-        if state.in_active_session(id) {
-            return (
-                409,
-                json!({"error": "job is part of the active encode session"}),
-            );
-        }
+    let mut state = lock(shared);
+    if state.queue.job_by_id(id).is_none() {
+        return (404, json!({"error": "unknown job id"}));
     }
-    let _ = cmd_tx.send(Command::RemoveJob(id));
+    if state.in_active_session(id) {
+        return (
+            409,
+            json!({"error": "job is part of the active encode session"}),
+        );
+    }
+    state.queue.remove(id);
     (200, json!({"ok": true}))
 }
 
 /// Pause/resume auto-starting new sessions (does not stop the current one).
-pub fn queue_pause(cmd_tx: &Sender<Command>, body: &Value) -> (u16, Value) {
+pub fn queue_pause(shared: &SharedState, body: &Value) -> (u16, Value) {
     let Some(paused) = body.get("paused").and_then(Value::as_bool) else {
         return (400, json!({"error": "missing 'paused'"}));
     };
-    let _ = cmd_tx.send(Command::SetPaused(paused));
+    lock(shared).paused = paused;
     (200, json!({"paused": paused}))
 }
 
 /// Cancel the running encode session.
-pub fn queue_cancel(cmd_tx: &Sender<Command>) -> (u16, Value) {
-    let _ = cmd_tx.send(Command::CancelEncoding);
+pub fn queue_cancel(shared: &SharedState) -> (u16, Value) {
+    let state = lock(shared);
+    if let Some(session) = state.session.as_ref().filter(|_| state.encoding_active) {
+        session
+            .cancel_flag
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     (200, json!({"ok": true}))
 }
 
 /// Drop all jobs in terminal states.
-pub fn queue_clear_finished(shared: &SharedState, cmd_tx: &Sender<Command>) -> (u16, Value) {
-    let removed = {
-        let state = lock(shared);
-        state
-            .queue
-            .jobs_with_ids()
-            .filter(|(_, job)| is_terminal(&job.status))
-            .count()
-    };
-    let _ = cmd_tx.send(Command::ClearFinished);
+pub fn queue_clear_finished(shared: &SharedState) -> (u16, Value) {
+    let mut state = lock(shared);
+    let finished: Vec<u64> = state
+        .queue
+        .jobs_with_ids()
+        .filter(|(_, job)| is_terminal(&job.status))
+        .map(|(id, _)| id)
+        .collect();
+    let removed = finished.len();
+    for id in finished {
+        state.queue.remove(id);
+    }
     (200, json!({"removed": removed}))
 }
 
@@ -455,7 +438,7 @@ pub fn settings_get(shared: &SharedState) -> Value {
 /// Replace the configuration: sanitize, persist to config.toml, and swap the
 /// live copy. Non-daemon fields apply from the next analysis/encode; daemon
 /// bind/port changes need a restart.
-pub fn settings_post(cmd_tx: &Sender<Command>, body: &Value) -> (u16, Value) {
+pub fn settings_post(shared: &SharedState, body: &Value) -> (u16, Value) {
     let mut config: AppConfig = match serde_json::from_value(body.clone()) {
         Ok(c) => c,
         Err(e) => return (400, json!({"error": format!("invalid settings: {e}")})),
@@ -465,7 +448,7 @@ pub fn settings_post(cmd_tx: &Sender<Command>, body: &Value) -> (u16, Value) {
         return (500, json!({"error": format!("failed to save: {e}")}));
     }
     let saved = serde_json::to_value(&config).unwrap_or_else(|_| json!({}));
-    let _ = cmd_tx.send(Command::UpdateConfig(Box::new(config)));
+    lock(shared).config = config;
     (200, saved)
 }
 
@@ -538,6 +521,7 @@ mod tests {
                     language: None,
                     codec: "dts".to_string(),
                     channels: Some(6),
+                    channel_layout: Some("5.1(side)".to_string()),
                     title: None,
                     bitrate: None,
                     sample_rate: None,
@@ -554,35 +538,26 @@ mod tests {
         #[test]
         fn opus_indices_are_confined_to_selected_tracks() {
             let (shared, id) = shared_with_job();
-            let (tx, rx) = std::sync::mpsc::channel();
 
             let (code, body) = job_tracks_set(
                 &shared,
-                &tx,
                 &json!({"id": id, "audio_indices": [0, 2], "audio_to_opus": [1, 2]}),
             );
             assert_eq!(code, 200);
             assert_eq!(body["audio_to_opus"], json!([2]));
-
-            match rx.recv().unwrap() {
-                Command::SetTracks(got_id, selection) => {
-                    assert_eq!(got_id, id);
-                    assert_eq!(selection.audio_indices, vec![0, 2]);
-                    assert_eq!(selection.audio_to_opus, vec![2]);
-                }
-                _ => panic!("expected SetTracks"),
-            }
+            let state = lock(&shared);
+            let selection = &state.queue.job_by_id(id).unwrap().track_selection;
+            assert_eq!(selection.audio_indices, vec![0, 2]);
+            assert_eq!(selection.audio_to_opus, vec![2]);
         }
 
         /// Indices the file does not have are dropped rather than stored.
         #[test]
         fn unknown_track_indices_are_rejected() {
             let (shared, id) = shared_with_job();
-            let (tx, _rx) = std::sync::mpsc::channel();
 
             let (code, body) = job_tracks_set(
                 &shared,
-                &tx,
                 &json!({"id": id, "audio_indices": [0, 99], "audio_to_opus": [99]}),
             );
             assert_eq!(code, 200);
@@ -595,11 +570,10 @@ mod tests {
         #[test]
         fn encoding_jobs_refuse_track_edits() {
             let (shared, id) = shared_with_job();
-            let (tx, _rx) = std::sync::mpsc::channel();
             lock(&shared).queue.job_by_id_mut(id).unwrap().status =
                 JobStatus::Encoding { progress: 10.0 };
 
-            let (code, _) = job_tracks_set(&shared, &tx, &json!({"id": id, "audio_indices": [0]}));
+            let (code, _) = job_tracks_set(&shared, &json!({"id": id, "audio_indices": [0]}));
             assert_eq!(code, 409);
             assert_eq!(
                 job_tracks(&shared, &id.to_string()).1["editable"],

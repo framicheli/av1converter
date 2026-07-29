@@ -3,7 +3,7 @@ use crate::config::{AppConfig, Encoder};
 use crate::error::AppError;
 use crate::queue::{
     EncodingJob, JobStatus, QueueState, WorkerJob, WorkerMessage, auto_select_tracks,
-    collect_video_files, is_own_output, is_video_file, run_worker,
+    collect_video_files, is_video_file, make_output_paths_unique, run_worker,
 };
 use crate::utils::DependencyStatus;
 use ratatui::widgets::ListState;
@@ -590,9 +590,6 @@ impl App {
             );
         }
 
-        // Scanning a folder that has been converted before would otherwise
-        // queue the previous run's outputs for another pass.
-        paths.retain(|p| !is_own_output(p, &self.config.output));
         paths.sort();
         for path in paths {
             self.queue.jobs.push(EncodingJob::new(path));
@@ -669,6 +666,7 @@ impl App {
                 }
             }
         }
+        make_output_paths_unique(&mut self.queue.jobs);
 
         // Find first job awaiting config
         self.queue.config_job_index = self
@@ -826,7 +824,7 @@ impl App {
                     .collect();
                 Some(WorkerJob {
                     index: i,
-                    subtitle_codec: crate::tracks::subtitle_codec_for(&output, &selected_subs),
+                    subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
                     input: j.path.clone(),
                     output,
                     metadata,

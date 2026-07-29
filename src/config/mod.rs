@@ -339,5 +339,6 @@ mod tests {
         assert!(cfg.daemon.binds_publicly());
         cfg.daemon.bind_address = "::1".to_string();
         assert!(!cfg.daemon.binds_publicly());
+        assert_eq!(cfg.daemon.listen_address(), "[::1]:8399");
     }
 }

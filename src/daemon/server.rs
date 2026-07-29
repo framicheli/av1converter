@@ -1,5 +1,6 @@
 use super::api;
-use super::state::{Command, SharedState};
+use super::state::SharedState;
+use crate::analyzer::AnalysisResult;
 use crate::error::AppError;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,17 +22,17 @@ pub fn bind(listen: &str) -> Result<Server, AppError> {
         .map_err(|e| AppError::CommandExecution(format!("Failed to bind web server: {e}")))
 }
 
-/// Accept loop. Single-threaded: handlers only read shared state or push
-/// commands, so no request ever blocks on encoding work.
+/// Accept loop. Single-threaded; state mutations only hold the shared lock for
+/// short in-memory updates.
 pub fn serve(
     server: &Server,
     shared: &SharedState,
-    cmd_tx: &Sender<Command>,
+    analysis_tx: &Sender<(u64, Result<AnalysisResult, AppError>)>,
     shutdown: &AtomicBool,
 ) {
     while !shutdown.load(Ordering::SeqCst) {
         match server.recv_timeout(Duration::from_millis(500)) {
-            Ok(Some(request)) => handle_request(request, shared, cmd_tx),
+            Ok(Some(request)) => handle_request(request, shared, analysis_tx),
             Ok(None) => {}
             Err(e) => warn!("HTTP accept error: {e}"),
         }
@@ -57,7 +58,21 @@ fn authorized(request: &Request, query: &str, token: &str) -> bool {
         || query_param(query, "token").as_deref() == Some(token)
 }
 
-fn handle_request(mut request: Request, shared: &SharedState, cmd_tx: &Sender<Command>) {
+/// Requiring JSON makes browser cross-origin POSTs preflight instead of being
+/// silently accepted as form/text requests. This server grants no CORS access.
+fn has_json_content_type(headers: &[Header]) -> bool {
+    headers
+        .iter()
+        .find(|h| h.field.equiv("Content-Type"))
+        .and_then(|h| h.value.as_str().split(';').next())
+        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+}
+
+fn handle_request(
+    mut request: Request,
+    shared: &SharedState,
+    analysis_tx: &Sender<(u64, Result<AnalysisResult, AppError>)>,
+) {
     let url = request.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
 
@@ -68,6 +83,13 @@ fn handle_request(mut request: Request, shared: &SharedState, cmd_tx: &Sender<Co
                 request,
                 401,
                 &serde_json::json!({"error": "missing or invalid token"}),
+            );
+        }
+        if request.method() == &Method::Post && !has_json_content_type(request.headers()) {
+            return respond_json(
+                request,
+                415,
+                &serde_json::json!({"error": "Content-Type must be application/json"}),
             );
         }
     }
@@ -94,25 +116,25 @@ fn handle_request(mut request: Request, shared: &SharedState, cmd_tx: &Sender<Co
             api::job_tracks(shared, &query_param(query, "id").unwrap_or_default())
         }
         (Method::Post, "/api/job/tracks") => match read_json_body(&mut request) {
-            Ok(body) => api::job_tracks_set(shared, cmd_tx, &body),
+            Ok(body) => api::job_tracks_set(shared, &body),
             Err(resp) => resp,
         },
         (Method::Post, "/api/queue/add") => match read_json_body(&mut request) {
-            Ok(body) => api::queue_add(shared, cmd_tx, &body),
+            Ok(body) => api::queue_add(shared, analysis_tx, &body),
             Err(resp) => resp,
         },
         (Method::Post, "/api/queue/remove") => match read_json_body(&mut request) {
-            Ok(body) => api::queue_remove(shared, cmd_tx, &body),
+            Ok(body) => api::queue_remove(shared, &body),
             Err(resp) => resp,
         },
         (Method::Post, "/api/queue/pause") => match read_json_body(&mut request) {
-            Ok(body) => api::queue_pause(cmd_tx, &body),
+            Ok(body) => api::queue_pause(shared, &body),
             Err(resp) => resp,
         },
-        (Method::Post, "/api/queue/cancel") => api::queue_cancel(cmd_tx),
-        (Method::Post, "/api/queue/clear_finished") => api::queue_clear_finished(shared, cmd_tx),
+        (Method::Post, "/api/queue/cancel") => api::queue_cancel(shared),
+        (Method::Post, "/api/queue/clear_finished") => api::queue_clear_finished(shared),
         (Method::Post, "/api/settings") => match read_json_body(&mut request) {
-            Ok(body) => api::settings_post(cmd_tx, &body),
+            Ok(body) => api::settings_post(shared, &body),
             Err(resp) => resp,
         },
         _ => (404, serde_json::json!({"error": "not found"})),
@@ -218,5 +240,14 @@ mod tests {
         );
         assert_eq!(query_param("path=%2Ftmp", "hidden"), None);
         assert_eq!(query_param("", "path"), None);
+    }
+
+    #[test]
+    fn mutation_content_type_must_be_json() {
+        let json = Header::from_bytes("Content-Type", "application/json; charset=utf-8").unwrap();
+        let text = Header::from_bytes("Content-Type", "text/plain").unwrap();
+        assert!(has_json_content_type(&[json]));
+        assert!(!has_json_content_type(&[text]));
+        assert!(!has_json_content_type(&[]));
     }
 }

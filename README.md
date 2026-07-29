@@ -104,7 +104,7 @@ Each file in the queue is processed in one of two modes. The mode is chosen per 
 
 ### Encode Mode (Encode Video → AV1)
 
-The default mode for non-AV1 sources. The video stream is re-encoded to AV1 using the detected hardware or software encoder, with parameters chosen automatically from the resolution and HDR format (see [Encoding Presets](#encoding-presets)). Selected subtitle tracks are copied into the output, as are audio tracks unless you convert them to Opus (see [Audio Transcoding](#audio-transcoding)). Output is written to the configured container (e.g. `mkv`) with the configured suffix (default `_av1`), and the result is verified with VMAF before the source can be deleted.
+The default mode for non-AV1 sources. The video stream is re-encoded to AV1 using the detected hardware or software encoder, with parameters chosen automatically from the resolution and HDR format (see [Encoding Presets](#encoding-presets)). Selected subtitle tracks are copied when the output container supports their format, otherwise compatible text subtitles are converted; audio tracks are copied unless you convert them to Opus (see [Audio Transcoding](#audio-transcoding)). Output is written to the configured container (e.g. `mkv`) with the configured suffix (default `_av1`), and the result is verified with VMAF before the source can be deleted.
 
 ### Demux/Remux Mode (Remux Only → Copy Video)
 
@@ -127,7 +127,7 @@ When a Dolby Vision source is queued for encoding, a dialog asks how to convert 
 
 Audio tracks are copied untouched by default. Any track can instead be converted to Opus, and the choice is per track: a file can keep its lossless track and shrink the commentary, or the other way round.
 
-The channel layout is never changed — a 5.1 track becomes 5.1 Opus, stereo becomes stereo — and the bitrate follows from it, at 64 kbps per channel by default:
+The channel count and order are preserved — uncommon layouts use independent Opus mapping instead of being silently downmixed — and the bitrate follows the channel count, at 64 kbps per channel by default:
 
 | Source track | Opus output |
 |--------------|-------------|

@@ -80,10 +80,9 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
             Ok(pid) => {
                 println!("{} (PID {pid})", t(lang, Msg::DaemonStarted));
                 println!(
-                    "{} http://{}:{}",
+                    "{} http://{}",
                     t(lang, Msg::DaemonListening),
-                    config.daemon.bind_address,
-                    config.daemon.port
+                    config.daemon.listen_address()
                 );
                 println!("{}", t(lang, Msg::DaemonStopHint));
                 return Ok(());
@@ -100,17 +99,14 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
     }
 
     utils::init_daemon_logging();
-    daemon::lifecycle::write_pid_file()?;
-    let result = daemon::run_daemon(config).map_err(io::Error::other);
-    daemon::lifecycle::remove_pid_file();
-    result
+    let _pid_guard = daemon::lifecycle::write_pid_file()?;
+    daemon::run_daemon(config).map_err(io::Error::other)
 }
 
 /// `--stop`: signal the background daemon and wait for it to exit.
 fn stop_daemon_entry() {
     let lang = config::AppConfig::load().language;
     let Some(pid) = daemon::lifecycle::running_pid() else {
-        daemon::lifecycle::remove_pid_file(); // clear a stale file, if any
         println!("{}", t(lang, Msg::DaemonNotRunning));
         return;
     };
@@ -133,10 +129,9 @@ fn daemon_status_entry() {
         Some(pid) => {
             println!("{} (PID {pid})", t(lang, Msg::DaemonRunning));
             println!(
-                "{} http://{}:{}",
+                "{} http://{}",
                 t(lang, Msg::DaemonListening),
-                config.daemon.bind_address,
-                config.daemon.port
+                config.daemon.listen_address()
             );
         }
         None => println!("{}", t(lang, Msg::DaemonNotRunning)),
@@ -148,7 +143,10 @@ fn main() -> io::Result<()> {
         Cli::Tui => {}
         Cli::Daemon => return run_daemon_entry(false),
         Cli::DaemonForeground => return run_daemon_entry(true),
-        Cli::Stop => stop_daemon_entry(),
+        Cli::Stop => {
+            stop_daemon_entry();
+            return Ok(());
+        }
         Cli::Status => {
             daemon_status_entry();
             return Ok(());
@@ -468,6 +466,7 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 let all_indices: Vec<usize> = job.audio_tracks.iter().map(|t| t.index).collect();
                 if job.track_selection.audio_indices.len() == all_indices.len() {
                     job.track_selection.audio_indices.clear();
+                    job.track_selection.audio_to_opus.clear();
                 } else {
                     job.track_selection.audio_indices = all_indices;
                 }
@@ -510,6 +509,7 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 job.remux_only = !job.remux_only;
                 job.generate_output_path(&output_config);
             }
+            crate::queue::make_output_paths_unique(&mut app.queue.jobs);
             // Switching a DV job from remux to encode needs a DV decision
             app.maybe_open_dv_dialog();
         }
@@ -600,6 +600,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Char('s') => {
             let lang = app.config.language;
+            app.config.sanitize();
             if let Err(e) = app.config.save() {
                 tracing::warn!("Failed to save config: {:?}", e);
                 app.set_timed_message(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 3);

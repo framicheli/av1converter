@@ -1,7 +1,5 @@
 use crate::config::AppConfig;
 use crate::queue::{EncodingJob, JobStatus, QueueState};
-use crate::tracks::TrackSelection;
-use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -99,8 +97,8 @@ pub struct EncodeSession {
     pub cancel_flag: Arc<AtomicBool>,
 }
 
-/// Shared daemon state: read by HTTP handlers, mutated only by the
-/// orchestrator loop (except `config`, which handlers replace via command).
+/// Shared daemon state. HTTP handlers commit short mutations under the mutex;
+/// analysis and worker results are applied by the orchestrator loop.
 pub struct DaemonState {
     pub queue: DaemonQueue,
     pub config: AppConfig,
@@ -132,21 +130,6 @@ impl DaemonState {
     }
 }
 
-/// Mutations requested by HTTP handlers, executed by the orchestrator.
-pub enum Command {
-    AddPaths(Vec<PathBuf>),
-    RemoveJob(u64),
-    SetPaused(bool),
-    CancelEncoding,
-    /// Already sanitized and saved by the handler; swaps the live copy.
-    UpdateConfig(Box<AppConfig>),
-    /// Replace one job's track selection. Validated by the handler against the
-    /// job's real tracks; re-checked here because the queue can move in
-    /// between.
-    SetTracks(u64, TrackSelection),
-    ClearFinished,
-}
-
 pub type SharedState = Arc<Mutex<DaemonState>>;
 
 /// Lock the shared state, recovering from a poisoned mutex.
@@ -164,6 +147,7 @@ pub fn lock(shared: &SharedState) -> std::sync::MutexGuard<'_, DaemonState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn queue_with(n: usize) -> DaemonQueue {
         let mut q = DaemonQueue::new();

@@ -82,6 +82,10 @@ impl TrackSelection {
                 AudioStreamPlan {
                     source_index,
                     opus_kbps,
+                    independent_mapping: opus_kbps.is_some()
+                        && !track
+                            .and_then(|t| t.channel_layout.as_deref())
+                            .is_some_and(opus_supports_layout),
                 }
             })
             .collect();
@@ -109,6 +113,15 @@ pub struct AudioStreamPlan {
     pub source_index: usize,
     /// `None` copies the stream; `Some(kbps)` re-encodes it to Opus.
     pub opus_kbps: Option<u32>,
+    /// Use Opus mapping family 255 for layouts its standard mapping rejects.
+    /// This preserves channel count and order instead of downmixing/remapping.
+    pub independent_mapping: bool,
+}
+
+fn opus_supports_layout(layout: &str) -> bool {
+    ["mono", "stereo", "3.0", "quad", "5.0", "5.1", "6.1", "7.1"]
+        .iter()
+        .any(|supported| layout.eq_ignore_ascii_case(supported))
 }
 
 /// The audio and subtitle streams to write, already resolved from the user's
@@ -137,6 +150,7 @@ mod tests {
             language: None,
             codec: codec.to_string(),
             channels,
+            channel_layout: None,
             title: None,
             bitrate: None,
             sample_rate: None,
@@ -227,5 +241,20 @@ mod tests {
         assert_eq!(plan.audio[1].source_index, 2);
         assert_eq!(plan.audio[1].opus_kbps, Some(128));
         assert!(plan.transcodes_audio());
+    }
+
+    #[test]
+    fn uncommon_opus_layouts_use_independent_mapping() {
+        let mut standard = track(0, "aac", Some(6));
+        standard.channel_layout = Some("5.1".to_string());
+        let mut uncommon = track(1, "aac", Some(3));
+        uncommon.channel_layout = Some("2.1".to_string());
+        let mut sel = TrackSelection::default();
+        sel.set_audio_opus(0, true);
+        sel.set_audio_opus(1, true);
+
+        let plan = sel.resolve(&[standard, uncommon], &AudioConfig::default());
+        assert!(!plan.audio[0].independent_mapping);
+        assert!(plan.audio[1].independent_mapping);
     }
 }

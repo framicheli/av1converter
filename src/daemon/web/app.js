@@ -54,7 +54,11 @@ async function api(path, options) {
 }
 
 const post = (path, body) =>
-  api(path, { method: "POST", body: body === undefined ? "{}" : JSON.stringify(body) });
+  api(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? "{}" : JSON.stringify(body),
+  });
 
 // ── Tabs ────────────────────────────────────────────────────────────
 
