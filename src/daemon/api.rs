@@ -83,7 +83,7 @@ pub fn queue(shared: &SharedState) -> Value {
 }
 
 /// Whether a job's tracks can still be changed: once its encode is under way,
-/// the selection is already baked into the running FFmpeg command.
+/// the selection is already baked into the running `FFmpeg` command.
 fn tracks_editable(state: &super::state::DaemonState, id: u64) -> bool {
     !state.in_active_session(id)
         && state

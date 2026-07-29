@@ -165,9 +165,9 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
 /// Channel layouts libopus accepts, in `aformat` syntax.
 ///
 /// libopus only takes layouts in Vorbis channel order and rejects everything
-/// else outright — `5.1(side)`, which is what most DTS and TrueHD sources
+/// else outright — `5.1(side)`, which is what most `DTS` and `TrueHD` sources
 /// decode to, fails the encode with "Invalid channel layout". Naming the
-/// layouts it does accept makes FFmpeg insert a remap to the nearest one,
+/// layouts it does accept makes `FFmpeg` insert a remap to the nearest one,
 /// which reorders the channels without dropping any: 5.1(side) becomes 5.1,
 /// still six channels. Setting `-mapping_family` does *not* help here; the
 /// check runs before the mapping family is consulted.
@@ -176,7 +176,7 @@ const OPUS_CHANNEL_LAYOUTS: &str = "mono|stereo|3.0|quad|5.0|5.1|6.1(back)|7.1";
 /// Per-stream audio codec options, in output stream order.
 ///
 /// Every mapped stream gets an explicit `-c:a:N`. Leaning on a global
-/// `-c:a copy` plus overrides would leave the result dependent on how FFmpeg
+/// `-c:a copy` plus overrides would leave the result dependent on how `FFmpeg`
 /// resolves options of differing specificity, and a single wrong stream here
 /// means silently re-encoding or copying the wrong track.
 fn build_audio_args(plan: &[AudioStreamPlan]) -> Vec<String> {
