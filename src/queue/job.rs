@@ -1,5 +1,5 @@
 use crate::analyzer::{DvMode, VideoMetadata};
-use crate::config::TrackPresetConfig;
+use crate::config::{AudioConfig, TrackPresetConfig};
 use crate::tracks::{AudioTrack, SubtitleTrack, TrackSelection};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -217,8 +217,9 @@ pub fn is_own_output(path: &Path, output: &crate::config::OutputConfig) -> bool 
     stem.ends_with("_remux") || (!output.suffix.is_empty() && stem.ends_with(&output.suffix))
 }
 
-/// Select audio and subtitle tracks based on configured language preferences.
-pub fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig) {
+/// Select audio and subtitle tracks based on configured language preferences,
+/// then apply the configured audio default to whatever was selected.
+pub fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig, audio: &AudioConfig) {
     // Audio tracks
     let preferred_audio: Vec<usize> = job
         .audio_tracks
@@ -267,6 +268,8 @@ pub fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig) {
     } else {
         Vec::new()
     };
+
+    job.track_selection.apply_audio_default(audio);
 }
 
 /// Check if a path is a video file

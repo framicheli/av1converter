@@ -4,7 +4,7 @@ pub mod server;
 pub mod state;
 
 use crate::analyzer::{self, AnalysisResult, DvMode, HdrType, is_av1_codec};
-use crate::config::{AppConfig, Encoder};
+use crate::config::{AppConfig, AudioMode, Encoder};
 use crate::error::AppError;
 use crate::i18n::{Msg, t};
 use crate::queue::{
@@ -32,6 +32,9 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     }
     if config.quality.vmaf_enabled && !DependencyStatus::vmaf_available() {
         warn!("VMAF is enabled but this FFmpeg build has no libvmaf; verification will fail");
+    }
+    if config.audio.default_mode == AudioMode::Opus && !DependencyStatus::libopus_available() {
+        warn!("Audio is set to Opus but this FFmpeg build has no libopus; encoding will fail");
     }
 
     let lang = config.language;
@@ -154,6 +157,20 @@ fn handle_command(
             // worker already cloned its config.
             lock(shared).config = *config;
         }
+        Command::SetTracks(id, selection) => {
+            let mut state = lock(shared);
+            // The job may have started encoding between the handler's check
+            // and this point, and its tracks are already baked into the
+            // running FFmpeg command by then.
+            if state.in_active_session(id) {
+                return;
+            }
+            if let Some(job) = state.queue.job_by_id_mut(id)
+                && matches!(job.status, JobStatus::Ready | JobStatus::AwaitingConfig)
+            {
+                job.track_selection = selection;
+            }
+        }
         Command::ClearFinished => {
             let mut state = lock(shared);
             let finished: Vec<u64> = state
@@ -228,6 +245,7 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
     let mut state = lock(shared);
     let output_config = state.config.output.clone();
     let track_config = state.config.tracks.clone();
+    let audio_config = state.config.audio.clone();
     let encoder = state.config.encoder;
 
     // The job may have been removed while analysis was running
@@ -244,7 +262,7 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
             job.audio_tracks = analysis.audio_tracks;
             job.subtitle_tracks = analysis.subtitle_tracks;
             job.remux_only = is_av1;
-            auto_select_tracks(job, &track_config);
+            auto_select_tracks(job, &track_config, &audio_config);
             job.generate_output_path(&output_config);
             // Hardware encoders cannot write the DV RPU, so those jobs are
             // resolved to HDR10 (mirrors `App::maybe_open_dv_dialog`)
@@ -275,6 +293,7 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
     }
 
     let output_config = state.config.output.clone();
+    let audio_config = state.config.audio.clone();
     let mut job_ids: Vec<u64> = Vec::new();
     let mut worker_jobs: Vec<WorkerJob> = Vec::new();
     for (id, job) in state.queue.jobs_with_ids() {
@@ -304,7 +323,9 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
             input: job.path.clone(),
             output,
             metadata,
-            tracks: job.track_selection.clone(),
+            tracks: job
+                .track_selection
+                .resolve(&job.audio_tracks, &audio_config),
             dv_mode: job.dv_mode.unwrap_or_default(),
             remux_only: job.remux_only,
         });

@@ -111,6 +111,8 @@ pub struct App {
     pub deps: bool,
     /// This `FFmpeg` build has libvmaf, which only VMAF verification needs
     pub vmaf_deps: bool,
+    /// Whether this `FFmpeg` build can encode Opus
+    pub opus_deps: bool,
 
     // UI state
     pub message: Option<String>,
@@ -167,6 +169,7 @@ impl App {
         let config = AppConfig::load();
         let deps = DependencyStatus::check();
         let vmaf_deps = DependencyStatus::vmaf_available();
+        let opus_deps = DependencyStatus::libopus_available();
 
         info!("Using encoder: {}", config.encoder);
 
@@ -198,6 +201,7 @@ impl App {
             config,
             deps,
             vmaf_deps,
+            opus_deps,
             message: None,
             message_expiry: None,
             confirm_dialog: None,
@@ -635,6 +639,7 @@ impl App {
     fn apply_analysis_results(&mut self, results: Vec<Result<AnalysisResult, AppError>>) {
         let output_config = self.config.output.clone();
         let track_config = self.config.tracks.clone();
+        let audio_config = self.config.audio.clone();
 
         for (job, result) in self.queue.jobs.iter_mut().zip(results) {
             match result {
@@ -644,7 +649,7 @@ impl App {
                     job.audio_tracks = analysis.audio_tracks;
                     job.subtitle_tracks = analysis.subtitle_tracks;
                     job.remux_only = is_av1;
-                    auto_select_tracks(job, &track_config);
+                    auto_select_tracks(job, &track_config, &audio_config);
                     job.generate_output_path(&output_config);
                     job.status = JobStatus::AwaitingConfig;
                 }
@@ -794,6 +799,7 @@ impl App {
         self.progress_receiver = Some(rx);
 
         let output_config = self.config.output.clone();
+        let audio_config = self.config.audio.clone();
 
         // Collect jobs to encode
         let worker_jobs: Vec<WorkerJob> = self
@@ -824,7 +830,7 @@ impl App {
                     input: j.path.clone(),
                     output,
                     metadata,
-                    tracks: j.track_selection.clone(),
+                    tracks: j.track_selection.resolve(&j.audio_tracks, &audio_config),
                     dv_mode: j.dv_mode.unwrap_or_default(),
                     remux_only: j.remux_only,
                 })

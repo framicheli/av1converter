@@ -257,6 +257,67 @@ td.grew { color: var(--warn); }
   #browser-list { max-height: 45vh; }
 }
 
+/* ── Track selection modal ──────────────────────────────────────── */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 20;
+}
+.modal-box {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: min(720px, 100%);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+.modal-head, .modal-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+}
+.modal-head { border-bottom: 1px solid var(--border); font-weight: 600; }
+.modal-head span:first-child { overflow-wrap: anywhere; flex: 1; }
+.modal-foot { border-top: 1px solid var(--border); font-size: 12px; }
+.modal-body { overflow-y: auto; padding: 8px 16px 16px; }
+
+.track-group {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-2);
+  margin: 14px 0 6px;
+}
+.track-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+.track-row:last-child { border-bottom: none; }
+.track-info { flex: 1; min-width: 0; }
+.track-info .name { overflow-wrap: anywhere; }
+.track-info .sub { font-size: 11px; color: var(--ink-2); }
+.track-row select {
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+}
+.track-row select:focus { outline: none; border-color: var(--accent); }
+.track-target { font-size: 11px; color: var(--accent); white-space: nowrap; }
+
 /* ── Toast ──────────────────────────────────────────────────────── */
 .toast {
   position: fixed;

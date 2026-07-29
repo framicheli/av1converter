@@ -21,7 +21,7 @@ pub fn subtitle_codec_for(output: &std::path::Path, selected: &[SubtitleTrack]) 
     }
 }
 
-pub use selection::TrackSelection;
+pub use selection::{AudioStreamPlan, OutputTracks, TrackSelection};
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 use crate::queue::{EncodingJob, JobStatus, QueueState};
+use crate::tracks::TrackSelection;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -139,6 +140,10 @@ pub enum Command {
     CancelEncoding,
     /// Already sanitized and saved by the handler; swaps the live copy.
     UpdateConfig(Box<AppConfig>),
+    /// Replace one job's track selection. Validated by the handler against the
+    /// job's real tracks; re-checked here because the queue can move in
+    /// between.
+    SetTracks(u64, TrackSelection),
     ClearFinished,
 }
 

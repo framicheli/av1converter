@@ -82,6 +82,144 @@ pub fn queue(shared: &SharedState) -> Value {
     json!({ "jobs": jobs })
 }
 
+/// Whether a job's tracks can still be changed: once its encode is under way,
+/// the selection is already baked into the running FFmpeg command.
+fn tracks_editable(state: &super::state::DaemonState, id: u64) -> bool {
+    !state.in_active_session(id)
+        && state
+            .queue
+            .job_by_id(id)
+            .is_some_and(|job| matches!(job.status, JobStatus::Ready | JobStatus::AwaitingConfig))
+}
+
+/// One job's audio and subtitle tracks, with the current per-track choices.
+pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
+    let Ok(id) = id_param.parse::<u64>() else {
+        return (400, json!({"error": "missing or invalid 'id'"}));
+    };
+    let state = lock(shared);
+    let audio_config = state.config.audio.clone();
+    let Some(job) = state.queue.job_by_id(id) else {
+        return (404, json!({"error": "unknown job id"}));
+    };
+
+    // Resolving here means the row shows the bitrate the encoder will actually
+    // be asked for, including tracks that are already Opus and so left alone.
+    let plan = job
+        .track_selection
+        .resolve(&job.audio_tracks, &audio_config);
+    let audio: Vec<Value> = job
+        .audio_tracks
+        .iter()
+        .map(|track| {
+            json!({
+                "index": track.index,
+                "name": track.display_name(),
+                "codec": track.codec,
+                "channels": track.channels,
+                "bitrate": track.bitrate_string(),
+                "sample_rate": track.sample_rate_string(),
+                "selected": job.track_selection.audio_indices.contains(&track.index),
+                "opus": job.track_selection.is_opus(track.index),
+                "opus_kbps": plan
+                    .audio
+                    .iter()
+                    .find(|p| p.source_index == track.index)
+                    .and_then(|p| p.opus_kbps),
+            })
+        })
+        .collect();
+
+    let subtitles: Vec<Value> = job
+        .subtitle_tracks
+        .iter()
+        .map(|track| {
+            json!({
+                "index": track.index,
+                "name": track.display_name(),
+                "selected": job.track_selection.subtitle_indices.contains(&track.index),
+            })
+        })
+        .collect();
+
+    (
+        200,
+        json!({
+            "id": id,
+            "filename": job.filename(),
+            "editable": tracks_editable(&state, id),
+            "audio": audio,
+            "subtitles": subtitles,
+        }),
+    )
+}
+
+/// Read a JSON array of track indices, keeping only ones the job really has.
+fn valid_indices(body: &Value, key: &str, known: &[usize]) -> Vec<usize> {
+    let mut out: Vec<usize> = body
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_u64)
+                .filter_map(|i| usize::try_from(i).ok())
+                .filter(|i| known.contains(i))
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Replace one job's track selection.
+pub fn job_tracks_set(
+    shared: &SharedState,
+    cmd_tx: &Sender<Command>,
+    body: &Value,
+) -> (u16, Value) {
+    let Some(id) = body.get("id").and_then(Value::as_u64) else {
+        return (400, json!({"error": "missing 'id'"}));
+    };
+
+    let selection = {
+        let state = lock(shared);
+        let Some(job) = state.queue.job_by_id(id) else {
+            return (404, json!({"error": "unknown job id"}));
+        };
+        if !tracks_editable(&state, id) {
+            return (409, json!({"error": "job is encoding or already finished"}));
+        }
+
+        let audio_known: Vec<usize> = job.audio_tracks.iter().map(|t| t.index).collect();
+        let subtitle_known: Vec<usize> = job.subtitle_tracks.iter().map(|t| t.index).collect();
+
+        let audio_indices = valid_indices(body, "audio_indices", &audio_known);
+        // Opus is only meaningful for tracks that are actually written, and a
+        // stale entry would shift every per-stream codec option one place.
+        let audio_to_opus: Vec<usize> = valid_indices(body, "audio_to_opus", &audio_known)
+            .into_iter()
+            .filter(|i| audio_indices.contains(i))
+            .collect();
+
+        crate::tracks::TrackSelection {
+            audio_indices,
+            subtitle_indices: valid_indices(body, "subtitle_indices", &subtitle_known),
+            audio_to_opus,
+        }
+    };
+
+    let applied = json!({
+        "audio_indices": selection.audio_indices,
+        "audio_to_opus": selection.audio_to_opus,
+        "subtitle_indices": selection.subtitle_indices,
+    });
+    if cmd_tx.send(Command::SetTracks(id, selection)).is_err() {
+        return (500, json!({"error": "daemon is shutting down"}));
+    }
+    (200, applied)
+}
+
 /// Whether `path` sits inside `root`, comparing resolved paths so that `..`
 /// segments and symlinks cannot step outside. An empty root allows everything.
 pub fn within_root(path: &Path, root: &str) -> bool {
@@ -382,5 +520,91 @@ mod tests {
     #[test]
     fn unresolvable_paths_are_refused_under_a_root() {
         assert!(!within_root(Path::new("/nonexistent/x.mkv"), "/tmp"));
+    }
+
+    mod tracks {
+        use super::super::*;
+        use crate::daemon::state::DaemonState;
+        use crate::queue::EncodingJob;
+        use crate::tracks::AudioTrack;
+        use std::sync::{Arc, Mutex};
+
+        fn shared_with_job() -> (SharedState, u64) {
+            let mut state = DaemonState::new(AppConfig::default());
+            let mut job = EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
+            job.audio_tracks = (0..3)
+                .map(|index| AudioTrack {
+                    index,
+                    language: None,
+                    codec: "dts".to_string(),
+                    channels: Some(6),
+                    title: None,
+                    bitrate: None,
+                    sample_rate: None,
+                })
+                .collect();
+            job.status = JobStatus::Ready;
+            let id = state.queue.push(job);
+            (Arc::new(Mutex::new(state)), id)
+        }
+
+        /// A client cannot mark a track for Opus without also selecting it:
+        /// the resulting plan drives per-stream codec options by position, so
+        /// an unselected index would land the option on the wrong stream.
+        #[test]
+        fn opus_indices_are_confined_to_selected_tracks() {
+            let (shared, id) = shared_with_job();
+            let (tx, rx) = std::sync::mpsc::channel();
+
+            let (code, body) = job_tracks_set(
+                &shared,
+                &tx,
+                &json!({"id": id, "audio_indices": [0, 2], "audio_to_opus": [1, 2]}),
+            );
+            assert_eq!(code, 200);
+            assert_eq!(body["audio_to_opus"], json!([2]));
+
+            match rx.recv().unwrap() {
+                Command::SetTracks(got_id, selection) => {
+                    assert_eq!(got_id, id);
+                    assert_eq!(selection.audio_indices, vec![0, 2]);
+                    assert_eq!(selection.audio_to_opus, vec![2]);
+                }
+                _ => panic!("expected SetTracks"),
+            }
+        }
+
+        /// Indices the file does not have are dropped rather than stored.
+        #[test]
+        fn unknown_track_indices_are_rejected() {
+            let (shared, id) = shared_with_job();
+            let (tx, _rx) = std::sync::mpsc::channel();
+
+            let (code, body) = job_tracks_set(
+                &shared,
+                &tx,
+                &json!({"id": id, "audio_indices": [0, 99], "audio_to_opus": [99]}),
+            );
+            assert_eq!(code, 200);
+            assert_eq!(body["audio_indices"], json!([0]));
+            assert_eq!(body["audio_to_opus"], json!([]));
+        }
+
+        /// A job that is already encoding refuses edits: its tracks are
+        /// baked into the running FFmpeg command.
+        #[test]
+        fn encoding_jobs_refuse_track_edits() {
+            let (shared, id) = shared_with_job();
+            let (tx, _rx) = std::sync::mpsc::channel();
+            lock(&shared).queue.job_by_id_mut(id).unwrap().status =
+                JobStatus::Encoding { progress: 10.0 };
+
+            let (code, _) = job_tracks_set(&shared, &tx, &json!({"id": id, "audio_indices": [0]}));
+            assert_eq!(code, 409);
+            assert_eq!(
+                job_tracks(&shared, &id.to_string()).1["editable"],
+                json!(false)
+            );
+        }
     }
 }

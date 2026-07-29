@@ -33,6 +33,9 @@ pub struct AppConfig {
     pub output: OutputConfig,
     /// Track selection presets
     pub tracks: TrackPresetConfig,
+    /// Audio transcoding settings
+    #[serde(default)]
+    pub audio: AudioConfig,
     /// Daemon / web UI settings
     #[serde(default)]
     pub daemon: DaemonConfig,
@@ -172,6 +175,12 @@ impl AppConfig {
         {
             self.daemon.bind_address = DaemonConfig::default().bind_address;
         }
+        // Opus bitrate is multiplied by the channel count, so an absurd
+        // per-channel value would ask libopus for a rate it rejects outright.
+        self.audio.opus_bitrate_per_channel = self
+            .audio
+            .opus_bitrate_per_channel
+            .clamp(AudioConfig::MIN_PER_CHANNEL, AudioConfig::MAX_PER_CHANNEL);
         self.daemon.browse_root = self.daemon.browse_root.trim().to_string();
         self.daemon.auth_token = self.daemon.auth_token.trim().to_string();
     }
@@ -238,6 +247,37 @@ mod tests {
         let loaded: AppConfig = toml::from_str(legacy).unwrap();
         assert!(!loaded.daemon.enabled);
         assert_eq!(loaded.daemon, DaemonConfig::default());
+    }
+
+    /// A config file written before the `[audio]` section existed must still
+    /// load, with audio copied exactly as it was before the feature landed.
+    #[test]
+    fn audio_defaults_on_legacy_config() {
+        let full = toml::to_string_pretty(&AppConfig::default()).unwrap();
+        let legacy = full.split("[audio]").next().unwrap();
+        let loaded: AppConfig = toml::from_str(legacy).unwrap();
+        assert_eq!(loaded.audio, AudioConfig::default());
+        assert_eq!(loaded.audio.default_mode, AudioMode::Copy);
+    }
+
+    /// A per-channel bitrate outside libopus' useful range is clamped, not
+    /// passed through to be multiplied by the channel count.
+    #[test]
+    fn opus_bitrate_per_channel_is_clamped() {
+        let mut cfg = AppConfig::default();
+        cfg.audio.opus_bitrate_per_channel = 9000;
+        cfg.sanitize();
+        assert_eq!(
+            cfg.audio.opus_bitrate_per_channel,
+            AudioConfig::MAX_PER_CHANNEL
+        );
+
+        cfg.audio.opus_bitrate_per_channel = 0;
+        cfg.sanitize();
+        assert_eq!(
+            cfg.audio.opus_bitrate_per_channel,
+            AudioConfig::MIN_PER_CHANNEL
+        );
     }
 
     /// An empty suffix next to the source would make the output path collide

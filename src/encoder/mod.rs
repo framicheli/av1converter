@@ -6,7 +6,7 @@ pub use ffmpeg::{EncodeResult, ProgressCallback, encode_video};
 
 use crate::analyzer::{DvMode, HdrType, VideoMetadata};
 use crate::config::AppConfig;
-use crate::tracks::TrackSelection;
+use crate::tracks::OutputTracks;
 use crate::verifier;
 use std::sync::atomic::AtomicBool;
 use tracing::{info, warn};
@@ -40,7 +40,7 @@ pub fn run_encoding_pipeline(
     input: &str,
     output: &str,
     metadata: &VideoMetadata,
-    tracks: TrackSelection,
+    tracks: OutputTracks,
     dv_mode: DvMode,
     remux_only: bool,
     subtitle_codec: &'static str,
@@ -108,11 +108,23 @@ pub fn run_encoding_pipeline(
                 cancel_flag,
             );
 
+            // VMAF compares video and nothing else, so a passing score says
+            // nothing about audio that was re-encoded to a lossy codec. The
+            // original is the only remaining copy of a lossless TrueHD or
+            // DTS-HD track, and no automated check here can vouch for what
+            // replaced it.
+            let audio_transcoded = params.tracks.transcodes_audio();
+            if audio_transcoded && config.quality.delete_source_on_success {
+                info!(
+                    "Keeping source file {input}: audio was transcoded and VMAF does not verify it"
+                );
+            }
+
             // The source is only ever deleted against a VMAF score that met the
             // threshold. A plain `Success` means no comparison ran at all (VMAF
             // disabled, a remux, or a tone-mapped DV profile 5 output), which is
             // no evidence that the encode is good enough to discard the original.
-            if config.quality.delete_source_on_success {
+            if config.quality.delete_source_on_success && !audio_transcoded {
                 if let FullEncodeResult::SuccessWithVmaf {
                     ref mut source_deleted,
                     ..

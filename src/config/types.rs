@@ -318,6 +318,70 @@ impl Default for DaemonConfig {
     }
 }
 
+/// What to do with the audio tracks of a newly queued file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AudioMode {
+    /// Pass the source streams through untouched
+    #[default]
+    #[serde(rename = "copy")]
+    Copy,
+    /// Re-encode to Opus at the source's channel layout
+    #[serde(rename = "opus")]
+    Opus,
+}
+
+impl AudioMode {
+    /// All modes, in display/cycle order.
+    pub const ALL: [AudioMode; 2] = [AudioMode::Copy, AudioMode::Opus];
+
+    /// The next mode in [`AudioMode::ALL`], wrapping around.
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    /// The previous mode in [`AudioMode::ALL`], wrapping around.
+    pub fn prev(self) -> Self {
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
+/// Audio transcoding configuration
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioConfig {
+    /// What newly analyzed files default to. Per-track choices override it.
+    pub default_mode: AudioMode,
+    /// Opus bitrate allotted per channel, in kbps. The channel layout is never
+    /// changed, so the stream bitrate is simply this times the channel count.
+    pub opus_bitrate_per_channel: u16,
+    /// Leave tracks that are already Opus alone: re-encoding them would only
+    /// add generation loss.
+    pub skip_already_opus: bool,
+}
+
+impl AudioConfig {
+    /// Lowest and highest per-channel bitrate `sanitize` will accept, in kbps.
+    pub const MIN_PER_CHANNEL: u16 = 16;
+    pub const MAX_PER_CHANNEL: u16 = 256;
+
+    /// Opus bitrate for a stream with this many channels, in kbps. A source
+    /// whose channel count ffprobe could not report is treated as stereo.
+    pub fn opus_bitrate_kbps(&self, channels: Option<u16>) -> u32 {
+        u32::from(channels.unwrap_or(2).max(1)) * u32::from(self.opus_bitrate_per_channel)
+    }
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            default_mode: AudioMode::Copy,
+            opus_bitrate_per_channel: 64,
+            skip_already_opus: true,
+        }
+    }
+}
+
 /// Track selection preset configuration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackPresetConfig {

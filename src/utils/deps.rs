@@ -16,6 +16,12 @@ impl DependencyStatus {
     pub fn vmaf_available() -> bool {
         check_vmaf_available()
     }
+
+    /// Whether this `FFmpeg` build can encode Opus. Like `libvmaf`, it is not
+    /// part of [`DependencyStatus::check`]: copying audio works without it.
+    pub fn libopus_available() -> bool {
+        check_encoder_available("libopus")
+    }
 }
 
 /// Check if a command is available
@@ -26,6 +32,21 @@ fn check_command(cmd: &str, args: &[&str]) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
+}
+
+/// Check whether `FFmpeg` was built with a given encoder
+fn check_encoder_available(name: &str) -> bool {
+    Command::new("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .ok()
+        .is_some_and(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                // The encoder name is the second column, after the capability
+                // flags; matching the whole output would also hit descriptions.
+                .any(|l| l.split_whitespace().nth(1) == Some(name))
+        })
 }
 
 /// Check if VMAF is available in `FFmpeg`

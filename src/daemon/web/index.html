@@ -88,11 +88,11 @@
     <div class="table-wrap">
       <table id="queue-table">
         <thead>
-          <tr><th>File</th><th>Source</th><th>Status</th><th>Size</th><th>Saved</th><th></th></tr>
+          <tr><th>File</th><th>Source</th><th>Status</th><th>Size</th><th>Saved</th><th></th><th></th></tr>
         </thead>
         <tbody id="queue-body"></tbody>
         <tbody id="queue-empty">
-          <tr><td colspan="6" class="muted center">Queue is empty — add files to start encoding</td></tr>
+          <tr><td colspan="7" class="muted center">Queue is empty — add files to start encoding</td></tr>
         </tbody>
       </table>
     </div>
@@ -108,6 +108,22 @@
   </section>
 </main>
 
+</div>
+
+<!-- ── Per-job track selection ─────────────────────────────────── -->
+<div id="tracks-modal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span id="tracks-title">Tracks</span>
+      <button id="tracks-close" class="iconbtn">✕</button>
+    </div>
+    <div id="tracks-body" class="modal-body"></div>
+    <div class="modal-foot">
+      <span id="tracks-note" class="muted"></span>
+      <span class="spacer"></span>
+      <button id="tracks-save">Save tracks</button>
+    </div>
+  </div>
 </div>
 
 <div id="toast" class="toast hidden"></div>

@@ -1,6 +1,6 @@
 use crate::analyzer::{DvMode, Hdr10StaticMetadata, HdrType, ResolutionTier, VideoMetadata};
 use crate::config::{AppConfig, Encoder};
-use crate::tracks::TrackSelection;
+use crate::tracks::{AudioStreamPlan, OutputTracks};
 
 /// Parameters for encoding a video file
 #[derive(Debug, Clone)]
@@ -14,7 +14,7 @@ pub struct EncodingParams {
     pub dv_mode: DvMode,
     pub dv_profile: Option<u8>,
     pub hdr10_static: Option<Hdr10StaticMetadata>,
-    pub tracks: TrackSelection,
+    pub tracks: OutputTracks,
     pub frame_rate_num: u32,
     pub frame_rate_den: u32,
     pub svt_preset: u8,
@@ -33,7 +33,7 @@ impl EncodingParams {
         output: &str,
         metadata: &VideoMetadata,
         config: &AppConfig,
-        tracks: TrackSelection,
+        tracks: OutputTracks,
         dv_mode: DvMode,
         remux_only: bool,
         subtitle_codec: &'static str,
@@ -106,12 +106,12 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     ]);
 
     // Track mapping
-    if params.tracks.audio_indices.is_empty() && params.tracks.subtitle_indices.is_empty() {
+    if params.tracks.audio.is_empty() && params.tracks.subtitle_indices.is_empty() {
         args.extend(["-map".to_string(), "0:a?".to_string()]);
         args.extend(["-map".to_string(), "0:s?".to_string()]);
     } else {
-        for idx in &params.tracks.audio_indices {
-            args.extend(["-map".to_string(), format!("0:a:{idx}")]);
+        for plan in &params.tracks.audio {
+            args.extend(["-map".to_string(), format!("0:a:{}", plan.source_index)]);
         }
         for idx in &params.tracks.subtitle_indices {
             args.extend(["-map".to_string(), format!("0:s:{idx}")]);
@@ -119,15 +119,12 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     }
 
     if params.remux_only {
-        // Remux mode: Copy all mapped streams without recompression
-        args.extend([
-            "-c:v".to_string(),
-            "copy".to_string(),
-            "-c:a".to_string(),
-            "copy".to_string(),
-            "-c:s".to_string(),
-            params.subtitle_codec.to_string(),
-        ]);
+        // Remux mode: the video is already AV1, so it is copied as-is. Audio
+        // still honours the per-track choice — a 1.5 Mbps DTS track is worth
+        // shrinking even when the video needs no work.
+        args.extend(["-c:v".to_string(), "copy".to_string()]);
+        args.extend(build_audio_args(&params.tracks.audio));
+        args.extend(["-c:s".to_string(), params.subtitle_codec.to_string()]);
     } else {
         // Video encoder
         args.extend(["-c:v".to_string(), params.encoder.ffmpeg_name().to_string()]);
@@ -144,13 +141,10 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
             ]);
         }
 
-        // Audio is always copied; subtitles only when the container allows it
-        args.extend([
-            "-c:a".to_string(),
-            "copy".to_string(),
-            "-c:s".to_string(),
-            params.subtitle_codec.to_string(),
-        ]);
+        // Audio follows the per-track choice; subtitles only when the
+        // container can hold them
+        args.extend(build_audio_args(&params.tracks.audio));
+        args.extend(["-c:s".to_string(), params.subtitle_codec.to_string()]);
 
         // Encoder-specific quality parameters
         args.extend(get_quality_params(params));
@@ -165,6 +159,47 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     }
 
     args.push(params.output.clone());
+    args
+}
+
+/// Channel layouts libopus accepts, in `aformat` syntax.
+///
+/// libopus only takes layouts in Vorbis channel order and rejects everything
+/// else outright — `5.1(side)`, which is what most DTS and TrueHD sources
+/// decode to, fails the encode with "Invalid channel layout". Naming the
+/// layouts it does accept makes FFmpeg insert a remap to the nearest one,
+/// which reorders the channels without dropping any: 5.1(side) becomes 5.1,
+/// still six channels. Setting `-mapping_family` does *not* help here; the
+/// check runs before the mapping family is consulted.
+const OPUS_CHANNEL_LAYOUTS: &str = "mono|stereo|3.0|quad|5.0|5.1|6.1(back)|7.1";
+
+/// Per-stream audio codec options, in output stream order.
+///
+/// Every mapped stream gets an explicit `-c:a:N`. Leaning on a global
+/// `-c:a copy` plus overrides would leave the result dependent on how FFmpeg
+/// resolves options of differing specificity, and a single wrong stream here
+/// means silently re-encoding or copying the wrong track.
+fn build_audio_args(plan: &[AudioStreamPlan]) -> Vec<String> {
+    if plan.is_empty() {
+        // No explicit selection: `-map 0:a?` took everything, so a global
+        // copy is the only thing that can address it.
+        return vec!["-c:a".to_string(), "copy".to_string()];
+    }
+
+    let mut args = Vec::new();
+    for (n, stream) in plan.iter().enumerate() {
+        match stream.opus_kbps {
+            None => args.extend([format!("-c:a:{n}"), "copy".to_string()]),
+            Some(kbps) => {
+                args.extend([format!("-c:a:{n}"), "libopus".to_string()]);
+                args.extend([format!("-b:a:{n}"), format!("{kbps}k")]);
+                args.extend([
+                    format!("-filter:a:{n}"),
+                    format!("aformat=channel_layouts={OPUS_CHANNEL_LAYOUTS}"),
+                ]);
+            }
+        }
+    }
     args
 }
 
@@ -360,7 +395,7 @@ mod tests {
             dv_mode,
             dv_profile,
             hdr10_static: None,
-            tracks: TrackSelection::default(),
+            tracks: OutputTracks::default(),
             frame_rate_num: 24000,
             frame_rate_den: 1001,
             svt_preset: 6,
@@ -441,7 +476,7 @@ mod tests {
             "out.mkv",
             &metadata,
             &config,
-            TrackSelection::default(),
+            OutputTracks::default(),
             DvMode::KeepDolbyVision,
             false,
             "copy",
@@ -449,6 +484,93 @@ mod tests {
         assert_eq!(params.dv_mode, DvMode::ToHdr10);
         let args = build_ffmpeg_args(&params);
         assert!(!args.contains(&"-dolbyvision".to_string()));
+    }
+
+    fn audio(source_index: usize, opus_kbps: Option<u32>) -> AudioStreamPlan {
+        AudioStreamPlan {
+            source_index,
+            opus_kbps,
+        }
+    }
+
+    /// Every mapped audio stream gets an explicit codec, indexed by its
+    /// position in the output — not by its index in the source.
+    #[test]
+    fn mixed_audio_selection_addresses_streams_by_output_position() {
+        let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
+        params.tracks = OutputTracks {
+            audio: vec![audio(1, None), audio(3, Some(384)), audio(4, None)],
+            subtitle_indices: vec![0],
+        };
+        let args = build_ffmpeg_args(&params);
+
+        // Mapping still uses the source's audio-relative indices...
+        let maps: Vec<&String> = args
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i > &0 && args[i - 1] == "-map")
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(maps, vec!["0:v:0", "0:a:1", "0:a:3", "0:a:4", "0:s:0"]);
+
+        // ...while the codec options are indexed by output position.
+        assert_eq!(arg_after(&args, "-c:a:0"), Some("copy".to_string()));
+        assert_eq!(arg_after(&args, "-c:a:1"), Some("libopus".to_string()));
+        assert_eq!(arg_after(&args, "-b:a:1"), Some("384k".to_string()));
+        assert_eq!(arg_after(&args, "-c:a:2"), Some("copy".to_string()));
+
+        // Only the transcoded stream is filtered, and only it carries a bitrate.
+        assert!(arg_after(&args, "-filter:a:1").is_some_and(|f| f.contains("channel_layouts")));
+        assert!(!args.contains(&"-filter:a:0".to_string()));
+        assert!(!args.contains(&"-b:a:0".to_string()));
+        // A bare `-c:a` would override the per-stream choices.
+        assert!(!args.contains(&"-c:a".to_string()));
+    }
+
+    /// libopus rejects `5.1(side)` outright, so every Opus stream is routed
+    /// through a layout the encoder accepts. The channel count is preserved.
+    #[test]
+    fn opus_streams_normalise_the_channel_layout() {
+        let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
+        params.tracks = OutputTracks {
+            audio: vec![audio(0, Some(384))],
+            subtitle_indices: Vec::new(),
+        };
+        let filter = arg_after(&build_ffmpeg_args(&params), "-filter:a:0").unwrap();
+        assert_eq!(
+            filter,
+            "aformat=channel_layouts=mono|stereo|3.0|quad|5.0|5.1|6.1(back)|7.1"
+        );
+    }
+
+    /// Remuxing leaves the video untouched but still honours the audio choice:
+    /// an oversized DTS track is worth shrinking on an already-AV1 file.
+    #[test]
+    fn remux_transcodes_audio_without_touching_the_video() {
+        let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
+        params.remux_only = true;
+        params.tracks = OutputTracks {
+            audio: vec![audio(0, Some(128))],
+            subtitle_indices: Vec::new(),
+        };
+        let args = build_ffmpeg_args(&params);
+
+        assert_eq!(arg_after(&args, "-c:v"), Some("copy".to_string()));
+        assert_eq!(arg_after(&args, "-c:a:0"), Some("libopus".to_string()));
+        assert_eq!(arg_after(&args, "-b:a:0"), Some("128k".to_string()));
+        // Remux must never grow a video filter or encoder settings.
+        assert!(!args.contains(&"-vf".to_string()));
+        assert!(!args.contains(&"-crf".to_string()));
+    }
+
+    /// With nothing selected, `-map 0:a?` takes every stream, which only a
+    /// global copy can address.
+    #[test]
+    fn unselected_audio_falls_back_to_a_global_copy() {
+        let args = build_ffmpeg_args(&dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8)));
+        assert!(args.contains(&"0:a?".to_string()));
+        assert_eq!(arg_after(&args, "-c:a"), Some("copy".to_string()));
+        assert!(!args.contains(&"-c:a:0".to_string()));
     }
 
     #[test]

@@ -90,6 +90,13 @@ fn handle_request(mut request: Request, shared: &SharedState, cmd_tx: &Sender<Co
             query_param(query, "hidden").as_deref() == Some("1"),
         ),
         (Method::Get, "/api/settings") => (200, api::settings_get(shared)),
+        (Method::Get, "/api/job/tracks") => {
+            api::job_tracks(shared, &query_param(query, "id").unwrap_or_default())
+        }
+        (Method::Post, "/api/job/tracks") => match read_json_body(&mut request) {
+            Ok(body) => api::job_tracks_set(shared, cmd_tx, &body),
+            Err(resp) => resp,
+        },
         (Method::Post, "/api/queue/add") => match read_json_body(&mut request) {
             Ok(body) => api::queue_add(shared, cmd_tx, &body),
             Err(resp) => resp,

@@ -12,6 +12,7 @@ use ratatui::{
 #[allow(clippy::too_many_lines)]
 pub fn render_track_config(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
+    let audio_config = app.config.audio.clone();
     let (
         filename,
         resolution_string,
@@ -26,16 +27,27 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             return;
         };
 
-        let audio_data: Vec<(String, String, String, bool)> = job
+        // Resolving the selection here rather than re-deriving it means the row
+        // shows exactly the bitrate the encoder will be asked for, including
+        // the already-Opus tracks that are quietly left alone.
+        let plan = job
+            .track_selection
+            .resolve(&job.audio_tracks, &audio_config);
+
+        let audio_data: Vec<AudioRow> = job
             .audio_tracks
             .iter()
-            .map(|track| {
-                (
-                    track.display_name(),
-                    track.bitrate_string(),
-                    track.sample_rate_string(),
-                    job.track_selection.audio_indices.contains(&track.index),
-                )
+            .map(|track| AudioRow {
+                name: track.display_name(),
+                bitrate: track.bitrate_string(),
+                sample_rate: track.sample_rate_string(),
+                selected: job.track_selection.audio_indices.contains(&track.index),
+                marked_opus: job.track_selection.is_opus(track.index),
+                opus_kbps: plan
+                    .audio
+                    .iter()
+                    .find(|p| p.source_index == track.index)
+                    .and_then(|p| p.opus_kbps),
             })
             .collect();
 
@@ -197,9 +209,9 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
     let audio_items: Vec<ListItem> = audio_data
         .iter()
         .enumerate()
-        .map(|(i, (name, bitrate, sample_rate, selected))| {
+        .map(|(i, row)| {
             let is_cursor = app.track_focus == TrackFocus::Audio && i == app.audio_cursor;
-            create_audio_track_item(name, bitrate, sample_rate, *selected, is_cursor)
+            create_audio_track_item(row, is_cursor, lang)
         })
         .collect();
 
@@ -209,16 +221,33 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         Color::DarkGray
     };
 
+    // Opus is only reachable if FFmpeg was built with libopus; saying so on the
+    // panel beats letting the encode fail an hour later.
+    let opus_missing = !app.opus_deps && audio_data.iter().any(|r| r.opus_kbps.is_some());
+    let audio_title = if opus_missing {
+        format!(
+            " {} [⚠ {}] ",
+            t(lang, Msg::AudioTracks),
+            t(lang, Msg::OpusUnavailable)
+        )
+    } else {
+        format!(
+            " {} [{}] ",
+            t(lang, Msg::AudioTracks),
+            t(lang, Msg::SpaceToToggle)
+        )
+    };
+
     let audio_list = List::new(audio_items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(audio_border_color))
-                .title(format!(
-                    " {} [{}] ",
-                    t(lang, Msg::AudioTracks),
-                    t(lang, Msg::SpaceToToggle)
-                )),
+                .border_style(Style::default().fg(if opus_missing {
+                    Color::Yellow
+                } else {
+                    audio_border_color
+                }))
+                .title(audio_title),
         )
         .highlight_style(Style::default());
 
@@ -280,6 +309,10 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         Span::raw(format!(" {}  ", t(lang, Msg::AllAudio))),
         Span::styled("s", Style::default().fg(Color::Yellow)),
         Span::raw(format!(" {}  ", t(lang, Msg::AllSubs))),
+        Span::styled("o", Style::default().fg(Color::Yellow)),
+        Span::raw(format!(" {}  ", t(lang, Msg::ToOpus))),
+        Span::styled("O", Style::default().fg(Color::Yellow)),
+        Span::raw(format!(" {}  ", t(lang, Msg::AllOpus))),
     ];
     if hdr_string == "Dolby Vision" {
         help_spans.push(Span::styled("d", Style::default().fg(Color::Yellow)));
@@ -307,26 +340,51 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
     f.render_widget(help, chunks[2]);
 }
 
-fn create_audio_track_item(
-    name: &str,
-    bitrate: &str,
-    sample_rate: &str,
+/// One row of the audio panel, already resolved against the audio settings.
+struct AudioRow {
+    name: String,
+    bitrate: String,
+    sample_rate: String,
     selected: bool,
+    /// The user asked for Opus on this track
+    marked_opus: bool,
+    /// The bitrate it will actually be encoded at, or `None` when it is copied
+    opus_kbps: Option<u32>,
+}
+
+fn create_audio_track_item(
+    row: &AudioRow,
     is_cursor: bool,
+    lang: crate::i18n::Language,
 ) -> ListItem<'static> {
-    let checkbox = if selected { "[x]" } else { "[ ]" };
+    // A track marked for Opus that resolves to no bitrate is one that is
+    // already Opus, so it stays a plain copy and says why.
+    let checkbox = match (row.selected, row.opus_kbps) {
+        (false, _) => "[ ]",
+        (true, None) => "[x]",
+        (true, Some(_)) => "[~]",
+    };
     let prefix = if is_cursor { "> " } else { "  " };
-    let extra = format!(" ({bitrate}, {sample_rate})");
+    let extra = format!(" ({}, {})", row.bitrate, row.sample_rate);
+    let target = match row.opus_kbps {
+        Some(kbps) => format!(" → OPUS {kbps}k"),
+        None if row.marked_opus && row.selected => {
+            format!(" ({})", t(lang, Msg::AlreadyOpus))
+        }
+        None => String::new(),
+    };
 
     let style = if is_cursor {
         Style::default().add_modifier(Modifier::BOLD)
-    } else if selected {
+    } else if row.opus_kbps.is_some() {
+        Style::default().fg(Color::Cyan)
+    } else if row.selected {
         Style::default().fg(Color::Green)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    ListItem::new(format!("{prefix}{checkbox} {name}{extra}")).style(style)
+    ListItem::new(format!("{prefix}{checkbox} {}{extra}{target}", row.name)).style(style)
 }
 
 fn create_subtitle_track_item(

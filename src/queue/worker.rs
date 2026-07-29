@@ -1,7 +1,7 @@
 use crate::analyzer::{DvMode, VideoMetadata};
 use crate::config::AppConfig;
 use crate::encoder::{self, FullEncodeResult};
-use crate::tracks::TrackSelection;
+use crate::tracks::OutputTracks;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -39,7 +39,9 @@ pub struct WorkerJob {
     pub input: PathBuf,
     pub output: PathBuf,
     pub metadata: VideoMetadata,
-    pub tracks: TrackSelection,
+    /// Audio and subtitle streams to write, already resolved from the user's
+    /// selection into output order
+    pub tracks: OutputTracks,
     pub dv_mode: DvMode,
     pub remux_only: bool,
     /// `copy`, or a codec the target container can actually hold

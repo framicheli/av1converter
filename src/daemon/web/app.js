@@ -186,6 +186,13 @@ function createRow(job) {
   const size = tr.insertCell();
   const saved = tr.insertCell();
 
+  const tracks = document.createElement("button");
+  tracks.className = "iconbtn";
+  tracks.textContent = "Tracks";
+  tracks.title = "Choose audio and subtitle tracks";
+  tracks.addEventListener("click", () => openTracks(job.id));
+  tr.insertCell().appendChild(tracks);
+
   const remove = document.createElement("button");
   remove.className = "iconbtn";
   remove.textContent = "✕";
@@ -198,7 +205,7 @@ function createRow(job) {
   });
   tr.insertCell().appendChild(remove);
 
-  return { tr, name, sub, source, badge, fill, bar, size, saved, remove };
+  return { tr, name, sub, source, badge, fill, bar, size, saved, tracks, remove };
 }
 
 function updateRow(row, job) {
@@ -229,6 +236,9 @@ function updateRow(row, job) {
   }
 
   row.remove.disabled = ["encoding", "verifying"].includes(job.status.kind);
+  // Tracks are only editable before the encode starts; afterwards the
+  // selection is already baked into the running FFmpeg command.
+  row.tracks.disabled = !["ready", "awaiting_config"].includes(job.status.kind);
 }
 
 async function refreshQueue() {
@@ -275,6 +285,169 @@ $("btn-clear").addEventListener("click", async () => {
   try {
     const r = await post("/api/queue/clear_finished");
     toast(`Removed ${r.removed} finished job(s)`);
+    refreshQueue();
+  } catch (e) { toast(e.message, true); }
+});
+
+// ── Per-job track selection ─────────────────────────────────────────
+
+// The modal owns its own copy of the selection while it is open. The queue
+// poll keeps running underneath and rewrites rows in place; it must never
+// reach in here and discard choices the user has not saved yet.
+let trackEditor = null;
+
+$("tracks-close").addEventListener("click", closeTracks);
+$("tracks-modal").addEventListener("click", (e) => {
+  if (e.target === $("tracks-modal")) closeTracks();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && trackEditor) closeTracks();
+});
+
+function closeTracks() {
+  trackEditor = null;
+  $("tracks-modal").classList.add("hidden");
+}
+
+async function openTracks(id) {
+  // The projected Opus bitrate comes from the audio settings, which are only
+  // fetched when the settings tab is opened.
+  if (!settingsLoaded) await loadSettings();
+  let data;
+  try {
+    data = await api(`/api/job/tracks?id=${id}`);
+  } catch (e) { return toast(e.message, true); }
+
+  trackEditor = {
+    id,
+    audio: data.audio.map((t) => ({ ...t, mode: t.selected ? (t.opus ? "opus" : "copy") : "off" })),
+    subtitles: data.subtitles.map((t) => ({ ...t })),
+    editable: data.editable,
+  };
+  $("tracks-title").textContent = data.filename;
+  $("tracks-save").disabled = !data.editable;
+  $("tracks-note").textContent = data.editable
+    ? ""
+    : "This job is already encoding — tracks cannot be changed.";
+  renderTracks();
+  $("tracks-modal").classList.remove("hidden");
+}
+
+// Opus keeps the source channel layout, so the bitrate is simply the
+// per-channel allowance times the channel count.
+function projectedKbps(track) {
+  const perChannel = config?.audio?.opus_bitrate_per_channel ?? 64;
+  return (track.channels || 2) * perChannel;
+}
+
+function isAlreadyOpus(track) {
+  return (config?.audio?.skip_already_opus ?? true)
+    && (track.codec || "").toLowerCase() === "opus";
+}
+
+function renderTracks() {
+  const body = $("tracks-body");
+  body.textContent = "";
+  const { audio, subtitles, editable } = trackEditor;
+
+  body.appendChild(groupHeading("Audio"));
+  if (audio.length === 0) body.appendChild(emptyNote("No audio tracks"));
+  for (const track of audio) {
+    const row = document.createElement("div");
+    row.className = "track-row";
+
+    const info = document.createElement("div");
+    info.className = "track-info";
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = track.name;
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    sub.textContent = `${track.bitrate} · ${track.sample_rate}`;
+    info.append(name, sub);
+
+    const target = document.createElement("span");
+    target.className = "track-target";
+
+    const select = document.createElement("select");
+    for (const [value, text] of [["off", "Exclude"], ["copy", "Copy"], ["opus", "Opus"]]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      select.appendChild(option);
+    }
+    select.value = track.mode;
+    select.disabled = !editable;
+    select.addEventListener("change", () => {
+      track.mode = select.value;
+      setTarget(target, track);
+    });
+    setTarget(target, track);
+
+    row.append(info, target, select);
+    body.appendChild(row);
+  }
+
+  body.appendChild(groupHeading("Subtitles"));
+  if (subtitles.length === 0) body.appendChild(emptyNote("No subtitle tracks"));
+  for (const track of subtitles) {
+    const row = document.createElement("div");
+    row.className = "track-row";
+
+    const info = document.createElement("div");
+    info.className = "track-info";
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = track.name;
+    info.appendChild(name);
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = track.selected;
+    box.disabled = !editable;
+    box.addEventListener("change", () => { track.selected = box.checked; });
+
+    row.append(info, box);
+    body.appendChild(row);
+  }
+}
+
+function setTarget(node, track) {
+  if (track.mode !== "opus") {
+    node.textContent = "";
+  } else if (isAlreadyOpus(track)) {
+    node.textContent = "already Opus — copied";
+  } else {
+    node.textContent = `→ Opus ${projectedKbps(track)}k`;
+  }
+}
+
+function groupHeading(text) {
+  const node = document.createElement("div");
+  node.className = "track-group";
+  node.textContent = text;
+  return node;
+}
+
+function emptyNote(text) {
+  const node = document.createElement("div");
+  node.className = "muted";
+  node.textContent = text;
+  return node;
+}
+
+$("tracks-save").addEventListener("click", async () => {
+  if (!trackEditor) return;
+  const { id, audio, subtitles } = trackEditor;
+  try {
+    await post("/api/job/tracks", {
+      id,
+      audio_indices: audio.filter((t) => t.mode !== "off").map((t) => t.index),
+      audio_to_opus: audio.filter((t) => t.mode === "opus").map((t) => t.index),
+      subtitle_indices: subtitles.filter((t) => t.selected).map((t) => t.index),
+    });
+    closeTracks();
+    toast("Tracks updated");
     refreshQueue();
   } catch (e) { toast(e.message, true); }
 });
@@ -377,6 +550,8 @@ const RF_TIERS = [["sd", "RF SD"], ["hd", "RF HD (720p)"], ["full_hd", "RF 1080p
 
 const RF_KEY = { SvtAv1: "crf", Nvenc: "nvenc_cq", Qsv: "qsv_quality", Amf: "amf_quality" };
 
+const AUDIO_MODES = [["copy", "Copy the source tracks"], ["opus", "Convert to Opus"]];
+
 function settingsFields(cfg) {
   const fields = [
     { group: "General" },
@@ -407,6 +582,10 @@ function settingsFields(cfg) {
     { path: "tracks.preferred_audio_languages", label: "Preferred audio languages", type: "list" },
     { path: "tracks.preferred_subtitle_languages", label: "Preferred subtitle languages", type: "list" },
     { path: "tracks.select_all_fallback", label: "Select all tracks as fallback", type: "checkbox" },
+    { group: "Audio" },
+    { path: "audio.default_mode", label: "New files default to", type: "select", options: AUDIO_MODES },
+    { path: "audio.opus_bitrate_per_channel", label: "Opus kbps per channel", type: "number", min: 16, max: 256 },
+    { path: "audio.skip_already_opus", label: "Skip tracks already in Opus", type: "checkbox" },
     { group: "Daemon (restart required)" },
     { path: "daemon.enabled", label: "Web daemon enabled", type: "checkbox" },
     { path: "daemon.bind_address", label: "Bind address", type: "text" },

@@ -483,6 +483,27 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 }
             }
         }
+        KeyCode::Char('o') => {
+            let cursor = app.audio_cursor;
+            if let Some(job) = app.current_config_job_mut()
+                && let Some(track) = job.audio_tracks.get(cursor)
+            {
+                let idx = track.index;
+                job.track_selection.toggle_audio_opus(idx);
+            }
+        }
+        KeyCode::Char('O') => {
+            if let Some(job) = app.current_config_job_mut() {
+                // All-or-nothing across the *selected* tracks, so the second
+                // press undoes the first rather than doing nothing.
+                let selected = job.track_selection.audio_indices.clone();
+                let all_opus = !selected.is_empty()
+                    && selected.iter().all(|&i| job.track_selection.is_opus(i));
+                for idx in selected {
+                    job.track_selection.set_audio_opus(idx, !all_opus);
+                }
+            }
+        }
         KeyCode::Char('r' | 'R') => {
             let output_config = app.config.output.clone();
             if let Some(job) = app.current_config_job_mut() {
@@ -735,6 +756,27 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         }
         ConfigField::DaemonEnabled => {
             app.config.daemon.enabled = !app.config.daemon.enabled;
+        }
+        ConfigField::AudioDefaultMode => {
+            app.config.audio.default_mode = if increase {
+                app.config.audio.default_mode.next()
+            } else {
+                app.config.audio.default_mode.prev()
+            };
+        }
+        ConfigField::OpusBitratePerChannel => {
+            use crate::config::AudioConfig;
+            let current = app.config.audio.opus_bitrate_per_channel;
+            let next = if increase {
+                current.saturating_add(8)
+            } else {
+                current.saturating_sub(8)
+            };
+            app.config.audio.opus_bitrate_per_channel =
+                next.clamp(AudioConfig::MIN_PER_CHANNEL, AudioConfig::MAX_PER_CHANNEL);
+        }
+        ConfigField::SkipAlreadyOpus => {
+            app.config.audio.skip_already_opus = !app.config.audio.skip_already_opus;
         }
         ConfigField::RfSd
         | ConfigField::RfHd

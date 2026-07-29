@@ -13,6 +13,7 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 - **Quality presets** — Low, Medium, or High shifts CRF/CQ values across every resolution tier at once; Custom leaves each tier's values manually editable
 - **VMAF quality verification** — Scores output quality after encoding; deletes the source only when a VMAF score actually met the threshold (never for remuxes, disabled VMAF, or tone-mapped DV profile 5)
 - **Track selection** — Auto-selects audio and subtitle tracks by preferred language; Selects all tracks or first track when no match is found
+- **Audio transcoding** — Copy audio tracks untouched (the default) or convert any of them to Opus at the source's own channel layout; per-track in both the TUI and the web UI
 - **Daemon mode with web UI** — Run headless and manage the queue from a browser (see [Daemon Mode](#daemon-mode-and-web-ui))
 - **Multi-language UI** — Interface available in English (default), Italian, Spanish, French, German, and Chinese; selectable in Settings
 - **Configurable** — All key settings adjustable through the built-in configuration screen or `~/.config/av1converter/config.toml`
@@ -27,6 +28,7 @@ Not every FFmpeg build includes every feature this tool uses. What you need depe
 |-------------------|-----------|-----------|
 | `libsvtav1` | Software AV1 encoding; Dolby Vision passthrough (AV1 profile 10) | Yes, unless you only use hardware encoders |
 | `libvmaf` | VMAF quality verification (and source auto-deletion, which depends on it) | Optional |
+| `libopus` | Converting audio tracks to Opus | Optional — only if you transcode audio |
 | `libplacebo` + a working Vulkan driver | Dolby Vision **profile 5** → HDR10 tone-mapping | Optional — only for DV profile 5 conversion |
 | `av1_nvenc` / `av1_qsv` / `av1_amf` | Hardware encoding (needs a matching GPU driver: NVIDIA driver, Intel media driver + libvpl, or AMD AMF runtime) | Optional |
 
@@ -36,6 +38,7 @@ Check what your build supports:
 ffmpeg -version                                  # 8.0+ required for DV passthrough
 ffmpeg -h encoder=libsvtav1 | grep dolbyvision   # DV passthrough
 ffmpeg -filters | grep libvmaf                   # VMAF verification
+ffmpeg -encoders | grep libopus                  # Opus audio transcoding
 ffmpeg -filters | grep libplacebo                # DV profile 5 tone-mapping
 vulkaninfo --summary                             # Vulkan driver (DV profile 5 only)
 ```
@@ -101,11 +104,13 @@ Each file in the queue is processed in one of two modes. The mode is chosen per 
 
 ### Encode Mode (Encode Video → AV1)
 
-The default mode for non-AV1 sources. The video stream is re-encoded to AV1 using the detected hardware or software encoder, with parameters chosen automatically from the resolution and HDR format (see [Encoding Presets](#encoding-presets)). Selected audio and subtitle tracks are copied into the output. Output is written to the configured container (e.g. `mkv`) with the configured suffix (default `_av1`), and the result is verified with VMAF before the source can be deleted.
+The default mode for non-AV1 sources. The video stream is re-encoded to AV1 using the detected hardware or software encoder, with parameters chosen automatically from the resolution and HDR format (see [Encoding Presets](#encoding-presets)). Selected subtitle tracks are copied into the output, as are audio tracks unless you convert them to Opus (see [Audio Transcoding](#audio-transcoding)). Output is written to the configured container (e.g. `mkv`) with the configured suffix (default `_av1`), and the result is verified with VMAF before the source can be deleted.
 
 ### Demux/Remux Mode (Remux Only → Copy Video)
 
-A fast, lossless repackaging mode that copies the video, audio, and subtitle streams without recompression (`-c copy`). Use it to change the container, drop unwanted audio/subtitle tracks, or clean up files that are already AV1 — no quality is lost and the operation is near-instant since nothing is re-encoded. The output keeps the source file's container extension and uses the `_remux` suffix. Because no encoding happens, VMAF verification is skipped.
+A fast, lossless repackaging mode that copies the video, audio, and subtitle streams without recompression. Use it to change the container, drop unwanted audio/subtitle tracks, or clean up files that are already AV1 — no quality is lost and the operation is near-instant since nothing is re-encoded. The output keeps the source file's container extension and uses the `_remux` suffix. Because no video encoding happens, VMAF verification is skipped.
+
+Audio is the one exception: tracks you convert to Opus are re-encoded even here, so an already-AV1 file with an oversized lossless track can be shrunk without touching the video.
 
 Files that are already encoded in AV1 default to demux/remux mode automatically; everything else defaults to encode mode.
 
@@ -117,6 +122,28 @@ When a Dolby Vision source is queued for encoding, a dialog asks how to convert 
 2. **AV1 with true HDR10** — the DV layer is dropped and the HDR10 static metadata (mastering display, MaxCLL/MaxFALL) from the source is written into the AV1 stream.
 
 **Profile 5** sources (IPT-PQ-c2, no HDR10-compatible base layer) are special: converting to HDR10 tone-maps the video on the GPU via `libplacebo` (requires Vulkan), while keeping DV produces output that only plays correctly on DV-capable players. HDR10 conversion is the recommended default for profile 5; keeping DV is recommended for profiles 7/8. VMAF verification is skipped for tone-mapped profile 5 output, since the pixels are intentionally changed.
+
+### Audio Transcoding
+
+Audio tracks are copied untouched by default. Any track can instead be converted to Opus, and the choice is per track: a file can keep its lossless track and shrink the commentary, or the other way round.
+
+The channel layout is never changed — a 5.1 track becomes 5.1 Opus, stereo becomes stereo — and the bitrate follows from it, at 64 kbps per channel by default:
+
+| Source track | Opus output |
+|--------------|-------------|
+| Mono | 64 kbps |
+| Stereo | 128 kbps |
+| 5.1 | 384 kbps |
+| 7.1 | 512 kbps |
+
+Set the allowance per channel with `opus_bitrate_per_channel` (16–256 kbps) to shift the whole table at once. Tracks that are already Opus are left alone rather than re-encoded, unless you turn `skip_already_opus` off.
+
+In the TUI, press `o` on a track in the track configuration screen (`O` applies it to every selected track); the row shows the resulting bitrate, e.g. `[~] 0: eng (DTS 5.1) → OPUS 384k`. In the web UI, use the **Tracks** button on any queued job that has not started encoding yet. `audio.default_mode` sets what newly queued files start out as, which is what the daemon uses when nobody configures a job by hand.
+
+Two things worth knowing:
+
+- **Sources are never auto-deleted when audio was transcoded.** `delete_source_on_success` relies on a VMAF score, and VMAF compares video only — it is no evidence that a lossy Opus track is an acceptable replacement for the lossless TrueHD or DTS-HD original. Those jobs keep the source and log why.
+- **Object-based audio does not survive.** Converting a TrueHD Atmos or DTS:X track to Opus keeps the channel bed and discards the object metadata. Copy those tracks if you want them intact.
 
 ### Keyboard Controls
 
@@ -131,13 +158,15 @@ When a Dolby Vision source is queued for encoding, a dialog asks how to convert 
 | `d` | Change Dolby Vision handling (track config screen, DV sources) |
 | `a` | Toggle all audio tracks |
 | `s` | Toggle all subtitle tracks |
+| `o` | Convert the highlighted audio track to Opus (track config screen) |
+| `O` | Convert all selected audio tracks to Opus (track config screen) |
 | `h` / `l` | Decrease / Increase config value |
 | `s` | Save configuration (config screen) |
 | `q` | Quit (with confirmation) |
 
 ## Daemon Mode and Web UI
 
-The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, pause, cancel, remove), and a settings page. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder.
+The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, pause, cancel, remove), and a settings page. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder; the **Tracks** button on a queued job opens the per-track audio and subtitle choices for that file, up until its encode starts.
 
 Enable it in Settings (or set `enabled = true` under `[daemon]`), then:
 
@@ -214,6 +243,11 @@ output_directory = null    # Custom output path (used when same_directory = fals
 preferred_audio_languages = ["eng", "ita"]
 preferred_subtitle_languages = ["eng"]
 select_all_fallback = true # Select all tracks if no preferred language is found
+
+[audio]
+default_mode = "copy"          # What newly queued files start as: "copy" or "opus"
+opus_bitrate_per_channel = 64  # kbps per channel (16–256); stereo → 128k, 5.1 → 384k
+skip_already_opus = true       # Leave tracks that are already Opus alone
 
 [daemon]
 enabled = false            # Required before `--daemon` will start
