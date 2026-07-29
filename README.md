@@ -180,14 +180,24 @@ Background mode is Unix-only; elsewhere use `--daemon-foreground`. Logs go to `~
 
 ### Security
 
-The web UI can browse the filesystem, start encodes and rewrite the configuration, and there is no authentication by default. It binds to `127.0.0.1` so that only this machine can reach it.
+The web UI can browse the filesystem, start encodes and rewrite the configuration, so it binds to `127.0.0.1` and is guarded by an access token.
 
-Before exposing it to a network, set both:
+**The token is generated for you.** If `auth_token` is empty when the daemon starts, a random one is minted and saved to `config.toml`, and the startup output prints the URL that carries it:
 
-- `auth_token` — a shared secret required by every `/api` request. Open the UI once as `http://host:8399/?token=YOUR_TOKEN`; the browser keeps it for the session.
-- `browse_root` — the only directory the file browser and the queue will accept paths under.
+```
+Web UI listening on http://127.0.0.1:8399/?token=aa2006351b5214a820e3fdc64da870af
+```
 
-The daemon prints a warning at startup if it is bound to a non-loopback address with no token set.
+Open that link once and the browser keeps the token for the session; `av1converter --status` prints it again whenever you need it. Clearing `auth_token` does not disable authentication — a new token is generated on the next start.
+
+Two things are worth knowing before exposing the daemon to a network:
+
+- `browse_root` — set it. It is the only directory the file browser and the queue will accept paths under, and it is the difference between "manage my media library" and "read every file this user can read".
+- `bind_address` — leave it on loopback unless you mean it. The daemon warns at startup when it is reachable from the network.
+
+`browse_root`, `auth_token`, `bind_address` and `port` are deliberately **not** editable from the web UI: a client that could rewrite them could widen its own access. Change them in `config.toml` or the TUI, then restart. Everything else on the settings page applies from the next job.
+
+The token is also what stops a website you visit from reaching the daemon. A page that re-points its own hostname at `127.0.0.1` becomes same-origin with it, so neither CORS nor the JSON content-type requirement applies — but the page still cannot produce your token. As a second line of defence, whenever the token is empty `/api` additionally rejects `Host` headers that are names rather than IP addresses or `localhost`, since a name is exactly what that attack needs.
 
 ## Encoding Presets
 
@@ -254,10 +264,10 @@ enabled = false            # Required before `--daemon` will start
 bind_address = "127.0.0.1" # Loopback by default; see the security note below
 port = 8399
 browse_root = ""           # Confine the web file browser to this directory ("" = whole filesystem)
-auth_token = ""            # Shared secret required by /api ("" = no authentication)
+auth_token = ""            # Shared secret required by /api ("" = one is generated on next start)
 ```
 
-If `config.toml` cannot be parsed it is kept as `config.toml.bak` and defaults are used for that run, so a typo never costs you your settings.
+If `config.toml` cannot be parsed it is left untouched and defaults are used for that run, so a typo never costs you your settings.
 
 Each resolution preset also exposes per-encoder quality values (`crf`, `nvenc_cq`, `qsv_quality`, `amf_quality`) and `film_grain` synthesis strength.
 

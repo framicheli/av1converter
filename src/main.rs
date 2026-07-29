@@ -64,7 +64,7 @@ fn parse_cli() -> Cli {
 /// an instance is already running. In background mode the process re-execs
 /// itself detached and the parent only reports the outcome.
 fn run_daemon_entry(foreground: bool) -> io::Result<()> {
-    let config = config::AppConfig::load();
+    let mut config = config::AppConfig::load();
     let lang = config.language;
     if !config.daemon.enabled {
         eprintln!("{}", t(lang, Msg::DaemonDisabledError));
@@ -75,15 +75,25 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
         std::process::exit(1);
     }
 
+    // Anyone who can reach the port can browse the filesystem, queue encodes
+    // and rewrite the configuration. Minting a token on first start costs the
+    // user one click on the printed URL and closes that by default; leaving it
+    // open would hand the same access to every process on the machine.
+    if config.daemon.auth_token.is_empty() {
+        config.daemon.auth_token =
+            config::DaemonConfig::generate_token().map_err(io::Error::other)?;
+        if let Err(e) = config.save() {
+            eprintln!("{} ({e})", t(lang, Msg::SaveFailed));
+            std::process::exit(1);
+        }
+        println!("{}", t(lang, Msg::DaemonTokenGenerated));
+    }
+
     if !foreground {
         match daemon::lifecycle::spawn_background() {
             Ok(pid) => {
                 println!("{} (PID {pid})", t(lang, Msg::DaemonStarted));
-                println!(
-                    "{} http://{}",
-                    t(lang, Msg::DaemonListening),
-                    config.daemon.listen_address()
-                );
+                println!("{} {}", t(lang, Msg::DaemonListening), config.daemon.url());
                 println!("{}", t(lang, Msg::DaemonStopHint));
                 return Ok(());
             }
@@ -128,11 +138,7 @@ fn daemon_status_entry() {
     match daemon::lifecycle::running_pid() {
         Some(pid) => {
             println!("{} (PID {pid})", t(lang, Msg::DaemonRunning));
-            println!(
-                "{} http://{}",
-                t(lang, Msg::DaemonListening),
-                config.daemon.listen_address()
-            );
+            println!("{} {}", t(lang, Msg::DaemonListening), config.daemon.url());
         }
         None => println!("{}", t(lang, Msg::DaemonNotRunning)),
     }

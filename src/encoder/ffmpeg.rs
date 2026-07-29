@@ -99,7 +99,13 @@ pub fn encode_video(
     let args = build_ffmpeg_args(&encode_params);
 
     // Create progress file
-    let progress_file = std::env::temp_dir().join(format!("av1c_progress_{tag}.txt"));
+    let progress_file = match crate::utils::scratch_path(&format!("av1c_progress_{tag}.txt")) {
+        Ok(path) => path,
+        Err(e) => {
+            let _ = std::fs::remove_file(&partial);
+            return EncodeResult::Error(e);
+        }
+    };
     if File::create(&progress_file).is_err() {
         let _ = std::fs::remove_file(&partial);
         return EncodeResult::Error("Failed to create progress file".to_string());
@@ -111,7 +117,14 @@ pub fn encode_video(
     args.insert(3, progress_file.to_string_lossy().to_string());
 
     // Redirect stderr to a temp file to avoid pipe buffer deadlock
-    let stderr_path = std::env::temp_dir().join(format!("av1c_stderr_{tag}.txt"));
+    let stderr_path = match crate::utils::scratch_path(&format!("av1c_stderr_{tag}.txt")) {
+        Ok(path) => path,
+        Err(e) => {
+            let _ = std::fs::remove_file(&progress_file);
+            let _ = std::fs::remove_file(&partial);
+            return EncodeResult::Error(e);
+        }
+    };
     let stderr_file = match File::create(&stderr_path) {
         Ok(f) => f,
         Err(e) => {

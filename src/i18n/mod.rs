@@ -246,6 +246,8 @@ pub enum Msg {
     DaemonDisabledError,
     DaemonListening,
     DaemonPublicNoToken,
+    DaemonTokenGenerated,
+    EncoderUnavailable,
     DaemonShuttingDown,
     DaemonStarted,
     DaemonStartFailed,
@@ -1498,6 +1500,42 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Interface web à l'écoute sur",
             De => "Web-UI lauscht auf",
             Zh => "Web 界面监听于",
+        },
+        Msg::EncoderUnavailable => match lang {
+            En => {
+                "Warning: the selected encoder is missing from this FFmpeg build; every encode will fail."
+            }
+            It => {
+                "Attenzione: il codificatore selezionato non è presente in questa build di FFmpeg; ogni conversione fallirà."
+            }
+            Es => {
+                "Aviso: el codificador seleccionado no está en esta compilación de FFmpeg; todas las conversiones fallarán."
+            }
+            Fr => {
+                "Attention : l'encodeur sélectionné est absent de cette version de FFmpeg ; tous les encodages échoueront."
+            }
+            De => {
+                "Warnung: Der gewählte Encoder fehlt in diesem FFmpeg-Build; jede Kodierung wird fehlschlagen."
+            }
+            Zh => "警告：所选编码器不在此 FFmpeg 构建中；所有转换都将失败。",
+        },
+        Msg::DaemonTokenGenerated => match lang {
+            En => {
+                "No access token was set, so one has been generated and saved to the config. Open the URL below to authorise your browser."
+            }
+            It => {
+                "Non era impostato alcun token di accesso: ne è stato generato uno e salvato nella configurazione. Apri l'URL qui sotto per autorizzare il browser."
+            }
+            Es => {
+                "No había ningún token de acceso configurado, así que se ha generado uno y guardado en la configuración. Abre la URL de abajo para autorizar tu navegador."
+            }
+            Fr => {
+                "Aucun jeton d'accès n'était défini : un jeton a été généré et enregistré dans la configuration. Ouvrez l'URL ci-dessous pour autoriser votre navigateur."
+            }
+            De => {
+                "Es war kein Zugriffstoken gesetzt, daher wurde eines erzeugt und in der Konfiguration gespeichert. Öffnen Sie die URL unten, um Ihren Browser zu autorisieren."
+            }
+            Zh => "未设置访问令牌，已生成一个并保存到配置中。请打开下方的网址以授权您的浏览器。",
         },
         Msg::DaemonPublicNoToken => match lang {
             En => {

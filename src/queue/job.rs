@@ -3,6 +3,7 @@ use crate::config::{AudioConfig, TrackPresetConfig};
 use crate::tracks::{AudioTrack, SubtitleTrack, TrackSelection};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 /// Status of a job in the encoding queue
 #[derive(Debug, Clone)]
@@ -171,9 +172,21 @@ impl EncodingJob {
 /// link cycle from recursing forever and to list a file reachable by two routes
 /// only once.
 pub fn collect_video_files(dir: &Path, paths: &mut Vec<PathBuf>) {
+    collect_video_files_impl(dir, paths, None);
+}
+
+/// Recursively collect video files without following links outside `root`.
+pub fn collect_video_files_within(dir: &Path, root: &Path, paths: &mut Vec<PathBuf>) {
+    let Ok(root) = root.canonicalize() else {
+        return;
+    };
+    collect_video_files_impl(dir, paths, Some(&root));
+}
+
+fn collect_video_files_impl(dir: &Path, paths: &mut Vec<PathBuf>, root: Option<&Path>) {
     let mut seen_dirs = HashSet::new();
     let mut seen_files = HashSet::new();
-    collect_video_files_inner(dir, paths, &mut seen_dirs, &mut seen_files);
+    collect_video_files_inner(dir, paths, &mut seen_dirs, &mut seen_files, root);
 }
 
 fn collect_video_files_inner(
@@ -181,25 +194,30 @@ fn collect_video_files_inner(
     paths: &mut Vec<PathBuf>,
     seen_dirs: &mut HashSet<PathBuf>,
     seen_files: &mut HashSet<PathBuf>,
+    root: Option<&Path>,
 ) {
     let Ok(real_dir) = dir.canonicalize() else {
         return;
     };
-    if !seen_dirs.insert(real_dir) {
+    if root.is_some_and(|root| !real_dir.starts_with(root)) {
+        return;
+    }
+    if !seen_dirs.insert(real_dir.clone()) {
         return;
     }
 
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = std::fs::read_dir(real_dir) else {
         return;
     };
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
         if path.is_dir() {
-            collect_video_files_inner(&path, paths, seen_dirs, seen_files);
+            collect_video_files_inner(&path, paths, seen_dirs, seen_files, root);
         } else if is_video_file(&path) {
             let real = path.canonicalize().unwrap_or_else(|_| path.clone());
-            if seen_files.insert(real) {
-                paths.push(path);
+            if !root.is_some_and(|root| !real.starts_with(root)) && seen_files.insert(real.clone())
+            {
+                paths.push(if root.is_some() { real } else { path });
             }
         }
     }
@@ -220,15 +238,32 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
         let parent = output.parent().unwrap_or(Path::new("."));
         let stem = output.file_stem().unwrap_or_default().to_string_lossy();
         let extension = output.extension().map(|ext| ext.to_string_lossy());
-        for n in 2.. {
-            let name = extension
-                .as_ref()
-                .map_or_else(|| format!("{stem}_{n}"), |ext| format!("{stem}_{n}.{ext}"));
-            let candidate = parent.join(name);
-            if std::fs::symlink_metadata(&candidate).is_err() && used.insert(candidate.clone()) {
+        // Bounded: a thousand files of one name in one directory is a mistake
+        // somewhere else, and silently counting to `i32::MAX` would only hide it.
+        let free = (2..1000)
+            .map(|n| {
+                let name = extension
+                    .as_ref()
+                    .map_or_else(|| format!("{stem}_{n}"), |ext| format!("{stem}_{n}.{ext}"));
+                parent.join(name)
+            })
+            .find(|candidate| {
+                !used.contains(candidate) && std::fs::symlink_metadata(candidate).is_err()
+            });
+
+        match free {
+            Some(candidate) => {
+                used.insert(candidate.clone());
                 job.output_path = Some(candidate);
-                break;
             }
+            // Left pointing at the taken path on purpose: the encoder refuses to
+            // overwrite an existing output, so the job fails loudly instead of
+            // quietly writing over something.
+            None => warn!(
+                "No free output name near {} for {}",
+                output.display(),
+                job.path.display()
+            ),
         }
     }
 }
@@ -417,6 +452,26 @@ mod tests {
         assert!(found[0].ends_with("clip.mkv"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confined_collection_never_follows_an_escaping_directory() {
+        let base = std::env::temp_dir().join(format!("av1c_confined_{}", std::process::id()));
+        let root = base.join("root");
+        let outside = base.join("outside");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("inside.mkv"), b"x").unwrap();
+        std::fs::write(outside.join("outside.mkv"), b"x").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+
+        let mut found = Vec::new();
+        collect_video_files_within(&root, &root, &mut found);
+        assert_eq!(found, vec![root.join("inside.mkv").canonicalize().unwrap()]);
+
+        let _ = std::fs::remove_dir_all(base);
     }
 
     /// Remux keeps the source container, so it needs its own distinct suffix.

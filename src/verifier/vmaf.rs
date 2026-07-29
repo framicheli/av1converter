@@ -116,8 +116,11 @@ pub fn calculate_vmaf(
     cancel_flag: &AtomicBool,
 ) -> Result<VmafOutcome, AppError> {
     let uid = VMAF_COUNTER.fetch_add(1, Ordering::Relaxed);
+    // libvmaf opens `log_path` itself, so the path has to be somewhere nobody
+    // else can have pre-planted a symlink under the name.
     let json_output =
-        std::env::temp_dir().join(format!("av1c_vmaf_{}_{}.json", std::process::id(), uid));
+        crate::utils::scratch_path(&format!("av1c_vmaf_{}_{}.json", std::process::id(), uid))
+            .map_err(AppError::Vmaf)?;
 
     let (model_suffix, model_name) = if width >= 3840 && hdr_type.is_hdr() {
         (":model='version=vmaf_4k_v0.6.1neg'", "vmaf_4k_v0.6.1neg")
@@ -152,11 +155,12 @@ pub fn calculate_vmaf(
 
     // stderr goes to a file rather than a pipe: a full pipe buffer would block
     // ffmpeg forever while nothing is reading it.
-    let stderr_path = std::env::temp_dir().join(format!(
+    let stderr_path = crate::utils::scratch_path(&format!(
         "av1c_vmaf_stderr_{}_{}.txt",
         std::process::id(),
         uid
-    ));
+    ))
+    .map_err(AppError::Vmaf)?;
     let stderr_file = std::fs::File::create(&stderr_path)
         .map_err(|e| AppError::Vmaf(format!("Failed to create VMAF log file: {e}")))?;
 

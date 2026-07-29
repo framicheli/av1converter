@@ -590,12 +590,11 @@ function settingsFields(cfg) {
     { path: "audio.default_mode", label: "New files default to", type: "select", options: AUDIO_MODES },
     { path: "audio.opus_bitrate_per_channel", label: "Opus kbps per channel", type: "number", min: 16, max: 256 },
     { path: "audio.skip_already_opus", label: "Skip tracks already in Opus", type: "checkbox" },
-    { group: "Daemon (restart required)" },
-    { path: "daemon.enabled", label: "Web daemon enabled", type: "checkbox" },
-    { path: "daemon.bind_address", label: "Bind address", type: "text" },
-    { path: "daemon.port", label: "Port", type: "number", min: 1, max: 65535 },
-    { path: "daemon.browse_root", label: "Browse root (blank = whole filesystem)", type: "text" },
-    { path: "daemon.auth_token", label: "Access token (blank = no auth)", type: "text" },
+    // The [daemon] block is deliberately absent: browse_root confines this file
+    // browser and auth_token guards this API, so the server refuses to let a
+    // client widen its own access. Edit those in config.toml or the TUI.
+    { group: "Daemon" },
+    { note: "Bind address, port, browse root and access token are only editable in config.toml or the TUI, and need a restart." },
   );
   return fields;
 }
@@ -618,6 +617,13 @@ function buildSettingsForm() {
       heading.className = "field-group";
       heading.textContent = field.group;
       form.appendChild(heading);
+      continue;
+    }
+    if (field.note) {
+      const note = document.createElement("div");
+      note.className = "muted";
+      note.textContent = field.note;
+      form.appendChild(note);
       continue;
     }
     const row = document.createElement("div");

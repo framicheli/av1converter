@@ -83,7 +83,11 @@ impl QueueState {
         let total_estimated_secs = elapsed_secs / (progress / 100.0);
         let remaining_secs = total_estimated_secs - elapsed_secs;
         if remaining_secs > 0.0 {
-            Some(Duration::from_secs_f64(remaining_secs))
+            // `try_from_secs_f64` rather than the panicking form: an estimate
+            // built by dividing by a progress value approaching zero can
+            // overflow `Duration`, and this runs on every dashboard poll — the
+            // last place that should be able to take a request handler down.
+            Duration::try_from_secs_f64(remaining_secs).ok()
         } else {
             None
         }

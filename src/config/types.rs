@@ -304,6 +304,47 @@ impl DaemonConfig {
         )
     }
 
+    /// The URL to open the web UI with, carrying the access token when one is
+    /// set so the browser is authorised by following the link once.
+    ///
+    /// A wildcard bind is shown as loopback: `http://0.0.0.0:8399/` is a valid
+    /// thing to listen on but not a thing any browser can open, and this string
+    /// is printed for the user to click.
+    pub fn url(&self) -> String {
+        let host = match self.bind_address.parse::<std::net::IpAddr>() {
+            Ok(ip) if ip.is_unspecified() && ip.is_ipv4() => "127.0.0.1".to_string(),
+            Ok(ip) if ip.is_unspecified() => "[::1]".to_string(),
+            Ok(ip) => std::net::SocketAddr::new(ip, self.port)
+                .to_string()
+                .rsplit_once(':')
+                .map_or_else(|| self.bind_address.clone(), |(host, _)| host.to_string()),
+            Err(_) => self.bind_address.clone(),
+        };
+        let authority = format!("{host}:{}", self.port);
+        if self.auth_token.is_empty() {
+            format!("http://{authority}/")
+        } else {
+            let token = self
+                .auth_token
+                .bytes()
+                .fold(String::new(), |mut out, byte| {
+                    use std::fmt::Write;
+                    if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                        out.push(char::from(byte));
+                    } else {
+                        let _ = write!(out, "%{byte:02X}");
+                    }
+                    out
+                });
+            format!("http://{authority}/?token={token}")
+        }
+    }
+
+    /// A fresh 128-bit access token, hex encoded.
+    pub fn generate_token() -> Result<String, String> {
+        crate::utils::random_hex(16)
+    }
+
     /// Bind addresses that expose the daemon beyond this machine.
     pub fn binds_publicly(&self) -> bool {
         match self.bind_address.parse::<std::net::IpAddr>() {

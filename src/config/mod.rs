@@ -7,6 +7,7 @@ pub use types::*;
 use crate::error::AppError;
 pub use crate::i18n::Language;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
@@ -73,28 +74,19 @@ impl AppConfig {
                     // config with one typo would otherwise be silently replaced
                     // by defaults, losing every setting in it.
                     warn!("Failed to load config: {e:?}. Using defaults.");
-                    let backup = config_path.with_extension("toml.bak");
-                    match std::fs::rename(&config_path, &backup) {
-                        Ok(()) => eprintln!(
-                            "Could not parse {}: {e}\nIt has been kept as {} and defaults are in use.",
-                            config_path.display(),
-                            backup.display()
-                        ),
-                        Err(rename_err) => {
-                            warn!("Could not preserve the unreadable config: {rename_err}");
-                            eprintln!(
-                                "Could not parse {}: {e}\nUsing defaults; the file was left untouched.",
-                                config_path.display()
-                            );
-                            return Self::default();
-                        }
-                    }
+                    eprintln!(
+                        "Could not parse {}: {e}\nUsing defaults; the file was left untouched.",
+                        config_path.display()
+                    );
+                    return Self::default();
                 }
             }
         }
 
-        let config = Self::default();
-        // Save default config for future editing
+        let config = Self {
+            encoder: encoder_detect::detect_encoder(),
+            ..Self::default()
+        };
         if let Err(e) = config.save() {
             warn!("Failed to save default config: {e:?}");
         }
@@ -110,11 +102,61 @@ impl AppConfig {
                 .map_err(|e| AppError::Config(format!("Failed to create config directory: {e}")))?;
         }
 
+        Self::preserve_unreadable(&config_path)?;
+
         let toml_string = toml::to_string_pretty(self)?;
-        std::fs::write(&config_path, toml_string)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            options.mode(0o600);
+            if config_path.exists() {
+                std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| AppError::Config(format!("Failed to secure config file: {e}")))?;
+            }
+        }
+        let mut file = options
+            .open(&config_path)
+            .map_err(|e| AppError::Config(format!("Failed to open config file: {e}")))?;
+        file.write_all(toml_string.as_bytes())
             .map_err(|e| AppError::Config(format!("Failed to write config file: {e}")))?;
 
         info!("Saved config to {}", config_path.display());
+        Ok(())
+    }
+
+    /// Copy `path` aside if it exists but cannot be parsed.
+    fn preserve_unreadable(path: &std::path::Path) -> Result<(), AppError> {
+        if !path.exists() || Self::load_from_file(path).is_ok() {
+            return Ok(());
+        }
+        let backup = path.with_extension("toml.bak");
+        let contents = std::fs::read(path).map_err(|e| {
+            AppError::Config(format!("Could not read {} for backup: {e}", path.display()))
+        })?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&backup).map_err(|e| {
+            AppError::Config(format!(
+                "Refusing to overwrite the unreadable config at {}: could not create backup {} ({e})",
+                path.display(),
+                backup.display()
+            ))
+        })?;
+        if let Err(e) = file.write_all(&contents) {
+            let _ = std::fs::remove_file(&backup);
+            return Err(AppError::Config(format!(
+                "Could not write backup {}: {e}",
+                backup.display()
+            )));
+        }
+        warn!("Kept the unreadable config as {}", backup.display());
         Ok(())
     }
 
@@ -260,6 +302,53 @@ mod tests {
         assert_eq!(loaded.audio.default_mode, AudioMode::Copy);
     }
 
+    /// A config with a typo in it is kept.
+    #[test]
+    fn an_unreadable_config_is_preserved_before_it_is_overwritten() {
+        let dir = std::env::temp_dir().join(format!("av1c_cfg_backup_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let backup = dir.join("config.toml.bak");
+
+        // A file that parses needs no copy.
+        std::fs::write(
+            &path,
+            toml::to_string_pretty(&AppConfig::default()).unwrap(),
+        )
+        .unwrap();
+        AppConfig::preserve_unreadable(&path).unwrap();
+        assert!(!backup.exists());
+
+        // One that does not is kept verbatim.
+        std::fs::write(&path, b"this is not = valid toml [[[").unwrap();
+        AppConfig::preserve_unreadable(&path).unwrap();
+        assert_eq!(
+            std::fs::read(&backup).unwrap(),
+            b"this is not = valid toml [[["
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&backup).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+        std::fs::write(&path, b"another invalid config [[[").unwrap();
+        assert!(AppConfig::preserve_unreadable(&path).is_err());
+        assert_eq!(
+            std::fs::read(&backup).unwrap(),
+            b"this is not = valid toml [[["
+        );
+
+        // A missing file is simply nothing to protect.
+        std::fs::remove_file(&path).unwrap();
+        AppConfig::preserve_unreadable(&path).unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A per-channel bitrate outside libopus' useful range is clamped, not
     /// passed through to be multiplied by the channel count.
     #[test]
@@ -326,6 +415,30 @@ mod tests {
         assert_eq!(cfg.daemon.port, 8399);
         assert_eq!(cfg.daemon.bind_address, "127.0.0.1");
         assert!(!cfg.daemon.binds_publicly());
+    }
+
+    /// The printed URL has to be a link the user can actually open, which a
+    /// wildcard bind address is not.
+    #[test]
+    fn wildcard_binds_are_shown_as_loopback() {
+        let mut cfg = DaemonConfig::default();
+        assert_eq!(cfg.url(), "http://127.0.0.1:8399/");
+
+        cfg.bind_address = "0.0.0.0".to_string();
+        assert_eq!(cfg.url(), "http://127.0.0.1:8399/");
+        cfg.bind_address = "::".to_string();
+        assert_eq!(cfg.url(), "http://[::1]:8399/");
+
+        // A real address is kept, and IPv6 stays bracketed.
+        cfg.bind_address = "192.168.1.10".to_string();
+        assert_eq!(cfg.url(), "http://192.168.1.10:8399/");
+        cfg.bind_address = "::1".to_string();
+        assert_eq!(cfg.url(), "http://[::1]:8399/");
+
+        cfg.auth_token = "abc".to_string();
+        assert_eq!(cfg.url(), "http://[::1]:8399/?token=abc");
+        cfg.auth_token = "a&b #+%".to_string();
+        assert_eq!(cfg.url(), "http://[::1]:8399/?token=a%26b%20%23%2B%25");
     }
 
     /// Only a non-loopback bind address counts as reaching the network.

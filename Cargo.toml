@@ -10,11 +10,12 @@ keywords = ["av1", "video", "ffmpeg", "encoding", "tui"]
 categories = ["command-line-utilities", "multimedia::video"]
 
 [dependencies]
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 ratatui = "0.30.2"
 crossterm = "0.29"
-toml = "1.1.2"
+toml = "1.1.4"
+getrandom = "0.3.4"
 
 # Daemon / web UI
 tiny_http = "0.12"

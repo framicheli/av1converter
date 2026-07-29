@@ -610,7 +610,6 @@ impl App {
                     job.status = JobStatus::Error {
                         message: "File path contains non-UTF-8 characters".to_string(),
                     };
-                    self.queue.error_count += 1;
                     paths.push(Err(AppError::Analysis(
                         "File path contains non-UTF-8 characters".to_string(),
                     )));
@@ -690,15 +689,31 @@ impl App {
 
     /// Poll the analysis channel; called every frame from the main loop.
     pub fn process_analysis_messages(&mut self) {
-        let results = if let Some(ref rx) = self.analysis_receiver {
-            rx.try_recv().ok()
-        } else {
+        let Some(ref rx) = self.analysis_receiver else {
             return;
         };
 
-        if let Some(results) = results {
-            self.analysis_receiver = None;
-            self.apply_analysis_results(results);
+        match rx.try_recv() {
+            Ok(results) => {
+                self.analysis_receiver = None;
+                self.apply_analysis_results(results);
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            // The analysis thread is gone without having sent anything, so no
+            // result is ever coming. Treating that as "nothing yet" would leave
+            // the Analyzing screen up forever with nothing said.
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.analysis_receiver = None;
+                for job in &mut self.queue.jobs {
+                    if !matches!(job.status, JobStatus::Error { .. }) {
+                        job.status = JobStatus::Error {
+                            message: "Analysis stopped unexpectedly".to_string(),
+                        };
+                        self.queue.error_count += 1;
+                    }
+                }
+                self.navigate_to_finish();
+            }
         }
     }
 
@@ -816,12 +831,10 @@ impl App {
                         stem, output_config.suffix, output_config.container
                     ))
                 });
-                let selected_subs: Vec<crate::tracks::SubtitleTrack> = j
-                    .subtitle_tracks
-                    .iter()
-                    .filter(|t| j.track_selection.subtitle_indices.contains(&t.index))
-                    .cloned()
-                    .collect();
+                let selected_subs = crate::tracks::selected_subtitles(
+                    &j.subtitle_tracks,
+                    &j.track_selection.subtitle_indices,
+                );
                 Some(WorkerJob {
                     index: i,
                     subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
@@ -862,10 +875,21 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn process_progress_messages(&mut self) {
+        let mut worker_gone = false;
         let messages: Vec<WorkerMessage> = if let Some(ref rx) = self.progress_receiver {
             let mut msgs = Vec::new();
-            while let Ok(msg) = rx.try_recv() {
-                msgs.push(msg);
+            loop {
+                match rx.try_recv() {
+                    Ok(msg) => msgs.push(msg),
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    // The worker thread is gone. Whatever it had left to say it
+                    // will never say, so the queue must not sit here showing a
+                    // frozen progress bar with `encoding_active` still set.
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        worker_gone = true;
+                        break;
+                    }
+                }
             }
             msgs
         } else {
@@ -979,6 +1003,26 @@ impl App {
             }
         }
 
+        // Nothing more is coming from a worker that has gone: close out whatever
+        // it left unfinished rather than waiting on it forever.
+        if worker_gone && self.encoding_active {
+            self.progress_receiver = None;
+            for job in &mut self.queue.jobs {
+                if matches!(
+                    job.status,
+                    JobStatus::Pending | JobStatus::Encoding { .. } | JobStatus::Verifying
+                ) {
+                    job.status = JobStatus::Error {
+                        message: "Encoding stopped unexpectedly".to_string(),
+                    };
+                    self.queue.error_count += 1;
+                    self.queue.encoding_progress_done += 1;
+                }
+            }
+            self.encoding_active = false;
+            should_finish = true;
+        }
+
         if should_finish {
             self.queue.end_time = Some(std::time::Instant::now());
             self.navigate_to_finish();
@@ -1026,7 +1070,12 @@ fn analyze_batch(
                         _ if cancel_flag.load(Ordering::Relaxed) => {
                             Err(AppError::Analysis("Cancelled".to_string()))
                         }
-                        Ok(path) => analyzer::analyze(path),
+                        Ok(path) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            analyzer::analyze(path)
+                        }))
+                        .unwrap_or_else(|_| {
+                            Err(AppError::Analysis(format!("Analysis panicked on {path}")))
+                        }),
                         Err(e) => Err(AppError::Analysis(e.to_string())),
                     };
                     if let Ok(mut slot) = slots[index].lock() {

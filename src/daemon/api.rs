@@ -1,8 +1,6 @@
 use super::state::{SharedState, is_terminal, lock};
-use crate::analyzer::AnalysisResult;
-use crate::config::AppConfig;
-use crate::error::AppError;
-use crate::queue::{JobStatus, collect_video_files, is_video_file};
+use crate::config::{AppConfig, DaemonConfig};
+use crate::queue::{JobStatus, collect_video_files, collect_video_files_within, is_video_file};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -235,7 +233,7 @@ pub fn within_root(path: &Path, root: &str) -> bool {
 /// Expand an add request into concrete video files and queue them.
 pub fn queue_add(
     shared: &SharedState,
-    analysis_tx: &Sender<(u64, Result<AnalysisResult, AppError>)>,
+    probe_tx: &Sender<(u64, String)>,
     body: &Value,
 ) -> (u16, Value) {
     let Some(path) = body.get("path").and_then(Value::as_str) else {
@@ -281,7 +279,11 @@ pub fn queue_add(
             if !path.is_dir() {
                 return (400, json!({"error": "not a directory"}));
             }
-            collect_video_files(&path, &mut files);
+            if browse_root.is_empty() {
+                collect_video_files(&path, &mut files);
+            } else {
+                collect_video_files_within(&path, Path::new(&browse_root), &mut files);
+            }
         }
         other => return (400, json!({"error": format!("unknown mode '{other}'")})),
     }
@@ -295,7 +297,7 @@ pub fn queue_add(
     }
     files.sort();
 
-    let (added, already_queued) = super::add_paths(shared, analysis_tx, files);
+    let (added, already_queued) = super::add_paths(shared, probe_tx, files);
     (
         200,
         json!({"added": added, "already_queued": already_queued}),
@@ -397,7 +399,7 @@ pub fn fs_browse(shared: &SharedState, path: &str, show_hidden: bool) -> (u16, V
             if within_root(&entry_path, &browse_root) {
                 dirs.push(json!({"name": name, "symlink": entry_path.is_symlink()}));
             }
-        } else if entry_path.is_file() {
+        } else if entry_path.is_file() && within_root(&entry_path, &browse_root) {
             let size = entry.metadata().ok().map(|m| m.len());
             files.push(json!({
                 "name": name,
@@ -429,26 +431,50 @@ pub fn fs_browse(shared: &SharedState, path: &str, show_hidden: bool) -> (u16, V
     )
 }
 
-/// Read the full configuration.
+/// Serialize the configuration with the auth token blanked out.
+///
+/// The token is what guards this endpoint, so handing it back would let anyone
+/// who reached the API once walk away with the credential itself.
+fn redacted(config: &AppConfig) -> Value {
+    let mut value = serde_json::to_value(config).unwrap_or_else(|_| json!({}));
+    if let Some(token) = value.pointer_mut("/daemon/auth_token") {
+        *token = json!("");
+    }
+    value
+}
+
+/// Read the full configuration, minus the auth token.
 pub fn settings_get(shared: &SharedState) -> Value {
-    let state = lock(shared);
-    serde_json::to_value(&state.config).unwrap_or_else(|_| json!({}))
+    redacted(&lock(shared).config)
+}
+
+/// Read a client-supplied configuration, keeping the live `[daemon]` block.
+///
+/// `browse_root` confines the file browser and `auth_token` guards every
+/// endpoint here, so a client able to rewrite them could widen its own access —
+/// and bind address and port need a restart regardless. Those stay editable
+/// from the config file and the TUI only.
+fn merged_settings(body: &Value, live: &DaemonConfig) -> Result<AppConfig, String> {
+    let mut config: AppConfig =
+        serde_json::from_value(body.clone()).map_err(|e| format!("invalid settings: {e}"))?;
+    config.daemon = live.clone();
+    config.sanitize();
+    Ok(config)
 }
 
 /// Replace the configuration: sanitize, persist to config.toml, and swap the
-/// live copy. Non-daemon fields apply from the next analysis/encode; daemon
-/// bind/port changes need a restart.
+/// live copy. Changes apply from the next analysis/encode.
 pub fn settings_post(shared: &SharedState, body: &Value) -> (u16, Value) {
-    let mut config: AppConfig = match serde_json::from_value(body.clone()) {
-        Ok(c) => c,
-        Err(e) => return (400, json!({"error": format!("invalid settings: {e}")})),
+    let mut state = lock(shared);
+    let config = match merged_settings(body, &state.config.daemon) {
+        Ok(config) => config,
+        Err(e) => return (400, json!({"error": e})),
     };
-    config.sanitize();
     if let Err(e) = config.save() {
         return (500, json!({"error": format!("failed to save: {e}")}));
     }
-    let saved = serde_json::to_value(&config).unwrap_or_else(|_| json!({}));
-    lock(shared).config = config;
+    let saved = redacted(&config);
+    state.config = config;
     (200, saved)
 }
 
@@ -496,6 +522,16 @@ mod tests {
         assert!(!within_root(&dir, &root_str));
         assert!(!within_root(&root.join("..").join(".."), &root_str));
 
+        #[cfg(unix)]
+        {
+            let outside = dir.join(format!("av1c_outside_{}", std::process::id()));
+            std::fs::write(&outside, b"x").unwrap();
+            let link = root.join("outside.mkv");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(!within_root(&link, &root_str));
+            let _ = std::fs::remove_file(outside);
+        }
+
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -503,6 +539,59 @@ mod tests {
     #[test]
     fn unresolvable_paths_are_refused_under_a_root() {
         assert!(!within_root(Path::new("/nonexistent/x.mkv"), "/tmp"));
+    }
+
+    mod settings {
+        use super::super::*;
+
+        fn guarded() -> DaemonConfig {
+            DaemonConfig {
+                auth_token: "s3cret".to_string(),
+                browse_root: "/media".to_string(),
+                ..DaemonConfig::default()
+            }
+        }
+
+        /// The token guards this endpoint, so it never travels back out of it.
+        #[test]
+        fn the_auth_token_is_never_served() {
+            let config = AppConfig {
+                daemon: guarded(),
+                ..AppConfig::default()
+            };
+            let value = redacted(&config);
+            assert_eq!(value["daemon"]["auth_token"], json!(""));
+            // Everything else is still reported as it stands.
+            assert_eq!(value["daemon"]["browse_root"], json!("/media"));
+        }
+
+        /// A client cannot unlock the filesystem it is confined to, nor clear
+        /// the credential standing between it and the API.
+        #[test]
+        fn the_daemon_block_survives_a_hostile_post() {
+            let mut hostile = serde_json::to_value(AppConfig::default()).unwrap();
+            hostile["daemon"]["browse_root"] = json!("");
+            hostile["daemon"]["auth_token"] = json!("");
+            hostile["daemon"]["bind_address"] = json!("0.0.0.0");
+
+            let merged = merged_settings(&hostile, &guarded()).unwrap();
+            assert_eq!(merged.daemon, guarded());
+        }
+
+        /// Ordinary settings still apply, and are still sanitized on the way in.
+        #[test]
+        fn non_daemon_settings_still_apply() {
+            let mut body = serde_json::to_value(AppConfig::default()).unwrap();
+            body["audio"]["opus_bitrate_per_channel"] = json!(9000);
+            body["output"]["suffix"] = json!("../escape");
+
+            let merged = merged_settings(&body, &DaemonConfig::default()).unwrap();
+            assert_eq!(
+                merged.audio.opus_bitrate_per_channel,
+                crate::config::AudioConfig::MAX_PER_CHANNEL
+            );
+            assert_eq!(merged.output.suffix, "..escape");
+        }
     }
 
     mod tracks {

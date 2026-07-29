@@ -1,5 +1,22 @@
 pub mod selection;
 
+/// The selected subtitle tracks, in the order they will be written.
+///
+/// `subtitle_indices` drives `-map 0:s:N` while [`subtitle_codecs_for`] drives
+/// the matching `-c:s:N`, and the two are only in step if both are ordered the
+/// same way. `TrackSelection::resolve` sorts the indices; this sorts the tracks
+/// to match, so neither side depends on the order ffprobe happened to report
+/// the streams in.
+pub fn selected_subtitles(tracks: &[SubtitleTrack], indices: &[usize]) -> Vec<SubtitleTrack> {
+    let mut selected: Vec<SubtitleTrack> = tracks
+        .iter()
+        .filter(|track| indices.contains(&track.index))
+        .cloned()
+        .collect();
+    selected.sort_by_key(|track| track.index);
+    selected
+}
+
 /// The subtitle codec to write for a given output container.
 ///
 /// Text subtitle formats differ between Matroska, WebM, and MP4. Convert only
@@ -36,7 +53,7 @@ pub use selection::{AudioStreamPlan, OutputTracks, TrackSelection};
 
 #[cfg(test)]
 mod tests {
-    use super::{SubtitleTrack, subtitle_codecs_for};
+    use super::{SubtitleTrack, selected_subtitles, subtitle_codecs_for};
     use std::path::Path;
 
     fn sub(codec: &str) -> SubtitleTrack {
@@ -47,6 +64,32 @@ mod tests {
             title: None,
             forced: false,
         }
+    }
+
+    fn sub_at(index: usize, codec: &str) -> SubtitleTrack {
+        SubtitleTrack {
+            index,
+            ..sub(codec)
+        }
+    }
+
+    /// `-map 0:s:N` follows the sorted indices, so the codec list has to as
+    /// well — even when ffprobe reported the streams out of order.
+    #[test]
+    fn selected_subtitles_are_ordered_by_index() {
+        let tracks = [sub_at(2, "subrip"), sub_at(0, "hdmv_pgs_subtitle")];
+        let selected = selected_subtitles(&tracks, &[0, 2]);
+
+        assert_eq!(
+            selected.iter().map(|t| t.index).collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        // ...which is what puts `copy` on stream 0 and `mov_text` on stream 1.
+        assert_eq!(
+            subtitle_codecs_for(Path::new("out.mp4"), &selected),
+            ["copy", "mov_text"]
+        );
+        assert!(selected_subtitles(&tracks, &[]).is_empty());
     }
 
     #[test]

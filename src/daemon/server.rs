@@ -1,6 +1,5 @@
 use super::api;
 use super::state::SharedState;
-use crate::analyzer::AnalysisResult;
 use crate::error::AppError;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,21 +21,45 @@ pub fn bind(listen: &str) -> Result<Server, AppError> {
         .map_err(|e| AppError::CommandExecution(format!("Failed to bind web server: {e}")))
 }
 
-/// Accept loop. Single-threaded; state mutations only hold the shared lock for
-/// short in-memory updates.
+/// Accept loop. Several of these run at once; state mutations only hold the
+/// shared lock for short in-memory updates.
 pub fn serve(
     server: &Server,
     shared: &SharedState,
-    analysis_tx: &Sender<(u64, Result<AnalysisResult, AppError>)>,
+    probe_tx: &Sender<(u64, String)>,
     shutdown: &AtomicBool,
 ) {
     while !shutdown.load(Ordering::SeqCst) {
         match server.recv_timeout(Duration::from_millis(500)) {
-            Ok(Some(request)) => handle_request(request, shared, analysis_tx),
+            // A panic here must cost one request, not one of the workers. These
+            // threads are never replaced, so letting the unwind escape would
+            // quietly take the daemon from four handlers to none — and the
+            // mutex poison recovery in `state::lock` would hide the evidence.
+            // The request is consumed either way, so the client sees a dropped
+            // connection rather than a hung one.
+            Ok(Some(request)) => {
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handle_request(request, shared, probe_tx);
+                }))
+                .is_err()
+                {
+                    warn!("HTTP handler panicked; connection dropped");
+                }
+            }
             Ok(None) => {}
             Err(e) => warn!("HTTP accept error: {e}"),
         }
     }
+}
+
+/// Compare two secrets without giving away how much of a guess was right.
+/// The length is not hidden, which tells an attacker nothing useful here.
+fn secret_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
 }
 
 /// Whether a request carries the configured shared secret.
@@ -54,8 +77,42 @@ fn authorized(request: &Request, query: &str, token: &str) -> bool {
         .find(|h| h.field.equiv("Authorization"))
         .map(|h| h.value.as_str().to_string())
         .unwrap_or_default();
-    header.strip_prefix("Bearer ").map(str::trim) == Some(token)
-        || query_param(query, "token").as_deref() == Some(token)
+    header
+        .strip_prefix("Bearer ")
+        .is_some_and(|value| secret_eq(value.trim(), token))
+        || query_param(query, "token").is_some_and(|value| secret_eq(&value, token))
+}
+
+/// Whether a `Host` header names something that cannot have been DNS-rebound:
+/// an IP literal, or the resolver-pinned `localhost`. The port is ignored, and
+/// an IPv6 literal arrives bracketed (`[::1]:8399`).
+fn host_is_pinned(host: &str) -> bool {
+    let name = host.strip_prefix('[').map_or_else(
+        || host.split(':').next().unwrap_or(""),
+        |rest| rest.split(']').next().unwrap_or(""),
+    );
+    name.eq_ignore_ascii_case("localhost") || name.parse::<std::net::IpAddr>().is_ok()
+}
+
+/// Whether this `Host` header can be trusted to actually mean *this* daemon.
+///
+/// A DNS rebinding attack has to reach us through a name the attacker controls:
+/// the browser resolves `evil.com` to `127.0.0.1` and every request it then
+/// sends is same-origin, so neither CORS nor the JSON content type stops it. An
+/// IP literal cannot be rebound and `localhost` is pinned by the resolver, so
+/// those are the only names accepted while no token is set.
+///
+/// A configured token defeats rebinding on its own — the attacker cannot read
+/// it cross-origin — so real hostnames keep working for anyone who set one.
+fn host_allowed(request: &Request, token: &str) -> bool {
+    if !token.is_empty() {
+        return true;
+    }
+    request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Host"))
+        .is_some_and(|h| host_is_pinned(h.value.as_str()))
 }
 
 /// Requiring JSON makes browser cross-origin POSTs preflight instead of being
@@ -68,16 +125,19 @@ fn has_json_content_type(headers: &[Header]) -> bool {
         .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
 }
 
-fn handle_request(
-    mut request: Request,
-    shared: &SharedState,
-    analysis_tx: &Sender<(u64, Result<AnalysisResult, AppError>)>,
-) {
+fn handle_request(mut request: Request, shared: &SharedState, probe_tx: &Sender<(u64, String)>) {
     let url = request.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
 
     if path.starts_with("/api") {
         let token = super::state::lock(shared).config.daemon.auth_token.clone();
+        if !host_allowed(&request, &token) {
+            return respond_json(
+                request,
+                403,
+                &serde_json::json!({"error": "unrecognised Host header; reach the daemon by IP address or set an auth_token"}),
+            );
+        }
         if !authorized(&request, query, &token) {
             return respond_json(
                 request,
@@ -120,7 +180,7 @@ fn handle_request(
             Err(resp) => resp,
         },
         (Method::Post, "/api/queue/add") => match read_json_body(&mut request) {
-            Ok(body) => api::queue_add(shared, analysis_tx, &body),
+            Ok(body) => api::queue_add(shared, probe_tx, &body),
             Err(resp) => resp,
         },
         (Method::Post, "/api/queue/remove") => match read_json_body(&mut request) {
@@ -168,9 +228,12 @@ fn read_json_body(request: &mut Request) -> Result<serde_json::Value, (u16, serd
     let mut body = String::new();
     request
         .as_reader()
-        .take(MAX_BODY)
+        .take(MAX_BODY + 1)
         .read_to_string(&mut body)
         .map_err(|e| (400, serde_json::json!({"error": format!("bad body: {e}")})))?;
+    if body.len() as u64 > MAX_BODY {
+        return Err((413, serde_json::json!({"error": "request body too large"})));
+    }
     serde_json::from_str(&body).map_err(|e| {
         (
             400,
@@ -240,6 +303,32 @@ mod tests {
         );
         assert_eq!(query_param("path=%2Ftmp", "hidden"), None);
         assert_eq!(query_param("", "path"), None);
+    }
+
+    /// Only names a browser cannot repoint at us are trusted while the API is
+    /// unguarded: an attacker's `evil.com` rebound to 127.0.0.1 is the whole
+    /// reason this check exists.
+    #[test]
+    fn only_unrebindable_hosts_are_pinned() {
+        assert!(host_is_pinned("127.0.0.1:8399"));
+        assert!(host_is_pinned("192.168.1.10:8399"));
+        assert!(host_is_pinned("[::1]:8399"));
+        assert!(host_is_pinned("[::1]"));
+        assert!(host_is_pinned("localhost:8399"));
+        assert!(host_is_pinned("LocalHost"));
+
+        assert!(!host_is_pinned("evil.com:8399"));
+        assert!(!host_is_pinned("nas.lan"));
+        assert!(!host_is_pinned("localhost.evil.com"));
+        assert!(!host_is_pinned(""));
+    }
+
+    #[test]
+    fn secret_comparison_matches_only_the_whole_token() {
+        assert!(secret_eq("s3cret", "s3cret"));
+        assert!(!secret_eq("s3cret", "s3cres"));
+        assert!(!secret_eq("s3cre", "s3cret"));
+        assert!(!secret_eq("", "s3cret"));
     }
 
     #[test]

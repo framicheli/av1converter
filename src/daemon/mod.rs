@@ -24,6 +24,9 @@ use tracing::{info, warn};
 const TICK: Duration = Duration::from_millis(250);
 /// How long shutdown waits for the worker to acknowledge cancellation.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+/// Requests are served concurrently: a recursive scan or a listing of a slow
+/// network mount would otherwise stall the dashboard poll behind it.
+const SERVER_THREADS: usize = 4;
 
 /// Run the headless daemon: web server + encoding orchestrator.
 /// Blocks until SIGINT/SIGTERM.
@@ -36,6 +39,14 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     }
     if config.audio.default_mode == AudioMode::Opus && !DependencyStatus::libopus_available() {
         warn!("Audio is set to Opus but this FFmpeg build has no libopus; encoding will fail");
+    }
+    let encoder_name = config.encoder.ffmpeg_name();
+    if !DependencyStatus::encoder_available(encoder_name) {
+        println!(
+            "{} ({encoder_name})",
+            t(config.language, Msg::EncoderUnavailable)
+        );
+        warn!("This FFmpeg build has no {encoder_name}; every encode will fail");
     }
 
     let lang = config.language;
@@ -50,7 +61,34 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
 
     let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(config)));
     let (analysis_tx, analysis_rx) = mpsc::channel::<(u64, Result<AnalysisResult, AppError>)>();
+    let (probe_tx, probe_rx) = mpsc::channel::<(u64, String)>();
     let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>();
+
+    // One long-lived prober rather than a thread per add request: each probe
+    // forks ffprobe of its own, and a client adding several folders at once
+    // must not be able to decide how many of those run at a time.
+    //
+    // Because it is shared, it must not be possible to kill: a panic on one
+    // malformed file would otherwise take analysis down for the rest of the
+    // daemon's life, leaving every later file stuck in `Analyzing` with nothing
+    // reported. The panic is caught, blamed on the file that caused it, and the
+    // next one is picked up.
+    {
+        let analysis_tx = analysis_tx.clone();
+        thread::spawn(move || {
+            for (id, path) in probe_rx {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    analyzer::analyze(&path)
+                }))
+                .unwrap_or_else(|_| {
+                    Err(AppError::Analysis(format!("Analysis panicked on {path}")))
+                });
+                if analysis_tx.send((id, result)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
 
     let shutdown = Arc::new(AtomicBool::new(false));
     {
@@ -64,16 +102,22 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         .map_err(|e| AppError::CommandExecution(format!("Failed to set signal handler: {e}")))?;
     }
 
-    let server_handle = {
-        let shared = shared.clone();
-        let analysis_tx = analysis_tx.clone();
-        let shutdown = shutdown.clone();
-        let listen = listen.clone();
-        let server = server::bind(&listen)?;
-        println!("{} http://{listen}", t(lang, Msg::DaemonListening));
-        info!("Web UI listening on http://{listen}");
-        thread::spawn(move || server::serve(&server, &shared, &analysis_tx, &shutdown))
-    };
+    let server = Arc::new(server::bind(&listen)?);
+    // Deliberately the bare address, not `url()`: in background mode this
+    // process's stdout is the daemon log file, and the token has no business
+    // being written there. The tokenised URL is printed to the terminal by
+    // whoever started us.
+    println!("{} http://{listen}", t(lang, Msg::DaemonListening));
+    info!("Web UI listening on http://{listen}");
+    let server_handles: Vec<_> = (0..SERVER_THREADS)
+        .map(|_| {
+            let server = server.clone();
+            let shared = shared.clone();
+            let probe_tx = probe_tx.clone();
+            let shutdown = shutdown.clone();
+            thread::spawn(move || server::serve(&server, &shared, &probe_tx, &shutdown))
+        })
+        .collect();
 
     // Main orchestrator loop: owns analysis and worker result application.
     while !shutdown.load(Ordering::SeqCst) {
@@ -122,14 +166,16 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         }
     }
 
-    let _ = server_handle.join();
+    for handle in server_handles {
+        let _ = handle.join();
+    }
     Ok(())
 }
 
-/// Queue new files and spawn a batch analysis thread for them.
+/// Queue new files and hand them to the prober.
 fn add_paths(
     shared: &SharedState,
-    analysis_tx: &Sender<(u64, Result<AnalysisResult, AppError>)>,
+    probe_tx: &Sender<(u64, String)>,
     paths: Vec<std::path::PathBuf>,
 ) -> (usize, usize) {
     let requested = paths.len();
@@ -168,18 +214,37 @@ fn add_paths(
         }
     }
 
-    if to_analyze.is_empty() {
-        return (added, requested - added);
+    // A job handed over is a job that will be reported on. If the prober is
+    // gone the queue must say so, rather than leaving jobs in `Analyzing`
+    // forever — a status that never resolves and, being non-terminal, would go
+    // on blocking every future attempt to add the same file.
+    let mut orphaned: Vec<u64> = Vec::new();
+    let mut requests = to_analyze.into_iter();
+    for request in requests.by_ref() {
+        if let Err(e) = probe_tx.send(request) {
+            orphaned.push(e.0.0);
+            break;
+        }
     }
-    let tx = analysis_tx.clone();
-    thread::spawn(move || {
-        for (id, path) in to_analyze {
-            let result = analyzer::analyze(&path);
-            if tx.send((id, result)).is_err() {
-                break;
+    orphaned.extend(requests.map(|(id, _)| id));
+
+    if !orphaned.is_empty() {
+        warn!(
+            "Analysis is not running; {} file(s) rejected",
+            orphaned.len()
+        );
+        let mut state = lock(shared);
+        for id in orphaned {
+            if let Some(job) = state.queue.job_by_id_mut(id) {
+                job.status = JobStatus::Error {
+                    message: "Analysis is not running".to_string(),
+                };
+                state.queue.state.error_count += 1;
+                added -= 1;
             }
         }
-    });
+    }
+
     (added, requested - added)
 }
 
@@ -257,12 +322,10 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
                 stem, output_config.suffix, output_config.container
             ))
         });
-        let selected_subs: Vec<crate::tracks::SubtitleTrack> = job
-            .subtitle_tracks
-            .iter()
-            .filter(|t| job.track_selection.subtitle_indices.contains(&t.index))
-            .cloned()
-            .collect();
+        let selected_subs = crate::tracks::selected_subtitles(
+            &job.subtitle_tracks,
+            &job.track_selection.subtitle_indices,
+        );
         worker_jobs.push(WorkerJob {
             index: worker_jobs.len(),
             subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
@@ -308,7 +371,19 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
     let config = state.config.clone();
     let tx = worker_tx.clone();
     thread::spawn(move || {
-        run_worker(worker_jobs, &config, &cancel_flag, &tx);
+        // `run_worker` already contains a panic per job, so this is the
+        // last-resort net for a panic outside one. It matters because the
+        // channel cannot signal it: this daemon keeps its own sender alive, so
+        // a dead worker never disconnects, it just stops talking — and the
+        // session would stay open forever, blocking every later one.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_worker(worker_jobs, &config, &cancel_flag, &tx);
+        }))
+        .is_err()
+        {
+            warn!("Encode worker panicked; ending the session");
+            let _ = tx.send(WorkerMessage::Cancelled);
+        }
     });
 }
 

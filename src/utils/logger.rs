@@ -27,7 +27,16 @@ pub fn init_logging() -> Option<WorkerGuard> {
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("av1converter");
 
-        let _ = std::fs::create_dir_all(&log_dir);
+        // The rolling appender names each file after the date and gives no way
+        // to set a mode, so the directory carries the restriction. The log
+        // records the path of every file processed.
+        if let Err(e) = super::ensure_private_dir(&log_dir) {
+            eprintln!(
+                "Could not prepare the log directory {}: {e}",
+                log_dir.display()
+            );
+            return None;
+        }
 
         let file_appender = tracing_appender::rolling::daily(&log_dir, "av1converter.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);

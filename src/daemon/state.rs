@@ -36,6 +36,11 @@ impl DaemonQueue {
     }
 
     pub fn index_of(&self, id: u64) -> Option<usize> {
+        debug_assert_eq!(
+            self.ids.len(),
+            self.state.jobs.len(),
+            "ids and jobs drifted apart; every lookup by id is now wrong"
+        );
         self.ids.iter().position(|&i| i == id)
     }
 
@@ -135,9 +140,18 @@ pub type SharedState = Arc<Mutex<DaemonState>>;
 /// Lock the shared state, recovering from a poisoned mutex.
 ///
 /// A panic in one HTTP handler must not turn the daemon into a process that
-/// answers nothing for the rest of its life. What the mutex guards is plain
-/// data with no invariant a partial mutation could break, so carrying on with
-/// the recovered state is safer than taking the whole daemon down with it.
+/// answers nothing for the rest of its life, so a poisoned lock is taken up
+/// again rather than propagated.
+///
+/// This is a judgement, not a proof of safety. Almost everything behind the
+/// mutex is plain data that a half-finished mutation leaves merely stale — but
+/// [`DaemonQueue`] does hold one real invariant, `ids[i]` against
+/// `state.jobs[i]`, and it is maintained by two `Vec` operations in a row
+/// rather than atomically. A panic between them would misalign the two for
+/// good, and every later lookup by id would answer with the wrong job. In
+/// practice neither operation can panic (`push` only on allocation failure,
+/// `remove` only on an index `index_of` just validated), and `index_of`
+/// debug-asserts the alignment; the trade is still worth naming.
 pub fn lock(shared: &SharedState) -> std::sync::MutexGuard<'_, DaemonState> {
     shared
         .lock()

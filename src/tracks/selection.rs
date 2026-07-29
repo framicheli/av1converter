@@ -90,9 +90,15 @@ impl TrackSelection {
             })
             .collect();
 
+        // Sorted here so the `-map 0:s:N` order and the codec list that
+        // `subtitle_codecs_for` produces are both in index order, whatever
+        // order the selection was built up in.
+        let mut subtitle_indices = self.subtitle_indices.clone();
+        subtitle_indices.sort_unstable();
+
         OutputTracks {
             audio,
-            subtitle_indices: self.subtitle_indices.clone(),
+            subtitle_indices,
         }
     }
 
@@ -118,6 +124,23 @@ pub struct AudioStreamPlan {
     pub independent_mapping: bool,
 }
 
+/// Whether Opus' standard channel mapping covers this layout, in which case the
+/// stream is coded with proper inter-channel coupling.
+///
+/// These are the Vorbis layouts, and the match is exact on purpose. It is
+/// tempting to also accept the qualified spellings — `5.1(side)` is what
+/// ffprobe reports for most real surround tracks, and treating it as uncommon
+/// looks like it costs coupling for nothing. It does not: ffmpeg's libopus
+/// wrapper rejects them outright.
+///
+/// ```text
+/// $ ffmpeg -i 5.1side.mkv -c:a libopus out.mkv
+/// [libopus] Invalid channel layout 5.1(side) for specified mapping family -1.
+/// ```
+///
+/// Mapping family 255 is what makes those files encodable at all, so a
+/// too-clever match here turns a working encode into a hard failure. Widening
+/// this list means relabelling the layout first (see [`AudioStreamPlan`]).
 fn opus_supports_layout(layout: &str) -> bool {
     ["mono", "stereo", "3.0", "quad", "5.0", "5.1", "6.1", "7.1"]
         .iter()
@@ -222,6 +245,20 @@ mod tests {
         assert_eq!(sel.resolve(&tracks, &forced).audio[0].opus_kbps, Some(384));
     }
 
+    /// Subtitle indices come out sorted whatever order they went in, so they
+    /// line up with the codec list built from the tracks.
+    #[test]
+    fn resolved_subtitle_indices_are_sorted() {
+        let sel = TrackSelection {
+            subtitle_indices: vec![3, 0, 2],
+            ..TrackSelection::default()
+        };
+        assert_eq!(
+            sel.resolve(&[], &AudioConfig::default()).subtitle_indices,
+            vec![0, 2, 3]
+        );
+    }
+
     /// The resolved plan is in output order, which is what `-c:a:N` indexes.
     #[test]
     fn plan_follows_the_mapped_stream_order() {
@@ -256,5 +293,41 @@ mod tests {
         let plan = sel.resolve(&[standard, uncommon], &AudioConfig::default());
         assert!(!plan.audio[0].independent_mapping);
         assert!(plan.audio[1].independent_mapping);
+    }
+
+    /// Regression guard. `5.1(side)` is what ffprobe reports for most real
+    /// surround tracks, and accepting it as a standard layout looks like an
+    /// easy win — but ffmpeg's libopus rejects it ("Invalid channel layout
+    /// 5.1(side) for specified mapping family -1") and the encode fails
+    /// outright. Independent mapping is what makes these files encodable.
+    #[test]
+    fn qualified_surround_layouts_need_independent_mapping() {
+        for layout in ["5.1(side)", "7.1(wide)", "7.1(wide-side)", "5.0(side)"] {
+            let mut source = track(0, "dts", Some(6));
+            source.channel_layout = Some(layout.to_string());
+            let mut sel = TrackSelection::default();
+            sel.set_audio_opus(0, true);
+
+            let plan = sel.resolve(&[source], &AudioConfig::default());
+            assert!(
+                plan.audio[0].independent_mapping,
+                "{layout} is not a layout libopus accepts under its standard mapping"
+            );
+        }
+    }
+
+    /// A layout Opus has no standard mapping for still gets independent
+    /// streams rather than being downmixed to fit.
+    #[test]
+    fn genuinely_unmapped_layouts_stay_independent() {
+        for layout in ["2.1", "22.2", "hexadecagonal"] {
+            let mut source = track(0, "pcm", Some(3));
+            source.channel_layout = Some(layout.to_string());
+            let mut sel = TrackSelection::default();
+            sel.set_audio_opus(0, true);
+
+            let plan = sel.resolve(&[source], &AudioConfig::default());
+            assert!(plan.audio[0].independent_mapping, "{layout}");
+        }
     }
 }

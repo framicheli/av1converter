@@ -1,4 +1,6 @@
 pub mod command_builder;
+#[cfg(test)]
+mod end_to_end;
 pub mod ffmpeg;
 
 pub use command_builder::EncodingParams;

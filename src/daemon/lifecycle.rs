@@ -105,7 +105,7 @@ fn lock_pid_file(path: &std::path::Path, pid: u32) -> io::Result<File> {
 
 /// Write and exclusively hold the PID file for the lifetime of the daemon.
 pub fn write_pid_file() -> io::Result<File> {
-    std::fs::create_dir_all(data_dir())?;
+    crate::utils::ensure_private_dir(&data_dir())?;
     lock_pid_file(&pid_file(), std::process::id())
 }
 
@@ -130,11 +130,17 @@ pub fn spawn_background() -> io::Result<u32> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
-    std::fs::create_dir_all(data_dir())?;
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_file())?;
+    crate::utils::ensure_private_dir(&data_dir())?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    // The daemon logs the paths of everything it touches; that is the user's
+    // business and nobody else's.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let log = options.open(log_file())?;
     let log_err = log.try_clone()?;
 
     let mut cmd = Command::new(std::env::current_exe()?);
