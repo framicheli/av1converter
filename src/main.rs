@@ -1,6 +1,7 @@
 mod analyzer;
 mod app;
 mod config;
+mod daemon;
 mod encoder;
 mod error;
 mod i18n;
@@ -23,7 +24,153 @@ use std::time::Duration;
 use crate::app::HOME_MENU;
 use crate::i18n::{Msg, t};
 
+const USAGE: &str = "\
+Usage: av1converter [OPTION]
+
+  (no option)          start the interactive TUI
+  --daemon             run the web-UI daemon in the background (must be enabled in Settings)
+  --daemon-foreground  run the daemon in the foreground, logging to stdout
+  --stop               stop the background daemon
+  --status             show whether the daemon is running
+  --help               show this help
+  --version            show the version
+";
+
+enum Cli {
+    Tui,
+    Daemon,
+    DaemonForeground,
+    Stop,
+    Status,
+    Help,
+    Version,
+    Unknown(String),
+}
+
+fn parse_cli() -> Cli {
+    match std::env::args().nth(1).as_deref() {
+        None => Cli::Tui,
+        Some("--daemon") => Cli::Daemon,
+        Some("--daemon-foreground") => Cli::DaemonForeground,
+        Some("--stop") => Cli::Stop,
+        Some("--status") => Cli::Status,
+        Some("--help" | "-h") => Cli::Help,
+        Some("--version" | "-V") => Cli::Version,
+        Some(other) => Cli::Unknown(other.to_string()),
+    }
+}
+
+/// Headless daemon entry: refuses to start unless enabled in the config or if
+/// an instance is already running. In background mode the process re-execs
+/// itself detached and the parent only reports the outcome.
+fn run_daemon_entry(foreground: bool) -> io::Result<()> {
+    let mut config = config::AppConfig::load();
+    let lang = config.language;
+    if !config.daemon.enabled {
+        eprintln!("{}", t(lang, Msg::DaemonDisabledError));
+        std::process::exit(1);
+    }
+    if let Some(pid) = daemon::lifecycle::running_pid() {
+        eprintln!("{} (PID {pid})", t(lang, Msg::DaemonAlreadyRunning));
+        std::process::exit(1);
+    }
+
+    // Anyone who can reach the port can browse the filesystem, queue encodes
+    // and rewrite the configuration. Minting a token on first start costs the
+    // user one click on the printed URL and closes that by default; leaving it
+    // open would hand the same access to every process on the machine.
+    if config.daemon.auth_token.is_empty() {
+        config.daemon.auth_token =
+            config::DaemonConfig::generate_token().map_err(io::Error::other)?;
+        if let Err(e) = config.save() {
+            eprintln!("{} ({e})", t(lang, Msg::SaveFailed));
+            std::process::exit(1);
+        }
+        println!("{}", t(lang, Msg::DaemonTokenGenerated));
+    }
+
+    if !foreground {
+        match daemon::lifecycle::spawn_background() {
+            Ok(pid) => {
+                println!("{} (PID {pid})", t(lang, Msg::DaemonStarted));
+                println!("{} {}", t(lang, Msg::DaemonListening), config.daemon.url());
+                println!("{}", t(lang, Msg::DaemonStopHint));
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!(
+                    "{} {} ({e})",
+                    t(lang, Msg::DaemonStartFailed),
+                    daemon::lifecycle::log_file().display()
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
+    utils::init_daemon_logging();
+    let _pid_guard = daemon::lifecycle::write_pid_file()?;
+    daemon::run_daemon(config).map_err(io::Error::other)
+}
+
+/// `--stop`: signal the background daemon and wait for it to exit.
+fn stop_daemon_entry() {
+    let lang = config::AppConfig::load().language;
+    let Some(pid) = daemon::lifecycle::running_pid() else {
+        println!("{}", t(lang, Msg::DaemonNotRunning));
+        return;
+    };
+    match daemon::lifecycle::stop(pid) {
+        Ok(()) => {
+            println!("{} (PID {pid})", t(lang, Msg::DaemonStopped));
+        }
+        Err(e) => {
+            eprintln!("{} {e}", t(lang, Msg::DaemonStopFailed));
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `--status`: report whether the background daemon is running.
+fn daemon_status_entry() {
+    let config = config::AppConfig::load();
+    let lang = config.language;
+    match daemon::lifecycle::running_pid() {
+        Some(pid) => {
+            println!("{} (PID {pid})", t(lang, Msg::DaemonRunning));
+            println!("{} {}", t(lang, Msg::DaemonListening), config.daemon.url());
+        }
+        None => println!("{}", t(lang, Msg::DaemonNotRunning)),
+    }
+}
+
 fn main() -> io::Result<()> {
+    match parse_cli() {
+        Cli::Tui => {}
+        Cli::Daemon => return run_daemon_entry(false),
+        Cli::DaemonForeground => return run_daemon_entry(true),
+        Cli::Stop => {
+            stop_daemon_entry();
+            return Ok(());
+        }
+        Cli::Status => {
+            daemon_status_entry();
+            return Ok(());
+        }
+        Cli::Help => {
+            print!("{USAGE}");
+            return Ok(());
+        }
+        Cli::Version => {
+            println!("av1converter {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Cli::Unknown(arg) => {
+            eprintln!("Unknown argument: {arg}\n{USAGE}");
+            std::process::exit(2);
+        }
+    }
+
     let _log_guard = utils::init_logging();
 
     // Restore the terminal even if panic
@@ -78,6 +225,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 Screen::Finish => ui::render_finish(f, app),
                 Screen::Configuration => ui::render_config_screen(f, app),
             }
+            if app.dv_dialog.is_some() && app.current_screen == Screen::TrackConfig {
+                ui::render_dv_dialog(f, app);
+            }
             if app.confirm_dialog.is_some() {
                 ui::render_confirm_dialog(f, app);
             }
@@ -99,6 +249,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 fn handle_key(app: &mut App, key: KeyCode) {
     if app.confirm_dialog.is_some() {
         handle_confirm_dialog_key(app, key);
+        return;
+    }
+
+    if app.dv_dialog.is_some() && app.current_screen == Screen::TrackConfig {
+        handle_dv_dialog_key(app, key);
         return;
     }
 
@@ -140,6 +295,32 @@ fn handle_confirm_dialog_key(app: &mut App, key: KeyCode) {
                 execute_confirm_action(app, action);
             }
         }
+        _ => {}
+    }
+}
+
+fn handle_dv_dialog_key(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Up
+        | KeyCode::Down
+        | KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Tab
+        | KeyCode::Char('h' | 'j' | 'k' | 'l') => {
+            if let Some(sel) = &mut app.dv_dialog {
+                *sel = 1 - *sel;
+            }
+        }
+        KeyCode::Char('1') => {
+            app.dv_dialog = Some(0);
+            app.confirm_dv_dialog();
+        }
+        KeyCode::Char('2') => {
+            app.dv_dialog = Some(1);
+            app.confirm_dv_dialog();
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => app.confirm_dv_dialog(),
+        KeyCode::Esc => app.dismiss_dv_dialog(),
         _ => {}
     }
 }
@@ -291,6 +472,7 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 let all_indices: Vec<usize> = job.audio_tracks.iter().map(|t| t.index).collect();
                 if job.track_selection.audio_indices.len() == all_indices.len() {
                     job.track_selection.audio_indices.clear();
+                    job.track_selection.audio_to_opus.clear();
                 } else {
                     job.track_selection.audio_indices = all_indices;
                 }
@@ -306,13 +488,38 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 }
             }
         }
+        KeyCode::Char('o') => {
+            let cursor = app.audio_cursor;
+            if let Some(job) = app.current_config_job_mut()
+                && let Some(track) = job.audio_tracks.get(cursor)
+            {
+                let idx = track.index;
+                job.track_selection.toggle_audio_opus(idx);
+            }
+        }
+        KeyCode::Char('O') => {
+            if let Some(job) = app.current_config_job_mut() {
+                // All-or-nothing across the *selected* tracks, so the second
+                // press undoes the first rather than doing nothing.
+                let selected = job.track_selection.audio_indices.clone();
+                let all_opus = !selected.is_empty()
+                    && selected.iter().all(|&i| job.track_selection.is_opus(i));
+                for idx in selected {
+                    job.track_selection.set_audio_opus(idx, !all_opus);
+                }
+            }
+        }
         KeyCode::Char('r' | 'R') => {
             let output_config = app.config.output.clone();
             if let Some(job) = app.current_config_job_mut() {
                 job.remux_only = !job.remux_only;
                 job.generate_output_path(&output_config);
             }
+            crate::queue::make_output_paths_unique(&mut app.queue.jobs);
+            // Switching a DV job from remux to encode needs a DV decision
+            app.maybe_open_dv_dialog();
         }
+        KeyCode::Char('d' | 'D') => app.reopen_dv_dialog(),
         KeyCode::Enter => app.confirm_track_config(),
         _ => {}
     }
@@ -366,7 +573,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         return;
     }
 
-    let config_item_count = crate::ui::config_screen::visible_config_items(&app.config).len();
+    let config_item_count = ui::config_screen::visible_config_items(&app.config).len();
 
     match key {
         KeyCode::Esc => {
@@ -399,6 +606,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Char('s') => {
             let lang = app.config.language;
+            app.config.sanitize();
             if let Err(e) = app.config.save() {
                 tracing::warn!("Failed to save config: {:?}", e);
                 app.set_timed_message(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 3);
@@ -425,6 +633,10 @@ fn start_config_edit(app: &mut App) {
         ConfigField::OutputContainer => app.config.output.container.clone(),
         ConfigField::AudioLanguages => app.config.tracks.preferred_audio_languages.join(", "),
         ConfigField::SubtitleLanguages => app.config.tracks.preferred_subtitle_languages.join(", "),
+        ConfigField::DaemonBindAddress => app.config.daemon.bind_address.clone(),
+        ConfigField::DaemonPort => app.config.daemon.port.to_string(),
+        ConfigField::DaemonBrowseRoot => app.config.daemon.browse_root.clone(),
+        ConfigField::DaemonAuthToken => app.config.daemon.auth_token.clone(),
         _ => return,
     });
 }
@@ -451,6 +663,22 @@ fn commit_config_edit(app: &mut App) {
         ConfigField::SubtitleLanguages => {
             app.config.tracks.preferred_subtitle_languages = parse_lang_list(&value);
         }
+        // Invalid addresses/ports keep the previous value
+        ConfigField::DaemonBindAddress => {
+            if value.parse::<std::net::IpAddr>().is_ok() {
+                app.config.daemon.bind_address = value;
+            }
+        }
+        ConfigField::DaemonPort => {
+            if let Ok(port) = value.parse::<u16>()
+                && port != 0
+            {
+                app.config.daemon.port = port;
+            }
+        }
+        // Both accept an empty value, which turns the feature off
+        ConfigField::DaemonBrowseRoot => app.config.daemon.browse_root = value,
+        ConfigField::DaemonAuthToken => app.config.daemon.auth_token = value,
         _ => {}
     }
 }
@@ -533,6 +761,30 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         ConfigField::SameDirectory => {
             app.config.output.same_directory = !app.config.output.same_directory;
         }
+        ConfigField::DaemonEnabled => {
+            app.config.daemon.enabled = !app.config.daemon.enabled;
+        }
+        ConfigField::AudioDefaultMode => {
+            app.config.audio.default_mode = if increase {
+                app.config.audio.default_mode.next()
+            } else {
+                app.config.audio.default_mode.prev()
+            };
+        }
+        ConfigField::OpusBitratePerChannel => {
+            use crate::config::AudioConfig;
+            let current = app.config.audio.opus_bitrate_per_channel;
+            let next = if increase {
+                current.saturating_add(8)
+            } else {
+                current.saturating_sub(8)
+            };
+            app.config.audio.opus_bitrate_per_channel =
+                next.clamp(AudioConfig::MIN_PER_CHANNEL, AudioConfig::MAX_PER_CHANNEL);
+        }
+        ConfigField::SkipAlreadyOpus => {
+            app.config.audio.skip_already_opus = !app.config.audio.skip_already_opus;
+        }
         ConfigField::RfSd
         | ConfigField::RfHd
         | ConfigField::RfFullHd
@@ -550,7 +802,11 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         ConfigField::OutputSuffix
         | ConfigField::OutputContainer
         | ConfigField::AudioLanguages
-        | ConfigField::SubtitleLanguages => {}
+        | ConfigField::SubtitleLanguages
+        | ConfigField::DaemonBindAddress
+        | ConfigField::DaemonPort
+        | ConfigField::DaemonBrowseRoot
+        | ConfigField::DaemonAuthToken => {}
     }
 }
 
@@ -558,7 +814,7 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
 ///
 /// `Low`/`Medium`/`High` overwrite the per-tier presets; `Custom` keeps the
 /// user's own values. Toggling visibility of the RF rows can shrink the list,
-/// so the selection index is clamped afterwards.
+/// so the selection index is clamped afterward.
 fn cycle_quality_preset(app: &mut App, increase: bool) {
     let next = if increase {
         app.config.quality_preset.next()
@@ -569,7 +825,7 @@ fn cycle_quality_preset(app: &mut App, increase: bool) {
     if let Some(presets) = next.presets() {
         app.config.presets = presets;
     }
-    let count = crate::ui::config_screen::visible_config_items(&app.config).len();
+    let count = ui::config_screen::visible_config_items(&app.config).len();
     if app.config_selected >= count {
         app.config_selected = count.saturating_sub(1);
     }
@@ -577,9 +833,9 @@ fn cycle_quality_preset(app: &mut App, increase: bool) {
 
 /// Map a per-resolution rate-factor field to its mutable preset, if any.
 fn preset_for_rf_field(
-    presets: &mut crate::config::EncodingPresetsConfig,
-    field: crate::ui::config_screen::ConfigField,
-) -> Option<&mut crate::config::EncodingPreset> {
+    presets: &mut config::EncodingPresetsConfig,
+    field: ui::config_screen::ConfigField,
+) -> Option<&mut config::EncodingPreset> {
     use crate::ui::config_screen::ConfigField;
     Some(match field {
         ConfigField::RfSd => &mut presets.sd,
@@ -594,11 +850,7 @@ fn preset_for_rf_field(
     })
 }
 
-fn adjust_preset_rf(
-    preset: &mut crate::config::EncodingPreset,
-    encoder: crate::config::Encoder,
-    increase: bool,
-) {
+fn adjust_preset_rf(preset: &mut config::EncodingPreset, encoder: config::Encoder, increase: bool) {
     use crate::config::Encoder;
     let val = match encoder {
         Encoder::SvtAv1 => &mut preset.crf,

@@ -1,7 +1,7 @@
-use crate::analyzer::VideoMetadata;
+use crate::analyzer::{DvMode, VideoMetadata};
 use crate::config::AppConfig;
 use crate::encoder::{self, FullEncodeResult};
-use crate::tracks::TrackSelection;
+use crate::tracks::OutputTracks;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -39,8 +39,13 @@ pub struct WorkerJob {
     pub input: PathBuf,
     pub output: PathBuf,
     pub metadata: VideoMetadata,
-    pub tracks: TrackSelection,
+    /// Audio and subtitle streams to write, already resolved from the user's
+    /// selection into output order
+    pub tracks: OutputTracks,
+    pub dv_mode: DvMode,
     pub remux_only: bool,
+    /// Per-output-stream subtitle codecs (`copy`, or a compatible conversion).
+    pub subtitle_codecs: Vec<&'static str>,
 }
 
 /// Run the encoding worker in a separate thread
@@ -67,21 +72,33 @@ pub fn run_worker(
         let tx_verifying = tx.clone();
         let verifying_idx = job.index;
 
-        let result = encoder::run_encoding_pipeline(
-            &input_str,
-            &output_str,
-            &job.metadata,
-            job.tracks,
-            job.remux_only,
-            config,
-            Some(Box::new(move |progress| {
-                let _ = tx_progress.send(WorkerMessage::Progress(idx, progress));
-            })),
-            cancel_flag.as_ref(),
-            Some(Box::new(move || {
-                let _ = tx_verifying.send(WorkerMessage::Verifying(verifying_idx));
-            })),
-        );
+        // A panic here must end this job, not the worker. Nothing supervises
+        // this thread: the daemon holds its own copy of the sender, so a dead
+        // worker does not even close the channel — it just goes quiet, leaving
+        // the session permanently unfinished and the daemon unable to ever
+        // start another one. Blame the file being worked on and carry on.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            encoder::run_encoding_pipeline(
+                &input_str,
+                &output_str,
+                &job.metadata,
+                job.tracks,
+                job.dv_mode,
+                job.remux_only,
+                job.subtitle_codecs,
+                config,
+                Some(Box::new(move |progress| {
+                    let _ = tx_progress.send(WorkerMessage::Progress(idx, progress));
+                })),
+                cancel_flag.as_ref(),
+                Some(Box::new(move || {
+                    let _ = tx_verifying.send(WorkerMessage::Verifying(verifying_idx));
+                })),
+            )
+        }))
+        .unwrap_or_else(|_| {
+            FullEncodeResult::Error(format!("Encoding panicked on {}", job.input.display()))
+        });
 
         match result {
             FullEncodeResult::Success => {

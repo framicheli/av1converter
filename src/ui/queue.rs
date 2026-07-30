@@ -237,24 +237,29 @@ fn create_queue_item(
     match status {
         JobStatus::Pending => ListItem::new(format!("{prefix}○ {name}"))
             .style(Style::default().fg(Color::DarkGray).add_modifier(bold_mod)),
-        JobStatus::Analyzing => {
-            ListItem::new(format!("{prefix}◐ {name} {}", t(lang, Msg::StatusAnalyzing)))
-                .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod))
-        }
-        JobStatus::AwaitingConfig => {
-            ListItem::new(format!("{prefix}◑ {name} {}", t(lang, Msg::StatusConfiguring)))
+        JobStatus::Analyzing => ListItem::new(format!(
+            "{prefix}◐ {name} {}",
+            t(lang, Msg::StatusAnalyzing)
+        ))
+        .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
+        JobStatus::AwaitingConfig => ListItem::new(format!(
+            "{prefix}◑ {name} {}",
+            t(lang, Msg::StatusConfiguring)
+        ))
+        .style(Style::default().fg(Color::Blue).add_modifier(bold_mod)),
+        JobStatus::Ready => {
+            ListItem::new(format!("{prefix}● {name} {}", t(lang, Msg::StatusReady)))
                 .style(Style::default().fg(Color::Blue).add_modifier(bold_mod))
         }
-        JobStatus::Ready => ListItem::new(format!("{prefix}● {name} {}", t(lang, Msg::StatusReady)))
-            .style(Style::default().fg(Color::Blue).add_modifier(bold_mod)),
         JobStatus::Encoding { progress } => {
             ListItem::new(format!("{prefix}▶ {name} {progress:.1}%{crf_str}"))
                 .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod))
         }
-        JobStatus::Verifying => {
-            ListItem::new(format!("{prefix}◈ {name} {}", t(lang, Msg::StatusVerifying)))
-                .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod))
-        }
+        JobStatus::Verifying => ListItem::new(format!(
+            "{prefix}◈ {name} {}",
+            t(lang, Msg::StatusVerifying)
+        ))
+        .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod)),
         JobStatus::Done => ListItem::new(format!("{prefix}✓ {name} {}", t(lang, Msg::StatusDone)))
             .style(Style::default().fg(Color::Green).add_modifier(bold_mod)),
         JobStatus::DoneVmafFailed { reason } => ListItem::new(Line::from(vec![
@@ -280,14 +285,16 @@ fn create_queue_item(
                 ),
             ]))
         }
-        JobStatus::Skipped { reason } => {
-            ListItem::new(format!("{prefix}⊘ {name} ({})", translate_reason(lang, reason)))
-                .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod))
-        }
-        JobStatus::Error { message } => {
-            ListItem::new(format!("{prefix}✗ {name} {}: {message}", t(lang, Msg::Error)))
-                .style(Style::default().fg(Color::Red).add_modifier(bold_mod))
-        }
+        JobStatus::Skipped { reason } => ListItem::new(format!(
+            "{prefix}⊘ {name} ({})",
+            translate_reason(lang, reason)
+        ))
+        .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
+        JobStatus::Error { message } => ListItem::new(format!(
+            "{prefix}✗ {name} {}: {message}",
+            t(lang, Msg::Error)
+        ))
+        .style(Style::default().fg(Color::Red).add_modifier(bold_mod)),
         JobStatus::QualityWarning { vmaf, threshold } => {
             let vmaf_color = get_vmaf_color(*vmaf);
             ListItem::new(Line::from(vec![

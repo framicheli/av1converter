@@ -46,9 +46,10 @@ impl Encoder {
     }
 }
 
+/// Software encoding
 impl Default for Encoder {
     fn default() -> Self {
-        detect_encoder()
+        Encoder::SvtAv1
     }
 }
 

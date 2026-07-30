@@ -375,8 +375,10 @@ fn create_result_item(
 
     // Output size and compression ratio
     let output_info = match (job.output_size, job.size_reduction()) {
+        // A negative percentage means the output grew, so the sign is printed
+        // rather than assumed.
         (Some(output), Some((_, percent))) => {
-            format!(" → {} (-{:.1}%)", format_file_size(output), percent)
+            format!(" → {} ({:+.1}%)", format_file_size(output), -percent)
         }
         (Some(output), None) => format!(" → {}", format_file_size(output)),
         _ => String::new(),
@@ -402,7 +404,10 @@ fn create_result_item(
                 Span::styled(output_info, Style::default().fg(Color::DarkGray)),
             ];
             if !source_info.is_empty() {
-                spans.push(Span::styled(source_info, Style::default().fg(Color::Yellow)));
+                spans.push(Span::styled(
+                    source_info,
+                    Style::default().fg(Color::Yellow),
+                ));
             }
             ListItem::new(Line::from(spans)).style(Style::default().add_modifier(bold_mod))
         }
@@ -424,7 +429,10 @@ fn create_result_item(
                 ),
             ];
             if !source_info.is_empty() {
-                spans.push(Span::styled(source_info, Style::default().fg(Color::Yellow)));
+                spans.push(Span::styled(
+                    source_info,
+                    Style::default().fg(Color::Yellow),
+                ));
             }
             ListItem::new(Line::from(spans)).style(Style::default().add_modifier(bold_mod))
         }
@@ -452,7 +460,10 @@ fn create_result_item(
                 ),
             ];
             if !source_info.is_empty() {
-                spans.push(Span::styled(source_info, Style::default().fg(Color::Yellow)));
+                spans.push(Span::styled(
+                    source_info,
+                    Style::default().fg(Color::Yellow),
+                ));
             }
             ListItem::new(Line::from(spans)).style(Style::default().add_modifier(bold_mod))
         }

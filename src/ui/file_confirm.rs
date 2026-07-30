@@ -78,7 +78,8 @@ pub fn render_file_confirm(f: &mut Frame, app: &mut App) {
             .border_style(Style::default().fg(Color::DarkGray))
             .title(format!(" {} ", t(lang, Msg::Files))),
     );
-    app.file_confirm_list_state.select(Some(app.file_confirm_scroll));
+    app.file_confirm_list_state
+        .select(Some(app.file_confirm_scroll));
     f.render_stateful_widget(list, chunks[1], &mut app.file_confirm_list_state);
 
     // Help

@@ -14,6 +14,9 @@ pub struct QueueState {
     pub skipped_count: usize,
     pub error_count: usize,
     pub encoding_progress_done: usize,
+    /// Bytes saved by finished jobs that are no longer in `jobs`. The daemon
+    /// lets the queue be cleared, and the running total must survive that.
+    pub cleared_saved_bytes: u64,
 }
 
 impl QueueState {
@@ -29,6 +32,7 @@ impl QueueState {
             skipped_count: 0,
             error_count: 0,
             encoding_progress_done: 0,
+            cleared_saved_bytes: 0,
         }
     }
 
@@ -39,25 +43,17 @@ impl QueueState {
         })
     }
 
+    /// Progress across the current encode session, in percent.
+    ///
+    /// Counted from [`Self::encoding_progress_done`] rather than by scanning the
+    /// job list: the daemon lets jobs be removed from the queue mid-session, and
+    /// a finished job that is no longer listed must not un-count itself.
     pub fn overall_progress(&self) -> f64 {
         if self.total_jobs_to_encode == 0 {
             return 0.0;
         }
 
-        let completed = self
-            .jobs
-            .iter()
-            .filter(|j| {
-                matches!(
-                    j.status,
-                    JobStatus::Done
-                        | JobStatus::DoneWithVmaf { .. }
-                        | JobStatus::DoneVmafFailed { .. }
-                        | JobStatus::QualityWarning { .. }
-                        | JobStatus::Error { .. }
-                )
-            })
-            .count();
+        let completed = self.encoding_progress_done.min(self.total_jobs_to_encode);
 
         let current_progress = self
             .jobs
@@ -87,7 +83,11 @@ impl QueueState {
         let total_estimated_secs = elapsed_secs / (progress / 100.0);
         let remaining_secs = total_estimated_secs - elapsed_secs;
         if remaining_secs > 0.0 {
-            Some(Duration::from_secs_f64(remaining_secs))
+            // `try_from_secs_f64` rather than the panicking form: an estimate
+            // built by dividing by a progress value approaching zero can
+            // overflow `Duration`, and this runs on every dashboard poll — the
+            // last place that should be able to take a request handler down.
+            Duration::try_from_secs_f64(remaining_secs).ok()
         } else {
             None
         }
@@ -108,13 +108,15 @@ impl QueueState {
         })
     }
 
-    /// Get total space saved across all completed jobs
+    /// Get total space saved across all completed jobs, including jobs that
+    /// have since been removed from the queue.
     pub fn total_space_saved(&self) -> (u64, String) {
-        let total_saved: u64 = self
+        let listed: u64 = self
             .jobs
             .iter()
             .filter_map(|j| j.size_reduction().map(|(saved, _)| saved))
             .sum();
+        let total_saved = listed.saturating_add(self.cleared_saved_bytes);
         (total_saved, format_file_size(total_saved))
     }
 
@@ -130,11 +132,63 @@ impl QueueState {
         self.skipped_count = 0;
         self.error_count = 0;
         self.encoding_progress_done = 0;
+        self.cleared_saved_bytes = 0;
     }
 }
 
 impl Default for QueueState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn finished_job(source: u64, output: u64) -> EncodingJob {
+        let mut job = EncodingJob::new(PathBuf::from("/tmp/x.mkv"));
+        job.status = JobStatus::Done;
+        job.source_size = Some(source);
+        job.output_size = Some(output);
+        job
+    }
+
+    /// Progress follows the session counter, so a finished job leaving the
+    /// queue cannot drag the bar backwards.
+    #[test]
+    fn progress_survives_jobs_leaving_the_queue() {
+        let mut state = QueueState::new();
+        state.total_jobs_to_encode = 2;
+        state.encoding_progress_done = 2;
+        state.jobs.push(finished_job(100, 40));
+
+        assert!((state.overall_progress() - 100.0).abs() < f64::EPSILON);
+        state.jobs.clear();
+        assert!((state.overall_progress() - 100.0).abs() < f64::EPSILON);
+    }
+
+    /// Cancelled jobs count as done for the session, so a cancelled batch still
+    /// reads as complete rather than stalling part-way.
+    #[test]
+    fn a_fully_cancelled_session_reads_as_complete() {
+        let mut state = QueueState::new();
+        state.total_jobs_to_encode = 3;
+        state.encoding_progress_done = 3;
+        assert!((state.overall_progress() - 100.0).abs() < f64::EPSILON);
+    }
+
+    /// Savings from cleared jobs stay in the running total.
+    #[test]
+    fn cleared_savings_stay_counted() {
+        let mut state = QueueState::new();
+        state.jobs.push(finished_job(1000, 400));
+        assert_eq!(state.total_space_saved().0, 600);
+
+        // Simulates what DaemonQueue::remove hands over on removal.
+        state.jobs.clear();
+        state.cleared_saved_bytes = 600;
+        assert_eq!(state.total_space_saved().0, 600);
     }
 }

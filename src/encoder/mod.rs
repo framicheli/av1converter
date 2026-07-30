@@ -1,15 +1,66 @@
 pub mod command_builder;
+#[cfg(test)]
+mod end_to_end;
 pub mod ffmpeg;
 
 pub use command_builder::EncodingParams;
 pub use ffmpeg::{EncodeResult, ProgressCallback, encode_video};
 
-use crate::analyzer::{HdrType, VideoMetadata};
+use crate::analyzer::{DvMode, HdrType, VideoMetadata};
 use crate::config::AppConfig;
-use crate::tracks::TrackSelection;
+use crate::tracks::OutputTracks;
 use crate::verifier;
+use std::fs::{File, Metadata};
 use std::sync::atomic::AtomicBool;
+use std::time::SystemTime;
 use tracing::{info, warn};
+
+struct SourceIdentity {
+    len: u64,
+    modified: Option<SystemTime>,
+    created: Option<SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+impl SourceIdentity {
+    fn from_metadata(metadata: &Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            created: metadata.created().ok(),
+            #[cfg(unix)]
+            dev: metadata.dev(),
+            #[cfg(unix)]
+            ino: metadata.ino(),
+        }
+    }
+
+    fn matches_path(&self, path: &str) -> bool {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return false;
+        };
+        let current = Self::from_metadata(&metadata);
+        self.len == current.len
+            && self.modified == current.modified
+            && self.created == current.created
+            && {
+                #[cfg(unix)]
+                {
+                    self.dev == current.dev && self.ino == current.ino
+                }
+                #[cfg(not(unix))]
+                {
+                    true
+                }
+            }
+    }
+}
 
 /// Full encoding result including VMAF
 #[derive(Debug)]
@@ -34,27 +85,45 @@ pub enum FullEncodeResult {
     },
 }
 
-impl FullEncodeResult {
-    pub fn is_success(&self) -> bool {
-        matches!(self, Self::Success | Self::SuccessWithVmaf { .. })
-    }
-}
-
 /// Orchestrate the full encoding pipeline: encode -> verify
 #[allow(clippy::too_many_arguments)]
 pub fn run_encoding_pipeline(
     input: &str,
     output: &str,
     metadata: &VideoMetadata,
-    tracks: TrackSelection,
+    tracks: OutputTracks,
+    dv_mode: DvMode,
     remux_only: bool,
+    subtitle_codecs: Vec<&'static str>,
     config: &AppConfig,
     progress_callback: Option<ProgressCallback>,
     cancel_flag: &AtomicBool,
     on_before_vmaf: Option<Box<dyn FnOnce() + Send>>,
 ) -> FullEncodeResult {
+    // Keep the original file open and fingerprinted for the entire pipeline.
+    // Auto-delete must never remove a replacement that appeared at the path
+    // while a long encode or VMAF run was in progress.
+    let source_guard = config
+        .quality
+        .delete_source_on_success
+        .then(|| File::open(input).ok())
+        .flatten();
+    let source_identity = source_guard
+        .as_ref()
+        .and_then(|file| file.metadata().ok())
+        .map(|metadata| SourceIdentity::from_metadata(&metadata));
+
     // Encoding parameters
-    let params = EncodingParams::from_metadata(input, output, metadata, config, tracks, remux_only);
+    let params = EncodingParams::from_metadata(
+        input,
+        output,
+        metadata,
+        config,
+        tracks,
+        dv_mode,
+        remux_only,
+        subtitle_codecs,
+    );
     let duration = metadata.duration_secs;
 
     // Total frame count for frame-based progress fallback (some sources, e.g.
@@ -76,8 +145,17 @@ pub fn run_encoding_pipeline(
 
     match encode_result {
         EncodeResult::Success => {
+            // DV profile 5 → HDR10 is a tone-mapping pass: output pixels are
+            // intentionally different from the source, so VMAF is meaningless.
+            let tone_mapped = metadata.hdr_type == HdrType::DolbyVision
+                && metadata.dv_profile == Some(5)
+                && dv_mode == DvMode::ToHdr10;
+            if tone_mapped && config.quality.vmaf_enabled {
+                info!("Skipping VMAF: DV profile 5 tone-mapped output is not comparable");
+            }
+
             // Notify the UI for VMAF verification phase
-            let vmaf_threshold = if config.quality.vmaf_enabled && !remux_only {
+            let vmaf_threshold = if config.quality.vmaf_enabled && !remux_only && !tone_mapped {
                 if let Some(cb) = on_before_vmaf {
                     cb();
                 }
@@ -91,22 +169,48 @@ pub fn run_encoding_pipeline(
                 vmaf_threshold,
                 metadata.hdr_type,
                 metadata.width,
+                cancel_flag,
             );
 
-            // Optionally delete source after any successful encode
-            if config.quality.delete_source_on_success && result.is_success() {
-                match std::fs::remove_file(input) {
-                    Ok(()) => {
-                        info!("Deleted source file: {input}");
-                        if let FullEncodeResult::SuccessWithVmaf {
-                            ref mut source_deleted,
-                            ..
-                        } = result
-                        {
-                            *source_deleted = true;
+            // VMAF compares video and nothing else, so a passing score says
+            // nothing about audio that was re-encoded to a lossy codec. The
+            // original is the only remaining copy of a lossless TrueHD or
+            // DTS-HD track, and no automated check here can vouch for what
+            // replaced it.
+            let audio_transcoded = params.tracks.transcodes_audio();
+            if audio_transcoded && config.quality.delete_source_on_success {
+                info!(
+                    "Keeping source file {input}: audio was transcoded and VMAF does not verify it"
+                );
+            }
+
+            // The source is only ever deleted against a VMAF score that met the
+            // threshold. A plain `Success` means no comparison ran at all (VMAF
+            // disabled, a remux, or a tone-mapped DV profile 5 output), which is
+            // no evidence that the encode is good enough to discard the original.
+            if config.quality.delete_source_on_success && !audio_transcoded {
+                if let FullEncodeResult::SuccessWithVmaf {
+                    ref mut source_deleted,
+                    ..
+                } = result
+                {
+                    if cancel_flag.load(std::sync::atomic::Ordering::Relaxed)
+                        || !source_identity
+                            .as_ref()
+                            .is_some_and(|identity| identity.matches_path(input))
+                    {
+                        warn!("Keeping source file {input}: it changed while the job was running");
+                    } else {
+                        match std::fs::remove_file(input) {
+                            Ok(()) => {
+                                info!("Deleted source file: {input}");
+                                *source_deleted = true;
+                            }
+                            Err(e) => warn!("Failed to delete source file {input}: {e}"),
                         }
                     }
-                    Err(e) => warn!("Failed to delete source file {input}: {e}"),
+                } else if matches!(result, FullEncodeResult::Success) {
+                    info!("Keeping source file {input}: no VMAF verification ran for this job");
                 }
             }
 
@@ -124,6 +228,7 @@ fn run_vmaf_check(
     threshold: Option<f64>,
     hdr_type: HdrType,
     width: u32,
+    cancel_flag: &AtomicBool,
 ) -> FullEncodeResult {
     let Some(threshold) = threshold else {
         return FullEncodeResult::Success;
@@ -134,8 +239,11 @@ fn run_vmaf_check(
     let input_path = std::path::Path::new(input);
     let output_path = std::path::Path::new(output);
 
-    match verifier::calculate_vmaf(input_path, output_path, hdr_type, width) {
-        Ok(vmaf) => {
+    match verifier::calculate_vmaf(input_path, output_path, hdr_type, width, cancel_flag) {
+        // The encode itself finished, so the output stays; only the quality
+        // check was interrupted.
+        Ok(verifier::VmafOutcome::Cancelled) => FullEncodeResult::Cancelled,
+        Ok(verifier::VmafOutcome::Scored(vmaf)) => {
             info!("VMAF score: {:.2} ({})", vmaf.score, vmaf.quality_grade());
 
             if !vmaf.meets_threshold(threshold) {
@@ -157,5 +265,31 @@ fn run_vmaf_check(
                 message: e.to_string(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SourceIdentity;
+
+    #[test]
+    fn source_identity_rejects_a_replacement_file() {
+        let dir = std::env::temp_dir().join(format!("av1c_source_id_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("movie.mkv");
+        std::fs::write(&path, b"old").unwrap();
+        let original = std::fs::File::open(&path).unwrap();
+        let identity = SourceIdentity::from_metadata(&original.metadata().unwrap());
+        assert!(identity.matches_path(path.to_str().unwrap()));
+
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&path).unwrap();
+            std::fs::write(&path, b"new").unwrap();
+            assert!(!identity.matches_path(path.to_str().unwrap()));
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

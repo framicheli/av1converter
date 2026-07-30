@@ -82,6 +82,14 @@ pub enum Msg {
     SwitchMode,
     AllAudio,
     AllSubs,
+    CopyTracks,
+    ToOpus,
+    AllOpus,
+    AlreadyOpus,
+    OpusUnavailable,
+    AudioMode,
+    OpusBitratePerChannel,
+    SkipAlreadyOpus,
     OpenFolderAction,
     SelectThisFolder,
     SwitchFile,
@@ -124,6 +132,19 @@ pub enum Msg {
     SpaceToToggle,
     ForcedTag,
     Unknown,
+
+    // ── Dolby Vision dialog ──────────────────────────────────────────────────
+    DvDialogTitle,
+    DvDialogPrompt,
+    DvOptionKeep,
+    DvOptionKeepDesc,
+    DvOptionHdr10,
+    DvOptionHdr10Desc,
+    DvP5Warning,
+    DvRecommended,
+    DvRequiresSvt,
+    DvModeHelp,
+    DvKeptTag,
 
     // ── Queue ────────────────────────────────────────────────────────────────
     AnalyzingFilesTitle,
@@ -215,6 +236,27 @@ pub enum Msg {
     CfgAudioLanguages,
     CfgSubtitleLanguages,
     CfgLanguage,
+    CfgDaemonEnabled,
+    CfgDaemonBindAddress,
+    CfgDaemonPort,
+    CfgDaemonBrowseRoot,
+    CfgDaemonAuthToken,
+
+    // ── Daemon mode ──────────────────────────────────────────────────────────
+    DaemonDisabledError,
+    DaemonListening,
+    DaemonPublicNoToken,
+    DaemonTokenGenerated,
+    EncoderUnavailable,
+    DaemonShuttingDown,
+    DaemonStarted,
+    DaemonStartFailed,
+    DaemonAlreadyRunning,
+    DaemonRunning,
+    DaemonNotRunning,
+    DaemonStopped,
+    DaemonStopFailed,
+    DaemonStopHint,
 }
 
 /// Resolve a message key for the given language.
@@ -360,6 +402,70 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Tous les sous-titres",
             De => "Alle Untertitel",
             Zh => "全部字幕",
+        },
+        Msg::CopyTracks => match lang {
+            En => "Copy",
+            It => "Copia",
+            Es => "Copiar",
+            Fr => "Copier",
+            De => "Kopieren",
+            Zh => "复制",
+        },
+        Msg::ToOpus => match lang {
+            En => "To Opus",
+            It => "In Opus",
+            Es => "A Opus",
+            Fr => "En Opus",
+            De => "Zu Opus",
+            Zh => "转为 Opus",
+        },
+        Msg::AllOpus => match lang {
+            En => "All to Opus",
+            It => "Tutto in Opus",
+            Es => "Todo a Opus",
+            Fr => "Tout en Opus",
+            De => "Alles zu Opus",
+            Zh => "全部转为 Opus",
+        },
+        Msg::AlreadyOpus => match lang {
+            En => "already Opus",
+            It => "già Opus",
+            Es => "ya es Opus",
+            Fr => "déjà Opus",
+            De => "bereits Opus",
+            Zh => "已是 Opus",
+        },
+        Msg::OpusUnavailable => match lang {
+            En => "libopus missing",
+            It => "libopus assente",
+            Es => "falta libopus",
+            Fr => "libopus absent",
+            De => "libopus fehlt",
+            Zh => "缺少 libopus",
+        },
+        Msg::AudioMode => match lang {
+            En => "Audio tracks",
+            It => "Tracce audio",
+            Es => "Pistas de audio",
+            Fr => "Pistes audio",
+            De => "Audiospuren",
+            Zh => "音频轨道",
+        },
+        Msg::OpusBitratePerChannel => match lang {
+            En => "Opus kbps per channel",
+            It => "Opus kbps per canale",
+            Es => "Opus kbps por canal",
+            Fr => "Opus kbps par canal",
+            De => "Opus kbps pro Kanal",
+            Zh => "每声道 Opus kbps",
+        },
+        Msg::SkipAlreadyOpus => match lang {
+            En => "Skip tracks already in Opus",
+            It => "Salta tracce già in Opus",
+            Es => "Omitir pistas ya en Opus",
+            Fr => "Ignorer les pistes déjà en Opus",
+            De => "Bereits in Opus vorliegende Spuren überspringen",
+            Zh => "跳过已是 Opus 的轨道",
         },
         Msg::OpenFolderAction => match lang {
             En => "Open folder",
@@ -584,6 +690,107 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Video kodieren (AV1)",
             Zh => "编码视频（AV1）",
         },
+        // ── Dolby Vision dialog ──────────────────────────────────────────────
+        Msg::DvDialogTitle => match lang {
+            En => "Dolby Vision Source",
+            It => "Sorgente Dolby Vision",
+            Es => "Fuente Dolby Vision",
+            Fr => "Source Dolby Vision",
+            De => "Dolby-Vision-Quelle",
+            Zh => "杜比视界源",
+        },
+        Msg::DvDialogPrompt => match lang {
+            En => "This file contains Dolby Vision. How should it be converted?",
+            It => "Questo file contiene Dolby Vision. Come deve essere convertito?",
+            Es => "Este archivo contiene Dolby Vision. ¿Cómo debe convertirse?",
+            Fr => "Ce fichier contient du Dolby Vision. Comment le convertir ?",
+            De => "Diese Datei enthält Dolby Vision. Wie soll sie konvertiert werden?",
+            Zh => "此文件包含杜比视界。要如何转换？",
+        },
+        Msg::DvOptionKeep => match lang {
+            En => "AV1 with Dolby Vision (profile 10)",
+            It => "AV1 con Dolby Vision (profilo 10)",
+            Es => "AV1 con Dolby Vision (perfil 10)",
+            Fr => "AV1 avec Dolby Vision (profil 10)",
+            De => "AV1 mit Dolby Vision (Profil 10)",
+            Zh => "AV1 保留杜比视界（Profile 10）",
+        },
+        Msg::DvOptionKeepDesc => match lang {
+            En => "Keeps the dynamic metadata in the AV1 stream",
+            It => "Mantiene i metadati dinamici nel flusso AV1",
+            Es => "Mantiene los metadatos dinámicos en el flujo AV1",
+            Fr => "Conserve les métadonnées dynamiques dans le flux AV1",
+            De => "Behält die dynamischen Metadaten im AV1-Stream",
+            Zh => "在 AV1 流中保留动态元数据",
+        },
+        Msg::DvOptionHdr10 => match lang {
+            En => "AV1 with true HDR10",
+            It => "AV1 con vero HDR10",
+            Es => "AV1 con HDR10 verdadero",
+            Fr => "AV1 avec HDR10 véritable",
+            De => "AV1 mit echtem HDR10",
+            Zh => "AV1 转为真正的 HDR10",
+        },
+        Msg::DvOptionHdr10Desc => match lang {
+            En => "Drops the DV layer, keeps HDR10 static metadata",
+            It => "Rimuove il livello DV, mantiene i metadati statici HDR10",
+            Es => "Elimina la capa DV, mantiene los metadatos estáticos HDR10",
+            Fr => "Supprime la couche DV, conserve les métadonnées statiques HDR10",
+            De => "Entfernt die DV-Ebene, behält statische HDR10-Metadaten",
+            Zh => "移除 DV 层，保留 HDR10 静态元数据",
+        },
+        Msg::DvP5Warning => match lang {
+            En => {
+                "Profile 5 has no HDR10 base layer: keeping DV needs a DV-capable player; HDR10 tone-maps on the GPU (Vulkan)."
+            }
+            It => {
+                "Il profilo 5 non ha un livello base HDR10: mantenere DV richiede un lettore compatibile DV; HDR10 usa tone mapping su GPU (Vulkan)."
+            }
+            Es => {
+                "El perfil 5 no tiene capa base HDR10: mantener DV requiere un reproductor compatible con DV; HDR10 usa tone mapping en GPU (Vulkan)."
+            }
+            Fr => {
+                "Le profil 5 n'a pas de couche de base HDR10 : garder le DV exige un lecteur compatible DV ; HDR10 applique un tone mapping GPU (Vulkan)."
+            }
+            De => {
+                "Profil 5 hat keine HDR10-Basisebene: DV behalten erfordert einen DV-fähigen Player; HDR10 nutzt GPU-Tone-Mapping (Vulkan)."
+            }
+            Zh => {
+                "Profile 5 没有 HDR10 基础层：保留 DV 需要支持 DV 的播放器；转 HDR10 将使用 GPU 色调映射（Vulkan）。"
+            }
+        },
+        Msg::DvRecommended => match lang {
+            En => "recommended",
+            It => "consigliato",
+            Es => "recomendado",
+            Fr => "recommandé",
+            De => "empfohlen",
+            Zh => "推荐",
+        },
+        Msg::DvRequiresSvt => match lang {
+            En => "Dolby Vision passthrough requires the SVT-AV1 encoder",
+            It => "Il passthrough Dolby Vision richiede l'encoder SVT-AV1",
+            Es => "El passthrough de Dolby Vision requiere el codificador SVT-AV1",
+            Fr => "Le passthrough Dolby Vision nécessite l'encodeur SVT-AV1",
+            De => "Dolby-Vision-Passthrough erfordert den SVT-AV1-Encoder",
+            Zh => "杜比视界直通需要 SVT-AV1 编码器",
+        },
+        Msg::DvModeHelp => match lang {
+            En => "DV Mode",
+            It | Es => "Modo DV",
+            Fr => "Mode DV",
+            De => "DV-Modus",
+            Zh => "DV 模式",
+        },
+        Msg::DvKeptTag => match lang {
+            En => "kept",
+            It => "mantenuto",
+            Es => "mantenido",
+            Fr => "conservé",
+            De => "beibehalten",
+            Zh => "保留",
+        },
+
         Msg::VideoInfo => match lang {
             En => "Video Info",
             It => "Info video",
@@ -1108,12 +1315,12 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Zh => "启用 VMAF",
         },
         Msg::CfgDeleteSource => match lang {
-            En => "Delete Source on Success",
-            It => "Elimina origine se riuscito",
-            Es => "Eliminar origen si tiene éxito",
-            Fr => "Supprimer la source si réussi",
-            De => "Quelle bei Erfolg löschen",
-            Zh => "成功后删除源文件",
+            En => "Delete Source if VMAF Passes",
+            It => "Elimina origine se VMAF OK",
+            Es => "Eliminar origen si VMAF OK",
+            Fr => "Supprimer la source si VMAF OK",
+            De => "Quelle löschen bei VMAF-Erfolg",
+            Zh => "VMAF 达标后删除源文件",
         },
         Msg::CfgSvtPreset => match lang {
             En => "SVT-AV1 Preset",
@@ -1225,6 +1432,202 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Langue",
             De => "Sprache",
             Zh => "语言",
+        },
+        Msg::CfgDaemonEnabled => match lang {
+            En => "Web Daemon Enabled",
+            It => "Daemon web abilitato",
+            Es => "Daemon web habilitado",
+            Fr => "Daemon web activé",
+            De => "Web-Daemon aktiviert",
+            Zh => "启用 Web 守护进程",
+        },
+        Msg::CfgDaemonBindAddress => match lang {
+            En => "Daemon Bind Address",
+            It => "Indirizzo di ascolto daemon",
+            Es => "Dirección de escucha del daemon",
+            Fr => "Adresse d'écoute du daemon",
+            De => "Daemon-Bindungsadresse",
+            Zh => "守护进程监听地址",
+        },
+        Msg::CfgDaemonPort => match lang {
+            En => "Daemon Port",
+            It => "Porta daemon",
+            Es => "Puerto del daemon",
+            Fr => "Port du daemon",
+            De => "Daemon-Port",
+            Zh => "守护进程端口",
+        },
+        Msg::CfgDaemonBrowseRoot => match lang {
+            En => "Daemon Browse Root",
+            It => "Cartella base daemon",
+            Es => "Carpeta base del daemon",
+            Fr => "Dossier racine du daemon",
+            De => "Daemon-Basisordner",
+            Zh => "守护进程浏览根目录",
+        },
+        Msg::CfgDaemonAuthToken => match lang {
+            En => "Daemon Access Token",
+            It => "Token di accesso daemon",
+            Es => "Token de acceso del daemon",
+            Fr => "Jeton d'accès du daemon",
+            De => "Daemon-Zugriffstoken",
+            Zh => "守护进程访问令牌",
+        },
+        Msg::DaemonDisabledError => match lang {
+            En => {
+                "Daemon mode is disabled. Enable it in Settings or set enabled = true under [daemon] in config.toml."
+            }
+            It => {
+                "La modalità daemon è disabilitata. Abilitala nelle Impostazioni o imposta enabled = true sotto [daemon] in config.toml."
+            }
+            Es => {
+                "El modo daemon está deshabilitado. Habilítalo en Configuración o establece enabled = true bajo [daemon] en config.toml."
+            }
+            Fr => {
+                "Le mode daemon est désactivé. Activez-le dans les Paramètres ou définissez enabled = true sous [daemon] dans config.toml."
+            }
+            De => {
+                "Der Daemon-Modus ist deaktiviert. Aktiviere ihn in den Einstellungen oder setze enabled = true unter [daemon] in config.toml."
+            }
+            Zh => {
+                "守护进程模式已禁用。请在设置中启用，或在 config.toml 的 [daemon] 下设置 enabled = true。"
+            }
+        },
+        Msg::DaemonListening => match lang {
+            En => "Web UI listening on",
+            It => "Interfaccia web in ascolto su",
+            Es => "Interfaz web escuchando en",
+            Fr => "Interface web à l'écoute sur",
+            De => "Web-UI lauscht auf",
+            Zh => "Web 界面监听于",
+        },
+        Msg::EncoderUnavailable => match lang {
+            En => {
+                "Warning: the selected encoder is missing from this FFmpeg build; every encode will fail."
+            }
+            It => {
+                "Attenzione: il codificatore selezionato non è presente in questa build di FFmpeg; ogni conversione fallirà."
+            }
+            Es => {
+                "Aviso: el codificador seleccionado no está en esta compilación de FFmpeg; todas las conversiones fallarán."
+            }
+            Fr => {
+                "Attention : l'encodeur sélectionné est absent de cette version de FFmpeg ; tous les encodages échoueront."
+            }
+            De => {
+                "Warnung: Der gewählte Encoder fehlt in diesem FFmpeg-Build; jede Kodierung wird fehlschlagen."
+            }
+            Zh => "警告：所选编码器不在此 FFmpeg 构建中；所有转换都将失败。",
+        },
+        Msg::DaemonTokenGenerated => match lang {
+            En => {
+                "No access token was set, so one has been generated and saved to the config. Open the URL below to authorise your browser."
+            }
+            It => {
+                "Non era impostato alcun token di accesso: ne è stato generato uno e salvato nella configurazione. Apri l'URL qui sotto per autorizzare il browser."
+            }
+            Es => {
+                "No había ningún token de acceso configurado, así que se ha generado uno y guardado en la configuración. Abre la URL de abajo para autorizar tu navegador."
+            }
+            Fr => {
+                "Aucun jeton d'accès n'était défini : un jeton a été généré et enregistré dans la configuration. Ouvrez l'URL ci-dessous pour autoriser votre navigateur."
+            }
+            De => {
+                "Es war kein Zugriffstoken gesetzt, daher wurde eines erzeugt und in der Konfiguration gespeichert. Öffnen Sie die URL unten, um Ihren Browser zu autorisieren."
+            }
+            Zh => "未设置访问令牌，已生成一个并保存到配置中。请打开下方的网址以授权您的浏览器。",
+        },
+        Msg::DaemonPublicNoToken => match lang {
+            En => {
+                "Warning: the daemon is reachable from the network and no access token is set. Anyone who can reach the port can browse files and start encodes."
+            }
+            It => {
+                "Attenzione: il daemon è raggiungibile dalla rete e non è impostato alcun token di accesso. Chiunque raggiunga la porta può sfogliare i file e avviare conversioni."
+            }
+            Es => {
+                "Aviso: el daemon es accesible desde la red y no hay ningún token de acceso configurado. Cualquiera que alcance el puerto puede explorar archivos e iniciar conversiones."
+            }
+            Fr => {
+                "Attention : le daemon est accessible depuis le réseau et aucun jeton d'accès n'est défini. Quiconque atteint le port peut parcourir les fichiers et lancer des encodages."
+            }
+            De => {
+                "Warnung: Der Daemon ist aus dem Netzwerk erreichbar und es ist kein Zugriffstoken gesetzt. Wer den Port erreicht, kann Dateien durchsuchen und Kodierungen starten."
+            }
+            Zh => {
+                "警告：守护进程可从网络访问且未设置访问令牌。任何能连接该端口的人都可以浏览文件并启动转换。"
+            }
+        },
+        Msg::DaemonShuttingDown => match lang {
+            En => "Shutting down, stopping current encode...",
+            It => "Arresto in corso, interruzione della codifica corrente...",
+            Es => "Apagando, deteniendo la codificación actual...",
+            Fr => "Arrêt en cours, interruption de l'encodage actuel...",
+            De => "Wird beendet, aktuelle Kodierung wird gestoppt...",
+            Zh => "正在关闭，停止当前编码...",
+        },
+        Msg::DaemonStarted => match lang {
+            En => "Daemon started in the background",
+            It => "Daemon avviato in background",
+            Es => "Daemon iniciado en segundo plano",
+            Fr => "Daemon démarré en arrière-plan",
+            De => "Daemon im Hintergrund gestartet",
+            Zh => "守护进程已在后台启动",
+        },
+        Msg::DaemonStartFailed => match lang {
+            En => "Daemon failed to start; see the log at",
+            It => "Avvio del daemon non riuscito; vedi il log in",
+            Es => "El daemon no pudo iniciarse; consulta el registro en",
+            Fr => "Échec du démarrage du daemon ; consultez le journal dans",
+            De => "Daemon konnte nicht gestartet werden; siehe Log unter",
+            Zh => "守护进程启动失败；请查看日志：",
+        },
+        Msg::DaemonAlreadyRunning => match lang {
+            En => "Daemon is already running",
+            It => "Il daemon è già in esecuzione",
+            Es => "El daemon ya está en ejecución",
+            Fr => "Le daemon est déjà en cours d'exécution",
+            De => "Daemon läuft bereits",
+            Zh => "守护进程已在运行",
+        },
+        Msg::DaemonRunning => match lang {
+            En => "Daemon is running",
+            It => "Il daemon è in esecuzione",
+            Es => "El daemon está en ejecución",
+            Fr => "Le daemon est en cours d'exécution",
+            De => "Daemon läuft",
+            Zh => "守护进程正在运行",
+        },
+        Msg::DaemonNotRunning => match lang {
+            En => "Daemon is not running",
+            It => "Il daemon non è in esecuzione",
+            Es => "El daemon no está en ejecución",
+            Fr => "Le daemon n'est pas en cours d'exécution",
+            De => "Daemon läuft nicht",
+            Zh => "守护进程未运行",
+        },
+        Msg::DaemonStopped => match lang {
+            En => "Daemon stopped",
+            It => "Daemon arrestato",
+            Es => "Daemon detenido",
+            Fr => "Daemon arrêté",
+            De => "Daemon beendet",
+            Zh => "守护进程已停止",
+        },
+        Msg::DaemonStopFailed => match lang {
+            En => "Failed to stop the daemon:",
+            It => "Impossibile arrestare il daemon:",
+            Es => "No se pudo detener el daemon:",
+            Fr => "Échec de l'arrêt du daemon :",
+            De => "Daemon konnte nicht beendet werden:",
+            Zh => "无法停止守护进程：",
+        },
+        Msg::DaemonStopHint => match lang {
+            En => "Stop it with: av1converter --stop",
+            It => "Arrestalo con: av1converter --stop",
+            Es => "Deténlo con: av1converter --stop",
+            Fr => "Arrêtez-le avec : av1converter --stop",
+            De => "Beenden mit: av1converter --stop",
+            Zh => "使用 av1converter --stop 停止",
         },
     }
 }

@@ -2,11 +2,57 @@ use crate::analyzer::HdrType;
 use crate::error::AppError;
 use serde::Deserialize;
 use std::path::Path;
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 use tracing::info;
 
 static VMAF_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Escape a value going into a filtergraph argument. `:` separates options and
+/// `\`, `'`, `[`, `]`, `,` and `;` are all meaningful to the parser, so a temp
+/// directory containing any of them would otherwise break the graph.
+fn escape_filter_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        if matches!(c, '\\' | ':' | '\'' | '[' | ']' | ',' | ';') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Wait for a child process, killing it as soon as the cancel flag is raised.
+/// `Ok(None)` means it was cancelled rather than allowed to finish.
+fn wait_or_cancel(
+    child: &mut std::process::Child,
+    cancel_flag: &AtomicBool,
+) -> Result<Option<std::process::ExitStatus>, AppError> {
+    loop {
+        if cancel_flag.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(Some(status)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(250)),
+            Err(e) => {
+                return Err(AppError::Vmaf(format!(
+                    "Failed to check VMAF ffmpeg status: {e}"
+                )));
+            }
+        }
+    }
+}
+
+/// Outcome of a VMAF run that could be interrupted.
+pub enum VmafOutcome {
+    Scored(VmafResult),
+    /// The cancel flag was raised; the ffmpeg process was killed.
+    Cancelled,
+}
 
 /// VMAF quality result
 #[derive(Debug, Clone)]
@@ -57,16 +103,24 @@ impl std::fmt::Display for VmafResult {
     }
 }
 
-/// Calculate VMAF score between original and encoded video
+/// Calculate VMAF score between original and encoded video.
+///
+/// A VMAF pass over a feature-length file takes minutes, so it honours
+/// `cancel_flag` the same way encoding does: the ffmpeg process is killed and
+/// its log file cleaned up rather than left running past shutdown.
 pub fn calculate_vmaf(
     original: &Path,
     encoded: &Path,
     hdr_type: HdrType,
     width: u32,
-) -> Result<VmafResult, AppError> {
+    cancel_flag: &AtomicBool,
+) -> Result<VmafOutcome, AppError> {
     let uid = VMAF_COUNTER.fetch_add(1, Ordering::Relaxed);
+    // libvmaf opens `log_path` itself, so the path has to be somewhere nobody
+    // else can have pre-planted a symlink under the name.
     let json_output =
-        std::env::temp_dir().join(format!("av1c_vmaf_{}_{}.json", std::process::id(), uid));
+        crate::utils::scratch_path(&format!("av1c_vmaf_{}_{}.json", std::process::id(), uid))
+            .map_err(AppError::Vmaf)?;
 
     let (model_suffix, model_name) = if width >= 3840 && hdr_type.is_hdr() {
         (":model='version=vmaf_4k_v0.6.1neg'", "vmaf_4k_v0.6.1neg")
@@ -86,7 +140,7 @@ pub fn calculate_vmaf(
         "[0:v]format=yuv420p10le,setpts=PTS-STARTPTS[ref];\
          [1:v]format=yuv420p10le,setpts=PTS-STARTPTS[dist];\
          [ref][dist]libvmaf=log_path={}:log_fmt=json:n_threads={}:n_subsample=10{}",
-        json_output.to_string_lossy(),
+        escape_filter_value(&json_output.to_string_lossy()),
         n_threads,
         model_suffix
     );
@@ -99,8 +153,20 @@ pub fn calculate_vmaf(
         hdr_type.display_string()
     );
 
-    let output = Command::new("ffmpeg")
+    // stderr goes to a file rather than a pipe: a full pipe buffer would block
+    // ffmpeg forever while nothing is reading it.
+    let stderr_path = crate::utils::scratch_path(&format!(
+        "av1c_vmaf_stderr_{}_{}.txt",
+        std::process::id(),
+        uid
+    ))
+    .map_err(AppError::Vmaf)?;
+    let stderr_file = std::fs::File::create(&stderr_path)
+        .map_err(|e| AppError::Vmaf(format!("Failed to create VMAF log file: {e}")))?;
+
+    let mut child = Command::new("ffmpeg")
         .args([
+            "-nostdin",
             "-i",
             &original.to_string_lossy(),
             "-i",
@@ -111,12 +177,35 @@ pub fn calculate_vmaf(
             "null",
             "-",
         ])
-        .output()
-        .map_err(|e| AppError::CommandExecution(format!("Failed to run ffmpeg for VMAF: {e}")))?;
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(stderr_file))
+        .spawn()
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&stderr_path);
+            AppError::CommandExecution(format!("Failed to run ffmpeg for VMAF: {e}"))
+        })?;
 
-    if !output.status.success() {
+    let waited = wait_or_cancel(&mut child, cancel_flag);
+    let status = match waited {
+        Ok(Some(status)) => status,
+        other => {
+            let _ = std::fs::remove_file(&json_output);
+            let _ = std::fs::remove_file(&stderr_path);
+            return match other {
+                Ok(_) => {
+                    info!("VMAF check cancelled");
+                    Ok(VmafOutcome::Cancelled)
+                }
+                Err(e) => Err(e),
+            };
+        }
+    };
+
+    let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&stderr_path);
+
+    if !status.success() {
         let _ = std::fs::remove_file(&json_output);
-        let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("No such filter: 'libvmaf'")
             || stderr.contains("Unknown libvmaf")
             || stderr.contains("Option model not found")
@@ -145,7 +234,22 @@ pub fn calculate_vmaf(
 
     info!("VMAF result: {}", result);
 
-    Ok(result)
+    Ok(VmafOutcome::Scored(result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_filter_value;
+
+    #[test]
+    fn filter_values_escape_graph_syntax() {
+        assert_eq!(escape_filter_value("/tmp/plain.json"), "/tmp/plain.json");
+        assert_eq!(
+            escape_filter_value("/tmp/od:d[dir]/v.json"),
+            "/tmp/od\\:d\\[dir\\]/v.json"
+        );
+        assert_eq!(escape_filter_value(r"C:\tmp\v.json"), r"C\:\\tmp\\v.json");
+    }
 }
 
 // JSON deserialization structures

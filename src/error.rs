@@ -53,6 +53,8 @@ impl std::fmt::Display for AppError {
     }
 }
 
+impl std::error::Error for AppError {}
+
 impl From<std::io::Error> for AppError {
     fn from(err: std::io::Error) -> Self {
         AppError::Io {

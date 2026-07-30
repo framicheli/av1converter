@@ -276,6 +276,160 @@ impl Default for OutputConfig {
     }
 }
 
+/// Daemon / web UI configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DaemonConfig {
+    /// Whether `--daemon` is allowed to start
+    pub enabled: bool,
+    /// Bind address for the web server. Defaults to loopback: the web UI can
+    /// queue encodes and delete sources, so reaching the network is opt-in.
+    pub bind_address: String,
+    /// TCP port for the web server
+    pub port: u16,
+    /// Directory the web file browser is confined to. Empty means the whole
+    /// filesystem, which is only reasonable while bound to loopback.
+    #[serde(default)]
+    pub browse_root: String,
+    /// Shared secret required by the `/api` endpoints. Empty disables the
+    /// check; set it whenever the daemon is reachable from the network.
+    #[serde(default)]
+    pub auth_token: String,
+}
+
+impl DaemonConfig {
+    pub fn listen_address(&self) -> String {
+        self.bind_address.parse::<std::net::IpAddr>().map_or_else(
+            |_| format!("{}:{}", self.bind_address, self.port),
+            |ip| std::net::SocketAddr::new(ip, self.port).to_string(),
+        )
+    }
+
+    /// The URL to open the web UI with, carrying the access token when one is
+    /// set so the browser is authorised by following the link once.
+    ///
+    /// A wildcard bind is shown as loopback: `http://0.0.0.0:8399/` is a valid
+    /// thing to listen on but not a thing any browser can open, and this string
+    /// is printed for the user to click.
+    pub fn url(&self) -> String {
+        let host = match self.bind_address.parse::<std::net::IpAddr>() {
+            Ok(ip) if ip.is_unspecified() && ip.is_ipv4() => "127.0.0.1".to_string(),
+            Ok(ip) if ip.is_unspecified() => "[::1]".to_string(),
+            Ok(ip) => std::net::SocketAddr::new(ip, self.port)
+                .to_string()
+                .rsplit_once(':')
+                .map_or_else(|| self.bind_address.clone(), |(host, _)| host.to_string()),
+            Err(_) => self.bind_address.clone(),
+        };
+        let authority = format!("{host}:{}", self.port);
+        if self.auth_token.is_empty() {
+            format!("http://{authority}/")
+        } else {
+            let token = self
+                .auth_token
+                .bytes()
+                .fold(String::new(), |mut out, byte| {
+                    use std::fmt::Write;
+                    if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                        out.push(char::from(byte));
+                    } else {
+                        let _ = write!(out, "%{byte:02X}");
+                    }
+                    out
+                });
+            format!("http://{authority}/?token={token}")
+        }
+    }
+
+    /// A fresh 128-bit access token, hex encoded.
+    pub fn generate_token() -> Result<String, String> {
+        crate::utils::random_hex(16)
+    }
+
+    /// Bind addresses that expose the daemon beyond this machine.
+    pub fn binds_publicly(&self) -> bool {
+        match self.bind_address.parse::<std::net::IpAddr>() {
+            Ok(ip) => !ip.is_loopback(),
+            Err(_) => false,
+        }
+    }
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind_address: "127.0.0.1".to_string(),
+            port: 8399,
+            browse_root: String::new(),
+            auth_token: String::new(),
+        }
+    }
+}
+
+/// What to do with the audio tracks of a newly queued file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AudioMode {
+    /// Pass the source streams through untouched
+    #[default]
+    #[serde(rename = "copy")]
+    Copy,
+    /// Re-encode to Opus at the source's channel layout
+    #[serde(rename = "opus")]
+    Opus,
+}
+
+impl AudioMode {
+    /// All modes, in display/cycle order.
+    pub const ALL: [AudioMode; 2] = [AudioMode::Copy, AudioMode::Opus];
+
+    /// The next mode in [`AudioMode::ALL`], wrapping around.
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    /// The previous mode in [`AudioMode::ALL`], wrapping around.
+    pub fn prev(self) -> Self {
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
+/// Audio transcoding configuration
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioConfig {
+    /// What newly analyzed files default to. Per-track choices override it.
+    pub default_mode: AudioMode,
+    /// Opus bitrate allotted per channel, in kbps. The channel layout is never
+    /// changed, so the stream bitrate is simply this times the channel count.
+    pub opus_bitrate_per_channel: u16,
+    /// Leave tracks that are already Opus alone: re-encoding them would only
+    /// add generation loss.
+    pub skip_already_opus: bool,
+}
+
+impl AudioConfig {
+    /// Lowest and highest per-channel bitrate `sanitize` will accept, in kbps.
+    pub const MIN_PER_CHANNEL: u16 = 16;
+    pub const MAX_PER_CHANNEL: u16 = 256;
+
+    /// Opus bitrate for a stream with this many channels, in kbps. A source
+    /// whose channel count ffprobe could not report is treated as stereo.
+    pub fn opus_bitrate_kbps(&self, channels: Option<u16>) -> u32 {
+        u32::from(channels.unwrap_or(2).max(1)) * u32::from(self.opus_bitrate_per_channel)
+    }
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            default_mode: AudioMode::Copy,
+            opus_bitrate_per_channel: 64,
+            skip_already_opus: true,
+        }
+    }
+}
+
 /// Track selection preset configuration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackPresetConfig {

@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::config::{AppConfig, Encoder, EncodingPreset, QualityPreset};
+use crate::config::{AppConfig, AudioMode, Encoder, EncodingPreset, QualityPreset};
 use crate::i18n::{Msg, t};
 use ratatui::{
     Frame,
@@ -46,6 +46,14 @@ pub enum ConfigField {
     SameDirectory,
     AudioLanguages,
     SubtitleLanguages,
+    AudioDefaultMode,
+    OpusBitratePerChannel,
+    SkipAlreadyOpus,
+    DaemonEnabled,
+    DaemonBindAddress,
+    DaemonPort,
+    DaemonBrowseRoot,
+    DaemonAuthToken,
 }
 
 /// Descriptor for a single row in the config screen.
@@ -162,6 +170,46 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         kind: ConfigItemKind::Text,
         field: ConfigField::SubtitleLanguages,
     },
+    ConfigItem {
+        label: Msg::AudioMode,
+        kind: ConfigItemKind::Cycle,
+        field: ConfigField::AudioDefaultMode,
+    },
+    ConfigItem {
+        label: Msg::OpusBitratePerChannel,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::OpusBitratePerChannel,
+    },
+    ConfigItem {
+        label: Msg::SkipAlreadyOpus,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::SkipAlreadyOpus,
+    },
+    ConfigItem {
+        label: Msg::CfgDaemonEnabled,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::DaemonEnabled,
+    },
+    ConfigItem {
+        label: Msg::CfgDaemonBindAddress,
+        kind: ConfigItemKind::Text,
+        field: ConfigField::DaemonBindAddress,
+    },
+    ConfigItem {
+        label: Msg::CfgDaemonPort,
+        kind: ConfigItemKind::Text,
+        field: ConfigField::DaemonPort,
+    },
+    ConfigItem {
+        label: Msg::CfgDaemonBrowseRoot,
+        kind: ConfigItemKind::Text,
+        field: ConfigField::DaemonBrowseRoot,
+    },
+    ConfigItem {
+        label: Msg::CfgDaemonAuthToken,
+        kind: ConfigItemKind::Text,
+        field: ConfigField::DaemonAuthToken,
+    },
 ];
 
 /// Whether a field is one of the per-resolution rate-factor rows.
@@ -204,6 +252,14 @@ fn quality_preset_name(lang: crate::i18n::Language, preset: QualityPreset) -> &'
     )
 }
 
+/// Localized display name for an audio mode.
+fn audio_mode_name(lang: crate::i18n::Language, mode: AudioMode) -> String {
+    match mode {
+        AudioMode::Copy => t(lang, Msg::CopyTracks).to_string(),
+        AudioMode::Opus => "Opus".to_string(),
+    }
+}
+
 /// Read the current display value for visible config item `index` from `config`.
 pub fn get_config_value(config: &AppConfig, index: usize) -> String {
     let items = visible_config_items(config);
@@ -236,6 +292,34 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::SameDirectory => bool_display(config.language, config.output.same_directory),
         ConfigField::AudioLanguages => config.tracks.preferred_audio_languages.join(", "),
         ConfigField::SubtitleLanguages => config.tracks.preferred_subtitle_languages.join(", "),
+        ConfigField::AudioDefaultMode => {
+            audio_mode_name(config.language, config.audio.default_mode)
+        }
+        ConfigField::OpusBitratePerChannel => config.audio.opus_bitrate_per_channel.to_string(),
+        ConfigField::SkipAlreadyOpus => {
+            bool_display(config.language, config.audio.skip_already_opus)
+        }
+        ConfigField::DaemonEnabled => bool_display(config.language, config.daemon.enabled),
+        ConfigField::DaemonBindAddress => config.daemon.bind_address.clone(),
+        ConfigField::DaemonPort => config.daemon.port.to_string(),
+        ConfigField::DaemonBrowseRoot => empty_as_dash(&config.daemon.browse_root),
+        // Shown as a placeholder rather than the secret itself.
+        ConfigField::DaemonAuthToken => {
+            if config.daemon.auth_token.is_empty() {
+                "—".to_string()
+            } else {
+                "••••••••".to_string()
+            }
+        }
+    }
+}
+
+/// Render an unset optional text field as a dash rather than as blank.
+fn empty_as_dash(value: &str) -> String {
+    if value.is_empty() {
+        "—".to_string()
+    } else {
+        value.to_string()
     }
 }
 

@@ -1,8 +1,9 @@
-use crate::analyzer::{self, AnalysisResult, is_av1_codec};
-use crate::config::{AppConfig, TrackPresetConfig};
+use crate::analyzer::{self, AnalysisResult, DvMode, HdrType, is_av1_codec};
+use crate::config::{AppConfig, Encoder};
 use crate::error::AppError;
 use crate::queue::{
-    EncodingJob, JobStatus, QueueState, WorkerJob, WorkerMessage, is_video_file, run_worker,
+    EncodingJob, JobStatus, QueueState, WorkerJob, WorkerMessage, auto_select_tracks,
+    collect_video_files, is_video_file, make_output_paths_unique, run_worker,
 };
 use crate::utils::DependencyStatus;
 use ratatui::widgets::ListState;
@@ -61,6 +62,9 @@ pub const HOME_MENU: &[&str] = &[
 ];
 
 /// Main application state
+// Screen-state flags for a TUI: grouping them into sub-structs would only add
+// indirection to code that reads them one at a time.
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub current_screen: Screen,
     pub should_quit: bool,
@@ -103,12 +107,19 @@ pub struct App {
 
     // Configuration
     pub config: AppConfig,
+    /// ffmpeg and ffprobe are on PATH — without these nothing works
     pub deps: bool,
+    /// This `FFmpeg` build has libvmaf, which only VMAF verification needs
+    pub vmaf_deps: bool,
+    /// Whether this `FFmpeg` build can encode Opus
+    pub opus_deps: bool,
 
     // UI state
     pub message: Option<String>,
     pub message_expiry: Option<Instant>,
     pub confirm_dialog: Option<(ConfirmAction, bool)>,
+    /// Dolby Vision mode dialog: selected option (0 = keep DV, 1 = HDR10)
+    pub dv_dialog: Option<usize>,
 
     // Config screen state
     pub config_selected: usize,
@@ -157,6 +168,8 @@ impl App {
 
         let config = AppConfig::load();
         let deps = DependencyStatus::check();
+        let vmaf_deps = DependencyStatus::vmaf_available();
+        let opus_deps = DependencyStatus::libopus_available();
 
         info!("Using encoder: {}", config.encoder);
 
@@ -187,9 +200,12 @@ impl App {
             analysis_cancel_flag: Arc::new(AtomicBool::new(false)),
             config,
             deps,
+            vmaf_deps,
+            opus_deps,
             message: None,
             message_expiry: None,
             confirm_dialog: None,
+            dv_dialog: None,
             config_selected: 0,
             config_edit_buffer: None,
             config_snapshot: None,
@@ -249,6 +265,78 @@ impl App {
         self.current_screen = Screen::TrackConfig;
     }
 
+    // Dolby Vision dialog
+
+    /// Open the DV-mode dialog if the job at `config_job_index` is a Dolby
+    /// Vision source that still needs a decision. Hardware encoders cannot
+    /// write the DV RPU, so those jobs are silently resolved to HDR10.
+    pub fn maybe_open_dv_dialog(&mut self) {
+        self.dv_dialog = None;
+
+        let Some(job) = self.current_config_job() else {
+            return;
+        };
+        let Some(meta) = job.metadata.as_ref() else {
+            return;
+        };
+        if job.remux_only || job.dv_mode.is_some() || meta.hdr_type != HdrType::DolbyVision {
+            return;
+        }
+
+        if self.config.encoder == Encoder::SvtAv1 {
+            let recommended = DvMode::recommended_for(meta.dv_profile);
+            self.dv_dialog = Some(dv_mode_index(recommended));
+        } else if let Some(job) = self.current_config_job_mut() {
+            job.dv_mode = Some(DvMode::ToHdr10);
+        }
+    }
+
+    /// Re-open the DV-mode dialog from the track config screen ('d' key).
+    pub fn reopen_dv_dialog(&mut self) {
+        let Some(meta) = self.current_config_job().and_then(|j| j.metadata.as_ref()) else {
+            return;
+        };
+        if meta.hdr_type != HdrType::DolbyVision {
+            return;
+        }
+        if self.config.encoder != Encoder::SvtAv1 {
+            let msg = crate::i18n::t(self.config.language, crate::i18n::Msg::DvRequiresSvt);
+            self.set_timed_message(msg, 3);
+            return;
+        }
+        let current = self
+            .current_config_job()
+            .and_then(|j| j.dv_mode)
+            .unwrap_or_else(|| DvMode::recommended_for(meta.dv_profile));
+        self.dv_dialog = Some(dv_mode_index(current));
+    }
+
+    /// Apply the selected DV mode to the current job and close the dialog.
+    pub fn confirm_dv_dialog(&mut self) {
+        if let Some(sel) = self.dv_dialog.take()
+            && let Some(job) = self.current_config_job_mut()
+        {
+            job.dv_mode = Some(if sel == 0 {
+                DvMode::KeepDolbyVision
+            } else {
+                DvMode::ToHdr10
+            });
+        }
+    }
+
+    /// Close the dialog with the recommended default (Esc).
+    pub fn dismiss_dv_dialog(&mut self) {
+        if self.dv_dialog.take().is_some() {
+            let profile = self
+                .current_config_job()
+                .and_then(|j| j.metadata.as_ref())
+                .and_then(|m| m.dv_profile);
+            if let Some(job) = self.current_config_job_mut() {
+                job.dv_mode.get_or_insert(DvMode::recommended_for(profile));
+            }
+        }
+    }
+
     /// Reset track focus/cursors to match the job now at `config_job_index`.
     fn reset_track_config_cursor(&mut self) {
         let audio_count = self
@@ -266,6 +354,7 @@ impl App {
         };
         self.audio_cursor = 0;
         self.subtitle_cursor = 0;
+        self.maybe_open_dv_dialog();
     }
 
     pub fn navigate_to_queue(&mut self) {
@@ -489,25 +578,21 @@ impl App {
     pub fn scan_folder(&mut self, folder: &Path, recursive: bool) {
         self.queue.reset();
 
+        let mut paths: Vec<PathBuf> = Vec::new();
         if recursive {
-            let mut paths: Vec<PathBuf> = Vec::new();
             collect_video_files(folder, &mut paths);
-            paths.sort();
-            for path in paths {
-                self.queue.jobs.push(EncodingJob::new(path));
-            }
         } else if let Ok(entries) = std::fs::read_dir(folder) {
-            let mut paths: Vec<PathBuf> = entries
-                .filter_map(Result::ok)
-                .map(|e| e.path())
-                .filter(|p| is_video_file(p))
-                .collect();
+            paths.extend(
+                entries
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| is_video_file(p)),
+            );
+        }
 
-            paths.sort();
-
-            for path in paths {
-                self.queue.jobs.push(EncodingJob::new(path));
-            }
+        paths.sort();
+        for path in paths {
+            self.queue.jobs.push(EncodingJob::new(path));
         }
     }
 
@@ -525,7 +610,6 @@ impl App {
                     job.status = JobStatus::Error {
                         message: "File path contains non-UTF-8 characters".to_string(),
                     };
-                    self.queue.error_count += 1;
                     paths.push(Err(AppError::Analysis(
                         "File path contains non-UTF-8 characters".to_string(),
                     )));
@@ -540,44 +624,7 @@ impl App {
         self.analysis_receiver = Some(rx);
 
         thread::spawn(move || {
-            let results: Vec<Result<AnalysisResult, AppError>> = std::thread::scope(|s| {
-                // Spawn one thread per valid path
-                let handles: Vec<Option<_>> = paths
-                    .iter()
-                    .map(|pr| match pr {
-                        Ok(p) => {
-                            if cancel_flag.load(Ordering::Relaxed) {
-                                None // skip remaining if already cancelled
-                            } else {
-                                let p = p.clone();
-                                let flag = cancel_flag.clone();
-                                Some(s.spawn(move || {
-                                    if flag.load(Ordering::Relaxed) {
-                                        Err(AppError::Analysis("Cancelled".to_string()))
-                                    } else {
-                                        analyzer::analyze(&p)
-                                    }
-                                }))
-                            }
-                        }
-                        Err(_) => None,
-                    })
-                    .collect();
-
-                handles
-                    .into_iter()
-                    .zip(paths.iter())
-                    .map(|(handle, original)| match handle {
-                        Some(h) => h.join().unwrap_or_else(|_| {
-                            Err(AppError::Analysis("Analysis thread panicked".to_string()))
-                        }),
-                        None => match original {
-                            Err(e) => Err(AppError::Analysis(e.to_string())),
-                            Ok(_) => Err(AppError::Analysis("Cancelled".to_string())),
-                        },
-                    })
-                    .collect()
-            });
+            let results = analyze_batch(&paths, &cancel_flag);
             let _ = tx.send(results);
         });
 
@@ -588,6 +635,7 @@ impl App {
     fn apply_analysis_results(&mut self, results: Vec<Result<AnalysisResult, AppError>>) {
         let output_config = self.config.output.clone();
         let track_config = self.config.tracks.clone();
+        let audio_config = self.config.audio.clone();
 
         for (job, result) in self.queue.jobs.iter_mut().zip(results) {
             match result {
@@ -597,7 +645,7 @@ impl App {
                     job.audio_tracks = analysis.audio_tracks;
                     job.subtitle_tracks = analysis.subtitle_tracks;
                     job.remux_only = is_av1;
-                    auto_select_tracks(job, &track_config);
+                    auto_select_tracks(job, &track_config, &audio_config);
                     job.generate_output_path(&output_config);
                     job.status = JobStatus::AwaitingConfig;
                 }
@@ -617,6 +665,7 @@ impl App {
                 }
             }
         }
+        make_output_paths_unique(&mut self.queue.jobs);
 
         // Find first job awaiting config
         self.queue.config_job_index = self
@@ -640,15 +689,31 @@ impl App {
 
     /// Poll the analysis channel; called every frame from the main loop.
     pub fn process_analysis_messages(&mut self) {
-        let results = if let Some(ref rx) = self.analysis_receiver {
-            rx.try_recv().ok()
-        } else {
+        let Some(ref rx) = self.analysis_receiver else {
             return;
         };
 
-        if let Some(results) = results {
-            self.analysis_receiver = None;
-            self.apply_analysis_results(results);
+        match rx.try_recv() {
+            Ok(results) => {
+                self.analysis_receiver = None;
+                self.apply_analysis_results(results);
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            // The analysis thread is gone without having sent anything, so no
+            // result is ever coming. Treating that as "nothing yet" would leave
+            // the Analyzing screen up forever with nothing said.
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.analysis_receiver = None;
+                for job in &mut self.queue.jobs {
+                    if !matches!(job.status, JobStatus::Error { .. }) {
+                        job.status = JobStatus::Error {
+                            message: "Analysis stopped unexpectedly".to_string(),
+                        };
+                        self.queue.error_count += 1;
+                    }
+                }
+                self.navigate_to_finish();
+            }
         }
     }
 
@@ -747,6 +812,7 @@ impl App {
         self.progress_receiver = Some(rx);
 
         let output_config = self.config.output.clone();
+        let audio_config = self.config.audio.clone();
 
         // Collect jobs to encode
         let worker_jobs: Vec<WorkerJob> = self
@@ -765,12 +831,18 @@ impl App {
                         stem, output_config.suffix, output_config.container
                     ))
                 });
+                let selected_subs = crate::tracks::selected_subtitles(
+                    &j.subtitle_tracks,
+                    &j.track_selection.subtitle_indices,
+                );
                 Some(WorkerJob {
                     index: i,
+                    subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
                     input: j.path.clone(),
                     output,
                     metadata,
-                    tracks: j.track_selection.clone(),
+                    tracks: j.track_selection.resolve(&j.audio_tracks, &audio_config),
+                    dv_mode: j.dv_mode.unwrap_or_default(),
                     remux_only: j.remux_only,
                 })
             })
@@ -780,6 +852,7 @@ impl App {
 
         self.queue.start_time = Some(std::time::Instant::now());
         self.queue.total_jobs_to_encode = worker_jobs.len();
+        self.queue.encoding_progress_done = 0;
 
         // Mark jobs as pending
         for wj in &worker_jobs {
@@ -802,10 +875,21 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn process_progress_messages(&mut self) {
+        let mut worker_gone = false;
         let messages: Vec<WorkerMessage> = if let Some(ref rx) = self.progress_receiver {
             let mut msgs = Vec::new();
-            while let Ok(msg) = rx.try_recv() {
-                msgs.push(msg);
+            loop {
+                match rx.try_recv() {
+                    Ok(msg) => msgs.push(msg),
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    // The worker thread is gone. Whatever it had left to say it
+                    // will never say, so the queue must not sit here showing a
+                    // frozen progress bar with `encoding_active` still set.
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        worker_gone = true;
+                        break;
+                    }
+                }
             }
             msgs
         } else {
@@ -910,12 +994,33 @@ impl App {
                                 reason: "Cancelled".to_string(),
                             };
                             self.queue.skipped_count += 1;
+                            self.queue.encoding_progress_done += 1;
                         }
                     }
                     self.encoding_active = false;
                     should_finish = true;
                 }
             }
+        }
+
+        // Nothing more is coming from a worker that has gone: close out whatever
+        // it left unfinished rather than waiting on it forever.
+        if worker_gone && self.encoding_active {
+            self.progress_receiver = None;
+            for job in &mut self.queue.jobs {
+                if matches!(
+                    job.status,
+                    JobStatus::Pending | JobStatus::Encoding { .. } | JobStatus::Verifying
+                ) {
+                    job.status = JobStatus::Error {
+                        message: "Encoding stopped unexpectedly".to_string(),
+                    };
+                    self.queue.error_count += 1;
+                    self.queue.encoding_progress_done += 1;
+                }
+            }
+            self.encoding_active = false;
+            should_finish = true;
         }
 
         if should_finish {
@@ -933,71 +1038,69 @@ impl App {
     }
 }
 
-fn collect_video_files(dir: &Path, paths: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        if path.is_symlink() {
-            continue;
+/// Probe a batch of files, keeping results in input order.
+///
+/// A fixed pool of workers pulls from the batch rather than one thread per
+/// file: a recursive scan can hold hundreds of entries, and each probe spawns
+/// ffprobe processes of its own. Every worker rechecks `cancel_flag` before
+/// picking up the next file, so cancelling actually stops the work instead of
+/// only skipping what has not been spawned yet.
+fn analyze_batch(
+    paths: &[Result<String, AppError>],
+    cancel_flag: &AtomicBool,
+) -> Vec<Result<AnalysisResult, AppError>> {
+    /// Enough to keep the disk and CPU busy without thrashing either.
+    const MAX_WORKERS: usize = 4;
+
+    let slots: Vec<std::sync::Mutex<Option<Result<AnalysisResult, AppError>>>> = (0..paths.len())
+        .map(|_| std::sync::Mutex::new(None))
+        .collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = MAX_WORKERS.min(paths.len().max(1));
+
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(path) = paths.get(index) else {
+                        break;
+                    };
+                    let result = match path {
+                        _ if cancel_flag.load(Ordering::Relaxed) => {
+                            Err(AppError::Analysis("Cancelled".to_string()))
+                        }
+                        Ok(path) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            analyzer::analyze(path)
+                        }))
+                        .unwrap_or_else(|_| {
+                            Err(AppError::Analysis(format!("Analysis panicked on {path}")))
+                        }),
+                        Err(e) => Err(AppError::Analysis(e.to_string())),
+                    };
+                    if let Ok(mut slot) = slots[index].lock() {
+                        *slot = Some(result);
+                    }
+                }
+            });
         }
-        if path.is_dir() {
-            collect_video_files(&path, paths);
-        } else if is_video_file(&path) {
-            paths.push(path);
-        }
-    }
+    });
+
+    slots
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| Err(AppError::Analysis("Analysis thread panicked".to_string())))
+        })
+        .collect()
 }
 
-/// Select audio and subtitle tracks based on configured language preferences.
-fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig) {
-    // Audio tracks
-    let preferred_audio: Vec<usize> = job
-        .audio_tracks
-        .iter()
-        .filter(|t| {
-            t.language.as_deref().is_some_and(|l| {
-                config
-                    .preferred_audio_languages
-                    .iter()
-                    .any(|p| p.eq_ignore_ascii_case(l))
-            })
-        })
-        .map(|t| t.index)
-        .collect();
-
-    job.track_selection.audio_indices = if !preferred_audio.is_empty() {
-        preferred_audio
-    } else if config.select_all_fallback || config.preferred_audio_languages.is_empty() {
-        job.audio_tracks.iter().map(|t| t.index).collect()
-    } else {
-        job.audio_tracks
-            .first()
-            .map(|t| vec![t.index])
-            .unwrap_or_default()
-    };
-
-    // Subtitle tracks
-    let preferred_subs: Vec<usize> = job
-        .subtitle_tracks
-        .iter()
-        .filter(|t| {
-            t.language.as_deref().is_some_and(|l| {
-                config
-                    .preferred_subtitle_languages
-                    .iter()
-                    .any(|p| p.eq_ignore_ascii_case(l))
-            })
-        })
-        .map(|t| t.index)
-        .collect();
-
-    job.track_selection.subtitle_indices = if !preferred_subs.is_empty() {
-        preferred_subs
-    } else if config.select_all_fallback || config.preferred_subtitle_languages.is_empty() {
-        job.subtitle_tracks.iter().map(|t| t.index).collect()
-    } else {
-        Vec::new()
-    };
+/// Dialog option index for a DV mode (0 = keep DV, 1 = HDR10)
+fn dv_mode_index(mode: DvMode) -> usize {
+    match mode {
+        DvMode::KeepDolbyVision => 0,
+        DvMode::ToHdr10 => 1,
+    }
 }
