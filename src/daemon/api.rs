@@ -210,11 +210,9 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
         "audio_to_opus": selection.audio_to_opus,
         "subtitle_indices": selection.subtitle_indices,
     });
-    state
-        .queue
-        .job_by_id_mut(id)
-        .expect("job checked above")
-        .track_selection = selection;
+    let job = state.queue.job_by_id_mut(id).expect("job checked above");
+    job.track_selection = selection;
+    job.status = JobStatus::Ready;
     (200, applied)
 }
 
@@ -652,6 +650,20 @@ mod tests {
             assert_eq!(code, 200);
             assert_eq!(body["audio_indices"], json!([0]));
             assert_eq!(body["audio_to_opus"], json!([]));
+        }
+
+        #[test]
+        fn saving_tracks_releases_job_for_encoding() {
+            let (shared, id) = shared_with_job();
+            lock(&shared).queue.job_by_id_mut(id).unwrap().status = JobStatus::AwaitingConfig;
+
+            let (code, _) = job_tracks_set(&shared, &json!({"id": id}));
+
+            assert_eq!(code, 200);
+            assert!(matches!(
+                lock(&shared).queue.job_by_id(id).unwrap().status,
+                JobStatus::Ready
+            ));
         }
 
         /// A job that is already encoding refuses edits: its tracks are

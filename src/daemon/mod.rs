@@ -249,8 +249,8 @@ fn add_paths(
 }
 
 /// Apply one finished analysis: mirror the TUI's `apply_analysis_results`,
-/// then resolve the Dolby Vision mode non-interactively and mark the job
-/// ready to encode.
+/// then resolve the Dolby Vision mode non-interactively and wait for the WebUI
+/// track confirmation.
 fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisResult, AppError>) {
     let mut state = lock(shared);
     let output_config = state.config.output.clone();
@@ -283,7 +283,7 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
                     DvMode::ToHdr10
                 });
             }
-            job.status = JobStatus::Ready;
+            job.status = JobStatus::AwaitingConfig;
             info!("Analyzed {}", job.path.display());
             make_output_paths_unique(&mut state.queue.state.jobs);
         }
