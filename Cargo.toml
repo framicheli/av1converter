@@ -1,6 +1,6 @@
 [package]
 name = "av1converter"
-version = "2.6.0"
+version = "2.6.0.1"
 edition = "2024"
 description = "A terminal-based interactive tool to batch convert video files to the AV1 codec using FFmpeg"
 license = "MIT"
