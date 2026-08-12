@@ -81,6 +81,14 @@ pub struct PerformanceConfig {
     pub nvenc_preset: String,
 }
 
+impl PerformanceConfig {
+    pub const NVENC_PRESETS: [&'static str; 7] = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
+
+    pub fn valid_nvenc_preset(value: &str) -> bool {
+        Self::NVENC_PRESETS.contains(&value)
+    }
+}
+
 impl Default for PerformanceConfig {
     fn default() -> Self {
         Self {
@@ -290,8 +298,8 @@ pub struct DaemonConfig {
     /// filesystem, which is only reasonable while bound to loopback.
     #[serde(default)]
     pub browse_root: String,
-    /// Shared secret required by the `/api` endpoints. Empty disables the
-    /// check; set it whenever the daemon is reachable from the network.
+    /// Shared secret required by the `/api` endpoints. Values shorter than 32
+    /// bytes are replaced with a generated token when the daemon starts.
     #[serde(default)]
     pub auth_token: String,
 }
@@ -336,7 +344,7 @@ impl DaemonConfig {
                     }
                     out
                 });
-            format!("http://{authority}/?token={token}")
+            format!("http://{authority}/#token={token}")
         }
     }
 

@@ -1,0 +1,129 @@
+stages:
+  - quality
+  - build
+  - release
+
+quality:
+  stage: quality
+  image: rust:latest
+  script:
+    - rustup component add rustfmt clippy
+    - cargo fmt -- --check
+    - cargo clippy --all-targets -- -W clippy::pedantic -D warnings
+    - cargo test --all-targets
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+build_linux:
+  stage: build
+  image: rust:latest
+  needs: [quality]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends musl-tools rpm
+    - rustup target add x86_64-unknown-linux-musl
+  script:
+    - VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+    - cargo build --release --locked --target x86_64-unknown-linux-musl
+    - mkdir -p dist
+    - BINARY="av1converter-x86_64-unknown-linux-musl"
+    - install -m 0755 target/x86_64-unknown-linux-musl/release/av1converter "dist/$BINARY"
+    - '"dist/$BINARY" --version'
+    - tar -C dist -czf "dist/$BINARY.tar.gz" "$BINARY"
+    - packaging/package-linux.sh "dist/$BINARY" "$VERSION" dist
+    - dpkg-deb --info "dist/av1converter_${VERSION}_amd64.deb"
+    - rpm -qip "dist/av1converter-${VERSION}-1.x86_64.rpm"
+    - rm "dist/$BINARY"
+    - echo "VERSION=$VERSION" >> build.env
+    - |
+      if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q .; then
+        echo "SHOULD_RELEASE=false" >> build.env
+      else
+        echo "SHOULD_RELEASE=true" >> build.env
+      fi
+    - awk -v v="$VERSION" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## /{f=0} f' CHANGELOG.md > release_notes.md
+    - test -s release_notes.md || { echo "CHANGELOG.md has no '## [$VERSION]' section"; exit 1; }
+  artifacts:
+    paths:
+      - dist/
+      - release_notes.md
+    reports:
+      dotenv: build.env
+
+build_macos:
+  stage: build
+  tags: [saas-macos-medium-m1]
+  image: macos-15-xcode-16
+  needs: [quality]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  before_script:
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
+    - sh /tmp/rustup-init.sh -y --profile minimal
+    - source "$HOME/.cargo/env"
+    - rustup target add x86_64-apple-darwin aarch64-apple-darwin
+  script:
+    - mkdir -p dist
+    - |
+      for TARGET in x86_64-apple-darwin aarch64-apple-darwin; do
+        cargo build --release --locked --target "$TARGET"
+        BINARY="av1converter-$TARGET"
+        install -m 0755 "target/$TARGET/release/av1converter" "dist/$BINARY"
+        if [ "$TARGET" = aarch64-apple-darwin ]; then
+          "dist/$BINARY" --version
+        else
+          file "dist/$BINARY" | grep -q x86_64
+        fi
+        tar -C dist -czf "dist/$BINARY.tar.gz" "$BINARY"
+        rm "dist/$BINARY"
+      done
+  artifacts:
+    paths: [dist/]
+
+build_windows:
+  stage: build
+  tags: [saas-windows-medium-amd64]
+  needs: [quality]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  before_script:
+    - Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+    - .\rustup-init.exe -y --profile minimal --default-toolchain stable
+    - $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+    - rustup target add x86_64-pc-windows-msvc
+  script:
+    - cargo build --release --locked --target x86_64-pc-windows-msvc
+    - New-Item -ItemType Directory -Force dist
+    - $binary = "av1converter-x86_64-pc-windows-msvc.exe"
+    - Copy-Item "target/x86_64-pc-windows-msvc/release/av1converter.exe" "dist/$binary"
+    - '& "dist/$binary" --version'
+    - Compress-Archive -Path "dist/$binary" -DestinationPath "dist/$binary.zip"
+    - Remove-Item "dist/$binary"
+  artifacts:
+    paths: [dist/]
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: build_linux
+    - job: build_macos
+    - job: build_windows
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - '[ "$SHOULD_RELEASE" = "true" ] || { rm -rf dist; echo "v$VERSION already released"; exit 0; }'
+    - (cd dist && sha256sum av1converter* > SHA256SUMS)
+    - |
+      release-cli create \
+        --name "v$VERSION" \
+        --tag-name "v$VERSION" \
+        --ref "$CI_COMMIT_SHA" \
+        --description release_notes.md \
+        --assets-link "{\"name\":\"Release downloads\",\"url\":\"$CI_PROJECT_URL/-/jobs/$CI_JOB_ID/artifacts/download\",\"link_type\":\"package\"}"
+  artifacts:
+    paths: [dist/]
+    expire_in: never

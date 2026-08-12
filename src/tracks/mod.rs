@@ -19,7 +19,7 @@ pub fn selected_subtitles(tracks: &[SubtitleTrack], indices: &[usize]) -> Vec<Su
 
 /// The subtitle codec to write for a given output container.
 ///
-/// Text subtitle formats differ between Matroska, WebM, and MP4. Convert only
+/// Text subtitle formats differ between Matroska, `WebM`, and MP4. Convert only
 /// the text tracks that the target container cannot hold; bitmap subtitles
 /// remain copies so an unsupported combination fails instead of disappearing.
 pub fn subtitle_codecs_for(
@@ -133,7 +133,7 @@ mod tests {
 }
 
 /// Audio track information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AudioTrack {
     pub index: usize,
     pub language: Option<String>,
@@ -197,7 +197,7 @@ impl AudioTrack {
 }
 
 /// Subtitle track information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SubtitleTrack {
     pub index: usize,
     pub language: Option<String>,

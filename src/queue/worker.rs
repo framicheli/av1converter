@@ -1,6 +1,7 @@
 use crate::analyzer::{DvMode, VideoMetadata};
 use crate::config::AppConfig;
 use crate::encoder::{self, FullEncodeResult};
+use crate::queue::SourceIdentity;
 use crate::tracks::OutputTracks;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,6 +39,7 @@ pub struct WorkerJob {
     pub index: usize,
     pub input: PathBuf,
     pub output: PathBuf,
+    pub source_identity: SourceIdentity,
     pub metadata: VideoMetadata,
     /// Audio and subtitle streams to write, already resolved from the user's
     /// selection into output order
@@ -81,6 +83,7 @@ pub fn run_worker(
             encoder::run_encoding_pipeline(
                 &input_str,
                 &output_str,
+                &job.source_identity,
                 &job.metadata,
                 job.tracks,
                 job.dv_mode,

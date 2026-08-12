@@ -4,129 +4,153 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AV1Converter</title>
+<link rel="icon" type="image/png" href="/favicon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<div id="offline-banner" class="banner hidden">Daemon unreachable — retrying…</div>
+<div id="offline-banner" class="banner hidden" data-i18n="offline" role="alert" aria-live="assertive">Daemon unreachable — retrying…</div>
 
 <header>
-  <div class="brand">AV1<span>Converter</span></div>
-  <span id="status-pill" class="pill">…</span>
-  <nav>
-    <button class="tab active" data-tab="dashboard">Dashboard</button>
-    <button class="tab" data-tab="queue">Queue</button>
-    <button class="tab" data-tab="settings">Settings</button>
+  <h1 class="brand">AV1<span>Converter</span></h1>
+  <span id="status-pill" class="pill" role="status" aria-live="polite" aria-atomic="true">…</span>
+  <nav aria-label="Primary" role="tablist">
+    <button id="queue-tab" class="tab active" data-tab="queue" data-i18n="tab_queue"
+            role="tab" aria-selected="true" aria-controls="tab-queue">Queue</button>
+    <button id="settings-tab" class="tab" data-tab="settings" data-i18n="tab_settings"
+            role="tab" aria-selected="false" aria-controls="tab-settings" tabindex="-1">Settings</button>
   </nav>
 </header>
 
 <div class="layout">
-
-<!-- ── Server-side file browser ────────────────────────────────── -->
-<aside id="browser">
-  <div class="browser-head">
-    <span id="browser-title">Select a video file</span>
-    <span id="browser-path" class="muted"></span>
-  </div>
-  <ul id="browser-list"></ul>
-  <div class="browser-foot">
-    <label class="muted"><input type="checkbox" id="browser-hidden"> Hidden files</label>
-    <span class="spacer"></span>
-    <button id="browser-choose" class="hidden">Add this folder</button>
-    <button id="browser-close" class="hidden">Cancel</button>
-  </div>
-</aside>
-
 <main>
-  <!-- ── Dashboard ─────────────────────────────────────────────── -->
-  <section id="tab-dashboard">
-    <div class="panel">
-      <div class="panel-title">Current file</div>
-      <div id="current-file" class="filename">Idle — nothing encoding</div>
-      <div class="bar"><div id="current-bar" class="bar-fill" style="width:0%"></div></div>
-      <div class="bar-meta">
-        <span id="current-pct"></span>
-        <span id="current-stage" class="muted"></span>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-title">Overall progress</div>
-      <div class="bar"><div id="overall-bar" class="bar-fill" style="width:0%"></div></div>
-      <div class="bar-meta">
-        <span id="overall-pct">0%</span>
-        <span id="eta" class="muted"></span>
-      </div>
-    </div>
-
-    <div class="tiles">
-      <div class="tile"><div class="tile-label">In queue</div><div class="tile-value" id="stat-total">0</div></div>
-      <div class="tile"><div class="tile-label">Converted</div><div class="tile-value" id="stat-converted">0</div></div>
-      <div class="tile"><div class="tile-label">Skipped</div><div class="tile-value" id="stat-skipped">0</div></div>
-      <div class="tile"><div class="tile-label">Errors</div><div class="tile-value" id="stat-errors">0</div></div>
-      <div class="tile"><div class="tile-label">Space saved</div><div class="tile-value" id="stat-saved">0 B</div></div>
-      <div class="tile"><div class="tile-label">Elapsed</div><div class="tile-value" id="stat-elapsed">—</div></div>
-    </div>
-
-    <div class="meta-row">
-      <span id="meta-encoder"></span>
-      <span id="meta-version"></span>
-      <span id="meta-uptime"></span>
-    </div>
-  </section>
-
   <!-- ── Queue ─────────────────────────────────────────────────── -->
-  <section id="tab-queue" class="hidden">
-    <div class="toolbar">
-      <button id="btn-add-file">+ File</button>
-      <button id="btn-add-folder">+ Folder</button>
-      <button id="btn-add-recursive">+ Folder (recursive)</button>
-      <span class="spacer"></span>
-      <button id="btn-pause">Pause</button>
-      <button id="btn-cancel" class="danger">Cancel encoding</button>
-      <button id="btn-clear">Clear finished</button>
+  <section id="tab-queue" role="tabpanel" aria-labelledby="queue-tab">
+    <div class="overview">
+      <div class="tiles">
+        <div class="tile"><div class="tile-label" data-i18n="stat_in_queue">In queue</div><div class="tile-value" id="stat-total">0</div></div>
+        <div class="tile"><div class="tile-label" data-i18n="stat_space_saved">Space saved</div><div class="tile-value" id="stat-saved">0 B</div></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title" id="current-label" data-i18n="current_file">Current file</div>
+        <div id="current-file" class="filename" data-i18n="idle_nothing">Idle — nothing encoding</div>
+        <progress class="bar" id="current-progress" aria-labelledby="current-label"
+                  max="100" value="0">0%</progress>
+        <div class="bar-meta">
+          <span id="current-pct"></span>
+          <span id="current-stage" class="muted"></span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title" id="overall-label" data-i18n="overall_progress">Overall progress</div>
+        <progress class="bar" id="overall-progress" aria-labelledby="overall-label"
+                  max="100" value="0">0%</progress>
+        <div class="bar-meta">
+          <span id="overall-pct">0%</span>
+          <span id="eta" class="muted"></span>
+        </div>
+      </div>
     </div>
+
+    <div class="toolbar">
+      <button id="btn-add-file" data-i18n="add_file">+ File</button>
+      <button id="btn-add-folder" data-i18n="add_folder">+ Folder</button>
+      <button id="btn-add-recursive" data-i18n="add_folder_recursive">+ Folder (recursive)</button>
+      <span class="spacer"></span>
+      <button id="btn-cancel" class="danger" data-i18n="cancel_encoding">Cancel encoding</button>
+      <button id="btn-clear" data-i18n="clear_finished">Clear finished</button>
+    </div>
+    <!-- Session totals. Hidden while work remains or until a result exists. -->
+    <div id="summary" class="summary hidden">
+      <span class="summary-title" data-i18n="summary_title">Summary</span>
+      <span class="summary-figure good">
+        <span class="summary-label" data-i18n="summary_converted">Converted</span>
+        <span id="summary-converted" class="summary-value">0</span>
+      </span>
+      <span id="summary-skipped-group" class="summary-figure">
+        <span class="summary-label" data-i18n="badge_skipped">Skipped</span>
+        <span id="summary-skipped" class="summary-value">0</span>
+      </span>
+      <span id="summary-errors-group" class="summary-figure">
+        <span class="summary-label" data-i18n="summary_errors">Errors</span>
+        <span id="summary-errors" class="summary-value">0</span>
+      </span>
+      <span class="summary-figure">
+        <span class="summary-label" data-i18n="stat_space_saved">Total space saved</span>
+        <span id="summary-saved" class="summary-value">0 B</span>
+      </span>
+      <span id="summary-time-group" class="summary-figure">
+        <span class="summary-label" data-i18n="summary_time">Total time</span>
+        <span id="summary-time" class="summary-value">—</span>
+      </span>
+      <button id="summary-dismiss" class="iconbtn"
+              data-i18n-aria-label="summary_dismiss" aria-label="Dismiss summary">✕</button>
+    </div>
+
     <div class="table-wrap">
       <table id="queue-table">
         <thead>
-          <tr><th>File</th><th>Source</th><th>Status</th><th>Size</th><th>Saved</th><th></th><th></th></tr>
+          <tr><th data-i18n="col_file">File</th><th data-i18n="col_source">Source</th><th data-i18n="col_status">Status</th><th data-i18n="col_size">Size</th><th data-i18n="col_saved">Saved</th><th><span class="sr-only" data-i18n="tracks_title">Tracks</span></th><th><span class="sr-only" data-i18n="remove_from_queue">Remove from queue</span></th></tr>
         </thead>
         <tbody id="queue-body"></tbody>
         <tbody id="queue-empty">
-          <tr><td colspan="7" class="muted center">Queue is empty — add files to start encoding</td></tr>
+          <tr><td colspan="7" class="muted center" data-i18n="queue_empty">Queue is empty — add files to start encoding</td></tr>
         </tbody>
       </table>
     </div>
   </section>
 
   <!-- ── Settings ──────────────────────────────────────────────── -->
-  <section id="tab-settings" class="hidden">
+  <section id="tab-settings" class="hidden" role="tabpanel" aria-labelledby="settings-tab">
     <form id="settings-form" autocomplete="off"></form>
     <div class="toolbar">
-      <button id="btn-save-settings" type="button">Save settings</button>
-      <span class="muted">Changes apply to the next encode; daemon address/port need a restart.</span>
+      <button id="btn-save-settings" type="button" data-i18n="save" disabled>Save settings</button>
+      <button id="btn-reset-settings" type="button" data-i18n="discard_changes" disabled>Discard changes</button>
+      <span class="muted" data-i18n="settings_note">Changes apply to the next encode; daemon address/port need a restart.</span>
     </div>
   </section>
 </main>
 
 </div>
 
-<!-- ── Per-job track selection ─────────────────────────────────── -->
-<div id="tracks-modal" class="modal hidden">
-  <div class="modal-box">
-    <div class="modal-head">
-      <span id="tracks-title">Tracks</span>
-      <button id="tracks-close" class="iconbtn">✕</button>
-    </div>
-    <div id="tracks-body" class="modal-body"></div>
-    <div class="modal-foot">
-      <span id="tracks-note" class="muted"></span>
-      <span class="spacer"></span>
-      <button id="tracks-save">Save tracks</button>
-    </div>
+<!-- ── Server-side file browser ────────────────────────────────── -->
+<dialog id="browser" aria-labelledby="browser-title">
+  <div class="browser-head">
+    <span id="browser-title" data-i18n="select_video_file">Select a video file</span>
+    <span id="browser-path" class="muted"></span>
   </div>
-</div>
+  <ul id="browser-list"></ul>
+  <div class="browser-foot">
+    <label class="muted"><input type="checkbox" id="browser-hidden"> <span data-i18n="hidden_files">Hidden files</span></label>
+    <span class="spacer"></span>
+    <button id="browser-choose" class="hidden" data-i18n="select_this_folder">Add this folder</button>
+    <button id="browser-close" data-i18n="cancel">Cancel</button>
+  </div>
+</dialog>
 
-<div id="toast" class="toast hidden"></div>
+<!-- ── Per-job track selection ─────────────────────────────────── -->
+<dialog id="tracks-modal" aria-labelledby="tracks-title">
+  <div class="modal-head">
+    <span id="tracks-title" data-i18n="tracks_title">Tracks</span>
+    <button id="tracks-close" class="iconbtn" data-i18n-aria-label="tracks_close" aria-label="Close track selection">✕</button>
+  </div>
+  <div id="tracks-body" class="modal-body"></div>
+  <div class="modal-foot">
+    <span id="tracks-note" class="muted"></span>
+    <label id="tracks-apply-wrap" class="apply-remaining hidden">
+      <input type="checkbox" id="tracks-apply-remaining">
+      <span data-i18n="apply_remaining">Apply to remaining files</span>
+    </label>
+    <span class="spacer"></span>
+    <button id="tracks-save" data-i18n="save">Save tracks</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast hidden" role="status" aria-live="polite" aria-atomic="true" popover="manual">
+  <span id="toast-message"></span>
+  <button id="toast-close" class="iconbtn" data-i18n-aria-label="dismiss" aria-label="Dismiss">✕</button>
+</div>
 
 <script src="/app.js"></script>
 </body>

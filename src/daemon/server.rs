@@ -11,6 +11,7 @@ use tracing::warn;
 const INDEX_HTML: &str = include_str!("web/index.html");
 const STYLE_CSS: &str = include_str!("web/style.css");
 const APP_JS: &str = include_str!("web/app.js");
+const FAVICON_PNG: &[u8] = include_bytes!("web/favicon.png");
 
 /// Maximum accepted request body size (settings JSON is well under this).
 const MAX_BODY: u64 = 1024 * 1024;
@@ -64,10 +65,9 @@ fn secret_eq(a: &str, b: &str) -> bool {
 
 /// Whether a request carries the configured shared secret.
 ///
-/// Accepted as `Authorization: Bearer <token>` or a `token=` query parameter,
-/// so a plain URL is enough to open the UI. Only `/api` paths are guarded: the
-/// page itself has to load before it can send anything.
-fn authorized(request: &Request, query: &str, token: &str) -> bool {
+/// Accepted as `Authorization: Bearer <token>`. The launch URL carries the
+/// token in its fragment, which browsers never send to this HTTP server.
+fn authorized(request: &Request, token: &str) -> bool {
     if token.is_empty() {
         return true;
     }
@@ -80,7 +80,6 @@ fn authorized(request: &Request, query: &str, token: &str) -> bool {
     header
         .strip_prefix("Bearer ")
         .is_some_and(|value| secret_eq(value.trim(), token))
-        || query_param(query, "token").is_some_and(|value| secret_eq(&value, token))
 }
 
 /// Whether a `Host` header names something that cannot have been DNS-rebound:
@@ -138,7 +137,7 @@ fn handle_request(mut request: Request, shared: &SharedState, probe_tx: &Sender<
                 &serde_json::json!({"error": "unrecognised Host header; reach the daemon by IP address or set an auth_token"}),
             );
         }
-        if !authorized(&request, query, &token) {
+        if !authorized(&request, &token) {
             return respond_json(
                 request,
                 401,
@@ -164,6 +163,9 @@ fn handle_request(mut request: Request, shared: &SharedState, probe_tx: &Sender<
         (Method::Get, "/app.js") => {
             return respond_asset(request, APP_JS, "application/javascript; charset=utf-8");
         }
+        (Method::Get, "/favicon.png") => {
+            return respond_bytes(request, FAVICON_PNG, "image/png");
+        }
         (Method::Get, "/api/status") => (200, api::status(shared)),
         (Method::Get, "/api/queue") => (200, api::queue(shared)),
         (Method::Get, "/api/fs") => api::fs_browse(
@@ -172,6 +174,7 @@ fn handle_request(mut request: Request, shared: &SharedState, probe_tx: &Sender<
             query_param(query, "hidden").as_deref() == Some("1"),
         ),
         (Method::Get, "/api/settings") => (200, api::settings_get(shared)),
+        (Method::Get, "/api/strings") => (200, api::strings(shared)),
         (Method::Get, "/api/job/tracks") => {
             api::job_tracks(shared, &query_param(query, "id").unwrap_or_default())
         }
@@ -187,10 +190,6 @@ fn handle_request(mut request: Request, shared: &SharedState, probe_tx: &Sender<
             Ok(body) => api::queue_remove(shared, &body),
             Err(resp) => resp,
         },
-        (Method::Post, "/api/queue/pause") => match read_json_body(&mut request) {
-            Ok(body) => api::queue_pause(shared, &body),
-            Err(resp) => resp,
-        },
         (Method::Post, "/api/queue/cancel") => api::queue_cancel(shared),
         (Method::Post, "/api/queue/clear_finished") => api::queue_clear_finished(shared),
         (Method::Post, "/api/settings") => match read_json_body(&mut request) {
@@ -204,16 +203,25 @@ fn handle_request(mut request: Request, shared: &SharedState, probe_tx: &Sender<
 }
 
 fn respond_json(request: Request, status: u16, body: &serde_json::Value) {
-    let response = Response::from_string(body.to_string())
-        .with_status_code(status)
-        .with_header(content_type("application/json"));
+    let response = secure_response(
+        Response::from_string(body.to_string())
+            .with_status_code(status)
+            .with_header(content_type("application/json")),
+    );
     if let Err(e) = request.respond(response) {
         warn!("Failed to send HTTP response: {e}");
     }
 }
 
 fn respond_asset(request: Request, body: &'static str, mime: &str) {
-    let response = Response::from_string(body).with_header(content_type(mime));
+    let response = secure_response(Response::from_string(body).with_header(content_type(mime)));
+    if let Err(e) = request.respond(response) {
+        warn!("Failed to send HTTP response: {e}");
+    }
+}
+
+fn respond_bytes(request: Request, body: &'static [u8], mime: &str) {
+    let response = secure_response(Response::from_data(body).with_header(content_type(mime)));
     if let Err(e) = request.respond(response) {
         warn!("Failed to send HTTP response: {e}");
     }
@@ -221,6 +229,22 @@ fn respond_asset(request: Request, body: &'static str, mime: &str) {
 
 fn content_type(mime: &str) -> Header {
     Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).expect("valid header")
+}
+
+fn secure_response<R: Read>(mut response: Response<R>) -> Response<R> {
+    for (name, value) in [
+        ("Cache-Control", "no-store"),
+        (
+            "Content-Security-Policy",
+            "default-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; style-src 'self'",
+        ),
+        ("Referrer-Policy", "no-referrer"),
+        ("X-Content-Type-Options", "nosniff"),
+        ("X-Frame-Options", "DENY"),
+    ] {
+        response.add_header(Header::from_bytes(name, value).expect("valid security header"));
+    }
+    response
 }
 
 /// Read and parse a JSON request body, capped at [`MAX_BODY`].
@@ -338,5 +362,33 @@ mod tests {
         assert!(has_json_content_type(&[json]));
         assert!(!has_json_content_type(&[text]));
         assert!(!has_json_content_type(&[]));
+    }
+
+    #[test]
+    fn every_response_gets_browser_security_headers() {
+        let response = secure_response(Response::from_string("ok"));
+        for expected in [
+            "Cache-Control",
+            "Content-Security-Policy",
+            "Referrer-Policy",
+            "X-Content-Type-Options",
+            "X-Frame-Options",
+        ] {
+            assert!(
+                response
+                    .headers()
+                    .iter()
+                    .any(|header| header.field.equiv(expected)),
+                "missing {expected}"
+            );
+        }
+        let csp = response
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv("Content-Security-Policy"))
+            .unwrap()
+            .value
+            .as_str();
+        assert!(!csp.contains("unsafe-inline"));
     }
 }

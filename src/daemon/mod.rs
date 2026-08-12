@@ -3,8 +3,8 @@ pub mod lifecycle;
 pub mod server;
 pub mod state;
 
-use crate::analyzer::{self, AnalysisResult, DvMode, HdrType, is_av1_codec};
-use crate::config::{AppConfig, AudioMode, Encoder};
+use crate::analyzer::{self, AnalysisResult, HdrType, is_av1_codec};
+use crate::config::{AppConfig, AudioMode};
 use crate::error::AppError;
 use crate::i18n::{Msg, t};
 use crate::queue::{
@@ -30,6 +30,7 @@ const SERVER_THREADS: usize = 4;
 
 /// Run the headless daemon: web server + encoding orchestrator.
 /// Blocks until SIGINT/SIGTERM.
+#[allow(clippy::too_many_lines)]
 pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     if !DependencyStatus::check() {
         warn!("ffmpeg or ffprobe was not found on PATH; encoding will fail");
@@ -52,14 +53,14 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     let lang = config.language;
     let listen = config.daemon.listen_address();
 
-    // Anyone who can reach the port can queue encodes, rewrite the settings and
-    // browse the filesystem, so say so plainly when that is more than this host.
-    if config.daemon.binds_publicly() && config.daemon.auth_token.is_empty() {
-        println!("{}", t(lang, Msg::DaemonPublicNoToken));
-        warn!("Daemon is reachable from the network with no auth_token set");
+    // Authentication does not encrypt the token or the media paths in transit.
+    if config.daemon.binds_publicly() {
+        warn!("Daemon is network-facing over plain HTTP; use HTTPS termination or a trusted LAN");
     }
 
-    let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(config)));
+    let queue_file = lifecycle::queue_file();
+    let (state, reprobe) = restore_state(config, &queue_file);
+    let shared: SharedState = Arc::new(Mutex::new(state));
     let (analysis_tx, analysis_rx) = mpsc::channel::<(u64, Result<AnalysisResult, AppError>)>();
     let (probe_tx, probe_rx) = mpsc::channel::<(u64, String)>();
     let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>();
@@ -73,12 +74,14 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     // daemon's life, leaving every later file stuck in `Analyzing` with nothing
     // reported. The panic is caught, blamed on the file that caused it, and the
     // next one is picked up.
-    {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let analysis_handle = {
         let analysis_tx = analysis_tx.clone();
+        let shutdown = shutdown.clone();
         thread::spawn(move || {
             for (id, path) in probe_rx {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    analyzer::analyze(&path)
+                    analyzer::analyze(&path, &shutdown)
                 }))
                 .unwrap_or_else(|_| {
                     Err(AppError::Analysis(format!("Analysis panicked on {path}")))
@@ -87,10 +90,18 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
                     break;
                 }
             }
-        });
+        })
+    };
+
+    // Now that the prober is listening, hand back the reloaded files that
+    // never got analyzed.
+    for request in reprobe {
+        if probe_tx.send(request).is_err() {
+            warn!("Analysis is not running; reloaded files will stay unanalyzed");
+            break;
+        }
     }
 
-    let shutdown = Arc::new(AtomicBool::new(false));
     {
         let shutdown = shutdown.clone();
         ctrlc::set_handler(move || {
@@ -120,6 +131,8 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         .collect();
 
     // Main orchestrator loop: owns analysis and worker result application.
+    let mut last_saved = Vec::new();
+    let mut last_save_warning = None;
     while !shutdown.load(Ordering::SeqCst) {
         match analysis_rx.recv_timeout(TICK) {
             Ok((id, result)) => apply_analysis_result(&shared, id, result),
@@ -135,6 +148,12 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         }
 
         maybe_start_session(&shared, &worker_tx);
+        persist_queue(
+            &shared,
+            &queue_file,
+            &mut last_saved,
+            &mut last_save_warning,
+        );
     }
 
     // Graceful shutdown: cancel any running encode and wait for the worker
@@ -166,10 +185,131 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         }
     }
 
+    // Cancellation changes every unfinished job to a terminal state. Save
+    // after applying it, otherwise a cleanly stopped daemon resurrects those
+    // jobs as interrupted work on its next launch.
+    persist_queue(
+        &shared,
+        &queue_file,
+        &mut last_saved,
+        &mut last_save_warning,
+    );
+
     for handle in server_handles {
         let _ = handle.join();
     }
+    // The analyzer owns ffprobe children. Closing its input and joining it is
+    // what guarantees a normal daemon stop cannot leave one behind.
+    drop(probe_tx);
+    let _ = analysis_handle.join();
     Ok(())
+}
+
+/// Build the starting state from the queue this daemon last wrote.
+///
+/// Returns the state to run with, and the jobs that have to be handed back to
+/// the prober — reloaded files that were never analyzed, which nothing else
+/// would ever move out of `Pending`.
+fn restore_state(
+    config: AppConfig,
+    queue_file: &std::path::Path,
+) -> (DaemonState, Vec<(u64, String)>) {
+    let mut restored = crate::queue::state::load(queue_file);
+    let browse_root = config.daemon.browse_root.clone();
+    for job in &mut restored.state.jobs {
+        let source = api::confined_path(&job.path, &browse_root);
+        let output = job.output_path.as_ref().and_then(|output| {
+            let parent = api::confined_path(output.parent()?, &browse_root)?;
+            Some(parent.join(output.file_name()?))
+        });
+        if source.is_none() || (job.output_path.is_some() && output.is_none()) {
+            // The queue API includes paths, so even completed history must not
+            // disclose a location excluded by a newly tightened root.
+            job.path = std::path::PathBuf::from("<outside browse_root>");
+            job.output_path = None;
+            if !is_terminal(&job.status) {
+                job.status = JobStatus::Error {
+                    message: "Saved job is outside the configured browse root".to_string(),
+                };
+                restored.state.error_count += 1;
+            }
+        } else if let Some(source) = source
+            && !browse_root.is_empty()
+        {
+            // Keep using the exact resolved paths that passed confinement.
+            // Retaining a symlink spelling would let it be repointed later.
+            job.path = source;
+            if job.output_path.is_some() {
+                job.output_path = output;
+            }
+        }
+    }
+    crate::queue::state::resume(&mut restored);
+    let restored_jobs = restored.state.jobs.len();
+
+    let reprobe: Vec<(u64, String)> = crate::queue::state::needs_analysis(&restored)
+        .into_iter()
+        .filter_map(|(index, path)| restored.ids.get(index).map(|&id| (id, path)))
+        .collect();
+
+    let mut state = DaemonState::new(config);
+    state.queue = state::DaemonQueue::from_persisted(restored);
+    for (id, _) in &reprobe {
+        if let Some(job) = state.queue.job_by_id_mut(*id) {
+            job.status = JobStatus::Analyzing;
+        }
+    }
+    if restored_jobs > 0 {
+        info!(
+            "Reloaded {restored_jobs} job(s) from {} ({} to re-analyze)",
+            queue_file.display(),
+            reprobe.len()
+        );
+    }
+    (state, reprobe)
+}
+
+/// Write the queue out if it has changed since the last write.
+///
+/// Comparing the serialized form is what makes this the only call site: every
+/// HTTP handler and every worker message mutates the queue behind the mutex,
+/// and none of them has to remember to save. `JobStatus::Encoding` does not
+/// persist its percentage, so a running encode does not churn the file.
+///
+// ponytail: re-serializes the queue once per tick to compare. That is O(jobs)
+// four times a second; if a very large queue ever makes it show up, set a
+// dirty flag in `DaemonQueue`'s mutators instead.
+fn persist_queue(
+    shared: &SharedState,
+    path: &std::path::Path,
+    last_saved: &mut Vec<u8>,
+    last_warning: &mut Option<Instant>,
+) {
+    let json = {
+        let state = lock(shared);
+        let snapshot = state.queue.as_persistable();
+        match serde_json::to_vec_pretty(&snapshot) {
+            Ok(json) => json,
+            Err(_) => return,
+        }
+    };
+    if json == *last_saved {
+        return;
+    }
+    match crate::queue::state::save_serialized(path, &json) {
+        Ok(()) => {
+            *last_saved = json;
+            *last_warning = None;
+        }
+        // Keep retrying transient failures, but do not fill the log four times
+        // a second while a disk or mount remains unavailable.
+        Err(e) => {
+            if last_warning.is_none_or(|at| at.elapsed() >= Duration::from_mins(1)) {
+                warn!("Could not save the queue to {}: {e}", path.display());
+                *last_warning = Some(Instant::now());
+            }
+        }
+    }
 }
 
 /// Queue new files and hand them to the prober.
@@ -249,7 +389,7 @@ fn add_paths(
 }
 
 /// Apply one finished analysis: mirror the TUI's `apply_analysis_results`,
-/// then resolve the Dolby Vision mode non-interactively and wait for the WebUI
+/// then resolve the Dolby Vision mode non-interactively and wait for the `WebUI`
 /// track confirmation.
 fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisResult, AppError>) {
     let mut state = lock(shared);
@@ -268,20 +408,18 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
             let is_av1 = is_av1_codec(&analysis.metadata.codec_name);
             let hdr_type = analysis.metadata.hdr_type;
             let dv_profile = analysis.metadata.dv_profile;
+            job.source_size = Some(analysis.source_identity.size_bytes());
+            job.source_identity = Some(analysis.source_identity);
             job.metadata = Some(analysis.metadata);
             job.audio_tracks = analysis.audio_tracks;
             job.subtitle_tracks = analysis.subtitle_tracks;
             job.remux_only = is_av1;
             auto_select_tracks(job, &track_config, &audio_config);
             job.generate_output_path(&output_config);
-            // Hardware encoders cannot write the DV RPU, so those jobs are
-            // resolved to HDR10 (mirrors `App::maybe_open_dv_dialog`)
+            // Mirrors `App::maybe_open_dv_dialog`; shared with the web API so
+            // the two cannot drift apart.
             if !is_av1 && hdr_type == HdrType::DolbyVision {
-                job.dv_mode = Some(if encoder == Encoder::SvtAv1 {
-                    DvMode::recommended_for(dv_profile)
-                } else {
-                    DvMode::ToHdr10
-                });
+                job.dv_mode = Some(api::resolved_dv_mode(encoder, dv_profile));
             }
             job.status = JobStatus::AwaitingConfig;
             info!("Analyzed {}", job.path.display());
@@ -296,10 +434,10 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
     }
 }
 
-/// Start a new encode session if idle, not paused, and jobs are ready.
+/// Start a new encode session if idle and jobs are ready.
 fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) {
     let mut state = lock(shared);
-    if state.encoding_active || state.paused {
+    if state.encoding_active {
         return;
     }
 
@@ -312,6 +450,9 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
             continue;
         }
         let Some(metadata) = job.metadata.clone() else {
+            continue;
+        };
+        let Some(source_identity) = job.source_identity.clone() else {
             continue;
         };
         let output = job.output_path.clone().unwrap_or_else(|| {
@@ -331,6 +472,7 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
             subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
             input: job.path.clone(),
             output,
+            source_identity,
             metadata,
             tracks: job
                 .track_selection
@@ -519,6 +661,91 @@ mod tests {
         assert_eq!(add_paths(&shared, &tx, vec![path]), (0, 1));
         assert_eq!(lock(&shared).queue.state.jobs.len(), 1);
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restored_jobs_outside_the_new_root_are_never_resumed() {
+        let base = std::env::temp_dir().join(format!("av1c_restore_root_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let source = outside.join("movie.mkv");
+        let output = outside.join("movie_av1.mkv");
+        let partial = outside.join("movie_av1.part.123_4.mkv");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(&partial, b"partial").unwrap();
+
+        let mut queue = crate::queue::QueueState::new();
+        let mut job = EncodingJob::new(source);
+        job.output_path = Some(output);
+        job.status = JobStatus::Encoding { progress: 50.0 };
+        queue.jobs.push(job);
+        let queue_file = base.join("queue.json");
+        crate::queue::state::save(
+            &queue_file,
+            &crate::queue::QueueRef {
+                state: &queue,
+                ids: &[1],
+                next_id: 2,
+            },
+        )
+        .unwrap();
+        let config = AppConfig {
+            daemon: crate::config::DaemonConfig {
+                browse_root: root.to_string_lossy().into_owned(),
+                ..crate::config::DaemonConfig::default()
+            },
+            ..AppConfig::default()
+        };
+
+        let (state, reprobe) = restore_state(config, &queue_file);
+        assert!(matches!(
+            state.queue.state.jobs[0].status,
+            JobStatus::Error { .. }
+        ));
+        assert!(reprobe.is_empty());
+        assert!(
+            partial.exists(),
+            "resume must not delete files outside browse_root"
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn shutdown_cancellation_is_saved_as_terminal() {
+        let dir =
+            std::env::temp_dir().join(format!("av1c_shutdown_persist_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let queue_file = dir.join("queue.json");
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        {
+            let mut state = lock(&shared);
+            let id = state
+                .queue
+                .push(EncodingJob::new(std::path::PathBuf::from("/tmp/movie.mkv")));
+            state.queue.job_by_id_mut(id).unwrap().status = JobStatus::Pending;
+            state.session = Some(EncodeSession {
+                job_ids: vec![id],
+                cancel_flag: Arc::new(AtomicBool::new(true)),
+            });
+            state.encoding_active = true;
+        }
+
+        apply_worker_message(&shared, WorkerMessage::Cancelled);
+        let mut last_saved = Vec::new();
+        let mut last_warning = None;
+        persist_queue(&shared, &queue_file, &mut last_saved, &mut last_warning);
+
+        let saved = crate::queue::state::load(&queue_file);
+        assert!(matches!(
+            saved.state.jobs[0].status,
+            JobStatus::Skipped { .. }
+        ));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

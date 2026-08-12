@@ -641,6 +641,8 @@ impl App {
             match result {
                 Ok(analysis) => {
                     let is_av1 = is_av1_codec(&analysis.metadata.codec_name);
+                    job.source_size = Some(analysis.source_identity.size_bytes());
+                    job.source_identity = Some(analysis.source_identity);
                     job.metadata = Some(analysis.metadata);
                     job.audio_tracks = analysis.audio_tracks;
                     job.subtitle_tracks = analysis.subtitle_tracks;
@@ -823,6 +825,7 @@ impl App {
             .filter(|(_, j)| matches!(j.status, JobStatus::Ready))
             .filter_map(|(i, j)| {
                 let metadata = j.metadata.clone()?;
+                let source_identity = j.source_identity.clone()?;
                 let output = j.output_path.clone().unwrap_or_else(|| {
                     let stem = j.path.file_stem().unwrap_or_default().to_string_lossy();
                     let parent = j.path.parent().unwrap_or(std::path::Path::new("."));
@@ -840,6 +843,7 @@ impl App {
                     subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
                     input: j.path.clone(),
                     output,
+                    source_identity,
                     metadata,
                     tracks: j.track_selection.resolve(&j.audio_tracks, &audio_config),
                     dv_mode: j.dv_mode.unwrap_or_default(),
@@ -1071,7 +1075,7 @@ fn analyze_batch(
                             Err(AppError::Analysis("Cancelled".to_string()))
                         }
                         Ok(path) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            analyzer::analyze(path)
+                            analyzer::analyze(path, cancel_flag)
                         }))
                         .unwrap_or_else(|_| {
                             Err(AppError::Analysis(format!("Analysis panicked on {path}")))

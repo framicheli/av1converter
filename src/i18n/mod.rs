@@ -198,6 +198,7 @@ pub enum Msg {
     CancelEncodingPrompt,
     ExitAppTitle,
     ExitAppPrompt,
+    ExitAppActivePrompt,
     AbandonTrackConfigTitle,
     AbandonTrackConfigPrompt,
     DiscardConfigTitle,
@@ -245,7 +246,7 @@ pub enum Msg {
     // ── Daemon mode ──────────────────────────────────────────────────────────
     DaemonDisabledError,
     DaemonListening,
-    DaemonPublicNoToken,
+    DaemonPublicHttp,
     DaemonTokenGenerated,
     EncoderUnavailable,
     DaemonShuttingDown,
@@ -257,6 +258,78 @@ pub enum Msg {
     DaemonStopped,
     DaemonStopFailed,
     DaemonStopHint,
+
+    // ── Web UI ───────────────────────────────────────────────────────────────
+    WebTabQueue,
+    WebOffline,
+    WebIdle,
+    WebStatInQueue,
+    WebCurrentFile,
+    WebIdleNothing,
+    WebOverallProgress,
+    WebAddFile,
+    WebAddFolder,
+    WebAddFolderRecursive,
+    WebClearFinished,
+    WebSize,
+    WebSaved,
+    WebQueueEmpty,
+    WebTagRemux,
+    WebVmafFailed,
+    WebLowVmaf,
+    WebSelectFolderRecursive,
+    WebHiddenFiles,
+    WebParentDirectory,
+    WebKindFolder,
+    WebKindVideoFile,
+    WebKindFile,
+    WebKindSymlink,
+    WebKindNotSelectable,
+    WebTracksTitle,
+    WebTracksHint,
+    WebCloseTracks,
+    WebTracksLocked,
+    WebTracksUpdated,
+    WebApplyRemaining,
+    WebTracksApplied,
+    WebNoAudioTracks,
+    WebNoSubtitleTracks,
+    WebSelectAll,
+    WebClearAll,
+    WebOptions,
+    WebTrackExclude,
+    WebAlreadyOpusCopied,
+    WebRemuxHint,
+    WebDolbyVision,
+    WebDvRemuxHint,
+    WebDvSourceHint,
+    WebDvProfile,
+    WebCancelling,
+    WebRemovedFinished,
+    WebAddedFiles,
+    WebAlreadyQueued,
+    WebNothingAdded,
+    WebUnauthorized,
+    WebRemoveFromQueue,
+    WebGroupGeneral,
+    WebGroupQuality,
+    WebGroupPerformance,
+    WebGroupOutput,
+    WebGroupAudio,
+    WebGroupDaemon,
+    WebGroupRateFactors,
+    WebCfgOutputDirectory,
+    WebCfgSelectAllFallback,
+    WebCfgAudioDefault,
+    WebCfgAudioModeCopy,
+    WebCfgAudioModeOpus,
+    WebSettingsNote,
+    WebDaemonNote,
+    WebDismissSummary,
+    WebDismiss,
+    WebScanning,
+    WebDeleteSourceWarning,
+    TerminalTooSmall,
 }
 
 /// Resolve a message key for the given language.
@@ -1200,6 +1273,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Möchten Sie wirklich beenden?",
             Zh => "确定要退出吗？",
         },
+        Msg::ExitAppActivePrompt => match lang {
+            En => "Active work will be cancelled before exit. Continue?",
+            It => "Il lavoro attivo verrà annullato prima dell'uscita. Continuare?",
+            Es => "El trabajo activo se cancelará antes de salir. ¿Continuar?",
+            Fr => "Le travail en cours sera annulé avant de quitter. Continuer ?",
+            De => "Aktive Vorgänge werden vor dem Beenden abgebrochen. Fortfahren?",
+            Zh => "退出前将取消正在进行的任务。是否继续？",
+        },
         Msg::AbandonTrackConfigTitle => match lang {
             En => "Discard Batch",
             It => "Annulla lotto",
@@ -1521,40 +1602,42 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         },
         Msg::DaemonTokenGenerated => match lang {
             En => {
-                "No access token was set, so one has been generated and saved to the config. Open the URL below to authorise your browser."
+                "No strong access token was set, so one has been generated and saved to the config. Open the URL below to authorise your browser."
             }
             It => {
-                "Non era impostato alcun token di accesso: ne è stato generato uno e salvato nella configurazione. Apri l'URL qui sotto per autorizzare il browser."
+                "Non era impostato un token di accesso sicuro: ne è stato generato uno e salvato nella configurazione. Apri l'URL qui sotto per autorizzare il browser."
             }
             Es => {
-                "No había ningún token de acceso configurado, así que se ha generado uno y guardado en la configuración. Abre la URL de abajo para autorizar tu navegador."
+                "No había un token de acceso seguro, así que se ha generado uno y guardado en la configuración. Abre la URL de abajo para autorizar tu navegador."
             }
             Fr => {
-                "Aucun jeton d'accès n'était défini : un jeton a été généré et enregistré dans la configuration. Ouvrez l'URL ci-dessous pour autoriser votre navigateur."
+                "Aucun jeton d'accès robuste n'était défini : un jeton a été généré et enregistré dans la configuration. Ouvrez l'URL ci-dessous pour autoriser votre navigateur."
             }
             De => {
-                "Es war kein Zugriffstoken gesetzt, daher wurde eines erzeugt und in der Konfiguration gespeichert. Öffnen Sie die URL unten, um Ihren Browser zu autorisieren."
-            }
-            Zh => "未设置访问令牌，已生成一个并保存到配置中。请打开下方的网址以授权您的浏览器。",
-        },
-        Msg::DaemonPublicNoToken => match lang {
-            En => {
-                "Warning: the daemon is reachable from the network and no access token is set. Anyone who can reach the port can browse files and start encodes."
-            }
-            It => {
-                "Attenzione: il daemon è raggiungibile dalla rete e non è impostato alcun token di accesso. Chiunque raggiunga la porta può sfogliare i file e avviare conversioni."
-            }
-            Es => {
-                "Aviso: el daemon es accesible desde la red y no hay ningún token de acceso configurado. Cualquiera que alcance el puerto puede explorar archivos e iniciar conversiones."
-            }
-            Fr => {
-                "Attention : le daemon est accessible depuis le réseau et aucun jeton d'accès n'est défini. Quiconque atteint le port peut parcourir les fichiers et lancer des encodages."
-            }
-            De => {
-                "Warnung: Der Daemon ist aus dem Netzwerk erreichbar und es ist kein Zugriffstoken gesetzt. Wer den Port erreicht, kann Dateien durchsuchen und Kodierungen starten."
+                "Es war kein starkes Zugriffstoken gesetzt, daher wurde eines erzeugt und in der Konfiguration gespeichert. Öffnen Sie die URL unten, um Ihren Browser zu autorisieren."
             }
             Zh => {
-                "警告：守护进程可从网络访问且未设置访问令牌。任何能连接该端口的人都可以浏览文件并启动转换。"
+                "未设置安全的访问令牌，已生成一个并保存到配置中。请打开下方的网址以授权您的浏览器。"
+            }
+        },
+        Msg::DaemonPublicHttp => match lang {
+            En => {
+                "Warning: this network-facing daemon uses plain HTTP. Put it behind HTTPS or use it only on a trusted network."
+            }
+            It => {
+                "Attenzione: questo daemon esposto in rete usa HTTP non cifrato. Proteggilo con HTTPS o usalo solo su una rete fidata."
+            }
+            Es => {
+                "Aviso: este daemon expuesto a la red usa HTTP sin cifrar. Colócalo detrás de HTTPS o úsalo solo en una red de confianza."
+            }
+            Fr => {
+                "Attention : ce daemon exposé au réseau utilise HTTP sans chiffrement. Placez-le derrière HTTPS ou limitez-le à un réseau fiable."
+            }
+            De => {
+                "Warnung: Dieser im Netzwerk erreichbare Daemon verwendet unverschlüsseltes HTTP. Schalten Sie HTTPS davor oder nutzen Sie ihn nur in einem vertrauenswürdigen Netz."
+            }
+            Zh => {
+                "警告：此网络守护进程使用未加密的 HTTP。请在前端配置 HTTPS，或仅在可信网络中使用。"
             }
         },
         Msg::DaemonShuttingDown => match lang {
@@ -1629,5 +1712,807 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Beenden mit: av1converter --stop",
             Zh => "使用 av1converter --stop 停止",
         },
+        // ── Web UI ───────────────────────────────────────────────────────────
+        Msg::WebTabQueue => match lang {
+            En => "Queue",
+            It => "Coda",
+            Es => "Cola",
+            Fr => "File",
+            De => "Warteschlange",
+            Zh => "队列",
+        },
+        Msg::WebOffline => match lang {
+            En => "Daemon unreachable — retrying…",
+            It => "Daemon irraggiungibile — nuovo tentativo…",
+            Es => "Daemon inaccesible — reintentando…",
+            Fr => "Daemon injoignable — nouvelle tentative…",
+            De => "Daemon nicht erreichbar — neuer Versuch…",
+            Zh => "无法连接守护进程 — 正在重试…",
+        },
+        Msg::WebIdle => match lang {
+            En => "Idle",
+            It => "Inattivo",
+            Es => "Inactivo",
+            Fr => "Inactif",
+            De => "Bereit",
+            Zh => "空闲",
+        },
+        Msg::WebStatInQueue => match lang {
+            En => "In queue",
+            It => "In coda",
+            Es => "En cola",
+            Fr => "Dans la file",
+            De => "In Warteschlange",
+            Zh => "队列中",
+        },
+        Msg::WebCurrentFile => match lang {
+            En => "Current file",
+            It => "File corrente",
+            Es => "Archivo actual",
+            Fr => "Fichier en cours",
+            De => "Aktuelle Datei",
+            Zh => "当前文件",
+        },
+        Msg::WebIdleNothing => match lang {
+            En => "Idle — nothing encoding",
+            It => "Inattivo — nessuna codifica",
+            Es => "Inactivo — sin codificación",
+            Fr => "Inactif — aucun encodage",
+            De => "Bereit — keine Kodierung",
+            Zh => "空闲 — 无编码任务",
+        },
+        Msg::WebOverallProgress => match lang {
+            En => "Overall progress",
+            It => "Avanzamento totale",
+            Es => "Progreso total",
+            Fr => "Progression totale",
+            De => "Gesamtfortschritt",
+            Zh => "总进度",
+        },
+        Msg::WebAddFile => match lang {
+            En | It => "+ File",
+            Es => "+ Archivo",
+            Fr => "+ Fichier",
+            De => "+ Datei",
+            Zh => "+ 文件",
+        },
+        Msg::WebAddFolder => match lang {
+            En => "+ Folder",
+            It => "+ Cartella",
+            Es => "+ Carpeta",
+            Fr => "+ Dossier",
+            De => "+ Ordner",
+            Zh => "+ 文件夹",
+        },
+        Msg::WebAddFolderRecursive => match lang {
+            En => "+ Folder (recursive)",
+            It => "+ Cartella (ricorsiva)",
+            Es => "+ Carpeta (recursiva)",
+            Fr => "+ Dossier (récursif)",
+            De => "+ Ordner (rekursiv)",
+            Zh => "+ 文件夹（递归）",
+        },
+        Msg::WebClearFinished => match lang {
+            En => "Clear finished",
+            It => "Rimuovi completati",
+            Es => "Quitar completados",
+            Fr => "Effacer les terminés",
+            De => "Fertige entfernen",
+            Zh => "清除已完成",
+        },
+        Msg::WebSize => match lang {
+            En => "Size",
+            It => "Dimensione",
+            Es => "Tamaño",
+            Fr => "Taille",
+            De => "Größe",
+            Zh => "大小",
+        },
+        Msg::WebSaved => match lang {
+            En => "Saved",
+            It => "Risparmio",
+            Es => "Ahorro",
+            Fr => "Économisé",
+            De => "Gespart",
+            Zh => "已节省",
+        },
+        Msg::WebQueueEmpty => match lang {
+            En => "Queue is empty — add files to start encoding",
+            It => "La coda è vuota — aggiungi file per iniziare",
+            Es => "La cola está vacía — añade archivos para empezar",
+            Fr => "La file est vide — ajoutez des fichiers pour commencer",
+            De => "Warteschlange leer — Dateien hinzufügen, um zu starten",
+            Zh => "队列为空 — 添加文件以开始编码",
+        },
+        Msg::WebTagRemux => match lang {
+            En | It | Es | Fr => "remux",
+            De => "Remux",
+            Zh => "重封装",
+        },
+        Msg::WebVmafFailed => match lang {
+            En => "VMAF failed",
+            It => "VMAF fallito",
+            Es => "VMAF falló",
+            Fr => "VMAF échoué",
+            De => "VMAF fehlgeschlagen",
+            Zh => "VMAF 失败",
+        },
+        Msg::WebLowVmaf => match lang {
+            En => "Low VMAF",
+            It => "VMAF basso",
+            Es => "VMAF bajo",
+            Fr => "VMAF faible",
+            De => "Niedriger VMAF",
+            Zh => "VMAF 偏低",
+        },
+        Msg::WebSelectFolderRecursive => match lang {
+            En => "Select a folder (recursive)",
+            It => "Seleziona una cartella (ricorsiva)",
+            Es => "Seleccionar una carpeta (recursiva)",
+            Fr => "Sélectionner un dossier (récursif)",
+            De => "Ordner wählen (rekursiv)",
+            Zh => "选择文件夹（递归）",
+        },
+        Msg::WebHiddenFiles => match lang {
+            En => "Hidden files",
+            It => "File nascosti",
+            Es => "Archivos ocultos",
+            Fr => "Fichiers cachés",
+            De => "Versteckte Dateien",
+            Zh => "隐藏文件",
+        },
+        Msg::WebParentDirectory => match lang {
+            En => "Parent directory",
+            It => "Cartella superiore",
+            Es => "Carpeta superior",
+            Fr => "Dossier parent",
+            De => "Übergeordneter Ordner",
+            Zh => "上级目录",
+        },
+        Msg::WebKindFolder => match lang {
+            En => "folder",
+            It => "cartella",
+            Es => "carpeta",
+            Fr => "dossier",
+            De => "Ordner",
+            Zh => "文件夹",
+        },
+        Msg::WebKindVideoFile => match lang {
+            En => "video file",
+            It => "file video",
+            Es => "archivo de video",
+            Fr => "fichier vidéo",
+            De => "Videodatei",
+            Zh => "视频文件",
+        },
+        Msg::WebKindFile => match lang {
+            En | It => "file",
+            Es => "archivo",
+            Fr => "fichier",
+            De => "Datei",
+            Zh => "文件",
+        },
+        Msg::WebKindSymlink => match lang {
+            En => "symlink",
+            It => "collegamento",
+            Es => "enlace simbólico",
+            Fr => "lien symbolique",
+            De => "Symlink",
+            Zh => "符号链接",
+        },
+        Msg::WebKindNotSelectable => match lang {
+            En => "not selectable",
+            It => "non selezionabile",
+            Es => "no seleccionable",
+            Fr => "non sélectionnable",
+            De => "nicht auswählbar",
+            Zh => "不可选择",
+        },
+        Msg::WebTracksTitle => match lang {
+            En => "Tracks",
+            It => "Tracce",
+            Es => "Pistas",
+            Fr => "Pistes",
+            De => "Spuren",
+            Zh => "轨道",
+        },
+        Msg::WebTracksHint => match lang {
+            En => "Choose audio and subtitle tracks",
+            It => "Scegli le tracce audio e dei sottotitoli",
+            Es => "Elegir pistas de audio y subtítulos",
+            Fr => "Choisir les pistes audio et de sous-titres",
+            De => "Audio- und Untertitelspuren wählen",
+            Zh => "选择音频和字幕轨道",
+        },
+        Msg::WebCloseTracks => match lang {
+            En => "Close track selection",
+            It => "Chiudi la selezione delle tracce",
+            Es => "Cerrar la selección de pistas",
+            Fr => "Fermer la sélection des pistes",
+            De => "Spurauswahl schließen",
+            Zh => "关闭轨道选择",
+        },
+        Msg::WebTracksLocked => match lang {
+            En => "This job is already encoding — tracks cannot be changed.",
+            It => "Questo lavoro è già in codifica — le tracce non sono modificabili.",
+            Es => "Este trabajo ya se está codificando — las pistas no se pueden cambiar.",
+            Fr => "Cette tâche est déjà en cours d'encodage — les pistes ne sont plus modifiables.",
+            De => "Dieser Auftrag wird bereits kodiert — Spuren können nicht geändert werden.",
+            Zh => "此任务正在编码 — 无法更改轨道。",
+        },
+        Msg::WebTracksUpdated => match lang {
+            En => "Tracks updated",
+            It => "Tracce aggiornate",
+            Es => "Pistas actualizadas",
+            Fr => "Pistes mises à jour",
+            De => "Spuren aktualisiert",
+            Zh => "轨道已更新",
+        },
+        Msg::WebApplyRemaining => match lang {
+            En => "Apply to remaining files",
+            It => "Applica ai file rimanenti",
+            Es => "Aplicar a los archivos restantes",
+            Fr => "Appliquer aux fichiers restants",
+            De => "Auf verbleibende Dateien anwenden",
+            Zh => "应用于剩余文件",
+        },
+        Msg::WebTracksApplied => match lang {
+            En => "Applied to {n} files",
+            It => "Applicato a {n} file",
+            Es => "Aplicado a {n} archivos",
+            Fr => "Appliqué à {n} fichiers",
+            De => "Auf {n} Dateien angewendet",
+            Zh => "已应用于 {n} 个文件",
+        },
+        Msg::WebNoAudioTracks => match lang {
+            En => "No audio tracks",
+            It => "Nessuna traccia audio",
+            Es => "Sin pistas de audio",
+            Fr => "Aucune piste audio",
+            De => "Keine Audiospuren",
+            Zh => "无音频轨道",
+        },
+        Msg::WebNoSubtitleTracks => match lang {
+            En => "No subtitle tracks",
+            It => "Nessuna traccia sottotitoli",
+            Es => "Sin pistas de subtítulos",
+            Fr => "Aucune piste de sous-titres",
+            De => "Keine Untertitelspuren",
+            Zh => "无字幕轨道",
+        },
+        Msg::WebSelectAll => match lang {
+            En => "Select all",
+            It => "Seleziona tutto",
+            Es => "Seleccionar todo",
+            Fr => "Tout sélectionner",
+            De => "Alle auswählen",
+            Zh => "全选",
+        },
+        Msg::WebClearAll => match lang {
+            En => "Clear all",
+            It => "Deseleziona tutto",
+            Es => "Deseleccionar todo",
+            Fr => "Tout désélectionner",
+            De => "Auswahl aufheben",
+            Zh => "全部取消",
+        },
+        Msg::WebOptions => match lang {
+            En | Fr => "Options",
+            It => "Opzioni",
+            Es => "Opciones",
+            De => "Optionen",
+            Zh => "选项",
+        },
+        Msg::WebTrackExclude => match lang {
+            En => "Exclude",
+            It => "Escludi",
+            Es => "Excluir",
+            Fr => "Exclure",
+            De => "Ausschließen",
+            Zh => "排除",
+        },
+        Msg::WebAlreadyOpusCopied => match lang {
+            En => "already Opus — copied",
+            It => "già Opus — copiata",
+            Es => "ya es Opus — copiada",
+            Fr => "déjà Opus — copiée",
+            De => "bereits Opus — kopiert",
+            Zh => "已是 Opus — 直接复制",
+        },
+        Msg::WebRemuxHint => match lang {
+            En => "Repackage without re-encoding the video. Default for sources already in AV1.",
+            It => {
+                "Ricontenitorizza senza ricodificare il video. Predefinito per sorgenti già in AV1."
+            }
+            Es => "Reempaqueta sin recodificar el video. Predeterminado para fuentes ya en AV1.",
+            Fr => "Réencapsule sans réencoder la vidéo. Par défaut pour les sources déjà en AV1.",
+            De => {
+                "Neu verpacken, ohne das Video neu zu kodieren. Standard für Quellen, die bereits AV1 sind."
+            }
+            Zh => "重新封装而不重新编码视频。已是 AV1 的源默认使用此项。",
+        },
+        Msg::WebDolbyVision => match lang {
+            En | It | Es | Fr | De => "Dolby Vision",
+            Zh => "杜比视界",
+        },
+        Msg::WebDvRemuxHint => match lang {
+            En => "A remux keeps the source stream untouched, Dolby Vision included.",
+            It => "Un remux lascia intatto il flusso sorgente, Dolby Vision compreso.",
+            Es => "Un remux deja intacto el flujo de origen, incluido Dolby Vision.",
+            Fr => "Un remux laisse le flux source intact, Dolby Vision compris.",
+            De => "Ein Remux lässt den Quellstream unangetastet, samt Dolby Vision.",
+            Zh => "重封装会保持源流不变，包括杜比视界。",
+        },
+        Msg::WebDvSourceHint => match lang {
+            En => "Dolby Vision {profile} source.",
+            It => "Sorgente Dolby Vision {profile}.",
+            Es => "Fuente Dolby Vision {profile}.",
+            Fr => "Source Dolby Vision {profile}.",
+            De => "Dolby-Vision-Quelle {profile}.",
+            Zh => "杜比视界 {profile} 源。",
+        },
+        Msg::WebDvProfile => match lang {
+            En => "profile {n}",
+            It => "profilo {n}",
+            Es => "perfil {n}",
+            Fr => "profil {n}",
+            De => "Profil {n}",
+            Zh => "配置 {n}",
+        },
+        Msg::WebCancelling => match lang {
+            En => "Cancelling…",
+            It => "Annullamento…",
+            Es => "Cancelando…",
+            Fr => "Annulation…",
+            De => "Wird abgebrochen…",
+            Zh => "正在取消…",
+        },
+        Msg::WebRemovedFinished => match lang {
+            En => "Removed {n} finished job(s)",
+            It => "Rimossi {n} lavori completati",
+            Es => "Se quitaron {n} trabajos completados",
+            Fr => "{n} tâche(s) terminée(s) retirée(s)",
+            De => "{n} fertige Aufträge entfernt",
+            Zh => "已移除 {n} 个已完成任务",
+        },
+        Msg::WebAddedFiles => match lang {
+            En => "Added {n} file(s) to the queue",
+            It => "Aggiunti {n} file alla coda",
+            Es => "Se añadieron {n} archivos a la cola",
+            Fr => "{n} fichier(s) ajouté(s) à la file",
+            De => "{n} Datei(en) zur Warteschlange hinzugefügt",
+            Zh => "已将 {n} 个文件加入队列",
+        },
+        Msg::WebAlreadyQueued => match lang {
+            En => "{n} already queued",
+            It => "{n} già in coda",
+            Es => "{n} ya en cola",
+            Fr => "{n} déjà dans la file",
+            De => "{n} bereits in der Warteschlange",
+            Zh => "{n} 个已在队列中",
+        },
+        Msg::WebNothingAdded => match lang {
+            En => "Nothing added — {n} file(s) already queued",
+            It => "Nessuna aggiunta — {n} file già in coda",
+            Es => "No se añadió nada — {n} archivos ya en cola",
+            Fr => "Rien d'ajouté — {n} fichier(s) déjà dans la file",
+            De => "Nichts hinzugefügt — {n} Datei(en) bereits in der Warteschlange",
+            Zh => "未添加 — {n} 个文件已在队列中",
+        },
+        Msg::WebUnauthorized => match lang {
+            En => "Unauthorized — open the UI with #token=… from your config",
+            It => "Non autorizzato — apri l'interfaccia con #token=… dalla configurazione",
+            Es => "No autorizado — abre la interfaz con #token=… de tu configuración",
+            Fr => "Non autorisé — ouvrez l'interface avec #token=… depuis votre configuration",
+            De => "Nicht autorisiert — Oberfläche mit #token=… aus der Konfiguration öffnen",
+            Zh => "未授权 — 请使用配置中的 #token=… 打开界面",
+        },
+        Msg::WebRemoveFromQueue => match lang {
+            En => "Remove from queue",
+            It => "Rimuovi dalla coda",
+            Es => "Quitar de la cola",
+            Fr => "Retirer de la file",
+            De => "Aus der Warteschlange entfernen",
+            Zh => "从队列中移除",
+        },
+        Msg::WebGroupGeneral => match lang {
+            En | Es => "General",
+            It => "Generale",
+            Fr => "Général",
+            De => "Allgemein",
+            Zh => "常规",
+        },
+        Msg::WebGroupQuality => match lang {
+            En => "Quality",
+            It => "Qualità",
+            Es => "Calidad",
+            Fr => "Qualité",
+            De => "Qualität",
+            Zh => "质量",
+        },
+        Msg::WebGroupPerformance => match lang {
+            En | Fr => "Performance",
+            It => "Prestazioni",
+            Es => "Rendimiento",
+            De => "Leistung",
+            Zh => "性能",
+        },
+        Msg::WebGroupOutput => match lang {
+            En | It => "Output",
+            Es => "Salida",
+            Fr => "Sortie",
+            De => "Ausgabe",
+            Zh => "输出",
+        },
+        Msg::WebGroupAudio => match lang {
+            En | It | Es | Fr | De => "Audio",
+            Zh => "音频",
+        },
+        Msg::WebGroupDaemon => match lang {
+            En | It | Es | Fr | De => "Daemon",
+            Zh => "守护进程",
+        },
+        Msg::WebGroupRateFactors => match lang {
+            En => "Rate factors",
+            It => "Fattori di qualità",
+            Es => "Factores de calidad",
+            Fr => "Facteurs de qualité",
+            De => "Ratenfaktoren",
+            Zh => "码率因子",
+        },
+        Msg::WebCfgOutputDirectory => match lang {
+            En => "Output directory (if not same)",
+            It => "Cartella di output (se diversa)",
+            Es => "Carpeta de salida (si no es la misma)",
+            Fr => "Dossier de sortie (si différent)",
+            De => "Ausgabeordner (falls abweichend)",
+            Zh => "输出目录（若不同）",
+        },
+        Msg::WebCfgSelectAllFallback => match lang {
+            En => "Select all tracks as fallback",
+            It => "Seleziona tutte le tracce come ripiego",
+            Es => "Seleccionar todas las pistas como alternativa",
+            Fr => "Sélectionner toutes les pistes par défaut",
+            De => "Alle Spuren als Rückfall auswählen",
+            Zh => "回退时选择所有轨道",
+        },
+        Msg::WebCfgAudioDefault => match lang {
+            En => "New files default to",
+            It => "Impostazione predefinita per i nuovi file",
+            Es => "Valor predeterminado para archivos nuevos",
+            Fr => "Valeur par défaut des nouveaux fichiers",
+            De => "Standard für neue Dateien",
+            Zh => "新文件默认",
+        },
+        Msg::WebCfgAudioModeCopy => match lang {
+            En => "Copy the source tracks",
+            It => "Copia le tracce sorgente",
+            Es => "Copiar las pistas de origen",
+            Fr => "Copier les pistes source",
+            De => "Quellspuren kopieren",
+            Zh => "复制源轨道",
+        },
+        Msg::WebCfgAudioModeOpus => match lang {
+            En => "Convert to Opus",
+            It => "Converti in Opus",
+            Es => "Convertir a Opus",
+            Fr => "Convertir en Opus",
+            De => "In Opus konvertieren",
+            Zh => "转换为 Opus",
+        },
+        Msg::WebSettingsNote => match lang {
+            En => {
+                "Encoder, quality and output changes apply to waiting jobs; track defaults apply to newly added files."
+            }
+            It => {
+                "Le modifiche a codificatore, qualità e output valgono per i lavori in attesa; le tracce predefinite solo per i nuovi file."
+            }
+            Es => {
+                "Los cambios de codificador, calidad y salida se aplican a los trabajos en espera; las pistas predeterminadas solo a archivos nuevos."
+            }
+            Fr => {
+                "Les changements d'encodeur, de qualité et de sortie s'appliquent aux tâches en attente ; les pistes par défaut aux nouveaux fichiers."
+            }
+            De => {
+                "Encoder-, Qualitäts- und Ausgabeänderungen gelten für wartende Aufträge; Spurvorgaben nur für neu hinzugefügte Dateien."
+            }
+            Zh => "编码器、质量和输出更改适用于等待中的任务；轨道默认值仅适用于新添加的文件。",
+        },
+        Msg::WebDaemonNote => match lang {
+            En => {
+                "Bind address, port, browse root and access token are only editable in config.toml or the TUI, and need a restart."
+            }
+            It => {
+                "Indirizzo, porta, cartella radice e token di accesso si modificano solo in config.toml o nella TUI, e richiedono un riavvio."
+            }
+            Es => {
+                "La dirección, el puerto, la carpeta raíz y el token de acceso solo se editan en config.toml o en la TUI, y requieren reiniciar."
+            }
+            Fr => {
+                "L'adresse, le port, le dossier racine et le jeton d'accès ne se modifient que dans config.toml ou la TUI, et exigent un redémarrage."
+            }
+            De => {
+                "Adresse, Port, Stammordner und Zugriffstoken lassen sich nur in config.toml oder der TUI ändern und erfordern einen Neustart."
+            }
+            Zh => {
+                "绑定地址、端口、浏览根目录和访问令牌仅可在 config.toml 或 TUI 中修改，且需重启。"
+            }
+        },
+        Msg::WebDismissSummary => match lang {
+            En => "Dismiss summary",
+            It => "Chiudi il riepilogo",
+            Es => "Descartar el resumen",
+            Fr => "Fermer le récapitulatif",
+            De => "Zusammenfassung schließen",
+            Zh => "关闭摘要",
+        },
+        Msg::WebDismiss => match lang {
+            En => "Dismiss",
+            It => "Chiudi",
+            Es => "Cerrar",
+            Fr => "Fermer",
+            De => "Schließen",
+            Zh => "关闭",
+        },
+        Msg::WebScanning => match lang {
+            En => "Scanning…",
+            It => "Scansione…",
+            Es => "Escaneando…",
+            Fr => "Analyse…",
+            De => "Durchsuchen…",
+            Zh => "扫描中…",
+        },
+        Msg::WebDeleteSourceWarning => match lang {
+            En => {
+                "Permanent: after video quality passes, the source is deleted. Audio, subtitles and metadata are not quality-checked."
+            }
+            It => {
+                "Permanente: superato il controllo qualità video, il sorgente viene eliminato. Audio, sottotitoli e metadati non vengono verificati."
+            }
+            Es => {
+                "Permanente: tras superar la calidad de vídeo, se elimina el origen. Audio, subtítulos y metadatos no se verifican."
+            }
+            Fr => {
+                "Permanent : après validation de la qualité vidéo, la source est supprimée. Audio, sous-titres et métadonnées ne sont pas vérifiés."
+            }
+            De => {
+                "Dauerhaft: Nach bestandener Videoqualitätsprüfung wird die Quelle gelöscht. Audio, Untertitel und Metadaten werden nicht geprüft."
+            }
+            Zh => "永久操作：视频质量检查通过后将删除源文件。音频、字幕和元数据不会进行质量检查。",
+        },
+        Msg::TerminalTooSmall => match lang {
+            En => "Terminal too small. Resize to at least 60 × 21. Press q to quit.",
+            It => "Terminale troppo piccolo. Ridimensionalo ad almeno 60 × 21. Premi q per uscire.",
+            Es => "Terminal demasiado pequeño. Ajústalo al menos a 60 × 21. Pulsa q para salir.",
+            Fr => {
+                "Terminal trop petit. Redimensionnez-le à au moins 60 × 21. Appuyez sur q pour quitter."
+            }
+            De => "Terminal zu klein. Auf mindestens 60 × 21 vergrößern. q zum Beenden drücken.",
+            Zh => "终端太小。请调整到至少 60 × 21。按 q 退出。",
+        },
+    }
+}
+
+/// The web UI's string table: the JSON key each element and script uses, and
+/// the [`Msg`] it resolves to.
+///
+/// Only this subset is served to the browser — the TUI's several hundred other
+/// keys have no business crossing the wire on every page load. Keys reused
+/// from the TUI point at the existing [`Msg`] rather than a near-duplicate, so
+/// the two interfaces cannot drift into saying different things about the same
+/// concept.
+pub const WEB_KEYS: &[(&str, Msg)] = &[
+    ("add_file", Msg::WebAddFile),
+    ("add_folder", Msg::WebAddFolder),
+    ("add_folder_recursive", Msg::WebAddFolderRecursive),
+    ("added_files", Msg::WebAddedFiles),
+    ("already_opus_copied", Msg::WebAlreadyOpusCopied),
+    ("already_queued", Msg::WebAlreadyQueued),
+    ("apply_remaining", Msg::WebApplyRemaining),
+    ("badge_analyzing", Msg::StatusAnalyzing),
+    ("badge_awaiting_config", Msg::StatusConfiguring),
+    ("badge_done", Msg::StatusDone),
+    ("badge_error", Msg::Error),
+    ("badge_low_vmaf", Msg::WebLowVmaf),
+    ("badge_pending", Msg::Waiting),
+    ("badge_ready", Msg::StatusReady),
+    ("badge_skipped", Msg::Skipped),
+    ("badge_verifying", Msg::StatusVerifying),
+    ("badge_vmaf_failed", Msg::WebVmafFailed),
+    ("cancel", Msg::Cancel),
+    ("cancel_encoding", Msg::CancelEncodingTitle),
+    ("cancel_encoding_prompt", Msg::CancelEncodingPrompt),
+    ("cancelling", Msg::WebCancelling),
+    ("cfg_audio_default", Msg::WebCfgAudioDefault),
+    ("cfg_audio_languages", Msg::CfgAudioLanguages),
+    ("cfg_audio_mode_copy", Msg::WebCfgAudioModeCopy),
+    ("cfg_audio_mode_opus", Msg::WebCfgAudioModeOpus),
+    ("cfg_delete_source", Msg::CfgDeleteSource),
+    ("cfg_encoder", Msg::EncoderLabel),
+    ("cfg_language", Msg::CfgLanguage),
+    ("cfg_nvenc_preset", Msg::CfgNvencPreset),
+    ("cfg_opus_bitrate", Msg::OpusBitratePerChannel),
+    ("cfg_output_container", Msg::CfgOutputContainer),
+    ("cfg_output_directory", Msg::WebCfgOutputDirectory),
+    ("cfg_output_suffix", Msg::CfgOutputSuffix),
+    ("cfg_quality_preset", Msg::CfgQualityPreset),
+    ("cfg_same_directory", Msg::CfgSameDirectory),
+    ("cfg_select_all_fallback", Msg::WebCfgSelectAllFallback),
+    ("cfg_skip_already_opus", Msg::SkipAlreadyOpus),
+    ("cfg_subtitle_languages", Msg::CfgSubtitleLanguages),
+    ("cfg_svt_preset", Msg::CfgSvtPreset),
+    ("cfg_vmaf_enabled", Msg::CfgVmafEnabled),
+    ("cfg_vmaf_threshold", Msg::CfgVmafThreshold),
+    ("clear_all", Msg::WebClearAll),
+    ("clear_finished", Msg::WebClearFinished),
+    ("col_file", Msg::FileLabel),
+    ("col_saved", Msg::WebSaved),
+    ("col_size", Msg::WebSize),
+    ("col_source", Msg::SourceLabel),
+    ("col_status", Msg::Status),
+    ("current_file", Msg::WebCurrentFile),
+    ("daemon_note", Msg::WebDaemonNote),
+    ("delete_source_warning", Msg::WebDeleteSourceWarning),
+    ("discard_changes", Msg::DiscardConfigTitle),
+    ("dismiss", Msg::WebDismiss),
+    ("dolby_vision", Msg::WebDolbyVision),
+    ("dv_hdr10", Msg::DvOptionHdr10),
+    ("dv_keep", Msg::DvOptionKeep),
+    ("dv_profile", Msg::WebDvProfile),
+    ("dv_remux_hint", Msg::WebDvRemuxHint),
+    ("dv_requires_svt", Msg::DvRequiresSvt),
+    ("dv_source_hint", Msg::WebDvSourceHint),
+    ("eta", Msg::Eta),
+    ("group_audio", Msg::WebGroupAudio),
+    ("group_daemon", Msg::WebGroupDaemon),
+    ("group_general", Msg::WebGroupGeneral),
+    ("group_output", Msg::WebGroupOutput),
+    ("group_performance", Msg::WebGroupPerformance),
+    ("group_quality", Msg::WebGroupQuality),
+    ("group_rate_factors", Msg::WebGroupRateFactors),
+    ("group_tracks", Msg::SubtitleTracks),
+    ("heading_audio", Msg::AudioTracks),
+    ("heading_subtitles", Msg::SubtitleTracks),
+    ("hidden_files", Msg::WebHiddenFiles),
+    ("idle_nothing", Msg::WebIdleNothing),
+    ("kind_file", Msg::WebKindFile),
+    ("kind_folder", Msg::WebKindFolder),
+    ("kind_not_selectable", Msg::WebKindNotSelectable),
+    ("kind_symlink", Msg::WebKindSymlink),
+    ("kind_video", Msg::WebKindVideoFile),
+    ("no_audio_tracks", Msg::WebNoAudioTracks),
+    ("no_subtitle_tracks", Msg::WebNoSubtitleTracks),
+    ("nothing_added", Msg::WebNothingAdded),
+    ("offline", Msg::WebOffline),
+    ("options", Msg::WebOptions),
+    ("overall_progress", Msg::WebOverallProgress),
+    ("parent_directory", Msg::WebParentDirectory),
+    ("qp_custom", Msg::QpCustom),
+    ("qp_high", Msg::QpHigh),
+    ("qp_low", Msg::QpLow),
+    ("qp_medium", Msg::QpMedium),
+    ("queue_empty", Msg::WebQueueEmpty),
+    ("remove_from_queue", Msg::WebRemoveFromQueue),
+    ("removed_finished", Msg::WebRemovedFinished),
+    ("remux_hint", Msg::WebRemuxHint),
+    ("remux_only", Msg::RemuxOnly),
+    ("rf_full_hd", Msg::CfgRfFullHd),
+    ("rf_full_hd_dv", Msg::CfgRfFullHdDv),
+    ("rf_full_hd_hdr", Msg::CfgRfFullHdHdr),
+    ("rf_hd", Msg::CfgRfHd),
+    ("rf_sd", Msg::CfgRfSd),
+    ("rf_uhd", Msg::CfgRfUhd),
+    ("rf_uhd_dv", Msg::CfgRfUhdDv),
+    ("rf_uhd_hdr", Msg::CfgRfUhdHdr),
+    ("save", Msg::Save),
+    ("scanning", Msg::WebScanning),
+    ("saved_exclaim", Msg::SavedExclaim),
+    ("select_all", Msg::WebSelectAll),
+    ("select_folder", Msg::SelectFolder),
+    ("select_folder_recursive", Msg::WebSelectFolderRecursive),
+    ("select_this_folder", Msg::SelectThisFolder),
+    ("select_video_file", Msg::SelectVideoFile),
+    ("settings_note", Msg::WebSettingsNote),
+    ("stat_in_queue", Msg::WebStatInQueue),
+    ("stat_space_saved", Msg::TotalSpaceSaved),
+    ("status_encoding", Msg::Encoding),
+    ("status_idle", Msg::WebIdle),
+    ("summary_complete", Msg::ConversionComplete),
+    ("summary_title", Msg::Summary),
+    ("summary_converted", Msg::Converted),
+    ("summary_dismiss", Msg::WebDismissSummary),
+    ("summary_errors", Msg::Errors),
+    ("summary_time", Msg::TotalTime),
+    ("tab_queue", Msg::WebTabQueue),
+    ("tab_settings", Msg::Settings),
+    ("tag_remux", Msg::WebTagRemux),
+    ("tag_source_deleted", Msg::SourceDeletedTag),
+    ("track_copy", Msg::CopyTracks),
+    ("track_exclude", Msg::WebTrackExclude),
+    ("track_opus", Msg::ToOpus),
+    ("tracks_close", Msg::WebCloseTracks),
+    ("tracks_applied", Msg::WebTracksApplied),
+    ("tracks_hint", Msg::WebTracksHint),
+    ("tracks_locked", Msg::WebTracksLocked),
+    ("tracks_title", Msg::WebTracksTitle),
+    ("tracks_updated", Msg::WebTracksUpdated),
+    ("unauthorized", Msg::WebUnauthorized),
+    ("verifying_vmaf", Msg::StatusVerifying),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::{Language, WEB_KEYS, t};
+    use std::collections::HashSet;
+
+    /// The web UI looks every string up by name, so a duplicate key would mean
+    /// one of the two silently never reaches the page.
+    #[test]
+    fn web_keys_are_unique() {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for (key, _) in WEB_KEYS {
+            assert!(seen.insert(key), "duplicate web key: {key}");
+        }
+    }
+
+    /// Every served key has to resolve in every language. The match in `t` is
+    /// exhaustive over `Msg`, so a missing arm cannot compile — but an arm
+    /// left as an empty string would still ship a blank label, and a key that
+    /// resolves to the same English text in all six is a translation someone
+    /// forgot rather than one that genuinely does not vary.
+    #[test]
+    fn every_web_key_is_translated() {
+        // The only strings that genuinely do not vary: the rate-factor tier
+        // labels are technical abbreviations ("RF 1080p HDR") written the same
+        // way in every locale. Everything else served to the browser has to
+        // differ somewhere across the six, or it is a translation nobody wrote.
+        const INVARIANT: &[&str] = &[
+            "rf_full_hd",
+            "rf_full_hd_dv",
+            "rf_full_hd_hdr",
+            "rf_hd",
+            "rf_sd",
+            "rf_uhd",
+            "rf_uhd_dv",
+            "rf_uhd_hdr",
+        ];
+
+        for (key, msg) in WEB_KEYS {
+            let resolved: Vec<&str> = Language::ALL.iter().map(|&l| t(l, *msg)).collect();
+            for (lang, text) in Language::ALL.iter().zip(&resolved) {
+                assert!(
+                    !text.trim().is_empty(),
+                    "web key {key} is empty in {lang:?}"
+                );
+            }
+            if !INVARIANT.contains(key) {
+                let distinct: HashSet<&&str> = resolved.iter().collect();
+                assert!(
+                    distinct.len() > 1,
+                    "web key {key} resolves to {:?} in all six languages; \
+                     either translate it or list it as invariant",
+                    resolved[0]
+                );
+            }
+        }
+    }
+
+    /// Placeholders are substituted by the browser, so a translation that drops
+    /// or renames one would render a literal `{n}` at the user.
+    #[test]
+    fn placeholders_survive_every_translation() {
+        for (key, msg) in WEB_KEYS {
+            let english = t(Language::English, *msg);
+            for name in ["{n}", "{profile}"] {
+                if english.contains(name) {
+                    for &lang in &Language::ALL {
+                        assert!(
+                            t(lang, *msg).contains(name),
+                            "web key {key} loses {name} in {lang:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

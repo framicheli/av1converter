@@ -1,0 +1,11 @@
+Package: av1converter
+Version: @VERSION@
+Architecture: amd64
+Maintainer: Francesco Micheli
+Depends: ffmpeg
+Section: video
+Priority: optional
+Homepage: https://gitlab.com/francescomicheli/av1converter
+Description: Batch-convert video files to AV1 using FFmpeg
+ AV1Converter provides an interactive terminal UI and a local web UI for
+ managing FFmpeg encoding, track selection, and quality verification.

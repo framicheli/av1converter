@@ -33,6 +33,14 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
     let Some(job) = app.queue.jobs.first() else {
         return;
     };
+    let (heading, heading_color) = match &job.status {
+        JobStatus::Error { .. } => (Msg::Error, Color::Red),
+        JobStatus::Skipped { .. } => (Msg::Skipped, Color::Yellow),
+        JobStatus::DoneVmafFailed { .. } | JobStatus::QualityWarning { .. } => {
+            (Msg::QualityWarning, Color::Yellow)
+        }
+        _ => (Msg::ConversionComplete, Color::Green),
+    };
     let elapsed_str = app
         .queue
         .elapsed_time()
@@ -41,9 +49,9 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
 
     let mut lines = vec![
         Line::from(vec![Span::styled(
-            t(lang, Msg::ConversionComplete),
+            t(lang, heading),
             Style::default()
-                .fg(Color::Green)
+                .fg(heading_color)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
@@ -115,6 +123,18 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
                 Span::styled(
                     format!(" ({}: {threshold:.0})", t(lang, Msg::ThresholdLabel)),
                     Style::default().fg(Color::Red),
+                ),
+            ]));
+        }
+        JobStatus::DoneVmafFailed { reason } => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{}: ", t(lang, Msg::Status)),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{}: {reason}", t(lang, Msg::QualityWarning)),
+                    Style::default().fg(Color::Yellow),
                 ),
             ]));
         }
@@ -257,12 +277,19 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
         .elapsed_time()
         .map(format_duration)
         .unwrap_or_default();
+    let (heading, heading_color) = if app.queue.error_count > 0 {
+        (Msg::Errors, Color::Red)
+    } else if app.queue.skipped_count > 0 {
+        (Msg::Summary, Color::Yellow)
+    } else {
+        (Msg::ConversionComplete, Color::Green)
+    };
 
     let mut summary_lines = vec![
         Line::from(vec![Span::styled(
-            t(lang, Msg::ConversionComplete),
+            t(lang, heading),
             Style::default()
-                .fg(Color::Green)
+                .fg(heading_color)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),

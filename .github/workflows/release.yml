@@ -1,110 +1,137 @@
 name: Release
 
 on:
-    push:
-        branches:
-            - main
+  push:
+    branches: [main]
 
 jobs:
-    check-version:
-        runs-on: ubuntu-latest
-        outputs:
-            should_release: ${{ steps.check.outputs.should_release }}
-        steps:
-            - uses: actions/checkout@v4
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Check version tag
+        id: check
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+          if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q .; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
 
-            - name: Check if version tag exists
-              id: check
-              run: |
-                  VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
-                  if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q .; then
-                      echo "should_release=false" >> $GITHUB_OUTPUT
-                  else
-                      echo "should_release=true" >> $GITHUB_OUTPUT
-                  fi
+  quality:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - run: cargo fmt -- --check
+      - run: cargo clippy --all-targets -- -W clippy::pedantic -D warnings
+      - run: cargo test --all-targets
+      - run: cargo install cargo-audit --version 0.22.2 --locked && cargo audit
 
-    build:
-        needs: check-version
-        if: needs.check-version.outputs.should_release == 'true'
-        name: Build ${{ matrix.target }}
-        runs-on: ${{ matrix.os }}
-        strategy:
-            matrix:
-                include:
-                    - os: ubuntu-latest
-                      target: x86_64-unknown-linux-musl
-                      binary: av1converter
-                      artifact: av1converter-x86_64-unknown-linux-musl
-                    - os: macos-latest
-                      target: x86_64-apple-darwin
-                      binary: av1converter
-                      artifact: av1converter-x86_64-apple-darwin
-                    - os: macos-latest
-                      target: aarch64-apple-darwin
-                      binary: av1converter
-                      artifact: av1converter-aarch64-apple-darwin
-                    - os: windows-latest
-                      target: x86_64-pc-windows-msvc
-                      binary: av1converter.exe
-                      artifact: av1converter-x86_64-pc-windows-msvc.exe
+  build:
+    needs: [check-version, quality]
+    if: needs.check-version.outputs.should_release == 'true'
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binary: av1converter
+            artifact: av1converter-x86_64-unknown-linux-musl
+            linux_packages: true
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            binary: av1converter
+            artifact: av1converter-x86_64-apple-darwin
+            linux_packages: false
+          - os: macos-15
+            target: aarch64-apple-darwin
+            binary: av1converter
+            artifact: av1converter-aarch64-apple-darwin
+            linux_packages: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: av1converter.exe
+            artifact: av1converter-x86_64-pc-windows-msvc.exe
+            linux_packages: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Install Linux packaging tools
+        if: matrix.linux_packages
+        run: sudo apt-get update && sudo apt-get install -y musl-tools rpm
+      - name: Build
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+          mkdir -p dist
+          install -m 0755 "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.artifact }}"
+          "dist/${{ matrix.artifact }}" --version
+          tar -C dist -czf "dist/${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}"
+          if [ "${{ matrix.linux_packages }}" = true ]; then
+            packaging/package-linux.sh "dist/${{ matrix.artifact }}" "$VERSION" dist
+            dpkg-deb --info "dist/av1converter_${VERSION}_amd64.deb"
+            rpm -qip "dist/av1converter-${VERSION}-1.x86_64.rpm"
+          fi
+          rm "dist/${{ matrix.artifact }}"
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.artifact }}"
+          & "dist/${{ matrix.artifact }}" --version
+          Compress-Archive -Path "dist/${{ matrix.artifact }}" -DestinationPath "dist/${{ matrix.artifact }}.zip"
+          Remove-Item "dist/${{ matrix.artifact }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
 
-        steps:
-            - uses: actions/checkout@v4
-
-            - uses: dtolnay/rust-toolchain@stable
-              with:
-                  targets: ${{ matrix.target }}
-
-            - name: Install musl tools
-              if: matrix.target == 'x86_64-unknown-linux-musl'
-              run: sudo apt-get install -y musl-tools
-
-            - name: Build
-              run: cargo build --release --target ${{ matrix.target }}
-
-            - name: Rename binary
-              shell: bash
-              run: mv target/${{ matrix.target }}/release/${{ matrix.binary }} target/${{ matrix.target }}/release/${{ matrix.artifact }}
-
-            - name: Upload artifact
-              uses: actions/upload-artifact@v4
-              with:
-                  name: ${{ matrix.artifact }}
-                  path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
-
-    release:
-        needs: [check-version, build]
-        if: needs.check-version.outputs.should_release == 'true'
-        runs-on: ubuntu-latest
-        permissions:
-            contents: write
-        steps:
-            - uses: actions/checkout@v4
-
-            - uses: actions/download-artifact@v4
-              with:
-                  merge-multiple: true
-
-            - name: Get tag name
-              id: tag
-              run: |
-                  VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
-                  echo "name=v$VERSION" >> $GITHUB_OUTPUT
-
-            - name: Create and push tag
-              run: |
-                  git config user.name "github-actions[bot]"
-                  git config user.email "github-actions[bot]@users.noreply.github.com"
-                  git tag ${{ steps.tag.outputs.name }}
-                  git push origin ${{ steps.tag.outputs.name }}
-
-            - name: Create GitHub Release
-              uses: softprops/action-gh-release@v2
-              with:
-                  tag_name: ${{ steps.tag.outputs.name }}
-                  generate_release_notes: true
-                  files: |
-                      av1converter-x86_64-unknown-linux-musl
-                      av1converter-x86_64-apple-darwin
-                      av1converter-aarch64-apple-darwin
-                      av1converter-x86_64-pc-windows-msvc.exe
+  release:
+    needs: [check-version, build]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create checksums
+        working-directory: dist
+        run: sha256sum av1converter* > SHA256SUMS
+      - name: Tag release
+        id: tag
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+          echo "name=v$VERSION" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+          files: |
+            dist/av1converter*
+            dist/SHA256SUMS

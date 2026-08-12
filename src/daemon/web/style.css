@@ -1,20 +1,26 @@
-/* Dark terminal aesthetic matching the TUI: near-black surface, cyan accent,
-   monospace stack. Values render in text tokens; color marks status only. */
+/* Dark terminal aesthetic matching the TUI: near-black surface, mint accent,
+   monospace stack. Values render in text tokens; color marks status only.
+
+   Every pair here is checked against WCAG AA: text at 4.5:1, boundaries and
+   the focus ring at 3:1. The surfaces sit close together on purpose — the
+   phosphor look depends on it — so --border is deliberately bright, because
+   it is the border, not the fill, that has to carry the 3:1 boundary. */
 
 :root {
-  --bg: #0d1117;
-  --panel: #161b22;
-  --border: #30363d;
-  --track: #21262d;
-  --ink: #e6edf3;
-  --ink-2: #8b949e;
-  --accent: #39c5cf;
-  --good: #3fb950;
-  --warn: #d29922;
-  --bad: #f85149;
+  --bg: #080b10;
+  --panel: #111721;
+  --track: #1b232f;
+  --border: #78859a;
+  --ink: #eef3f9;
+  --ink-2: #a8b6c8;
+  --accent: #4fdcc0;
+  --good: #59d97a;
+  --warn: #e8b544;
+  --bad: #ff8b82;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { overflow-x: clip; }
 
 body {
   background: var(--bg);
@@ -25,16 +31,31 @@ body {
 }
 
 .hidden { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .muted { color: var(--ink-2); }
 .center { text-align: center; }
 .spacer { flex: 1; }
+dialog { margin: auto; }
 
 .banner {
   background: var(--bad);
-  color: #0d1117;
+  color: var(--bg);
   text-align: center;
   padding: 4px 8px;
   font-weight: 600;
+}
+
+/* ── Focus ──────────────────────────────────────────────────────────
+   One rule for every focusable thing. :focus-visible so pointer users do
+   not get a ring on click, keyboard users always do. The offset keeps the
+   ring off the element's own border so both stay readable. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Rows sit flush in a scrolling list; an offset ring would be clipped. */
+#browser-list button:focus-visible {
+  outline-offset: -2px;
 }
 
 /* ── Header ─────────────────────────────────────────────────────── */
@@ -57,7 +78,6 @@ header {
   color: var(--ink-2);
 }
 .pill.encoding { color: var(--accent); border-color: var(--accent); }
-.pill.paused { color: var(--warn); border-color: var(--warn); }
 
 nav { margin-left: auto; display: flex; gap: 4px; }
 .tab {
@@ -76,10 +96,6 @@ nav { margin-left: auto; display: flex; gap: 4px; }
   max-width: 1300px;
   margin: 0 auto;
   padding: 20px;
-  display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
-  gap: 20px;
-  align-items: start;
 }
 main { display: grid; gap: 16px; min-width: 0; }
 section { display: grid; gap: 16px; }
@@ -96,19 +112,40 @@ section { display: grid; gap: 16px; }
 .panel-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-2); }
 .filename { overflow-wrap: anywhere; }
 
-.bar {
+progress.bar {
+  display: block;
+  width: 100%;
+  appearance: none;
+  border: 0;
   background: var(--track);
   border-radius: 4px;
   height: 8px;
   overflow: hidden;
 }
-.bar-fill {
+progress.bar::-webkit-progress-bar { background: var(--track); }
+progress.bar::-webkit-progress-value {
   background: var(--accent);
-  height: 100%;
   border-radius: 0 4px 4px 0;
   transition: width 0.5s linear;
 }
+progress.bar::-moz-progress-bar { background: var(--accent); border-radius: 0 4px 4px 0; }
+/* Figures are rewritten once a second. Tabular digits stop the percentages,
+   sizes and ETA from jittering as their glyphs change width. */
+.bar-meta, .tile-value, table, .badge, #browser-list .size {
+  font-variant-numeric: tabular-nums;
+}
 .bar-meta { display: flex; justify-content: space-between; font-size: 12px; }
+
+/* The table is the workbench. Everything above it is status, so it reads as
+   one compact band: two tiles and both progress panels on a single row,
+   stacking only when there is genuinely no width for it. */
+.overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.overview .panel { padding: 10px 14px; }
 
 .tiles {
   display: grid;
@@ -122,12 +159,10 @@ section { display: grid; gap: 16px; }
   padding: 10px 14px;
 }
 .tile-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-2); }
-.tile-value { font-size: 22px; font-weight: 600; margin-top: 2px; }
-
-.meta-row { display: flex; gap: 24px; font-size: 12px; color: var(--ink-2); flex-wrap: wrap; }
+.tile-value { font-size: 20px; font-weight: 600; margin-top: 2px; }
 
 /* ── Toolbar & buttons ──────────────────────────────────────────── */
-.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
 button {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -136,10 +171,46 @@ button {
   padding: 5px 12px;
   border-radius: 6px;
   cursor: pointer;
+  white-space: nowrap;
 }
-button:hover { border-color: var(--accent); }
+@media (hover: hover) {
+  button:hover { border-color: var(--accent); }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  #browser-list button:hover:not(:disabled) { background: var(--track); }
+}
+button:active:not(:disabled) { transform: translateY(1px); }
 button:disabled { opacity: 0.4; cursor: default; border-color: var(--border); }
-button.danger:hover { border-color: var(--bad); color: var(--bad); }
+
+/* ── Batch summary ──────────────────────────────────────────────── */
+.summary {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  background: var(--panel);
+  border: 1px solid var(--good);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-variant-numeric: tabular-nums;
+}
+/* A run that errored is not a success, so the strip itself changes colour
+   rather than leaving one red number to be spotted among green ones. */
+.summary.has-errors { border-color: var(--bad); }
+.summary.has-skips { border-color: var(--warn); }
+
+.summary-title { font-weight: 600; }
+.summary.has-errors .summary-title { color: var(--bad); }
+.summary.has-skips .summary-title { color: var(--warn); }
+
+.summary-figure { display: flex; align-items: baseline; gap: 6px; }
+.summary-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-2); }
+.summary-value { font-size: 16px; font-weight: 600; }
+.summary-figure.good .summary-value { color: var(--good); }
+/* Only once they are non-zero: a clean run should read clean. */
+.summary-figure.warn .summary-value { color: var(--warn); }
+.summary-figure.bad .summary-value { color: var(--bad); }
+
+#summary-dismiss { margin-left: auto; }
 
 /* ── Queue table ────────────────────────────────────────────────── */
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
@@ -149,6 +220,7 @@ th { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var
 tbody tr:last-child td { border-bottom: none; }
 td.filecell { max-width: 320px; overflow-wrap: anywhere; }
 td .subline { font-size: 11px; color: var(--ink-2); }
+.status-detail { margin-top: 4px; max-width: 42ch; color: var(--bad); font-size: 11px; overflow-wrap: anywhere; }
 
 .badge {
   display: inline-block;
@@ -166,8 +238,7 @@ td .subline { font-size: 11px; color: var(--ink-2); }
 
 td.grew { color: var(--warn); }
 
-.row-bar { margin-top: 4px; width: 140px; }
-.row-bar .bar { height: 5px; }
+.row-bar { margin-top: 4px; width: 140px; height: 5px; }
 
 .iconbtn { padding: 2px 8px; font-size: 12px; }
 
@@ -183,7 +254,10 @@ td.grew { color: var(--warn); }
   border-radius: 6px;
   padding: 8px 14px;
 }
-.field label { color: var(--ink-2); font-size: 13px; }
+/* German and French labels run half again as long as the English and wrap
+   inside this column; a compound long enough to beat the column on its own
+   breaks rather than pushing the control off the row. */
+.field label { color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere; }
 .field input[type="text"], .field input[type="number"], .field select {
   background: var(--track);
   border: 1px solid var(--border);
@@ -193,7 +267,12 @@ td.grew { color: var(--warn); }
   border-radius: 4px;
   max-width: 320px;
 }
-.field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+/* Accent border on focus, but the outline stays — removing it is what makes
+   a form untabbable for keyboard users. */
+.field input:focus, .field select:focus { border-color: var(--accent); }
+.field input:invalid { border-color: var(--bad); }
+.field input:disabled, .field select:disabled { opacity: 0.55; cursor: not-allowed; }
+.field-warning { grid-column: 2; color: var(--warn); font-size: 11px; max-width: 70ch; }
 .field-group {
   margin-top: 10px;
   font-size: 11px;
@@ -204,19 +283,24 @@ td.grew { color: var(--warn); }
 
 @media (max-width: 640px) {
   .field { grid-template-columns: 1fr; gap: 4px; }
+  .field-warning { grid-column: 1; }
 }
 
-/* ── File browser sidebar ───────────────────────────────────────── */
+/* ── File browser dialog ────────────────────────────────────────── */
 #browser {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
+  color: var(--ink);
+  padding: 0;
+  width: min(720px, calc(100% - 40px));
+  height: min(700px, calc(100% - 40px));
+}
+#browser[open] {
   display: flex;
   flex-direction: column;
-  position: sticky;
-  top: 20px;
-  max-height: calc(100vh - 40px);
 }
+#browser::backdrop { background: rgba(0, 0, 0, 0.6); }
 
 .browser-head {
   padding: 12px 16px;
@@ -232,51 +316,58 @@ td.grew { color: var(--warn); }
   flex: 1;
   min-height: 200px;
 }
-#browser-list li {
+/* Rows are real <button>s, so keyboard focus and Enter/Space are free.
+   Stripped back to look like list rows rather than controls. */
+#browser-list button {
+  width: 100%;
   padding: 6px 16px;
-  cursor: pointer;
   display: flex;
   gap: 8px;
   align-items: baseline;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
 }
-#browser-list li:hover { background: var(--track); }
-#browser-list li.disabled { color: var(--ink-2); cursor: default; }
-#browser-list li .size { margin-left: auto; font-size: 11px; color: var(--ink-2); }
+#browser-list button:disabled { color: var(--ink-2); opacity: 1; cursor: default; }
+#browser-list .size { margin-left: auto; font-size: 11px; color: var(--ink-2); }
+
+/* Filesystem marks: text, not emoji, so they inherit ink colour and are not
+   read out as picture names by a screen reader. */
+#browser-list .mark {
+  color: var(--ink-2);
+  flex: none;
+  width: 2ch;
+}
+#browser-list button:disabled .mark { opacity: 0.5; }
 
 .browser-foot {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   padding: 10px 16px;
   border-top: 1px solid var(--border);
 }
 
-@media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; }
-  #browser { order: 2; position: static; max-height: none; }
-  #browser-list { max-height: 45vh; }
-}
-
-/* ── Track selection modal ──────────────────────────────────────── */
-.modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-  z-index: 20;
-}
-.modal-box {
+/* ── Track selection dialog ─────────────────────────────────────── */
+#tracks-modal {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  width: min(720px, 100%);
-  max-height: 85vh;
+  color: var(--ink);
+  padding: 0;
+  width: min(720px, calc(100% - 40px));
+  max-height: 85dvh;
+}
+#tracks-modal[open] {
   display: flex;
   flex-direction: column;
 }
+#tracks-modal::backdrop { background: rgba(0, 0, 0, 0.6); }
+
 .modal-head, .modal-foot {
   display: flex;
   align-items: center;
@@ -285,15 +376,24 @@ td.grew { color: var(--warn); }
 }
 .modal-head { border-bottom: 1px solid var(--border); font-weight: 600; }
 .modal-head span:first-child { overflow-wrap: anywhere; flex: 1; }
-.modal-foot { border-top: 1px solid var(--border); font-size: 12px; }
+.modal-foot { border-top: 1px solid var(--border); font-size: 12px; flex-wrap: wrap; }
+.apply-remaining { display: flex; align-items: center; gap: 6px; }
 .modal-body { overflow-y: auto; padding: 8px 16px 16px; }
 
 .track-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--ink-2);
   margin: 14px 0 6px;
+}
+.track-group button {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .track-row {
   display: flex;
@@ -315,19 +415,59 @@ td.grew { color: var(--warn); }
   font: inherit;
   font-size: 12px;
 }
-.track-row select:focus { outline: none; border-color: var(--accent); }
+.track-row select:focus { border-color: var(--accent); }
 .track-target { font-size: 11px; color: var(--accent); white-space: nowrap; }
 
 /* ── Toast ──────────────────────────────────────────────────────── */
 .toast {
   position: fixed;
+  top: auto;
+  right: auto;
   bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
+  margin: 0;
+  max-width: calc(100% - 24px);
   background: var(--panel);
   border: 1px solid var(--accent);
   border-radius: 6px;
   padding: 8px 20px;
   z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow-wrap: anywhere;
 }
 .toast.error { border-color: var(--bad); color: var(--bad); }
+.toast .iconbtn { margin-left: auto; }
+
+@media (max-width: 640px) {
+  .layout { padding: 12px; }
+  #browser { width: calc(100% - 16px); height: calc(100% - 16px); }
+  .browser-foot .spacer { flex-basis: 100%; }
+  .browser-foot button { flex: 1; }
+
+  #queue-table th:last-child,
+  #queue-body td:last-child {
+    position: sticky;
+    right: 0;
+    min-width: 48px;
+    background: var(--panel);
+  }
+  #queue-table th:nth-last-child(2),
+  #queue-body td:nth-last-child(2) {
+    position: sticky;
+    right: 48px;
+    background: var(--panel);
+    box-shadow: -1px 0 var(--border);
+  }
+}
+
+@media (pointer: coarse) {
+  button, input, select { min-height: 44px; }
+  .iconbtn { min-width: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  progress.bar::-webkit-progress-value { transition: none; }
+}

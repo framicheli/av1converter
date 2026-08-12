@@ -1,0 +1,27 @@
+pkgname=av1converter
+pkgver=3.0.0
+pkgrel=1
+pkgdesc='Batch-convert video files to AV1 using FFmpeg'
+arch=('x86_64' 'aarch64')
+url='https://gitlab.com/francescomicheli/av1converter'
+license=('MIT')
+depends=('ffmpeg')
+makedepends=('cargo' 'git')
+source=("$pkgname::git+$url.git#commit=99ea137827ce660abb2c885b9f7174fd896804a5")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname"
+  cargo build --release --locked
+}
+
+check() {
+  cd "$pkgname"
+  cargo test --release --locked
+}
+
+package() {
+  cd "$pkgname"
+  install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

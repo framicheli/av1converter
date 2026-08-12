@@ -35,6 +35,12 @@ pub fn log_file() -> PathBuf {
     data_dir().join("daemon.log")
 }
 
+/// The queue as it stood when the daemon last changed it, so a restart or a
+/// crash does not lose what was waiting to encode.
+pub fn queue_file() -> PathBuf {
+    data_dir().join("queue.json")
+}
+
 /// PID recorded in the file while another process holds its daemon lock.
 #[cfg(unix)]
 fn locked_pid(path: &std::path::Path) -> Option<u32> {
@@ -69,8 +75,15 @@ fn locked_pid(path: &std::path::Path) -> Option<u32> {
 /// PID recorded in the locked PID file, if that process is still alive.
 /// An unlocked file is stale even if its old PID has since been reused.
 pub fn running_pid() -> Option<u32> {
-    let pid = locked_pid(&pid_file())?;
-    alive(pid).then_some(pid)
+    let path = pid_file();
+    let pid = locked_pid(&path)?;
+    if alive(pid) {
+        Some(pid)
+    } else {
+        #[cfg(not(unix))]
+        let _ = std::fs::remove_file(path);
+        None
+    }
 }
 
 #[cfg(unix)]
@@ -97,16 +110,33 @@ fn lock_pid_file(path: &std::path::Path, pid: u32) -> io::Result<File> {
 
 #[cfg(not(unix))]
 fn lock_pid_file(path: &std::path::Path, pid: u32) -> io::Result<File> {
-    let mut file = File::create(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)?;
     file.write_all(pid.to_string().as_bytes())?;
     file.sync_all()?;
     Ok(file)
 }
 
+/// Owns the PID file for the lifetime of the daemon.
+pub struct PidGuard {
+    _file: File,
+    path: PathBuf,
+}
+
+impl Drop for PidGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Write and exclusively hold the PID file for the lifetime of the daemon.
-pub fn write_pid_file() -> io::Result<File> {
+pub fn write_pid_file() -> io::Result<PidGuard> {
     crate::utils::ensure_private_dir(&data_dir())?;
-    lock_pid_file(&pid_file(), std::process::id())
+    let path = pid_file();
+    let file = lock_pid_file(&path, std::process::id())?;
+    Ok(PidGuard { _file: file, path })
 }
 
 #[cfg(unix)]
@@ -115,12 +145,34 @@ fn alive(pid: u32) -> bool {
     unsafe { libc::kill(pid.cast_signed(), 0) == 0 }
 }
 
-/// Liveness cannot be probed without a signal API, so a recorded PID is taken
-/// at face value: reporting "not running" for a daemon that is up would be
-/// worse than occasionally trusting a stale PID file.
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn alive(pid: u32) -> bool {
+    let expected_image = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let mut fields = line.trim_matches('"').split("\",\"");
+                    Some((fields.next()?, fields.next()?.parse::<u32>().ok()?))
+                })
+                .any(|(image, found)| image.eq_ignore_ascii_case(&expected_image) && found == pid)
+        })
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn alive(_pid: u32) -> bool {
-    true
+    false
 }
 
 /// Re-exec ourselves as `--daemon-foreground`, detached in a new session with
@@ -211,7 +263,28 @@ mod tests {
         let guard = lock_pid_file(&path, std::process::id()).unwrap();
         assert_eq!(locked_pid(&path), Some(std::process::id()));
         drop(guard);
+        // A child forked concurrently by another test briefly inherits open
+        // descriptors until exec applies O_CLOEXEC. Give that window time to
+        // close while still failing on a genuinely leaked lock.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while locked_pid(&path).is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(locked_pid(&path), None);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn pid_guard_removes_its_file_on_drop() {
+        let path = std::env::temp_dir().join(format!("av1c_pid_guard_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let file = lock_pid_file(&path, std::process::id()).unwrap();
+        let guard = PidGuard {
+            _file: file,
+            path: path.clone(),
+        };
+        assert!(path.exists());
+        drop(guard);
+        assert!(!path.exists());
     }
 }

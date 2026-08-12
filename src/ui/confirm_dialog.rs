@@ -22,7 +22,14 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
         ),
         ConfirmAction::ExitApp => (
             format!(" {} ", t(lang, Msg::ExitAppTitle)),
-            t(lang, Msg::ExitAppPrompt),
+            t(
+                lang,
+                if app.encoding_active || app.analysis_receiver.is_some() {
+                    Msg::ExitAppActivePrompt
+                } else {
+                    Msg::ExitAppPrompt
+                },
+            ),
         ),
         ConfirmAction::AbandonTrackConfig => (
             format!(" {} ", t(lang, Msg::AbandonTrackConfigTitle)),

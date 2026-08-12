@@ -39,6 +39,8 @@ fn wait_or_cancel(
             Ok(Some(status)) => return Ok(Some(status)),
             Ok(None) => std::thread::sleep(Duration::from_millis(250)),
             Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
                 return Err(AppError::Vmaf(format!(
                     "Failed to check VMAF ffmpeg status: {e}"
                 )));
@@ -108,6 +110,7 @@ impl std::fmt::Display for VmafResult {
 /// A VMAF pass over a feature-length file takes minutes, so it honours
 /// `cancel_flag` the same way encoding does: the ffmpeg process is killed and
 /// its log file cleaned up rather than left running past shutdown.
+#[allow(clippy::too_many_lines)]
 pub fn calculate_vmaf(
     original: &Path,
     encoded: &Path,
@@ -201,7 +204,7 @@ pub fn calculate_vmaf(
         }
     };
 
-    let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+    let stderr = crate::encoder::ffmpeg::read_file_tail(&stderr_path).unwrap_or_default();
     let _ = std::fs::remove_file(&stderr_path);
 
     if !status.success() {
@@ -218,13 +221,15 @@ pub fn calculate_vmaf(
     }
 
     // Read result then remove
-    let json_content = std::fs::read_to_string(&json_output);
+    let vmaf_data = std::fs::File::open(&json_output)
+        .map(std::io::BufReader::new)
+        .map_err(|e| AppError::Vmaf(format!("Failed to read VMAF output: {e}")))
+        .and_then(|reader| {
+            serde_json::from_reader::<_, VmafJson>(reader)
+                .map_err(|e| AppError::Vmaf(format!("Failed to parse VMAF JSON: {e}")))
+        });
     let _ = std::fs::remove_file(&json_output);
-    let json_content =
-        json_content.map_err(|e| AppError::Vmaf(format!("Failed to read VMAF output: {e}")))?;
-
-    let vmaf_data: VmafJson = serde_json::from_str(&json_content)
-        .map_err(|e| AppError::Vmaf(format!("Failed to parse VMAF JSON: {e}")))?;
+    let vmaf_data = vmaf_data?;
 
     let result = VmafResult {
         score: vmaf_data.pooled_metrics.vmaf.mean,

@@ -2,11 +2,58 @@ use crate::analyzer::{DvMode, VideoMetadata};
 use crate::config::{AudioConfig, TrackPresetConfig};
 use crate::tracks::{AudioTrack, SubtitleTrack, TrackSelection};
 use std::collections::HashSet;
+use std::fs::Metadata;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use tracing::warn;
 
+/// Filesystem identity captured while a source is analyzed.
+///
+/// The encoder checks it again before doing any work and before an automatic
+/// source deletion, so replacing a file at the same path cannot encode stale
+/// metadata or delete the replacement.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SourceIdentity {
+    len: u64,
+    modified: Option<SystemTime>,
+    created: Option<SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+impl SourceIdentity {
+    pub fn from_metadata(metadata: &Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            created: metadata.created().ok(),
+            #[cfg(unix)]
+            dev: metadata.dev(),
+            #[cfg(unix)]
+            ino: metadata.ino(),
+        }
+    }
+
+    pub fn from_path(path: impl AsRef<Path>) -> std::io::Result<Self> {
+        std::fs::metadata(path).map(|metadata| Self::from_metadata(&metadata))
+    }
+
+    pub fn matches_path(&self, path: impl AsRef<Path>) -> bool {
+        Self::from_path(path).is_ok_and(|current| *self == current)
+    }
+
+    pub fn size_bytes(&self) -> u64 {
+        self.len
+    }
+}
+
 /// Status of a job in the encoding queue
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum JobStatus {
     /// Waiting to be processed
     Pending,
@@ -16,8 +63,17 @@ pub enum JobStatus {
     AwaitingConfig,
     /// Ready to encode
     Ready,
-    /// Currently encoding
-    Encoding { progress: f64 },
+    /// Currently encoding.
+    ///
+    /// The percentage is deliberately not persisted. A reloaded `Encoding` job
+    /// is one the daemon died in the middle of, and it restarts from zero, so
+    /// the number has no meaning in the file — while persisting it would
+    /// rewrite the queue on disk several times a second for the whole length
+    /// of every encode.
+    Encoding {
+        #[serde(skip)]
+        progress: f64,
+    },
     /// Running VMAF quality check after encoding
     Verifying,
     /// Successfully encoded (no VMAF run)
@@ -34,8 +90,22 @@ pub enum JobStatus {
     QualityWarning { vmaf: f64, threshold: f64 },
 }
 
+impl JobStatus {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Done
+                | Self::DoneWithVmaf { .. }
+                | Self::DoneVmafFailed { .. }
+                | Self::Skipped { .. }
+                | Self::Error { .. }
+                | Self::QualityWarning { .. }
+        )
+    }
+}
+
 /// An encoding job in the queue
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EncodingJob {
     pub path: PathBuf,
     pub metadata: Option<VideoMetadata>,
@@ -46,6 +116,9 @@ pub struct EncodingJob {
     pub output_path: Option<PathBuf>,
     pub crf: Option<u8>,
     pub source_size: Option<u64>,
+    /// Source identity captured by the successful analysis.
+    #[serde(default)]
+    pub source_identity: Option<SourceIdentity>,
     pub output_size: Option<u64>,
     pub source_deleted: bool,
     pub source_kept_vmaf: Option<f64>,
@@ -68,6 +141,7 @@ impl EncodingJob {
             output_path: None,
             crf: None,
             source_size,
+            source_identity: None,
             output_size: None,
             source_deleted: false,
             source_kept_vmaf: None,
@@ -215,8 +289,7 @@ fn collect_video_files_inner(
             collect_video_files_inner(&path, paths, seen_dirs, seen_files, root);
         } else if is_video_file(&path) {
             let real = path.canonicalize().unwrap_or_else(|_| path.clone());
-            if !root.is_some_and(|root| !real.starts_with(root)) && seen_files.insert(real.clone())
-            {
+            if root.is_none_or(|root| real.starts_with(root)) && seen_files.insert(real.clone()) {
                 paths.push(if root.is_some() { real } else { path });
             }
         }
@@ -226,8 +299,16 @@ fn collect_video_files_inner(
 /// Make every generated output distinct from every queued source and output.
 pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
     let mut used: HashSet<PathBuf> = jobs.iter().map(|job| job.path.clone()).collect();
+    used.extend(
+        jobs.iter()
+            .filter(|job| job.status.is_terminal())
+            .filter_map(|job| job.output_path.clone()),
+    );
 
     for job in jobs {
+        if job.status.is_terminal() {
+            continue;
+        }
         let Some(output) = job.output_path.clone() else {
             continue;
         };
@@ -251,19 +332,18 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
                 !used.contains(candidate) && std::fs::symlink_metadata(candidate).is_err()
             });
 
-        match free {
-            Some(candidate) => {
-                used.insert(candidate.clone());
-                job.output_path = Some(candidate);
-            }
+        if let Some(candidate) = free {
+            used.insert(candidate.clone());
+            job.output_path = Some(candidate);
+        } else {
             // Left pointing at the taken path on purpose: the encoder refuses to
             // overwrite an existing output, so the job fails loudly instead of
             // quietly writing over something.
-            None => warn!(
+            warn!(
                 "No free output name near {} for {}",
                 output.display(),
                 job.path.display()
-            ),
+            );
         }
     }
 }
@@ -427,6 +507,25 @@ mod tests {
         assert_eq!(jobs[0].output_path, Some(dir.join("movie_av1_2.mkv")));
         assert_eq!(std::fs::read(dir.join("movie_av1.mkv")).unwrap(), b"keep");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn finished_output_paths_never_move_when_the_queue_changes() {
+        let finished_output = PathBuf::from("/out/movie_av1.mkv");
+        let mut finished = EncodingJob::new(PathBuf::from("/a/movie.mkv"));
+        finished.status = JobStatus::Done;
+        finished.output_path = Some(finished_output.clone());
+        let mut pending = EncodingJob::new(PathBuf::from("/b/movie.mkv"));
+        pending.output_path = Some(finished_output.clone());
+        let mut jobs = vec![finished, pending];
+
+        make_output_paths_unique(&mut jobs);
+
+        assert_eq!(jobs[0].output_path, Some(finished_output));
+        assert_eq!(
+            jobs[1].output_path,
+            Some(PathBuf::from("/out/movie_av1_2.mkv"))
+        );
     }
 
     /// A symlink loop must not hang the scan, and a file reachable by two

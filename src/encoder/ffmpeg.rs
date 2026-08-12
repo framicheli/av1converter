@@ -1,7 +1,7 @@
 use crate::encoder::command_builder::{EncodingParams, build_ffmpeg_args};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -26,6 +26,57 @@ fn partial_output_path(output: &str, tag: &str) -> String {
         None => format!("{stem}.part.{tag}"),
     };
     parent.join(name).to_string_lossy().into_owned()
+}
+
+/// Scratch files left next to `output` by an encode that never finished.
+///
+/// Lives beside [`partial_output_path`] deliberately: this has to recognise
+/// exactly what that function produces, and a second copy of the format string
+/// somewhere else would rot the first time either changed.
+///
+/// The tag is `{pid}_{counter}` and the pid belonged to a process that is gone,
+/// so the match is by shape rather than by value. It is kept strict — both
+/// halves must be digits — so that a real file which merely happens to contain
+/// `.part.` is never mistaken for scratch and deleted.
+pub fn orphaned_partials(output: &Path) -> Vec<PathBuf> {
+    let (Some(parent), Some(stem)) = (output.parent(), output.file_stem().and_then(|s| s.to_str()))
+    else {
+        return Vec::new();
+    };
+    let prefix = format!("{stem}.part.");
+    let suffix = output
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|ext| format!(".{ext}"));
+
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                return false;
+            };
+            let Some(rest) = name.strip_prefix(&prefix) else {
+                return false;
+            };
+            let tag = match suffix.as_deref() {
+                Some(suffix) => match rest.strip_suffix(suffix) {
+                    Some(tag) => tag,
+                    None => return false,
+                },
+                None => rest,
+            };
+            matches!(tag.split_once('_'), Some((pid, uid))
+                if !pid.is_empty()
+                    && !uid.is_empty()
+                    && pid.bytes().all(|b| b.is_ascii_digit())
+                    && uid.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .map(|entry| entry.path())
+        .collect()
 }
 
 /// Whether both paths designate the same file: literally equal, or resolving to
@@ -223,7 +274,7 @@ fn run_encode_loop(
                     cb(progress);
                 }
             }
-        } else if let Some(content) = read_progress_tail(progress_file) {
+        } else if let Some(content) = read_file_tail(progress_file) {
             // Encode: derive progress from the processed timestamp vs. duration.
             // FFmpeg versions differ in which out_time field they emit.
             let progress = if let Some(time_secs) = latest_progress_time_secs(&content) {
@@ -253,7 +304,7 @@ fn run_encode_loop(
         match child.try_wait() {
             Ok(Some(status)) => {
                 if !status.success() {
-                    let stderr = std::fs::read_to_string(stderr_path).unwrap_or_default();
+                    let stderr = read_file_tail(stderr_path).unwrap_or_default();
 
                     let _ = std::fs::remove_file(output);
 
@@ -278,6 +329,9 @@ fn run_encode_loop(
                 thread::sleep(Duration::from_millis(poll_ms));
             }
             Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_file(output);
                 return EncodeResult::Error(format!("Failed to check ffmpeg status: {e}"));
             }
         }
@@ -290,7 +344,7 @@ fn run_encode_loop(
 /// feature-length encode leaves megabytes behind. Only the most recent block
 /// matters, and re-reading and re-parsing the whole file four times a second
 /// would cost more as the encode goes on.
-fn read_progress_tail(path: &Path) -> Option<String> {
+pub(crate) fn read_file_tail(path: &Path) -> Option<String> {
     /// Comfortably more than one block, so a full block is always in view.
     const WINDOW: usize = 8192;
 
@@ -362,6 +416,7 @@ fn parse_out_time_secs(line: &str) -> Option<f64> {
 mod tests {
     use super::{
         is_same_file, latest_progress_frame, latest_progress_time_secs, partial_output_path,
+        read_file_tail,
     };
     use std::path::Path;
 
@@ -409,6 +464,18 @@ mod tests {
 
         assert!(is_same_file(&path, &indirect));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_tail_stays_bounded_and_keeps_the_end() {
+        let path =
+            std::env::temp_dir().join(format!("av1c_test_file_tail_{}.log", std::process::id()));
+        std::fs::write(&path, format!("{}the end", "x".repeat(9000))).unwrap();
+
+        let tail = read_file_tail(&path).unwrap();
+        assert_eq!(tail.len(), 8192);
+        assert!(tail.ends_with("the end"));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -96,34 +96,41 @@ impl AppConfig {
     /// Save configuration to TOML file
     pub fn save(&self) -> Result<(), AppError> {
         let config_path = Self::config_path();
+        self.save_to_path(&config_path)?;
+        info!("Saved config to {}", config_path.display());
+        Ok(())
+    }
 
+    fn save_to_path(&self, config_path: &std::path::Path) -> Result<(), AppError> {
         if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent)
+            crate::utils::ensure_private_dir(parent)
                 .map_err(|e| AppError::Config(format!("Failed to create config directory: {e}")))?;
         }
 
-        Self::preserve_unreadable(&config_path)?;
+        Self::preserve_unreadable(config_path)?;
 
         let toml_string = toml::to_string_pretty(self)?;
+        let nonce = crate::utils::random_hex(8)
+            .map_err(|e| AppError::Config(format!("Failed to create config temp file: {e}")))?;
+        let tmp = config_path.with_extension(format!("toml.{nonce}.tmp"));
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
-            if config_path.exists() {
-                std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
-                    .map_err(|e| AppError::Config(format!("Failed to secure config file: {e}")))?;
-            }
         }
         let mut file = options
-            .open(&config_path)
+            .open(&tmp)
             .map_err(|e| AppError::Config(format!("Failed to open config file: {e}")))?;
-        file.write_all(toml_string.as_bytes())
-            .map_err(|e| AppError::Config(format!("Failed to write config file: {e}")))?;
-
-        info!("Saved config to {}", config_path.display());
-        Ok(())
+        let result = file
+            .write_all(toml_string.as_bytes())
+            .and_then(|()| file.sync_all())
+            .and_then(|()| std::fs::rename(&tmp, config_path));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result.map_err(|e| AppError::Config(format!("Failed to write config file: {e}")))
     }
 
     /// Copy `path` aside if it exists but cannot be parsed.
@@ -183,6 +190,9 @@ impl AppConfig {
     pub fn sanitize(&mut self) {
         self.quality.vmaf_threshold = self.quality.vmaf_threshold.clamp(0.0, 100.0);
         self.performance.svt_preset = self.performance.svt_preset.min(13);
+        if !PerformanceConfig::valid_nvenc_preset(&self.performance.nvenc_preset) {
+            self.performance.nvenc_preset = PerformanceConfig::default().nvenc_preset;
+        }
         for preset in self.presets.all_mut() {
             preset.crf = preset.crf.min(Encoder::SvtAv1.max_quality());
             let hw_max = Encoder::Nvenc.max_quality();
@@ -278,6 +288,35 @@ mod tests {
             toml::from_str::<AppConfig>(&s).unwrap().language,
             Language::Chinese
         );
+    }
+
+    #[test]
+    fn config_save_round_trips_privately_without_leaving_a_temp_file() {
+        let dir = std::env::temp_dir().join(format!("av1c_cfg_save_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.toml");
+        let cfg = AppConfig {
+            language: Language::Italian,
+            ..AppConfig::default()
+        };
+
+        cfg.save_to_path(&path).unwrap();
+
+        assert_eq!(AppConfig::load_from_file(&path).unwrap(), cfg);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+                0
+            );
+            assert_eq!(
+                std::fs::metadata(&dir).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A config file written before the `[daemon]` section existed must still
@@ -417,6 +456,14 @@ mod tests {
         assert!(!cfg.daemon.binds_publicly());
     }
 
+    #[test]
+    fn invalid_nvenc_preset_falls_back_to_the_supported_default() {
+        let mut cfg = AppConfig::default();
+        cfg.performance.nvenc_preset = "slowest".to_string();
+        cfg.sanitize();
+        assert_eq!(cfg.performance.nvenc_preset, "p4");
+    }
+
     /// The printed URL has to be a link the user can actually open, which a
     /// wildcard bind address is not.
     #[test]
@@ -436,9 +483,9 @@ mod tests {
         assert_eq!(cfg.url(), "http://[::1]:8399/");
 
         cfg.auth_token = "abc".to_string();
-        assert_eq!(cfg.url(), "http://[::1]:8399/?token=abc");
+        assert_eq!(cfg.url(), "http://[::1]:8399/#token=abc");
         cfg.auth_token = "a&b #+%".to_string();
-        assert_eq!(cfg.url(), "http://[::1]:8399/?token=a%26b%20%23%2B%25");
+        assert_eq!(cfg.url(), "http://[::1]:8399/#token=a%26b%20%23%2B%25");
     }
 
     /// Only a non-loopback bind address counts as reaching the network.

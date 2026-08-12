@@ -12,6 +12,7 @@ use ratatui::{
 #[allow(clippy::too_many_lines)]
 pub fn render_track_config(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
+    let narrow = f.area().width < 100;
     let audio_config = app.config.audio.clone();
     let (
         filename,
@@ -108,7 +109,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(6),
             Constraint::Min(5),
-            Constraint::Length(3),
+            Constraint::Length(if narrow { 5 } else { 3 }),
         ])
         .margin(1)
         .split(f.area());
@@ -201,7 +202,11 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
 
     // Track selection area
     let track_chunks = Layout::default()
-        .direction(Direction::Horizontal)
+        .direction(if narrow {
+            Direction::Vertical
+        } else {
+            Direction::Horizontal
+        })
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[1]);
 

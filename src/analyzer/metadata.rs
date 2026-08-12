@@ -1,5 +1,5 @@
 /// HDR type classification
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum HdrType {
     /// Standard Dynamic Range
     #[default]
@@ -30,7 +30,7 @@ impl HdrType {
 }
 
 /// How to handle Dolby Vision sources when re-encoding to AV1
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum DvMode {
     /// Carry the DV RPU into the AV1 stream (DV profile 10, SVT-AV1 only)
     KeepDolbyVision,
@@ -53,7 +53,7 @@ impl DvMode {
 }
 
 /// HDR10 static metadata (mastering display + content light level)
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Hdr10StaticMetadata {
     /// Display primaries as CIE 1931 xy chromaticity coordinates
     pub red: (f64, f64),
@@ -98,7 +98,7 @@ impl Hdr10StaticMetadata {
 }
 
 /// Video metadata from analysis
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VideoMetadata {
     pub width: u32,
     pub height: u32,

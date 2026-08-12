@@ -1,13 +1,13 @@
-//! Encodes a real file with a real FFmpeg.
+//! Encodes a real file with a real `FFmpeg`.
 //!
 //! Everything else in this crate tests the arguments we intend to pass.
-//! Nothing tested whether FFmpeg accepts them — and it does not always: the
+//! Nothing tested whether `FFmpeg` accepts them — and it does not always: the
 //! `5.1(side)` channel layout, which is what ffprobe reports for most real
 //! surround tracks, is rejected outright under Opus' standard mapping. That
 //! shipped through argument-level tests, a clippy pass and three readings, and
 //! only turned up when a file was actually put through the encoder.
 //!
-//! Skipped, not failed, when the FFmpeg on `PATH` cannot do the job: the point
+//! Skipped, not failed, when the `FFmpeg` on `PATH` cannot do the job: the point
 //! is to catch regressions where the tooling exists, not to demand it.
 
 use crate::analyzer::{DvMode, HdrType, VideoMetadata};

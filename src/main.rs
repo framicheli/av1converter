@@ -13,7 +13,7 @@ mod verifier;
 
 use app::{App, ConfirmAction, Screen, TrackFocus};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -79,7 +79,7 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
     // and rewrite the configuration. Minting a token on first start costs the
     // user one click on the printed URL and closes that by default; leaving it
     // open would hand the same access to every process on the machine.
-    if config.daemon.auth_token.is_empty() {
+    if config.daemon.auth_token.len() < 32 {
         config.daemon.auth_token =
             config::DaemonConfig::generate_token().map_err(io::Error::other)?;
         if let Err(e) = config.save() {
@@ -87,6 +87,9 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
             std::process::exit(1);
         }
         println!("{}", t(lang, Msg::DaemonTokenGenerated));
+    }
+    if config.daemon.binds_publicly() {
+        eprintln!("{}", t(lang, Msg::DaemonPublicHttp));
     }
 
     if !foreground {
@@ -176,36 +179,44 @@ fn main() -> io::Result<()> {
     // Restore the terminal even if panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = restore_terminal();
         original_hook(info);
     }));
 
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    if let Err(e) = execute!(stdout, EnterAlternateScreen) {
+        let _ = restore_terminal();
+        return Err(e);
+    }
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(e) => {
+            let _ = restore_terminal();
+            return Err(e);
+        }
+    };
 
     // Create app and run
     let mut app = App::new();
     let res = run_app(&mut terminal, &mut app);
 
     // Restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    let restore = restore_terminal();
+    let cursor = terminal.show_cursor();
+    res?;
+    restore?;
+    cursor
+}
 
-    if let Err(err) = res {
-        eprintln!("Error: {err:?}");
-    }
-
-    Ok(())
+/// Best-effort terminal restoration used by setup errors, runtime errors and
+/// the panic hook. Both operations are attempted even when the first fails.
+fn restore_terminal() -> io::Result<()> {
+    let raw = disable_raw_mode();
+    let screen = execute!(io::stdout(), LeaveAlternateScreen);
+    raw.and(screen)
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
@@ -216,17 +227,21 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 
         terminal.draw(|f| {
             f.render_widget(Clear, f.area());
-            match app.current_screen {
-                Screen::Home => ui::render_home(f, app),
-                Screen::FileExplorer { .. } => ui::render_explorer(f, app),
-                Screen::FileConfirm => ui::render_file_confirm(f, app),
-                Screen::TrackConfig => ui::render_track_config(f, app),
-                Screen::Queue => ui::render_queue(f, app),
-                Screen::Finish => ui::render_finish(f, app),
-                Screen::Configuration => ui::render_config_screen(f, app),
-            }
-            if app.dv_dialog.is_some() && app.current_screen == Screen::TrackConfig {
-                ui::render_dv_dialog(f, app);
+            if ui::terminal_too_small(f.area()) {
+                ui::render_too_small(f, app.config.language);
+            } else {
+                match app.current_screen {
+                    Screen::Home => ui::render_home(f, app),
+                    Screen::FileExplorer { .. } => ui::render_explorer(f, app),
+                    Screen::FileConfirm => ui::render_file_confirm(f, app),
+                    Screen::TrackConfig => ui::render_track_config(f, app),
+                    Screen::Queue => ui::render_queue(f, app),
+                    Screen::Finish => ui::render_finish(f, app),
+                    Screen::Configuration => ui::render_config_screen(f, app),
+                }
+                if app.dv_dialog.is_some() && app.current_screen == Screen::TrackConfig {
+                    ui::render_dv_dialog(f, app);
+                }
             }
             if app.confirm_dialog.is_some() {
                 ui::render_confirm_dialog(f, app);
@@ -240,13 +255,16 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             handle_key(app, key.code);
         }
 
-        if app.should_quit {
+        if app.should_quit && !app.encoding_active && app.analysis_receiver.is_none() {
             return Ok(());
         }
     }
 }
 
 fn handle_key(app: &mut App, key: KeyCode) {
+    if app.should_quit {
+        return;
+    }
     if app.confirm_dialog.is_some() {
         handle_confirm_dialog_key(app, key);
         return;
@@ -331,6 +349,10 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
             app.cancel_encoding();
         }
         ConfirmAction::ExitApp => {
+            app.cancel_flag
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            app.analysis_cancel_flag
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             app.should_quit = true;
         }
         ConfirmAction::AbandonTrackConfig => {
@@ -407,6 +429,7 @@ fn handle_file_confirm_key(app: &mut App, key: KeyCode) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_track_config_key(app: &mut App, key: KeyCode) {
     let Some(job) = app.current_config_job() else {
         return;
@@ -607,6 +630,24 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('s') => {
             let lang = app.config.language;
             app.config.sanitize();
+            if !app.config.output.same_directory
+                && !app
+                    .config
+                    .output
+                    .output_directory
+                    .as_deref()
+                    .is_some_and(|path| std::path::Path::new(path).is_dir())
+            {
+                app.set_timed_message(
+                    &format!(
+                        "{}: {}",
+                        t(lang, Msg::SaveFailed),
+                        t(lang, Msg::WebCfgOutputDirectory)
+                    ),
+                    3,
+                );
+                return;
+            }
             if let Err(e) = app.config.save() {
                 tracing::warn!("Failed to save config: {:?}", e);
                 app.set_timed_message(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 3);
@@ -631,6 +672,12 @@ fn start_config_edit(app: &mut App) {
     app.config_edit_buffer = Some(match item.field {
         ConfigField::OutputSuffix => app.config.output.suffix.clone(),
         ConfigField::OutputContainer => app.config.output.container.clone(),
+        ConfigField::OutputDirectory => app
+            .config
+            .output
+            .output_directory
+            .clone()
+            .unwrap_or_default(),
         ConfigField::AudioLanguages => app.config.tracks.preferred_audio_languages.join(", "),
         ConfigField::SubtitleLanguages => app.config.tracks.preferred_subtitle_languages.join(", "),
         ConfigField::DaemonBindAddress => app.config.daemon.bind_address.clone(),
@@ -657,6 +704,9 @@ fn commit_config_edit(app: &mut App) {
     match item.field {
         ConfigField::OutputSuffix => app.config.output.suffix = value,
         ConfigField::OutputContainer => app.config.output.container = value,
+        ConfigField::OutputDirectory => {
+            app.config.output.output_directory = (!value.is_empty()).then_some(value);
+        }
         ConfigField::AudioLanguages => {
             app.config.tracks.preferred_audio_languages = parse_lang_list(&value);
         }
@@ -691,6 +741,7 @@ fn parse_lang_list(s: &str) -> Vec<String> {
         .collect()
 }
 
+#[allow(clippy::too_many_lines)]
 fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
     use crate::ui::config_screen::{ConfigField, visible_config_items};
 
@@ -745,7 +796,7 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             }
         }
         ConfigField::NvencPreset => {
-            let presets = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
+            let presets = crate::config::PerformanceConfig::NVENC_PRESETS;
             let current = presets
                 .iter()
                 .position(|p| *p == app.config.performance.nvenc_preset)
@@ -801,6 +852,7 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         // Text fields are edited via Enter, not ← →
         ConfigField::OutputSuffix
         | ConfigField::OutputContainer
+        | ConfigField::OutputDirectory
         | ConfigField::AudioLanguages
         | ConfigField::SubtitleLanguages
         | ConfigField::DaemonBindAddress

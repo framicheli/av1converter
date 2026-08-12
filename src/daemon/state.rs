@@ -35,6 +35,35 @@ impl DaemonQueue {
         &self.ids
     }
 
+    /// Borrow the queue in the shape it is persisted in.
+    pub fn as_persistable(&self) -> crate::queue::QueueRef<'_> {
+        crate::queue::QueueRef {
+            state: &self.state,
+            ids: &self.ids,
+            next_id: self.next_id,
+        }
+    }
+
+    /// Rebuild from a queue read back off disk.
+    ///
+    /// `next_id` is floored past every id in hand: a file that somehow carried
+    /// a lower one would hand the same id to two different jobs.
+    pub fn from_persisted(persisted: crate::queue::PersistedQueue) -> Self {
+        let next_id = persisted
+            .ids
+            .iter()
+            .copied()
+            .max()
+            .map_or(persisted.next_id, |highest| {
+                persisted.next_id.max(highest + 1)
+            });
+        Self {
+            ids: persisted.ids,
+            state: persisted.state,
+            next_id,
+        }
+    }
+
     pub fn index_of(&self, id: u64) -> Option<usize> {
         debug_assert_eq!(
             self.ids.len(),
@@ -84,15 +113,7 @@ impl Default for DaemonQueue {
 
 /// Whether a job status is terminal (will never change again).
 pub fn is_terminal(status: &JobStatus) -> bool {
-    matches!(
-        status,
-        JobStatus::Done
-            | JobStatus::DoneWithVmaf { .. }
-            | JobStatus::DoneVmafFailed { .. }
-            | JobStatus::Skipped { .. }
-            | JobStatus::Error { .. }
-            | JobStatus::QualityWarning { .. }
-    )
+    status.is_terminal()
 }
 
 /// One `run_worker` invocation. Worker messages carry an index into the
@@ -108,7 +129,7 @@ pub struct DaemonState {
     pub queue: DaemonQueue,
     pub config: AppConfig,
     pub encoding_active: bool,
-    pub paused: bool,
+    pub recursive_scan_active: bool,
     pub session: Option<EncodeSession>,
     pub started_at: Instant,
 }
@@ -119,7 +140,7 @@ impl DaemonState {
             queue: DaemonQueue::new(),
             config,
             encoding_active: false,
-            paused: false,
+            recursive_scan_active: false,
             session: None,
             started_at: Instant::now(),
         }
@@ -186,6 +207,31 @@ mod tests {
         // New pushes never reuse ids
         let new_id = q.push(EncodingJob::new(PathBuf::from("/tmp/f9.mkv")));
         assert_eq!(new_id, 4);
+    }
+
+    /// Ids keep going up across a restart. If `next_id` ever came back lower
+    /// than an id already in the queue, the next push would hand out a
+    /// duplicate and every lookup for it would find the older job.
+    #[test]
+    fn reloading_never_hands_out_an_id_twice() {
+        let mut state = crate::queue::QueueState::new();
+        state
+            .jobs
+            .push(EncodingJob::new(PathBuf::from("/tmp/a.mkv")));
+        state
+            .jobs
+            .push(EncodingJob::new(PathBuf::from("/tmp/b.mkv")));
+
+        let mut q = DaemonQueue::from_persisted(crate::queue::PersistedQueue {
+            state,
+            ids: vec![4, 8],
+            // Deliberately stale, as a truncated or hand-edited file might be.
+            next_id: 2,
+        });
+
+        assert_eq!(q.push(EncodingJob::new(PathBuf::from("/tmp/c.mkv"))), 9);
+        assert_eq!(q.job_by_id(4).unwrap().path, PathBuf::from("/tmp/a.mkv"));
+        assert_eq!(q.job_by_id(8).unwrap().path, PathBuf::from("/tmp/b.mkv"));
     }
 
     #[test]

@@ -53,20 +53,90 @@ Platform notes:
 
 ## Installation
 
+### Cargo
+
 ```bash
-cargo install av1converter          # from crates.io
-nix run github:framicheli/av1converter   # or with Nix (flake)
+cargo install av1converter
 ```
 
-From source:
+Maintainers must publish each release to crates.io with `cargo publish --locked` before announcing it.
+
+### Nix
+
+Run without installing:
 
 ```bash
-git clone https://github.com/framicheli/av1converter.git
+nix run gitlab:francescomicheli/av1converter
+```
+
+Or install into your Nix profile:
+
+```bash
+nix profile install gitlab:francescomicheli/av1converter
+```
+
+### Homebrew
+
+The project repository is also a Homebrew tap:
+
+```bash
+brew tap francescomicheli/av1converter https://gitlab.com/francescomicheli/av1converter.git
+brew install av1converter
+```
+
+### Arch Linux (AUR)
+
+After the package is published to the AUR:
+
+```bash
+git clone https://aur.archlinux.org/av1converter.git
+cd av1converter
+makepkg -si
+```
+
+### Debian, Ubuntu, and Fedora
+
+Download the package for your release from the [GitLab release page](https://gitlab.com/francescomicheli/av1converter/-/releases), then install it:
+
+```bash
+sudo apt install ./av1converter_VERSION_amd64.deb
+sudo dnf install ./av1converter-VERSION-1.x86_64.rpm
+```
+
+### Release binary or source
+
+Release archives are checksummed in `SHA256SUMS`. Extract the target-suffixed executable, rename it to `av1converter` (or `av1converter.exe` on Windows), and put it somewhere on your `PATH`.
+
+To build from source:
+
+```bash
+git clone https://gitlab.com/francescomicheli/av1converter.git
 cd av1converter
 cargo build --release
 ```
 
 The compiled binary will be at `target/release/av1converter`.
+
+### Uninstallation
+
+Stop a background daemon before removing the binary:
+
+```bash
+av1converter --stop
+```
+
+Then use the same tool that installed it:
+
+```bash
+cargo uninstall av1converter
+nix profile remove av1converter
+brew uninstall av1converter
+sudo pacman -R av1converter
+sudo apt remove av1converter
+sudo dnf remove av1converter
+```
+
+For a manual installation, remove the binary you placed on `PATH`. Uninstalling deliberately preserves configuration and daemon state. To purge those too, delete `~/.config/av1converter` and `~/.local/share/av1converter` on Unix (or the equivalent directories under `XDG_CONFIG_HOME` and `XDG_DATA_HOME`), or the `av1converter` directories under `%APPDATA%` and `%LOCALAPPDATA%` on Windows.
 
 ## Usage
 
@@ -138,7 +208,7 @@ The channel count and order are preserved — uncommon layouts use independent O
 
 Set the allowance per channel with `opus_bitrate_per_channel` (16–256 kbps) to shift the whole table at once. Tracks that are already Opus are left alone rather than re-encoded, unless you turn `skip_already_opus` off.
 
-In the TUI, press `o` on a track in the track configuration screen (`O` applies it to every selected track); the row shows the resulting bitrate, e.g. `[~] 0: eng (DTS 5.1) → OPUS 384k`. In the web UI, use the **Tracks** button on any queued job that has not started encoding yet. `audio.default_mode` sets what newly queued files start out as, which is what the daemon uses when nobody configures a job by hand.
+In the TUI, press `o` on a track in the track configuration screen (`O` applies it to every selected track); the row shows the resulting bitrate, e.g. `[~] 0: eng (DTS 5.1) → OPUS 384k`. In the web UI, a centered track configuration dialog opens automatically after analysis; the **Tracks** button reopens it for any queued job that has not started encoding yet. `audio.default_mode` sets what newly queued files start out as, which is what the daemon uses when nobody configures a job by hand.
 
 Two things worth knowing:
 
@@ -166,7 +236,7 @@ Two things worth knowing:
 
 ## Daemon Mode and Web UI
 
-The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, pause, cancel, remove), and a settings page. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder; the **Tracks** button on a queued job opens the per-track audio and subtitle choices for that file, up until its encode starts.
+The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, cancel, remove), and a settings page. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder. After analysis finishes, a centered dialog opens for the per-file choices; **Apply to remaining files** copies them to the other waiting jobs by track order, while extra tracks keep their automatic defaults.
 
 Enable it in Settings (or set `enabled = true` under `[daemon]`), then:
 
@@ -182,22 +252,24 @@ Background mode is Unix-only; elsewhere use `--daemon-foreground`. Logs go to `~
 
 The web UI can browse the filesystem, start encodes and rewrite the configuration, so it binds to `127.0.0.1` and is guarded by an access token.
 
-**The token is generated for you.** If `auth_token` is empty when the daemon starts, a random one is minted and saved to `config.toml`, and the startup output prints the URL that carries it:
+**The token is generated for you.** If `auth_token` is empty or shorter than 32 bytes when the daemon starts, a random 128-bit token is minted and saved to `config.toml`, and the startup output prints the URL that carries it:
 
 ```
-Web UI listening on http://127.0.0.1:8399/?token=aa2006351b5214a820e3fdc64da870af
+Web UI listening on http://127.0.0.1:8399/#token=aa2006351b5214a820e3fdc64da870af
 ```
 
-Open that link once and the browser keeps the token for the session; `av1converter --status` prints it again whenever you need it. Clearing `auth_token` does not disable authentication — a new token is generated on the next start.
+Open that link once and the browser keeps the token for the tab's session; `av1converter --status` prints it again whenever you need it. The fragment after `#` is not sent to the HTTP server or included in HTTP logs. Clearing or weakening `auth_token` does not disable authentication — a strong token is generated on the next start.
 
 Two things are worth knowing before exposing the daemon to a network:
 
 - `browse_root` — set it. It is the only directory the file browser and the queue will accept paths under, and it is the difference between "manage my media library" and "read every file this user can read".
 - `bind_address` — leave it on loopback unless you mean it. The daemon warns at startup when it is reachable from the network.
 
-`browse_root`, `auth_token`, `bind_address` and `port` are deliberately **not** editable from the web UI: a client that could rewrite them could widen its own access. Change them in `config.toml` or the TUI, then restart. Everything else on the settings page applies from the next job.
+The daemon serves plain HTTP. If it must be reachable beyond the local machine, put it behind an HTTPS reverse proxy with connection/request timeouts and rate limiting, and keep the direct daemon port firewalled from untrusted networks. The embedded server is intended for trusted local or LAN use, not direct internet exposure.
 
-The token is also what stops a website you visit from reaching the daemon. A page that re-points its own hostname at `127.0.0.1` becomes same-origin with it, so neither CORS nor the JSON content-type requirement applies — but the page still cannot produce your token. As a second line of defence, whenever the token is empty `/api` additionally rejects `Host` headers that are names rather than IP addresses or `localhost`, since a name is exactly what that attack needs.
+`browse_root`, `auth_token`, `bind_address` and `port` are deliberately **not** editable from the web UI: a client that could rewrite them could widen its own access. Change them in `config.toml` or the TUI, then restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
+
+The token is also what stops a website you visit from reaching the daemon. A page that re-points its own hostname at `127.0.0.1` still cannot produce the bearer token. The API also requires JSON for mutations, rejects unsafe unauthenticated hostnames, caps request bodies, and confines restored as well as newly added jobs to `browse_root`.
 
 ## Encoding Presets
 
@@ -264,7 +336,7 @@ enabled = false            # Required before `--daemon` will start
 bind_address = "127.0.0.1" # Loopback by default; see the security note below
 port = 8399
 browse_root = ""           # Confine the web file browser to this directory ("" = whole filesystem)
-auth_token = ""            # Shared secret required by /api ("" = one is generated on next start)
+auth_token = ""            # API secret (empty or under 32 bytes = regenerate on next start)
 ```
 
 If `config.toml` cannot be parsed it is left untouched and defaults are used for that run, so a typo never costs you your settings.
@@ -273,7 +345,7 @@ Each resolution preset also exposes per-encoder quality values (`crf`, `nvenc_cq
 
 `quality_preset` controls how those per-resolution values are managed: `low`, `medium`, and `high` apply built-in CRF/CQ values shifted across every tier at once (overwriting the `presets` table), while `custom` leaves the `presets` table untouched and editable, either directly in the file or via the RF fields on the configuration screen.
 
-`output_directory` can only be set by editing the file directly; the configuration screen exposes `same_directory` but not a path picker.
+When `same_directory` is disabled, `output_directory` is required. It can be entered in the TUI configuration screen or edited directly in the file; the web settings page also exposes it within `browse_root`.
 
 ## Debugging
 
@@ -285,4 +357,4 @@ AV1_DEBUG=1 ./av1converter
 
 Logs are written to:
 - **macOS/Linux:** `~/.local/share/av1converter/av1converter.log`
-- **Windows:** `%APPDATA%\av1converter\av1converter.log`
+- **Windows:** `%LOCALAPPDATA%\av1converter\av1converter.log`

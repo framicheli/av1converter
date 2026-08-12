@@ -3,7 +3,14 @@ use crate::error::AppError;
 use crate::tracks::{AudioTrack, SubtitleTrack};
 use serde::Deserialize;
 use serde_json::Value;
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+const FFPROBE_TIMEOUT: Duration = Duration::from_mins(2);
+const FFPROBE_STDOUT_LIMIT: u64 = 16 * 1024 * 1024;
+const FFPROBE_STDERR_LIMIT: u64 = 4 * 1024 * 1024;
 
 /// Full analysis result with all tracks
 #[derive(Debug)]
@@ -11,22 +18,31 @@ pub struct AnalysisResult {
     pub metadata: VideoMetadata,
     pub audio_tracks: Vec<AudioTrack>,
     pub subtitle_tracks: Vec<SubtitleTrack>,
+    pub source_identity: crate::queue::SourceIdentity,
 }
 
 /// Analyze a video file using ffprobe
-pub fn analyze(input_path: &str) -> Result<AnalysisResult, AppError> {
-    let metadata = analyze_video_stream(input_path)?;
-    let (audio_tracks, subtitle_tracks) = analyze_tracks(input_path)?;
+pub fn analyze(input_path: &str, cancel: &AtomicBool) -> Result<AnalysisResult, AppError> {
+    let source_identity = crate::queue::SourceIdentity::from_path(input_path)
+        .map_err(|e| AppError::Analysis(format!("Could not inspect source: {e}")))?;
+    let metadata = analyze_video_stream(input_path, cancel)?;
+    let (audio_tracks, subtitle_tracks) = analyze_tracks(input_path, cancel)?;
+    if !source_identity.matches_path(input_path) {
+        return Err(AppError::Analysis(
+            "Source changed while it was being analyzed; add it again".to_string(),
+        ));
+    }
 
     Ok(AnalysisResult {
         metadata,
         audio_tracks,
         subtitle_tracks,
+        source_identity,
     })
 }
 
 /// Analyze the primary video stream
-fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
+fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMetadata, AppError> {
     let args = [
         "-v",
         "error",
@@ -41,7 +57,7 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
         input_path,
     ];
 
-    let output = run_ffprobe(&args)?;
+    let output = run_ffprobe(&args, cancel)?;
     let data: FfprobeOutput = serde_json::from_str(&output)
         .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe output: {e}")))?;
 
@@ -86,7 +102,7 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
         .as_deref()
         .and_then(parse_hdr10_static);
     if hdr10_static.is_none() && matches!(hdr_type, HdrType::Pq | HdrType::DolbyVision) {
-        hdr10_static = probe_frame_hdr10_static(input_path);
+        hdr10_static = probe_frame_hdr10_static(input_path, cancel);
     }
 
     // Parse frame rate
@@ -184,7 +200,7 @@ fn parse_hdr10_static(side_data: &[Value]) -> Option<Hdr10StaticMetadata> {
 
 /// Probe the first video frame for SEI-carried HDR10 static metadata
 /// (sources that don't expose it at container level). Best-effort.
-fn probe_frame_hdr10_static(input_path: &str) -> Option<Hdr10StaticMetadata> {
+fn probe_frame_hdr10_static(input_path: &str, cancel: &AtomicBool) -> Option<Hdr10StaticMetadata> {
     let args = [
         "-v",
         "error",
@@ -199,7 +215,7 @@ fn probe_frame_hdr10_static(input_path: &str) -> Option<Hdr10StaticMetadata> {
         input_path,
     ];
 
-    let output = run_ffprobe(&args).ok()?;
+    let output = run_ffprobe(&args, cancel).ok()?;
     let data: FramesOutput = serde_json::from_str(&output).ok()?;
     data.frames
         .iter()
@@ -225,7 +241,10 @@ fn parse_frame_rate(rate_str: Option<&str>) -> (u32, u32) {
 }
 
 /// Analyze audio and subtitle tracks
-fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrack>), AppError> {
+fn analyze_tracks(
+    input_path: &str,
+    cancel: &AtomicBool,
+) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrack>), AppError> {
     let args = [
         "-v",
         "error",
@@ -238,7 +257,7 @@ fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrac
         input_path,
     ];
 
-    let output = run_ffprobe(&args)?;
+    let output = run_ffprobe(&args, cancel)?;
     let audio_data: AllStreamsOutput = serde_json::from_str(&output)
         .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe audio output: {e}")))?;
 
@@ -254,7 +273,7 @@ fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrac
         input_path,
     ];
 
-    let output_sub = run_ffprobe(&args_sub)?;
+    let output_sub = run_ffprobe(&args_sub, cancel)?;
     let sub_data: AllStreamsOutput = serde_json::from_str(&output_sub)
         .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe subtitle output: {e}")))?;
 
@@ -295,11 +314,10 @@ fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrac
 }
 
 /// Run ffprobe with arguments
-fn run_ffprobe(args: &[&str]) -> Result<String, AppError> {
-    let output = Command::new("ffprobe")
-        .args(args)
-        .output()
-        .map_err(|e| AppError::Analysis(format!("Failed to execute ffprobe: {e}")))?;
+fn run_ffprobe(args: &[&str], cancel: &AtomicBool) -> Result<String, AppError> {
+    let mut command = Command::new("ffprobe");
+    command.args(args);
+    let output = run_command(&mut command, cancel, FFPROBE_TIMEOUT)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -307,6 +325,82 @@ fn run_ffprobe(args: &[&str]) -> Result<String, AppError> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Run a probe without allowing a broken file or network mount to hang the UI.
+fn run_command(
+    command: &mut Command,
+    cancel: &AtomicBool,
+    timeout: Duration,
+) -> Result<std::process::Output, AppError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(AppError::Analysis("Cancelled".to_string()));
+    }
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| AppError::Analysis(format!("Failed to execute ffprobe: {e}")))?;
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let stdout_reader = std::thread::spawn(move || read_capped(&mut stdout, FFPROBE_STDOUT_LIMIT));
+    let stderr_reader = std::thread::spawn(move || read_capped(&mut stderr, FFPROBE_STDERR_LIMIT));
+    let started = Instant::now();
+    let status = loop {
+        if cancel.load(Ordering::Relaxed) || started.elapsed() >= timeout {
+            let cancelled = cancel.load(Ordering::Relaxed);
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err(AppError::Analysis(if cancelled {
+                "Cancelled".to_string()
+            } else {
+                "ffprobe timed out".to_string()
+            }));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(AppError::Analysis(format!(
+                    "Failed to wait for ffprobe: {e}"
+                )));
+            }
+        }
+    };
+    let (stdout, stdout_limited) = stdout_reader
+        .join()
+        .map_err(|_| AppError::Analysis("ffprobe stdout reader panicked".to_string()))?
+        .map_err(|e| AppError::Analysis(format!("Failed to read ffprobe stdout: {e}")))?;
+    let (stderr, stderr_limited) = stderr_reader
+        .join()
+        .map_err(|_| AppError::Analysis("ffprobe stderr reader panicked".to_string()))?
+        .map_err(|e| AppError::Analysis(format!("Failed to read ffprobe stderr: {e}")))?;
+    if stdout_limited || stderr_limited {
+        return Err(AppError::Analysis(
+            "ffprobe produced too much output; refusing to exhaust memory".to_string(),
+        ));
+    }
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn read_capped(reader: &mut impl Read, limit: u64) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut bytes = Vec::new();
+    reader.take(limit + 1).read_to_end(&mut bytes)?;
+    let exceeded = bytes.len() as u64 > limit;
+    if exceeded {
+        bytes.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    }
+    Ok((bytes, exceeded))
 }
 
 // JSON deserialization structures
@@ -416,5 +510,25 @@ mod tests {
         )
         .unwrap();
         assert!(parse_hdr10_static(&side_data).is_none());
+    }
+
+    #[test]
+    fn probe_output_reader_stops_at_its_memory_limit() {
+        let mut input = std::io::Cursor::new(b"12345");
+        let (bytes, exceeded) = read_capped(&mut input, 4).unwrap();
+        assert_eq!(bytes, b"1234");
+        assert!(exceeded);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_process_is_killed_at_its_deadline() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exec sleep 5"]);
+        let cancel = AtomicBool::new(false);
+        let started = Instant::now();
+        let error = run_command(&mut command, &cancel, Duration::from_millis(10)).unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

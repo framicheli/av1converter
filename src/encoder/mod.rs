@@ -4,63 +4,16 @@ mod end_to_end;
 pub mod ffmpeg;
 
 pub use command_builder::EncodingParams;
-pub use ffmpeg::{EncodeResult, ProgressCallback, encode_video};
+pub use ffmpeg::{EncodeResult, ProgressCallback, encode_video, orphaned_partials};
 
 use crate::analyzer::{DvMode, HdrType, VideoMetadata};
 use crate::config::AppConfig;
+use crate::queue::SourceIdentity;
 use crate::tracks::OutputTracks;
 use crate::verifier;
-use std::fs::{File, Metadata};
+use std::fs::File;
 use std::sync::atomic::AtomicBool;
-use std::time::SystemTime;
 use tracing::{info, warn};
-
-struct SourceIdentity {
-    len: u64,
-    modified: Option<SystemTime>,
-    created: Option<SystemTime>,
-    #[cfg(unix)]
-    dev: u64,
-    #[cfg(unix)]
-    ino: u64,
-}
-
-impl SourceIdentity {
-    fn from_metadata(metadata: &Metadata) -> Self {
-        #[cfg(unix)]
-        use std::os::unix::fs::MetadataExt;
-
-        Self {
-            len: metadata.len(),
-            modified: metadata.modified().ok(),
-            created: metadata.created().ok(),
-            #[cfg(unix)]
-            dev: metadata.dev(),
-            #[cfg(unix)]
-            ino: metadata.ino(),
-        }
-    }
-
-    fn matches_path(&self, path: &str) -> bool {
-        let Ok(metadata) = std::fs::metadata(path) else {
-            return false;
-        };
-        let current = Self::from_metadata(&metadata);
-        self.len == current.len
-            && self.modified == current.modified
-            && self.created == current.created
-            && {
-                #[cfg(unix)]
-                {
-                    self.dev == current.dev && self.ino == current.ino
-                }
-                #[cfg(not(unix))]
-                {
-                    true
-                }
-            }
-    }
-}
 
 /// Full encoding result including VMAF
 #[derive(Debug)]
@@ -86,10 +39,11 @@ pub enum FullEncodeResult {
 }
 
 /// Orchestrate the full encoding pipeline: encode -> verify
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn run_encoding_pipeline(
     input: &str,
     output: &str,
+    expected_source: &SourceIdentity,
     metadata: &VideoMetadata,
     tracks: OutputTracks,
     dv_mode: DvMode,
@@ -100,18 +54,40 @@ pub fn run_encoding_pipeline(
     cancel_flag: &AtomicBool,
     on_before_vmaf: Option<Box<dyn FnOnce() + Send>>,
 ) -> FullEncodeResult {
+    if !expected_source.matches_path(input) {
+        return FullEncodeResult::Error(
+            "Source changed since it was analyzed; remove and add it again".to_string(),
+        );
+    }
     // Keep the original file open and fingerprinted for the entire pipeline.
     // Auto-delete must never remove a replacement that appeared at the path
     // while a long encode or VMAF run was in progress.
-    let source_guard = config
-        .quality
-        .delete_source_on_success
-        .then(|| File::open(input).ok())
-        .flatten();
-    let source_identity = source_guard
-        .as_ref()
-        .and_then(|file| file.metadata().ok())
-        .map(|metadata| SourceIdentity::from_metadata(&metadata));
+    let _source_guard = if config.quality.delete_source_on_success {
+        match File::open(input) {
+            Ok(file)
+                if file
+                    .metadata()
+                    .ok()
+                    .map(|metadata| SourceIdentity::from_metadata(&metadata))
+                    .as_ref()
+                    == Some(expected_source) =>
+            {
+                Some(file)
+            }
+            Ok(_) => {
+                return FullEncodeResult::Error(
+                    "Source changed while preparing the job; remove and add it again".to_string(),
+                );
+            }
+            Err(e) => {
+                return FullEncodeResult::Error(format!(
+                    "Could not safely hold the source file open: {e}"
+                ));
+            }
+        }
+    } else {
+        None
+    };
 
     // Encoding parameters
     let params = EncodingParams::from_metadata(
@@ -145,6 +121,14 @@ pub fn run_encoding_pipeline(
 
     match encode_result {
         EncodeResult::Success => {
+            // VMAF and source deletion refer to the output by path. Remember
+            // the file the encoder actually placed there so a replacement
+            // cannot be verified and then left behind after deleting source.
+            let output_identity = config
+                .quality
+                .delete_source_on_success
+                .then(|| SourceIdentity::from_path(output).ok())
+                .flatten();
             // DV profile 5 → HDR10 is a tone-mapping pass: output pixels are
             // intentionally different from the source, so VMAF is meaningless.
             let tone_mapped = metadata.hdr_type == HdrType::DolbyVision
@@ -194,12 +178,17 @@ pub fn run_encoding_pipeline(
                     ..
                 } = result
                 {
-                    if cancel_flag.load(std::sync::atomic::Ordering::Relaxed)
-                        || !source_identity
-                            .as_ref()
-                            .is_some_and(|identity| identity.matches_path(input))
-                    {
+                    if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        warn!("Keeping source file {input}: cancellation was requested");
+                    } else if !expected_source.matches_path(input) {
                         warn!("Keeping source file {input}: it changed while the job was running");
+                    } else if !output_identity
+                        .as_ref()
+                        .is_some_and(|identity| identity.matches_path(output))
+                    {
+                        warn!(
+                            "Keeping source file {input}: the encoded output changed before deletion"
+                        );
                     } else {
                         match std::fs::remove_file(input) {
                             Ok(()) => {

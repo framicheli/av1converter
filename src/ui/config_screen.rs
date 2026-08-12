@@ -44,6 +44,7 @@ pub enum ConfigField {
     OutputSuffix,
     OutputContainer,
     SameDirectory,
+    OutputDirectory,
     AudioLanguages,
     SubtitleLanguages,
     AudioDefaultMode,
@@ -76,14 +77,14 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         field: ConfigField::Encoder,
     },
     ConfigItem {
-        label: Msg::CfgVmafThreshold,
-        kind: ConfigItemKind::Numeric,
-        field: ConfigField::VmafThreshold,
-    },
-    ConfigItem {
         label: Msg::CfgVmafEnabled,
         kind: ConfigItemKind::Toggle,
         field: ConfigField::VmafEnabled,
+    },
+    ConfigItem {
+        label: Msg::CfgVmafThreshold,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::VmafThreshold,
     },
     ConfigItem {
         label: Msg::CfgDeleteSource,
@@ -161,6 +162,11 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         field: ConfigField::SameDirectory,
     },
     ConfigItem {
+        label: Msg::WebCfgOutputDirectory,
+        kind: ConfigItemKind::Text,
+        field: ConfigField::OutputDirectory,
+    },
+    ConfigItem {
         label: Msg::CfgAudioLanguages,
         kind: ConfigItemKind::Text,
         field: ConfigField::AudioLanguages,
@@ -236,6 +242,20 @@ pub fn visible_config_items(config: &AppConfig) -> Vec<&'static ConfigItem> {
     CONFIG_ITEMS
         .iter()
         .filter(|item| show_rf || !is_rf_field(item.field))
+        .filter(|item| {
+            config.quality.vmaf_enabled
+                || !matches!(
+                    item.field,
+                    ConfigField::VmafThreshold | ConfigField::DeleteSource
+                )
+        })
+        .filter(|item| {
+            matches!(config.encoder, Encoder::SvtAv1) || item.field != ConfigField::SvtPreset
+        })
+        .filter(|item| {
+            matches!(config.encoder, Encoder::Nvenc) || item.field != ConfigField::NvencPreset
+        })
+        .filter(|item| !config.output.same_directory || item.field != ConfigField::OutputDirectory)
         .collect()
 }
 
@@ -290,6 +310,11 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::OutputSuffix => config.output.suffix.clone(),
         ConfigField::OutputContainer => config.output.container.clone(),
         ConfigField::SameDirectory => bool_display(config.language, config.output.same_directory),
+        ConfigField::OutputDirectory => config
+            .output
+            .output_directory
+            .as_deref()
+            .map_or_else(|| "—".to_string(), empty_as_dash),
         ConfigField::AudioLanguages => config.tracks.preferred_audio_languages.join(", "),
         ConfigField::SubtitleLanguages => config.tracks.preferred_subtitle_languages.join(", "),
         ConfigField::AudioDefaultMode => {
@@ -405,6 +430,15 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
             .wrap(Wrap { trim: true })
             .block(Block::default().borders(Borders::NONE));
         f.render_widget(status, chunks[2]);
+    } else if visible_config_items(&app.config)
+        .get(app.config_selected)
+        .is_some_and(|item| item.field == ConfigField::DeleteSource)
+    {
+        let warning = Paragraph::new(t(lang, Msg::WebDeleteSourceWarning))
+            .style(Style::default().fg(Color::Yellow))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
+        f.render_widget(warning, chunks[2]);
     } else {
         let help_text = if app.config_edit_buffer.is_some() {
             Line::from(vec![

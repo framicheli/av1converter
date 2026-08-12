@@ -2,7 +2,7 @@ use crate::config::{AudioConfig, AudioMode};
 use crate::tracks::AudioTrack;
 
 /// Track selection for encoding
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct TrackSelection {
     pub audio_indices: Vec<usize>,
     pub subtitle_indices: Vec<usize>,

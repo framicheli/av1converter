@@ -1,6 +1,11 @@
 use super::state::{SharedState, is_terminal, lock};
-use crate::config::{AppConfig, DaemonConfig};
-use crate::queue::{JobStatus, collect_video_files, collect_video_files_within, is_video_file};
+use crate::analyzer::{DvMode, HdrType};
+use crate::config::{AppConfig, AudioConfig, DaemonConfig, Encoder, EncodingPreset};
+use crate::queue::{
+    EncodingJob, JobStatus, collect_video_files, collect_video_files_within, is_video_file,
+    make_output_paths_unique,
+};
+use crate::tracks::TrackSelection;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -32,19 +37,42 @@ pub fn status(shared: &SharedState) -> Value {
         .iter()
         .filter(|j| matches!(j.status, JobStatus::Ready))
         .count();
+    let pending = queue
+        .jobs
+        .iter()
+        .filter(|j| matches!(j.status, JobStatus::Pending))
+        .count();
+    let analyzing = queue
+        .jobs
+        .iter()
+        .filter(|j| matches!(j.status, JobStatus::Analyzing))
+        .count();
+    let awaiting_config = queue
+        .jobs
+        .iter()
+        .filter(|j| matches!(j.status, JobStatus::AwaitingConfig))
+        .count();
+    let active = queue
+        .jobs
+        .iter()
+        .filter(|j| !is_terminal(&j.status))
+        .count();
     let (saved_bytes, saved_human) = queue.total_space_saved();
 
     json!({
         "version": env!("CARGO_PKG_VERSION"),
         "encoder": state.config.encoder.display_name(),
         "encoding_active": state.encoding_active,
-        "paused": state.paused,
         "uptime_secs": state.started_at.elapsed().as_secs(),
         "overall_progress": queue.overall_progress(),
         "eta_secs": queue.estimated_time_remaining().map(|d| d.as_secs()),
         "elapsed_secs": queue.elapsed_time().map(|d| d.as_secs()),
         "counts": {
             "total": queue.jobs.len(),
+            "active": active,
+            "pending": pending,
+            "analyzing": analyzing,
+            "awaiting_config": awaiting_config,
             "ready": ready,
             "converted": queue.converted_count,
             "skipped": queue.skipped_count,
@@ -92,6 +120,27 @@ fn tracks_editable(state: &super::state::DaemonState, id: u64) -> bool {
             .is_some_and(|job| matches!(job.status, JobStatus::Ready | JobStatus::AwaitingConfig))
 }
 
+/// The DV mode a job falls back to when nobody has chosen one: the profile's
+/// own recommendation on SVT-AV1, and HDR10 on every other encoder because
+/// none of them can write the DV RPU.
+pub fn resolved_dv_mode(encoder: Encoder, dv_profile: Option<u8>) -> DvMode {
+    if encoder == Encoder::SvtAv1 {
+        DvMode::recommended_for(dv_profile)
+    } else {
+        DvMode::ToHdr10
+    }
+}
+
+const DV_KEEP: &str = "keep";
+const DV_HDR10: &str = "hdr10";
+
+fn dv_mode_name(mode: DvMode) -> &'static str {
+    match mode {
+        DvMode::KeepDolbyVision => DV_KEEP,
+        DvMode::ToHdr10 => DV_HDR10,
+    }
+}
+
 /// One job's audio and subtitle tracks, with the current per-track choices.
 pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
     let Ok(id) = id_param.parse::<u64>() else {
@@ -99,9 +148,17 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
     };
     let state = lock(shared);
     let audio_config = state.config.audio.clone();
+    let encoder = state.config.encoder;
     let Some(job) = state.queue.job_by_id(id) else {
         return (404, json!({"error": "unknown job id"}));
     };
+    let remaining = state
+        .queue
+        .jobs_with_ids()
+        .filter(|(other_id, other)| {
+            *other_id != id && matches!(other.status, JobStatus::AwaitingConfig)
+        })
+        .count();
 
     // Resolving here means the row shows the bitrate the encoder will actually
     // be asked for, including tracks that are already Opus and so left alone.
@@ -142,6 +199,24 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
         })
         .collect();
 
+    // A DV choice only exists for a Dolby Vision source; everything else has
+    // no RPU to keep. `can_keep` carries the hardware constraint to the UI so
+    // it can refuse the option rather than offer one the server will reject.
+    let dv = job
+        .metadata
+        .as_ref()
+        .filter(|meta| meta.hdr_type == HdrType::DolbyVision)
+        .map(|meta| {
+            let effective = job
+                .dv_mode
+                .unwrap_or_else(|| resolved_dv_mode(encoder, meta.dv_profile));
+            json!({
+                "profile": meta.dv_profile,
+                "mode": dv_mode_name(effective),
+                "can_keep": encoder == Encoder::SvtAv1,
+            })
+        });
+
     (
         200,
         json!({
@@ -150,6 +225,9 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
             "editable": tracks_editable(&state, id),
             "audio": audio,
             "subtitles": subtitles,
+            "remux_only": job.remux_only,
+            "dv": dv,
+            "remaining": remaining,
         }),
     )
 }
@@ -172,14 +250,95 @@ fn valid_indices(body: &Value, key: &str, known: &[usize]) -> Vec<usize> {
     out
 }
 
-/// Replace one job's track selection.
+/// Map one file's choices onto another file by track order. Extra target
+/// tracks keep their automatic selection instead of being silently dropped.
+// ponytail: order mapping targets same-layout batches; match language/title if
+// mixed-layout batches prove common enough to need a more complex rule.
+fn mapped_selection(
+    job: &EncodingJob,
+    audio_modes: &[Option<bool>],
+    subtitle_selected: &[bool],
+) -> TrackSelection {
+    let audio_indices = job
+        .audio_tracks
+        .iter()
+        .enumerate()
+        .filter(|(position, track)| {
+            audio_modes.get(*position).map_or_else(
+                || job.track_selection.audio_indices.contains(&track.index),
+                Option::is_some,
+            )
+        })
+        .map(|(_, track)| track.index)
+        .collect();
+    let audio_to_opus = job
+        .audio_tracks
+        .iter()
+        .enumerate()
+        .filter(|(position, track)| {
+            audio_modes.get(*position).map_or_else(
+                || job.track_selection.is_opus(track.index),
+                |mode| *mode == Some(true),
+            )
+        })
+        .map(|(_, track)| track.index)
+        .collect();
+    let subtitle_indices = job
+        .subtitle_tracks
+        .iter()
+        .enumerate()
+        .filter(|(position, track)| {
+            subtitle_selected
+                .get(*position)
+                .copied()
+                .unwrap_or_else(|| job.track_selection.subtitle_indices.contains(&track.index))
+        })
+        .map(|(_, track)| track.index)
+        .collect();
+    TrackSelection {
+        audio_indices,
+        subtitle_indices,
+        audio_to_opus,
+    }
+}
+
+fn apply_track_config(
+    job: &mut EncodingJob,
+    selection: TrackSelection,
+    remux_only: bool,
+    dv_mode: Option<DvMode>,
+    output: &crate::config::OutputConfig,
+    encoder: Encoder,
+) {
+    job.track_selection = selection;
+    job.remux_only = remux_only;
+    job.dv_mode = dv_mode;
+    if !remux_only
+        && job.dv_mode.is_none()
+        && let Some(profile) = job
+            .metadata
+            .as_ref()
+            .filter(|meta| meta.hdr_type == HdrType::DolbyVision)
+            .map(|meta| meta.dv_profile)
+    {
+        job.dv_mode = Some(resolved_dv_mode(encoder, profile));
+    }
+    job.generate_output_path(output);
+    job.status = JobStatus::Ready;
+}
+
+/// Replace one job's track selection and per-job options.
+#[allow(clippy::too_many_lines)]
 pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
     let Some(id) = body.get("id").and_then(Value::as_u64) else {
         return (400, json!({"error": "missing 'id'"}));
     };
 
     let mut state = lock(shared);
-    let selection = {
+    let encoder = state.config.encoder;
+    let output_config = state.config.output.clone();
+
+    let (selection, remux_only, dv_mode, audio_modes, subtitle_selected) = {
         let Some(job) = state.queue.job_by_id(id) else {
             return (404, json!({"error": "unknown job id"}));
         };
@@ -198,34 +357,135 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
             .filter(|i| audio_indices.contains(i))
             .collect();
 
-        crate::tracks::TrackSelection {
+        let selection = crate::tracks::TrackSelection {
             audio_indices,
             subtitle_indices: valid_indices(body, "subtitle_indices", &subtitle_known),
             audio_to_opus,
-        }
+        };
+
+        // Both options are absent-means-unchanged: they are not part of the
+        // track set, so a client that only knows about tracks must not clear
+        // decisions it never offered.
+        let remux_only = body
+            .get("remux_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(job.remux_only);
+
+        let dv_mode = match body.get("dv_mode") {
+            None | Some(Value::Null) => job.dv_mode,
+            Some(requested) => {
+                let is_dv = job
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|meta| meta.hdr_type == HdrType::DolbyVision);
+                if !is_dv {
+                    return (400, json!({"error": "job is not a Dolby Vision source"}));
+                }
+                match requested.as_str() {
+                    Some(DV_HDR10) => Some(DvMode::ToHdr10),
+                    // Only SVT-AV1 can write the RPU; on any other encoder
+                    // this would silently produce a file without Dolby Vision.
+                    Some(DV_KEEP) if encoder == Encoder::SvtAv1 => Some(DvMode::KeepDolbyVision),
+                    Some(DV_KEEP) => {
+                        return (
+                            400,
+                            json!({"error": format!(
+                                "{} cannot write the Dolby Vision RPU",
+                                encoder.display_name()
+                            )}),
+                        );
+                    }
+                    _ => return (400, json!({"error": "dv_mode must be 'keep' or 'hdr10'"})),
+                }
+            }
+        };
+
+        let audio_modes: Vec<Option<bool>> = job
+            .audio_tracks
+            .iter()
+            .map(|track| {
+                selection
+                    .audio_indices
+                    .contains(&track.index)
+                    .then(|| selection.audio_to_opus.contains(&track.index))
+            })
+            .collect();
+        let subtitle_selected: Vec<bool> = job
+            .subtitle_tracks
+            .iter()
+            .map(|track| selection.subtitle_indices.contains(&track.index))
+            .collect();
+
+        (
+            selection,
+            remux_only,
+            dv_mode,
+            audio_modes,
+            subtitle_selected,
+        )
     };
 
-    let applied = json!({
-        "audio_indices": selection.audio_indices,
-        "audio_to_opus": selection.audio_to_opus,
-        "subtitle_indices": selection.subtitle_indices,
-    });
     let job = state.queue.job_by_id_mut(id).expect("job checked above");
-    job.track_selection = selection;
-    job.status = JobStatus::Ready;
+    apply_track_config(job, selection, remux_only, dv_mode, &output_config, encoder);
+
+    let mut applied = json!({
+        "audio_indices": job.track_selection.audio_indices,
+        "audio_to_opus": job.track_selection.audio_to_opus,
+        "subtitle_indices": job.track_selection.subtitle_indices,
+        "remux_only": job.remux_only,
+        "dv_mode": job.dv_mode.map(dv_mode_name),
+    });
+
+    let mut applied_count = 1;
+    if body
+        .get("apply_to_remaining")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        for job in &mut state.queue.state.jobs {
+            if !matches!(job.status, JobStatus::AwaitingConfig) {
+                continue;
+            }
+            let selection = mapped_selection(job, &audio_modes, &subtitle_selected);
+            let target_dv = job
+                .metadata
+                .as_ref()
+                .is_some_and(|meta| meta.hdr_type == HdrType::DolbyVision)
+                .then(|| dv_mode.or(job.dv_mode))
+                .flatten();
+            apply_track_config(
+                job,
+                selection,
+                remux_only,
+                target_dv,
+                &output_config,
+                encoder,
+            );
+            applied_count += 1;
+        }
+    }
+    make_output_paths_unique(&mut state.queue.state.jobs);
+    applied["applied"] = json!(applied_count);
     (200, applied)
 }
 
 /// Whether `path` sits inside `root`, comparing resolved paths so that `..`
 /// segments and symlinks cannot step outside. An empty root allows everything.
 pub fn within_root(path: &Path, root: &str) -> bool {
+    confined_path(path, root).is_some()
+}
+
+/// Keep the spelling the user chose when unrestricted; under a browse root,
+/// retain the resolved path that was actually checked so a later symlink
+/// change cannot redirect work outside the boundary.
+pub(crate) fn confined_path(path: &Path, root: &str) -> Option<PathBuf> {
     if root.is_empty() {
-        return true;
+        return Some(path.to_path_buf());
     }
     let (Ok(path), Ok(root)) = (path.canonicalize(), PathBuf::from(root).canonicalize()) else {
-        return false;
+        return None;
     };
-    path.starts_with(root)
+    path.starts_with(root).then_some(path)
 }
 
 /// Expand an add request into concrete video files and queue them.
@@ -238,17 +498,30 @@ pub fn queue_add(
         return (400, json!({"error": "missing 'path'"}));
     };
     let mode = body.get("mode").and_then(Value::as_str).unwrap_or("file");
+    let _scan_guard = if mode == "folder_recursive" {
+        match RecursiveScanGuard::acquire(shared) {
+            Some(guard) => Some(guard),
+            None => {
+                return (
+                    409,
+                    json!({"error": "another recursive folder scan is already running"}),
+                );
+            }
+        }
+    } else {
+        None
+    };
     let path = PathBuf::from(path);
     if !path.exists() {
         return (400, json!({"error": "path does not exist"}));
     }
     let browse_root = lock(shared).config.daemon.browse_root.clone();
-    if !within_root(&path, &browse_root) {
+    let Some(path) = confined_path(&path, &browse_root) else {
         return (
             403,
             json!({"error": "path is outside the configured browse root"}),
         );
-    }
+    };
 
     let mut files: Vec<PathBuf> = Vec::new();
     match mode {
@@ -288,7 +561,10 @@ pub fn queue_add(
 
     // Symlinks are followed while scanning, so a link can lead back out of the
     // browse root even when the folder given was inside it.
-    files.retain(|p| within_root(p, &browse_root));
+    files = files
+        .into_iter()
+        .filter_map(|path| confined_path(&path, &browse_root))
+        .collect();
 
     if files.is_empty() {
         return (400, json!({"error": "no video files found"}));
@@ -300,6 +576,27 @@ pub fn queue_add(
         200,
         json!({"added": added, "already_queued": already_queued}),
     )
+}
+
+/// Keep at most one recursive scan in flight, leaving the other HTTP workers
+/// available for dashboard polling and cancellation.
+struct RecursiveScanGuard(SharedState);
+
+impl RecursiveScanGuard {
+    fn acquire(shared: &SharedState) -> Option<Self> {
+        let mut state = lock(shared);
+        if state.recursive_scan_active {
+            return None;
+        }
+        state.recursive_scan_active = true;
+        Some(Self(shared.clone()))
+    }
+}
+
+impl Drop for RecursiveScanGuard {
+    fn drop(&mut self) {
+        lock(&self.0).recursive_scan_active = false;
+    }
 }
 
 /// Remove a job unless it belongs to the running encode session.
@@ -319,15 +616,6 @@ pub fn queue_remove(shared: &SharedState, body: &Value) -> (u16, Value) {
     }
     state.queue.remove(id);
     (200, json!({"ok": true}))
-}
-
-/// Pause/resume auto-starting new sessions (does not stop the current one).
-pub fn queue_pause(shared: &SharedState, body: &Value) -> (u16, Value) {
-    let Some(paused) = body.get("paused").and_then(Value::as_bool) else {
-        return (400, json!({"error": "missing 'paused'"}));
-    };
-    lock(shared).paused = paused;
-    (200, json!({"paused": paused}))
 }
 
 /// Cancel the running encode session.
@@ -360,7 +648,7 @@ pub fn queue_clear_finished(shared: &SharedState) -> (u16, Value) {
 /// Server-side file browser: list one directory level.
 pub fn fs_browse(shared: &SharedState, path: &str, show_hidden: bool) -> (u16, Value) {
     let browse_root = lock(shared).config.daemon.browse_root.clone();
-    let dir = if path.is_empty() {
+    let requested = if path.is_empty() {
         // With a root configured, that is where browsing starts.
         if browse_root.is_empty() {
             std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
@@ -371,12 +659,12 @@ pub fn fs_browse(shared: &SharedState, path: &str, show_hidden: bool) -> (u16, V
         PathBuf::from(path)
     };
 
-    if !within_root(&dir, &browse_root) {
+    let Some(dir) = confined_path(&requested, &browse_root) else {
         return (
             403,
             json!({"error": "path is outside the configured browse root"}),
         );
-    }
+    };
 
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return (400, json!({"error": "cannot read directory"}));
@@ -441,6 +729,29 @@ fn redacted(config: &AppConfig) -> Value {
     value
 }
 
+/// The web UI's strings, resolved for the configured language.
+///
+/// A flat `key -> text` map of [`crate::i18n::WEB_KEYS`] only. The language is
+/// whatever the config says, exactly as for the TUI: there is no per-request
+/// or per-client override, so this is not content-negotiated.
+pub fn strings(shared: &SharedState) -> Value {
+    let lang = lock(shared).config.language;
+    let mut map: serde_json::Map<String, Value> = crate::i18n::WEB_KEYS
+        .iter()
+        .map(|(key, msg)| ((*key).to_string(), Value::from(crate::i18n::t(lang, *msg))))
+        .collect();
+
+    // The page sets `<html lang>` from this, which is what tells a screen
+    // reader which voice to read it in. Taken from the same serde rename the
+    // config file uses, so there is no second list of codes to fall behind.
+    let code = serde_json::to_value(lang)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "en".to_string());
+    map.insert("html_lang".to_string(), Value::from(code));
+    map.into()
+}
+
 /// Read the full configuration, minus the auth token.
 pub fn settings_get(shared: &SharedState) -> Value {
     redacted(&lock(shared).config)
@@ -456,8 +767,67 @@ fn merged_settings(body: &Value, live: &DaemonConfig) -> Result<AppConfig, Strin
     let mut config: AppConfig =
         serde_json::from_value(body.clone()).map_err(|e| format!("invalid settings: {e}"))?;
     config.daemon = live.clone();
+    validate_numeric_settings(&config)?;
+    if let Some(presets) = config.quality_preset.presets() {
+        config.presets = presets;
+    }
     config.sanitize();
+    if !config.output.same_directory {
+        let directory = config
+            .output
+            .output_directory
+            .as_deref()
+            .filter(|dir| !dir.is_empty())
+            .ok_or_else(|| "output directory is required".to_string())?;
+        let path = Path::new(directory);
+        if !path.is_dir() {
+            return Err("output directory does not exist".to_string());
+        }
+        let Some(path) = confined_path(path, &config.daemon.browse_root) else {
+            return Err("output directory must be inside browse_root".to_string());
+        };
+        config.output.output_directory = Some(path.to_string_lossy().into_owned());
+    }
     Ok(config)
+}
+
+fn validate_numeric_settings(config: &AppConfig) -> Result<(), String> {
+    if !config.quality.vmaf_threshold.is_finite()
+        || !(0.0..=100.0).contains(&config.quality.vmaf_threshold)
+    {
+        return Err("VMAF threshold must be between 0 and 100".to_string());
+    }
+    if config.performance.svt_preset > 13 {
+        return Err("SVT preset must be between 0 and 13".to_string());
+    }
+    if !crate::config::PerformanceConfig::valid_nvenc_preset(&config.performance.nvenc_preset) {
+        return Err("NVENC preset must be between p1 and p7".to_string());
+    }
+    if !(AudioConfig::MIN_PER_CHANNEL..=AudioConfig::MAX_PER_CHANNEL)
+        .contains(&config.audio.opus_bitrate_per_channel)
+    {
+        return Err("Opus bitrate per channel must be between 16 and 256".to_string());
+    }
+    let presets: [&EncodingPreset; 8] = [
+        &config.presets.sd,
+        &config.presets.hd,
+        &config.presets.full_hd,
+        &config.presets.full_hd_hdr,
+        &config.presets.full_hd_dv,
+        &config.presets.uhd,
+        &config.presets.uhd_hdr,
+        &config.presets.uhd_dv,
+    ];
+    if presets.iter().any(|preset| {
+        preset.crf > Encoder::SvtAv1.max_quality()
+            || preset.nvenc_cq > Encoder::Nvenc.max_quality()
+            || preset.qsv_quality > Encoder::Qsv.max_quality()
+            || preset.amf_quality > Encoder::Amf.max_quality()
+            || preset.film_grain > 50
+    }) {
+        return Err("one or more rate-factor or film-grain values are out of range".to_string());
+    }
+    Ok(())
 }
 
 /// Replace the configuration: sanitize, persist to config.toml, and swap the
@@ -471,8 +841,18 @@ pub fn settings_post(shared: &SharedState, body: &Value) -> (u16, Value) {
     if let Err(e) = config.save() {
         return (500, json!({"error": format!("failed to save: {e}")}));
     }
+    let output_changed = state.config.output != config.output;
     let saved = redacted(&config);
     state.config = config;
+    if output_changed {
+        let output = state.config.output.clone();
+        for job in &mut state.queue.state.jobs {
+            if matches!(job.status, JobStatus::AwaitingConfig | JobStatus::Ready) {
+                job.generate_output_path(&output);
+            }
+        }
+        make_output_paths_unique(&mut state.queue.state.jobs);
+    }
     (200, saved)
 }
 
@@ -500,8 +880,11 @@ fn status_json(status: &JobStatus) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::within_root;
+    use super::{RecursiveScanGuard, queue_add, within_root};
+    use crate::config::{AppConfig, DaemonConfig};
+    use crate::daemon::state::{DaemonState, lock};
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
     /// An empty root is unrestricted; a configured one is escape-proof.
     #[test]
@@ -537,6 +920,44 @@ mod tests {
     #[test]
     fn unresolvable_paths_are_refused_under_a_root() {
         assert!(!within_root(Path::new("/nonexistent/x.mkv"), "/tmp"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn queued_paths_keep_the_resolved_target_that_passed_confinement() {
+        let base = std::env::temp_dir().join(format!("av1c_queue_link_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let source = base.join("movie.mkv");
+        let link = base.join("alias.mkv");
+        std::fs::write(&source, b"video").unwrap();
+        std::os::unix::fs::symlink(&source, &link).unwrap();
+
+        let config = AppConfig {
+            daemon: DaemonConfig {
+                browse_root: base.to_string_lossy().into_owned(),
+                ..DaemonConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        let shared = Arc::new(Mutex::new(DaemonState::new(config)));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (status, _) = queue_add(
+            &shared,
+            &tx,
+            &serde_json::json!({"path": link, "mode": "file"}),
+        );
+
+        assert_eq!(status, 200);
+        assert_eq!(
+            lock(&shared).queue.state.jobs[0].path,
+            source.canonicalize().unwrap()
+        );
+        assert_eq!(
+            std::path::PathBuf::from(rx.recv().unwrap().1),
+            source.canonicalize().unwrap()
+        );
+        let _ = std::fs::remove_dir_all(base);
     }
 
     mod settings {
@@ -580,29 +1001,119 @@ mod tests {
         #[test]
         fn non_daemon_settings_still_apply() {
             let mut body = serde_json::to_value(AppConfig::default()).unwrap();
-            body["audio"]["opus_bitrate_per_channel"] = json!(9000);
             body["output"]["suffix"] = json!("../escape");
 
             let merged = merged_settings(&body, &DaemonConfig::default()).unwrap();
-            assert_eq!(
-                merged.audio.opus_bitrate_per_channel,
-                crate::config::AudioConfig::MAX_PER_CHANNEL
-            );
             assert_eq!(merged.output.suffix, "..escape");
         }
+
+        #[test]
+        fn out_of_range_numbers_are_rejected_instead_of_silently_clamped() {
+            let mut body = serde_json::to_value(AppConfig::default()).unwrap();
+            body["audio"]["opus_bitrate_per_channel"] = json!(9000);
+            assert!(merged_settings(&body, &DaemonConfig::default()).is_err());
+        }
+
+        #[test]
+        fn invalid_nvenc_preset_is_rejected() {
+            let mut body = serde_json::to_value(AppConfig::default()).unwrap();
+            body["performance"]["nvenc_preset"] = json!("slowest");
+            assert!(merged_settings(&body, &DaemonConfig::default()).is_err());
+        }
+
+        #[test]
+        fn output_directory_cannot_escape_browse_root() {
+            let base =
+                std::env::temp_dir().join(format!("av1c_settings_root_{}", std::process::id()));
+            let root = base.join("root");
+            let inside = root.join("output");
+            let outside = base.join("outside");
+            std::fs::create_dir_all(&inside).unwrap();
+            std::fs::create_dir_all(&outside).unwrap();
+            let daemon = DaemonConfig {
+                browse_root: root.to_string_lossy().into_owned(),
+                ..DaemonConfig::default()
+            };
+            let mut body = serde_json::to_value(AppConfig::default()).unwrap();
+            body["output"]["same_directory"] = json!(false);
+            body["output"]["output_directory"] = json!(outside);
+            assert!(merged_settings(&body, &daemon).is_err());
+
+            body["output"]["output_directory"] = json!(inside);
+            let merged = merged_settings(&body, &daemon).unwrap();
+            assert_eq!(
+                merged.output.output_directory,
+                Some(
+                    inside
+                        .canonicalize()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                )
+            );
+            let _ = std::fs::remove_dir_all(base);
+        }
+
+        #[test]
+        fn output_directory_is_required_when_outputs_are_separate() {
+            let mut body = serde_json::to_value(AppConfig::default()).unwrap();
+            body["output"]["same_directory"] = json!(false);
+            body["output"]["output_directory"] = Value::Null;
+            assert!(merged_settings(&body, &DaemonConfig::default()).is_err());
+        }
+    }
+
+    #[test]
+    fn only_one_recursive_scan_can_hold_the_server() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let first = RecursiveScanGuard::acquire(&shared).unwrap();
+        assert!(RecursiveScanGuard::acquire(&shared).is_none());
+        drop(first);
+        assert!(RecursiveScanGuard::acquire(&shared).is_some());
     }
 
     mod tracks {
         use super::super::*;
+        use crate::analyzer::VideoMetadata;
         use crate::daemon::state::DaemonState;
         use crate::queue::EncodingJob;
         use crate::tracks::AudioTrack;
         use std::sync::{Arc, Mutex};
 
+        /// A queued job whose source carries Dolby Vision, on a chosen encoder.
+        fn shared_with_dv_job(encoder: Encoder, dv_profile: Option<u8>) -> (SharedState, u64) {
+            let mut state = DaemonState::new(AppConfig {
+                encoder,
+                ..AppConfig::default()
+            });
+            let mut job = EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
+            job.metadata = Some(VideoMetadata {
+                width: 3840,
+                height: 2160,
+                hdr_type: HdrType::DolbyVision,
+                dv_profile,
+                hdr10_static: None,
+                codec_name: "hevc".to_string(),
+                frame_rate_num: 24000,
+                frame_rate_den: 1001,
+                duration_secs: 60.0,
+            });
+            job.status = JobStatus::Ready;
+            let id = state.queue.push(job);
+            (Arc::new(Mutex::new(state)), id)
+        }
+
         fn shared_with_job() -> (SharedState, u64) {
             let mut state = DaemonState::new(AppConfig::default());
             let mut job = EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
-            job.audio_tracks = (0..3)
+            job.audio_tracks = audio_tracks(3);
+            job.status = JobStatus::Ready;
+            let id = state.queue.push(job);
+            (Arc::new(Mutex::new(state)), id)
+        }
+
+        fn audio_tracks(count: usize) -> Vec<AudioTrack> {
+            (0..count)
                 .map(|index| AudioTrack {
                     index,
                     language: None,
@@ -613,10 +1124,7 @@ mod tests {
                     bitrate: None,
                     sample_rate: None,
                 })
-                .collect();
-            job.status = JobStatus::Ready;
-            let id = state.queue.push(job);
-            (Arc::new(Mutex::new(state)), id)
+                .collect()
         }
 
         /// A client cannot mark a track for Opus without also selecting it:
@@ -666,8 +1174,43 @@ mod tests {
             ));
         }
 
+        #[test]
+        fn choices_apply_to_remaining_jobs_by_track_order() {
+            let (shared, id) = shared_with_job();
+            let remaining_id = {
+                let mut state = lock(&shared);
+                let mut job = EncodingJob::new(PathBuf::from("/tmp/episode-2.mkv"));
+                job.audio_tracks = audio_tracks(4);
+                job.track_selection.audio_indices = vec![0, 3];
+                job.track_selection.audio_to_opus = vec![3];
+                job.status = JobStatus::AwaitingConfig;
+                state.queue.push(job)
+            };
+
+            assert_eq!(job_tracks(&shared, &id.to_string()).1["remaining"], 1);
+            let (code, body) = job_tracks_set(
+                &shared,
+                &json!({
+                    "id": id,
+                    "audio_indices": [1],
+                    "audio_to_opus": [1],
+                    "remux_only": true,
+                    "apply_to_remaining": true,
+                }),
+            );
+
+            assert_eq!(code, 200);
+            assert_eq!(body["applied"], 2);
+            let state = lock(&shared);
+            let remaining = state.queue.job_by_id(remaining_id).unwrap();
+            assert_eq!(remaining.track_selection.audio_indices, vec![1, 3]);
+            assert_eq!(remaining.track_selection.audio_to_opus, vec![1, 3]);
+            assert!(remaining.remux_only);
+            assert!(matches!(remaining.status, JobStatus::Ready));
+        }
+
         /// A job that is already encoding refuses edits: its tracks are
-        /// baked into the running FFmpeg command.
+        /// baked into the running `FFmpeg` command.
         #[test]
         fn encoding_jobs_refuse_track_edits() {
             let (shared, id) = shared_with_job();
@@ -680,6 +1223,161 @@ mod tests {
                 job_tracks(&shared, &id.to_string()).1["editable"],
                 json!(false)
             );
+        }
+
+        /// The remux flag survives a round trip — and takes the output path
+        /// with it, since a remux keeps the source container and its own
+        /// suffix. Storing the flag without regenerating the path would leave
+        /// the job pointing at the name the encode branch would have used.
+        #[test]
+        fn remux_only_round_trips_and_renames_the_output() {
+            let (shared, id) = shared_with_job();
+
+            let (code, body) = job_tracks_set(&shared, &json!({"id": id, "remux_only": true}));
+            assert_eq!(code, 200);
+            assert_eq!(body["remux_only"], json!(true));
+
+            let output = lock(&shared)
+                .queue
+                .job_by_id(id)
+                .unwrap()
+                .output_path
+                .clone()
+                .expect("remux job has an output path");
+            assert_eq!(output.file_name().unwrap(), "movie_remux.mkv");
+            assert_eq!(
+                job_tracks(&shared, &id.to_string()).1["remux_only"],
+                json!(true)
+            );
+
+            // And back again, onto the encode branch's suffix.
+            let (code, body) = job_tracks_set(&shared, &json!({"id": id, "remux_only": false}));
+            assert_eq!(code, 200);
+            assert_eq!(body["remux_only"], json!(false));
+            let state = lock(&shared);
+            let job = state.queue.job_by_id(id).unwrap();
+            assert!(!job.remux_only);
+            assert_eq!(
+                job.output_path.as_ref().unwrap().file_name().unwrap(),
+                "movie_av1.mkv"
+            );
+        }
+
+        /// Absent means unchanged: a client that only knows about tracks must
+        /// not silently clear a remux decision it never offered.
+        #[test]
+        fn omitting_remux_only_leaves_it_alone() {
+            let (shared, id) = shared_with_job();
+            lock(&shared).queue.job_by_id_mut(id).unwrap().remux_only = true;
+
+            let (code, body) = job_tracks_set(&shared, &json!({"id": id, "audio_indices": [0]}));
+
+            assert_eq!(code, 200);
+            assert_eq!(body["remux_only"], json!(true));
+            assert!(lock(&shared).queue.job_by_id(id).unwrap().remux_only);
+        }
+
+        /// A source with no Dolby Vision layer has no DV decision to make.
+        #[test]
+        fn dv_mode_is_rejected_for_a_non_dv_job() {
+            let (shared, id) = shared_with_job();
+
+            let (code, body) = job_tracks_set(&shared, &json!({"id": id, "dv_mode": "keep"}));
+
+            assert_eq!(code, 400);
+            assert!(
+                body["error"].as_str().unwrap().contains("Dolby Vision"),
+                "unexpected error: {}",
+                body["error"]
+            );
+            assert!(lock(&shared).queue.job_by_id(id).unwrap().dv_mode.is_none());
+        }
+
+        /// Only SVT-AV1 can write the DV RPU. Asking a hardware encoder to
+        /// keep DV would silently produce a file without it, so it is refused
+        /// rather than accepted and quietly downgraded.
+        #[test]
+        fn keeping_dv_is_refused_when_the_encoder_cannot_write_the_rpu() {
+            let (shared, id) = shared_with_dv_job(Encoder::Nvenc, Some(8));
+
+            let (code, body) = job_tracks_set(&shared, &json!({"id": id, "dv_mode": "keep"}));
+            assert_eq!(code, 400);
+            assert!(
+                body["error"].as_str().unwrap().contains("RPU"),
+                "unexpected error: {}",
+                body["error"]
+            );
+
+            // The UI is told the same thing up front, so it need not guess.
+            let offered = job_tracks(&shared, &id.to_string()).1;
+            assert_eq!(offered["dv"]["can_keep"], json!(false));
+            assert_eq!(offered["dv"]["mode"], json!("hdr10"));
+            assert_eq!(offered["dv"]["profile"], json!(8));
+
+            // Converting to HDR10 is still allowed on that encoder.
+            let (code, body) = job_tracks_set(&shared, &json!({"id": id, "dv_mode": "hdr10"}));
+            assert_eq!(code, 200);
+            assert_eq!(body["dv_mode"], json!("hdr10"));
+        }
+
+        /// On SVT-AV1 the choice is real and round-trips.
+        #[test]
+        fn dv_mode_round_trips_on_svt_av1() {
+            let (shared, id) = shared_with_dv_job(Encoder::SvtAv1, Some(7));
+
+            let offered = job_tracks(&shared, &id.to_string()).1;
+            assert_eq!(offered["dv"]["can_keep"], json!(true));
+
+            let (code, body) = job_tracks_set(&shared, &json!({"id": id, "dv_mode": "keep"}));
+            assert_eq!(code, 200);
+            assert_eq!(body["dv_mode"], json!("keep"));
+            assert_eq!(
+                lock(&shared).queue.job_by_id(id).unwrap().dv_mode,
+                Some(DvMode::KeepDolbyVision)
+            );
+
+            let (code, _) = job_tracks_set(&shared, &json!({"id": id, "dv_mode": "nonsense"}));
+            assert_eq!(code, 400);
+        }
+
+        /// A job with no DV layer reports no DV block at all.
+        #[test]
+        fn a_non_dv_job_offers_no_dv_choice() {
+            let (shared, id) = shared_with_job();
+            assert_eq!(job_tracks(&shared, &id.to_string()).1["dv"], json!(null));
+        }
+
+        /// Turning remux off commits the job to a real encode, which is the
+        /// point at which a DV source needs a decision the analyzer skipped.
+        #[test]
+        fn leaving_remux_resolves_a_pending_dv_decision() {
+            let (shared, id) = shared_with_dv_job(Encoder::SvtAv1, Some(5));
+            lock(&shared).queue.job_by_id_mut(id).unwrap().remux_only = true;
+
+            let (code, body) = job_tracks_set(&shared, &json!({"id": id, "remux_only": false}));
+
+            assert_eq!(code, 200);
+            // Profile 5 has no HDR10-compatible base layer, so it tone-maps.
+            assert_eq!(body["dv_mode"], json!("hdr10"));
+        }
+
+        /// The encoding guard covers the new options too, not just tracks.
+        #[test]
+        fn encoding_jobs_refuse_option_edits() {
+            let (shared, id) = shared_with_dv_job(Encoder::SvtAv1, Some(8));
+            lock(&shared).queue.job_by_id_mut(id).unwrap().status =
+                JobStatus::Encoding { progress: 10.0 };
+
+            let (code, _) = job_tracks_set(
+                &shared,
+                &json!({"id": id, "remux_only": true, "dv_mode": "keep"}),
+            );
+
+            assert_eq!(code, 409);
+            let state = lock(&shared);
+            let job = state.queue.job_by_id(id).unwrap();
+            assert!(!job.remux_only);
+            assert!(job.dv_mode.is_none());
         }
     }
 }
