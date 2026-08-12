@@ -77,12 +77,14 @@ nix profile install gitlab:francescomicheli/av1converter
 
 ### Homebrew
 
-The project repository is also a Homebrew tap:
+macOS only; installs the prebuilt release binary and pulls in `ffmpeg`.
 
 ```bash
-brew tap francescomicheli/av1converter https://gitlab.com/francescomicheli/av1converter.git
+brew tap framicheli/tap
 brew install av1converter
 ```
+
+The formula lives in [framicheli/homebrew-tap](https://github.com/framicheli/homebrew-tap) and is updated automatically by the release workflow.
 
 ### Arch Linux (AUR)
 

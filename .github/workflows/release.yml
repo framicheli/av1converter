@@ -135,3 +135,49 @@ jobs:
           files: |
             dist/av1converter*
             dist/SHA256SUMS
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          VERSION="${TAG#v}"
+          ARM=$(awk '$2 == "av1converter-aarch64-apple-darwin.tar.gz" {print $1}' dist/SHA256SUMS)
+          INTEL=$(awk '$2 == "av1converter-x86_64-apple-darwin.tar.gz" {print $1}' dist/SHA256SUMS)
+          [ -n "$ARM" ] && [ -n "$INTEL" ]
+          git clone --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/framicheli/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cat > tap/Formula/av1converter.rb <<EOF
+          class Av1converter < Formula
+            desc "Batch-convert video files to AV1 using FFmpeg"
+            homepage "https://github.com/framicheli/av1converter"
+            version "$VERSION"
+            license "MIT"
+
+            depends_on "ffmpeg"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/framicheli/av1converter/releases/download/$TAG/av1converter-aarch64-apple-darwin.tar.gz"
+                sha256 "$ARM"
+              end
+
+              on_intel do
+                url "https://github.com/framicheli/av1converter/releases/download/$TAG/av1converter-x86_64-apple-darwin.tar.gz"
+                sha256 "$INTEL"
+              end
+            end
+
+            def install
+              bin.install Dir["av1converter-*-apple-darwin"].first => "av1converter"
+            end
+
+            test do
+              assert_match "av1converter #{version}", shell_output("#{bin}/av1converter --version")
+            end
+          end
+          EOF
+          git -C tap config user.name "github-actions[bot]"
+          git -C tap config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C tap add Formula/av1converter.rb
+          git -C tap commit -m "av1converter $VERSION"
+          git -C tap push
