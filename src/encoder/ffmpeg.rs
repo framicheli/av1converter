@@ -9,11 +9,9 @@ use std::time::Duration;
 
 static JOB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Scratch path an in-progress encode is written to, alongside the real output.
-///
-/// The final extension is preserved so `FFmpeg` still infers the container from
-/// it. Encoding here and renaming on success means the destination file is only
-/// ever touched by an encode that actually finished.
+/// Scratch path an in-progress encode is written to, alongside the real output
+/// and keeping its extension so `FFmpeg` still infers the container. Renamed
+/// onto the destination once the encode finishes.
 fn partial_output_path(output: &str, tag: &str) -> String {
     let path = Path::new(output);
     let parent = path.parent().unwrap_or(Path::new("."));
@@ -28,16 +26,10 @@ fn partial_output_path(output: &str, tag: &str) -> String {
     parent.join(name).to_string_lossy().into_owned()
 }
 
-/// Scratch files left next to `output` by an encode that never finished.
-///
-/// Lives beside [`partial_output_path`] deliberately: this has to recognise
-/// exactly what that function produces, and a second copy of the format string
-/// somewhere else would rot the first time either changed.
-///
-/// The tag is `{pid}_{counter}` and the pid belonged to a process that is gone,
-/// so the match is by shape rather than by value. It is kept strict — both
-/// halves must be digits — so that a real file which merely happens to contain
-/// `.part.` is never mistaken for scratch and deleted.
+/// Scratch files left next to `output` by an encode that never finished, as
+/// produced by [`partial_output_path`]. The `{pid}_{counter}` tag belongs to a
+/// process that is gone, so the match is by shape: both halves must be digits,
+/// and a file that merely contains `.part.` is not scratch.
 pub fn orphaned_partials(output: &Path) -> Vec<PathBuf> {
     let (Some(parent), Some(stem)) = (output.parent(), output.file_stem().and_then(|s| s.to_str()))
     else {
@@ -115,8 +107,7 @@ pub fn encode_video(
     duration: f64,
     total_frames: f64,
 ) -> EncodeResult {
-    // FFmpeg cannot edit a file in place, and a run that started anyway would
-    // end up renaming its own output over the source. Refuse before spawning.
+    // FFmpeg cannot edit a file in place; refuse before spawning.
     if is_same_file(Path::new(&params.input), Path::new(&params.output)) {
         return EncodeResult::Error(
             "Output path is the same as the input file; check the output suffix and container"
@@ -127,8 +118,8 @@ pub fn encode_video(
         return EncodeResult::Error("Output already exists; refusing to overwrite it".to_string());
     }
 
-    // Reserve a unique sibling before giving it to FFmpeg. A predictable
-    // `.part` name could itself be a real source file, which `-y` would erase.
+    // Reserved with `create_new` before FFmpeg sees it, so `-y` cannot erase a
+    // real file that happens to sit at the `.part` name.
     let (partial, tag) = loop {
         let uid = JOB_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tag = format!("{}_{}", std::process::id(), uid);
@@ -338,12 +329,9 @@ fn run_encode_loop(
     }
 }
 
-/// Read the last few progress blocks from `-progress` output.
-///
-/// `FFmpeg` appends a block roughly twice a second and never truncates, so a
-/// feature-length encode leaves megabytes behind. Only the most recent block
-/// matters, and re-reading and re-parsing the whole file four times a second
-/// would cost more as the encode goes on.
+/// Read the last few progress blocks from `-progress` output. `FFmpeg` appends
+/// a block roughly twice a second and never truncates, so only the tail of the
+/// file is read.
 pub(crate) fn read_file_tail(path: &Path) -> Option<String> {
     /// Comfortably more than one block, so a full block is always in view.
     const WINDOW: usize = 8192;
@@ -420,9 +408,8 @@ mod tests {
     };
     use std::path::Path;
 
-    /// The scratch file sits next to the real output and keeps its extension,
-    /// so `FFmpeg` still picks the right muxer and the rename stays on one
-    /// filesystem. Crucially it is never the destination path itself.
+    /// The scratch file sits next to the real output, keeps its extension, and
+    /// is never the destination path itself.
     #[test]
     fn partial_path_is_a_distinct_sibling_with_the_same_extension() {
         let output = "/media/films/movie_av1.mkv";

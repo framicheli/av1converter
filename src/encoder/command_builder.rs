@@ -104,8 +104,8 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         "0:v:0".to_string(),
     ]);
 
-    // Track mapping. Empty selections are intentional: auto-selection resolves
-    // defaults before this point, so adding fallback maps would undo deselection.
+    // Track mapping. An empty selection maps nothing: defaults are already
+    // resolved by auto-selection before this point.
     for plan in &params.tracks.audio {
         args.extend(["-map".to_string(), format!("0:a:{}", plan.source_index)]);
     }
@@ -114,9 +114,8 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     }
 
     if params.remux_only {
-        // Remux mode: the video is already AV1, so it is copied as-is. Audio
-        // still honours the per-track choice — a 1.5 Mbps DTS track is worth
-        // shrinking even when the video needs no work.
+        // Remux mode: the video is already AV1 and is copied as-is. Audio
+        // still honours the per-track choice.
         args.extend(["-c:v".to_string(), "copy".to_string()]);
         args.extend(build_audio_args(&params.tracks.audio));
         args.extend(build_subtitle_args(&params.subtitle_codecs));
@@ -157,12 +156,8 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     args
 }
 
-/// Per-stream audio codec options, in output stream order.
-///
-/// Every mapped stream gets an explicit `-c:a:N`. Leaning on a global
-/// `-c:a copy` plus overrides would leave the result dependent on how `FFmpeg`
-/// resolves options of differing specificity, and a single wrong stream here
-/// means silently re-encoding or copying the wrong track.
+/// Per-stream audio codec options, in output stream order. Every mapped stream
+/// gets an explicit `-c:a:N`, never a global `-c:a` with overrides.
 fn build_audio_args(plan: &[AudioStreamPlan]) -> Vec<String> {
     if plan.is_empty() {
         return Vec::new();
@@ -249,9 +244,8 @@ fn get_svtav1_params(params: &EncodingParams) -> Vec<String> {
         svt_params,
     ];
 
-    // Explicitly control DV RPU coding: FFmpeg's libsvtav1 defaults to
-    // "auto", which would silently pass the RPU through even when the user
-    // chose plain HDR10 output.
+    // DV RPU coding is set explicitly; FFmpeg's libsvtav1 defaults to "auto",
+    // which passes the RPU through.
     if params.hdr_type == HdrType::DolbyVision {
         let dovi = if params.keeps_dolby_vision() {
             "1"
@@ -348,9 +342,9 @@ fn build_video_filter(params: &EncodingParams) -> String {
     let mut filters = vec!["format=yuv420p10le".to_string()];
 
     if params.hdr_type == HdrType::DolbyVision {
-        // Cross-compatible profiles (7/8) have a PQ/BT.2020 base layer that
-        // is often left untagged in the source; profile 5 without tone-map
-        // (keep-DV) stays in Dolby's own space and must not be mistagged.
+        // Cross-compatible profiles (7/8) have a PQ/BT.2020 base layer, often
+        // left untagged in the source. Keep-DV profile 5 stays in Dolby's own
+        // space and is left alone.
         if params.dv_profile != Some(5) {
             filters.push(
                 "setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084"
@@ -495,8 +489,7 @@ mod tests {
         }
     }
 
-    /// Every mapped audio stream gets an explicit codec, indexed by its
-    /// position in the output — not by its index in the source.
+    /// Codec options are indexed by output position; `-map` by source index.
     #[test]
     fn mixed_audio_selection_addresses_streams_by_output_position() {
         let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
@@ -523,7 +516,7 @@ mod tests {
 
         // Only the transcoded stream carries a bitrate.
         assert!(!args.contains(&"-b:a:0".to_string()));
-        // A bare `-c:a` would override the per-stream choices.
+        // No bare `-c:a`, which would override the per-stream choices.
         assert!(!args.contains(&"-c:a".to_string()));
     }
 
@@ -588,8 +581,7 @@ mod tests {
         assert!(!args.contains(&"-metadata:s:a:0".to_string()));
     }
 
-    /// Remuxing leaves the video untouched but still honours the audio choice:
-    /// an oversized DTS track is worth shrinking on an already-AV1 file.
+    /// Remuxing copies the video but still honours the audio choice.
     #[test]
     fn remux_transcodes_audio_without_touching_the_video() {
         let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));

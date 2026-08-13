@@ -40,9 +40,9 @@ pub enum DvMode {
 }
 
 impl DvMode {
-    /// Recommended mode for a given DV profile. Profile 5 has no
-    /// HDR10-compatible base layer, so tone-mapping to HDR10 is the safer
-    /// default; cross-compatible profiles (7/8) keep DV losslessly.
+    /// Recommended mode for a given DV profile: HDR10 for profile 5, which has
+    /// no HDR10-compatible base layer, and keep-DV for the cross-compatible
+    /// profiles (7/8).
     pub fn recommended_for(dv_profile: Option<u8>) -> Self {
         if dv_profile == Some(5) {
             DvMode::ToHdr10

@@ -5,9 +5,8 @@ use std::process::Command;
 pub struct DependencyStatus;
 
 impl DependencyStatus {
-    /// Whether everything needed to encode is present. `libvmaf` is deliberately
-    /// not part of this: it is only needed for quality verification, and a build
-    /// without it works fine for anyone who does not use VMAF.
+    /// Whether everything needed to encode is present. `libvmaf` is not part of
+    /// this — it is only needed for quality verification.
     pub fn check() -> bool {
         check_command("ffmpeg", &["-version"]) && check_command("ffprobe", &["-version"])
     }
@@ -17,16 +16,14 @@ impl DependencyStatus {
         check_vmaf_available()
     }
 
-    /// Whether this `FFmpeg` build can encode Opus. Like `libvmaf`, it is not
-    /// part of [`DependencyStatus::check`]: copying audio works without it.
+    /// Whether this `FFmpeg` build can encode Opus. Like `libvmaf`, not part of
+    /// [`DependencyStatus::check`] — copying audio works without it.
     pub fn libopus_available() -> bool {
         check_encoder_available("libopus")
     }
 
     /// Whether this `FFmpeg` build has the named encoder, e.g. the video
-    /// encoder the configuration selected. A config carried over from another
-    /// machine, or an `FFmpeg` rebuilt without the hardware bits, otherwise fails
-    /// every single job with nothing said up front.
+    /// encoder the configuration selected.
     pub fn encoder_available(ffmpeg_name: &str) -> bool {
         check_encoder_available(ffmpeg_name)
     }
@@ -52,7 +49,7 @@ fn check_encoder_available(name: &str) -> bool {
             String::from_utf8_lossy(&o.stdout)
                 .lines()
                 // The encoder name is the second column, after the capability
-                // flags; matching the whole output would also hit descriptions.
+                // flags. Descriptions are not matched.
                 .any(|l| l.split_whitespace().nth(1) == Some(name))
         })
 }

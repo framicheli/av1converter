@@ -1,12 +1,8 @@
 pub mod selection;
 
-/// The selected subtitle tracks, in the order they will be written.
-///
-/// `subtitle_indices` drives `-map 0:s:N` while [`subtitle_codecs_for`] drives
-/// the matching `-c:s:N`, and the two are only in step if both are ordered the
-/// same way. `TrackSelection::resolve` sorts the indices; this sorts the tracks
-/// to match, so neither side depends on the order ffprobe happened to report
-/// the streams in.
+/// The selected subtitle tracks, sorted by index — the order they will be
+/// written. `TrackSelection::resolve` sorts the indices the same way, so the
+/// `-map 0:s:N` and `-c:s:N` lists line up whatever order ffprobe reported.
 pub fn selected_subtitles(tracks: &[SubtitleTrack], indices: &[usize]) -> Vec<SubtitleTrack> {
     let mut selected: Vec<SubtitleTrack> = tracks
         .iter()
@@ -19,9 +15,9 @@ pub fn selected_subtitles(tracks: &[SubtitleTrack], indices: &[usize]) -> Vec<Su
 
 /// The subtitle codec to write for a given output container.
 ///
-/// Text subtitle formats differ between Matroska, `WebM`, and MP4. Convert only
-/// the text tracks that the target container cannot hold; bitmap subtitles
-/// remain copies so an unsupported combination fails instead of disappearing.
+/// Text subtitle formats differ between Matroska, `WebM`, and MP4. Only text
+/// tracks the target container cannot hold are converted; bitmap subtitles are
+/// always copied.
 pub fn subtitle_codecs_for(
     output: &std::path::Path,
     selected: &[SubtitleTrack],

@@ -44,10 +44,8 @@ impl DaemonQueue {
         }
     }
 
-    /// Rebuild from a queue read back off disk.
-    ///
-    /// `next_id` is floored past every id in hand: a file that somehow carried
-    /// a lower one would hand the same id to two different jobs.
+    /// Rebuild from a queue read back off disk, flooring `next_id` past every
+    /// id in hand.
     pub fn from_persisted(persisted: crate::queue::PersistedQueue) -> Self {
         let next_id = persisted
             .ids
@@ -92,8 +90,7 @@ impl DaemonQueue {
         };
         self.ids.remove(index);
         let job = self.state.jobs.remove(index);
-        // The dashboard's running total is cumulative, so a job leaving the
-        // queue hands its savings over rather than taking them with it.
+        // A job leaving the queue hands its savings to the running total.
         if let Some((saved, _)) = job.size_reduction() {
             self.state.cleared_saved_bytes = self.state.cleared_saved_bytes.saturating_add(saved);
         }
@@ -209,9 +206,7 @@ mod tests {
         assert_eq!(new_id, 4);
     }
 
-    /// Ids keep going up across a restart. If `next_id` ever came back lower
-    /// than an id already in the queue, the next push would hand out a
-    /// duplicate and every lookup for it would find the older job.
+    /// Ids keep going up across a restart, never repeating one already used.
     #[test]
     fn reloading_never_hands_out_an_id_twice() {
         let mut state = crate::queue::QueueState::new();

@@ -1,14 +1,8 @@
-//! Encodes a real file with a real `FFmpeg`.
+//! Encodes a real file with a real `FFmpeg`. Every other test in this crate
+//! checks the arguments we intend to pass; these check that `FFmpeg` accepts
+//! them and produces the streams asked for.
 //!
-//! Everything else in this crate tests the arguments we intend to pass.
-//! Nothing tested whether `FFmpeg` accepts them — and it does not always: the
-//! `5.1(side)` channel layout, which is what ffprobe reports for most real
-//! surround tracks, is rejected outright under Opus' standard mapping. That
-//! shipped through argument-level tests, a clippy pass and three readings, and
-//! only turned up when a file was actually put through the encoder.
-//!
-//! Skipped, not failed, when the `FFmpeg` on `PATH` cannot do the job: the point
-//! is to catch regressions where the tooling exists, not to demand it.
+//! Skipped, not failed, when the `FFmpeg` on `PATH` cannot do the job.
 
 use crate::analyzer::{DvMode, HdrType, VideoMetadata};
 use crate::config::{AppConfig, AudioConfig, Encoder};
@@ -107,9 +101,8 @@ fn surround_track() -> AudioTrack {
     }
 }
 
-/// A 5.1 source, transcoded to Opus, has to come out the other side: AV1 video
-/// and a six-channel Opus track, with the scratch file renamed into place and
-/// nothing left behind.
+/// A 5.1 source comes out as AV1 video and a six-channel Opus track, with the
+/// scratch file renamed into place and nothing left behind.
 #[test]
 fn encodes_a_surround_source_to_av1_and_opus() {
     if !ffmpeg_can_encode_av1_opus() {

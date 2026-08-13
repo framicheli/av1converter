@@ -264,8 +264,7 @@ mod tests {
         assert_eq!(locked_pid(&path), Some(std::process::id()));
         drop(guard);
         // A child forked concurrently by another test briefly inherits open
-        // descriptors until exec applies O_CLOEXEC. Give that window time to
-        // close while still failing on a genuinely leaked lock.
+        // descriptors until exec applies O_CLOEXEC; wait out that window.
         let deadline = Instant::now() + Duration::from_secs(1);
         while locked_pid(&path).is_some() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));

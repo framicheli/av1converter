@@ -62,8 +62,7 @@ pub const HOME_MENU: &[&str] = &[
 ];
 
 /// Main application state
-// Screen-state flags for a TUI: grouping them into sub-structs would only add
-// indirection to code that reads them one at a time.
+// Flat screen-state flags, read one at a time.
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub current_screen: Screen,
@@ -268,8 +267,8 @@ impl App {
     // Dolby Vision dialog
 
     /// Open the DV-mode dialog if the job at `config_job_index` is a Dolby
-    /// Vision source that still needs a decision. Hardware encoders cannot
-    /// write the DV RPU, so those jobs are silently resolved to HDR10.
+    /// Vision source that still needs a decision. On hardware encoders, which
+    /// cannot write the DV RPU, the job resolves to HDR10 without a dialog.
     pub fn maybe_open_dv_dialog(&mut self) {
         self.dv_dialog = None;
 
@@ -702,8 +701,7 @@ impl App {
             }
             Err(mpsc::TryRecvError::Empty) => {}
             // The analysis thread is gone without having sent anything, so no
-            // result is ever coming. Treating that as "nothing yet" would leave
-            // the Analyzing screen up forever with nothing said.
+            // result is coming.
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.analysis_receiver = None;
                 for job in &mut self.queue.jobs {
@@ -886,9 +884,7 @@ impl App {
                 match rx.try_recv() {
                     Ok(msg) => msgs.push(msg),
                     Err(mpsc::TryRecvError::Empty) => break,
-                    // The worker thread is gone. Whatever it had left to say it
-                    // will never say, so the queue must not sit here showing a
-                    // frozen progress bar with `encoding_active` still set.
+                    // The worker thread is gone; nothing more is coming.
                     Err(mpsc::TryRecvError::Disconnected) => {
                         worker_gone = true;
                         break;
@@ -907,8 +903,8 @@ impl App {
                 WorkerMessage::Progress(idx, progress) => {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
                         job.status = JobStatus::Encoding { progress };
-                        // Keep the cursor following the active job unless the
-                        // user has manually scrolled it elsewhere.
+                        // The cursor follows the active job until manually
+                        // scrolled elsewhere.
                         if self.queue_cursor == self.queue.current_job_index {
                             self.queue_cursor = idx;
                         }
@@ -1007,8 +1003,7 @@ impl App {
             }
         }
 
-        // Nothing more is coming from a worker that has gone: close out whatever
-        // it left unfinished rather than waiting on it forever.
+        // The worker is gone; close out whatever it left unfinished.
         if worker_gone && self.encoding_active {
             self.progress_receiver = None;
             for job in &mut self.queue.jobs {
@@ -1042,18 +1037,14 @@ impl App {
     }
 }
 
-/// Probe a batch of files, keeping results in input order.
-///
-/// A fixed pool of workers pulls from the batch rather than one thread per
-/// file: a recursive scan can hold hundreds of entries, and each probe spawns
-/// ffprobe processes of its own. Every worker rechecks `cancel_flag` before
-/// picking up the next file, so cancelling actually stops the work instead of
-/// only skipping what has not been spawned yet.
+/// Probe a batch of files, keeping results in input order. A fixed pool of
+/// workers pulls from the batch, each rechecking `cancel_flag` before taking
+/// the next file.
 fn analyze_batch(
     paths: &[Result<String, AppError>],
     cancel_flag: &AtomicBool,
 ) -> Vec<Result<AnalysisResult, AppError>> {
-    /// Enough to keep the disk and CPU busy without thrashing either.
+    /// Concurrent ffprobe calls.
     const MAX_WORKERS: usize = 4;
 
     let slots: Vec<std::sync::Mutex<Option<Result<AnalysisResult, AppError>>>> = (0..paths.len())

@@ -75,10 +75,9 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
         std::process::exit(1);
     }
 
-    // Anyone who can reach the port can browse the filesystem, queue encodes
-    // and rewrite the configuration. Minting a token on first start costs the
-    // user one click on the printed URL and closes that by default; leaving it
-    // open would hand the same access to every process on the machine.
+    // The API can browse the filesystem, queue encodes and rewrite the
+    // configuration, so a token is minted on first start. The printed URL
+    // carries it, so one click authorises the browser.
     if config.daemon.auth_token.len() < 32 {
         config.daemon.auth_token =
             config::DaemonConfig::generate_token().map_err(io::Error::other)?;
@@ -522,8 +521,8 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Char('O') => {
             if let Some(job) = app.current_config_job_mut() {
-                // All-or-nothing across the *selected* tracks, so the second
-                // press undoes the first rather than doing nothing.
+                // All-or-nothing across the selected tracks: a second press
+                // undoes the first.
                 let selected = job.track_selection.audio_indices.clone();
                 let all_opus = !selected.is_empty()
                     && selected.iter().all(|&i| job.track_selection.is_opus(i));

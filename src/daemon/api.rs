@@ -110,8 +110,8 @@ pub fn queue(shared: &SharedState) -> Value {
     json!({ "jobs": jobs })
 }
 
-/// Whether a job's tracks can still be changed: once its encode is under way,
-/// the selection is already baked into the running `FFmpeg` command.
+/// Whether a job's tracks can still be changed. False once its encode is under
+/// way: the selection is baked into the running `FFmpeg` command.
 fn tracks_editable(state: &super::state::DaemonState, id: u64) -> bool {
     !state.in_active_session(id)
         && state
@@ -121,8 +121,7 @@ fn tracks_editable(state: &super::state::DaemonState, id: u64) -> bool {
 }
 
 /// The DV mode a job falls back to when nobody has chosen one: the profile's
-/// own recommendation on SVT-AV1, and HDR10 on every other encoder because
-/// none of them can write the DV RPU.
+/// own recommendation on SVT-AV1, HDR10 on every other encoder.
 pub fn resolved_dv_mode(encoder: Encoder, dv_profile: Option<u8>) -> DvMode {
     if encoder == Encoder::SvtAv1 {
         DvMode::recommended_for(dv_profile)
@@ -160,8 +159,8 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
         })
         .count();
 
-    // Resolving here means the row shows the bitrate the encoder will actually
-    // be asked for, including tracks that are already Opus and so left alone.
+    // Resolved so the row shows the bitrate the encoder is actually asked for,
+    // including already-Opus tracks, which are left alone.
     let plan = job
         .track_selection
         .resolve(&job.audio_tracks, &audio_config);
@@ -199,9 +198,8 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
         })
         .collect();
 
-    // A DV choice only exists for a Dolby Vision source; everything else has
-    // no RPU to keep. `can_keep` carries the hardware constraint to the UI so
-    // it can refuse the option rather than offer one the server will reject.
+    // A DV choice only exists for a Dolby Vision source. `can_keep` carries the
+    // encoder constraint to the UI, which refuses the option without it.
     let dv = job
         .metadata
         .as_ref()
@@ -350,8 +348,8 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
         let subtitle_known: Vec<usize> = job.subtitle_tracks.iter().map(|t| t.index).collect();
 
         let audio_indices = valid_indices(body, "audio_indices", &audio_known);
-        // Opus is only meaningful for tracks that are actually written, and a
-        // stale entry would shift every per-stream codec option one place.
+        // Kept a subset of the selection: the plan indexes per-stream codec
+        // options by output position.
         let audio_to_opus: Vec<usize> = valid_indices(body, "audio_to_opus", &audio_known)
             .into_iter()
             .filter(|i| audio_indices.contains(i))
@@ -363,9 +361,8 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
             audio_to_opus,
         };
 
-        // Both options are absent-means-unchanged: they are not part of the
-        // track set, so a client that only knows about tracks must not clear
-        // decisions it never offered.
+        // Both options are absent-means-unchanged, so a client that only knows
+        // about tracks leaves them as they stand.
         let remux_only = body
             .get("remux_only")
             .and_then(Value::as_bool)
@@ -383,8 +380,7 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
                 }
                 match requested.as_str() {
                     Some(DV_HDR10) => Some(DvMode::ToHdr10),
-                    // Only SVT-AV1 can write the RPU; on any other encoder
-                    // this would silently produce a file without Dolby Vision.
+                    // Only SVT-AV1 can write the RPU.
                     Some(DV_KEEP) if encoder == Encoder::SvtAv1 => Some(DvMode::KeepDolbyVision),
                     Some(DV_KEEP) => {
                         return (
@@ -475,9 +471,8 @@ pub fn within_root(path: &Path, root: &str) -> bool {
     confined_path(path, root).is_some()
 }
 
-/// Keep the spelling the user chose when unrestricted; under a browse root,
-/// retain the resolved path that was actually checked so a later symlink
-/// change cannot redirect work outside the boundary.
+/// The path to store: the spelling the user chose when unrestricted, and the
+/// resolved path that was checked when under a browse root.
 pub(crate) fn confined_path(path: &Path, root: &str) -> Option<PathBuf> {
     if root.is_empty() {
         return Some(path.to_path_buf());
@@ -525,8 +520,8 @@ pub fn queue_add(
 
     let mut files: Vec<PathBuf> = Vec::new();
     match mode {
-        // An explicitly chosen file is queued as asked, even if it looks like
-        // one of our own outputs — the user pointed straight at it.
+        // An explicitly chosen file is queued as asked, even when it looks like
+        // one of our own outputs.
         "file" => {
             if !path.is_file() || !is_video_file(&path) {
                 return (400, json!({"error": "not a video file"}));
@@ -559,8 +554,8 @@ pub fn queue_add(
         other => return (400, json!({"error": format!("unknown mode '{other}'")})),
     }
 
-    // Symlinks are followed while scanning, so a link can lead back out of the
-    // browse root even when the folder given was inside it.
+    // Scanning follows symlinks, so a link can lead back out of the browse
+    // root even from a folder inside it. Each result is re-checked.
     files = files
         .into_iter()
         .filter_map(|path| confined_path(&path, &browse_root))
@@ -579,7 +574,7 @@ pub fn queue_add(
 }
 
 /// Keep at most one recursive scan in flight, leaving the other HTTP workers
-/// available for dashboard polling and cancellation.
+/// free.
 struct RecursiveScanGuard(SharedState);
 
 impl RecursiveScanGuard {
@@ -678,9 +673,8 @@ pub fn fs_browse(shared: &SharedState, path: &str, show_hidden: bool) -> (u16, V
             continue;
         }
         let entry_path = entry.path();
-        // is_dir/is_file follow symlinks: media libraries are routinely
-        // assembled out of them, so they are listed like anything else. A
-        // symlink escaping the browse root is rejected on the way in.
+        // is_dir/is_file follow symlinks, so linked media is listed like
+        // anything else. One escaping the browse root is rejected on the way in.
         if entry_path.is_dir() {
             if within_root(&entry_path, &browse_root) {
                 dirs.push(json!({"name": name, "symlink": entry_path.is_symlink()}));
@@ -717,10 +711,8 @@ pub fn fs_browse(shared: &SharedState, path: &str, show_hidden: bool) -> (u16, V
     )
 }
 
-/// Serialize the configuration with the auth token blanked out.
-///
-/// The token is what guards this endpoint, so handing it back would let anyone
-/// who reached the API once walk away with the credential itself.
+/// Serialize the configuration with the auth token blanked out. The token
+/// guards this endpoint and never travels back out of it.
 fn redacted(config: &AppConfig) -> Value {
     let mut value = serde_json::to_value(config).unwrap_or_else(|_| json!({}));
     if let Some(token) = value.pointer_mut("/daemon/auth_token") {
@@ -729,11 +721,9 @@ fn redacted(config: &AppConfig) -> Value {
     value
 }
 
-/// The web UI's strings, resolved for the configured language.
-///
-/// A flat `key -> text` map of [`crate::i18n::WEB_KEYS`] only. The language is
-/// whatever the config says, exactly as for the TUI: there is no per-request
-/// or per-client override, so this is not content-negotiated.
+/// The web UI's strings, resolved for the configured language: a flat
+/// `key -> text` map of [`crate::i18n::WEB_KEYS`]. Not content-negotiated —
+/// the language comes from the config, as it does for the TUI.
 pub fn strings(shared: &SharedState) -> Value {
     let lang = lock(shared).config.language;
     let mut map: serde_json::Map<String, Value> = crate::i18n::WEB_KEYS
@@ -741,9 +731,8 @@ pub fn strings(shared: &SharedState) -> Value {
         .map(|(key, msg)| ((*key).to_string(), Value::from(crate::i18n::t(lang, *msg))))
         .collect();
 
-    // The page sets `<html lang>` from this, which is what tells a screen
-    // reader which voice to read it in. Taken from the same serde rename the
-    // config file uses, so there is no second list of codes to fall behind.
+    // The page sets `<html lang>` from this. Taken from the serde rename the
+    // config file uses, so there is no second list of codes.
     let code = serde_json::to_value(lang)
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
@@ -758,11 +747,8 @@ pub fn settings_get(shared: &SharedState) -> Value {
 }
 
 /// Read a client-supplied configuration, keeping the live `[daemon]` block.
-///
-/// `browse_root` confines the file browser and `auth_token` guards every
-/// endpoint here, so a client able to rewrite them could widen its own access —
-/// and bind address and port need a restart regardless. Those stay editable
-/// from the config file and the TUI only.
+/// `browse_root`, `auth_token`, bind address and port stay editable from the
+/// config file and the TUI only.
 fn merged_settings(body: &Value, live: &DaemonConfig) -> Result<AppConfig, String> {
     let mut config: AppConfig =
         serde_json::from_value(body.clone()).map_err(|e| format!("invalid settings: {e}"))?;
@@ -886,7 +872,7 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
-    /// An empty root is unrestricted; a configured one is escape-proof.
+    /// An empty root allows everything; a configured one confines to itself.
     #[test]
     fn browse_root_confines_paths() {
         let dir = std::env::temp_dir();
@@ -971,7 +957,7 @@ mod tests {
             }
         }
 
-        /// The token guards this endpoint, so it never travels back out of it.
+        /// The auth token is never included in a config response.
         #[test]
         fn the_auth_token_is_never_served() {
             let config = AppConfig {
@@ -984,8 +970,7 @@ mod tests {
             assert_eq!(value["daemon"]["browse_root"], json!("/media"));
         }
 
-        /// A client cannot unlock the filesystem it is confined to, nor clear
-        /// the credential standing between it and the API.
+        /// A client cannot change `browse_root` or `auth_token`.
         #[test]
         fn the_daemon_block_survives_a_hostile_post() {
             let mut hostile = serde_json::to_value(AppConfig::default()).unwrap();
@@ -1127,9 +1112,7 @@ mod tests {
                 .collect()
         }
 
-        /// A client cannot mark a track for Opus without also selecting it:
-        /// the resulting plan drives per-stream codec options by position, so
-        /// an unselected index would land the option on the wrong stream.
+        /// Opus indices are kept a subset of the selected tracks.
         #[test]
         fn opus_indices_are_confined_to_selected_tracks() {
             let (shared, id) = shared_with_job();
@@ -1209,8 +1192,7 @@ mod tests {
             assert!(matches!(remaining.status, JobStatus::Ready));
         }
 
-        /// A job that is already encoding refuses edits: its tracks are
-        /// baked into the running `FFmpeg` command.
+        /// A job that is already encoding refuses track edits.
         #[test]
         fn encoding_jobs_refuse_track_edits() {
             let (shared, id) = shared_with_job();
@@ -1225,10 +1207,8 @@ mod tests {
             );
         }
 
-        /// The remux flag survives a round trip — and takes the output path
-        /// with it, since a remux keeps the source container and its own
-        /// suffix. Storing the flag without regenerating the path would leave
-        /// the job pointing at the name the encode branch would have used.
+        /// The remux flag round-trips, and the output path is regenerated with
+        /// it: a remux keeps the source container and its own suffix.
         #[test]
         fn remux_only_round_trips_and_renames_the_output() {
             let (shared, id) = shared_with_job();
@@ -1263,8 +1243,7 @@ mod tests {
             );
         }
 
-        /// Absent means unchanged: a client that only knows about tracks must
-        /// not silently clear a remux decision it never offered.
+        /// An absent `remux` field leaves the stored decision unchanged.
         #[test]
         fn omitting_remux_only_leaves_it_alone() {
             let (shared, id) = shared_with_job();
@@ -1293,9 +1272,8 @@ mod tests {
             assert!(lock(&shared).queue.job_by_id(id).unwrap().dv_mode.is_none());
         }
 
-        /// Only SVT-AV1 can write the DV RPU. Asking a hardware encoder to
-        /// keep DV would silently produce a file without it, so it is refused
-        /// rather than accepted and quietly downgraded.
+        /// Keeping DV is refused on any encoder but SVT-AV1, which is the only
+        /// one that can write the RPU.
         #[test]
         fn keeping_dv_is_refused_when_the_encoder_cannot_write_the_rpu() {
             let (shared, id) = shared_with_dv_job(Encoder::Nvenc, Some(8));
@@ -1308,7 +1286,7 @@ mod tests {
                 body["error"]
             );
 
-            // The UI is told the same thing up front, so it need not guess.
+            // The UI is told the same up front.
             let offered = job_tracks(&shared, &id.to_string()).1;
             assert_eq!(offered["dv"]["can_keep"], json!(false));
             assert_eq!(offered["dv"]["mode"], json!("hdr10"));
@@ -1347,8 +1325,7 @@ mod tests {
             assert_eq!(job_tracks(&shared, &id.to_string()).1["dv"], json!(null));
         }
 
-        /// Turning remux off commits the job to a real encode, which is the
-        /// point at which a DV source needs a decision the analyzer skipped.
+        /// Turning remux off on a DV source resolves the DV mode.
         #[test]
         fn leaving_remux_resolves_a_pending_dv_decision() {
             let (shared, id) = shared_with_dv_job(Encoder::SvtAv1, Some(5));
@@ -1357,11 +1334,11 @@ mod tests {
             let (code, body) = job_tracks_set(&shared, &json!({"id": id, "remux_only": false}));
 
             assert_eq!(code, 200);
-            // Profile 5 has no HDR10-compatible base layer, so it tone-maps.
+            // Profile 5 has no HDR10-compatible base layer.
             assert_eq!(body["dv_mode"], json!("hdr10"));
         }
 
-        /// The encoding guard covers the new options too, not just tracks.
+        /// The encoding guard covers the per-job options, not just tracks.
         #[test]
         fn encoding_jobs_refuse_option_edits() {
             let (shared, id) = shared_with_dv_job(Encoder::SvtAv1, Some(8));

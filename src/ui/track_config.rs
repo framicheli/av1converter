@@ -28,9 +28,8 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             return;
         };
 
-        // Resolving the selection here rather than re-deriving it means the row
-        // shows exactly the bitrate the encoder will be asked for, including
-        // the already-Opus tracks that are quietly left alone.
+        // Resolved so the row shows the bitrate the encoder is actually asked
+        // for, including already-Opus tracks, which are left alone.
         let plan = job
             .track_selection
             .resolve(&job.audio_tracks, &audio_config);

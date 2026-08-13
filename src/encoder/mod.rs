@@ -59,9 +59,8 @@ pub fn run_encoding_pipeline(
             "Source changed since it was analyzed; remove and add it again".to_string(),
         );
     }
-    // Keep the original file open and fingerprinted for the entire pipeline.
-    // Auto-delete must never remove a replacement that appeared at the path
-    // while a long encode or VMAF run was in progress.
+    // The original stays open and fingerprinted for the whole pipeline, so a
+    // file that replaces it at the same path is not taken for the original.
     let _source_guard = if config.quality.delete_source_on_success {
         match File::open(input) {
             Ok(file)
@@ -121,9 +120,8 @@ pub fn run_encoding_pipeline(
 
     match encode_result {
         EncodeResult::Success => {
-            // VMAF and source deletion refer to the output by path. Remember
-            // the file the encoder actually placed there so a replacement
-            // cannot be verified and then left behind after deleting source.
+            // VMAF and source deletion refer to the output by path, so the
+            // file the encoder placed there is remembered and re-checked.
             let output_identity = config
                 .quality
                 .delete_source_on_success

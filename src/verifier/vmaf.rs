@@ -9,9 +9,8 @@ use tracing::info;
 
 static VMAF_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Escape a value going into a filtergraph argument. `:` separates options and
-/// `\`, `'`, `[`, `]`, `,` and `;` are all meaningful to the parser, so a temp
-/// directory containing any of them would otherwise break the graph.
+/// Escape a value going into a filtergraph argument: `:` separates options, and
+/// `\`, `'`, `[`, `]`, `,` and `;` are all meaningful to the parser.
 fn escape_filter_value(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
@@ -105,11 +104,9 @@ impl std::fmt::Display for VmafResult {
     }
 }
 
-/// Calculate VMAF score between original and encoded video.
-///
-/// A VMAF pass over a feature-length file takes minutes, so it honours
-/// `cancel_flag` the same way encoding does: the ffmpeg process is killed and
-/// its log file cleaned up rather than left running past shutdown.
+/// Calculate VMAF score between original and encoded video. Honours
+/// `cancel_flag` as encoding does: the ffmpeg process is killed and its log
+/// file cleaned up.
 #[allow(clippy::too_many_lines)]
 pub fn calculate_vmaf(
     original: &Path,
@@ -156,8 +153,8 @@ pub fn calculate_vmaf(
         hdr_type.display_string()
     );
 
-    // stderr goes to a file rather than a pipe: a full pipe buffer would block
-    // ffmpeg forever while nothing is reading it.
+    // stderr goes to a file, not a pipe: nothing here reads it while ffmpeg
+    // runs, and a full pipe buffer blocks the child.
     let stderr_path = crate::utils::scratch_path(&format!(
         "av1c_vmaf_stderr_{}_{}.txt",
         std::process::id(),

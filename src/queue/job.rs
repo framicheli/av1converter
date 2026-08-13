@@ -7,11 +7,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tracing::warn;
 
-/// Filesystem identity captured while a source is analyzed.
-///
-/// The encoder checks it again before doing any work and before an automatic
-/// source deletion, so replacing a file at the same path cannot encode stale
-/// metadata or delete the replacement.
+/// Filesystem identity captured while a source is analyzed. The encoder
+/// re-checks it before doing any work and before an automatic source deletion,
+/// so a file replaced at the same path is detected.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceIdentity {
     len: u64,
@@ -63,13 +61,8 @@ pub enum JobStatus {
     AwaitingConfig,
     /// Ready to encode
     Ready,
-    /// Currently encoding.
-    ///
-    /// The percentage is deliberately not persisted. A reloaded `Encoding` job
-    /// is one the daemon died in the middle of, and it restarts from zero, so
-    /// the number has no meaning in the file — while persisting it would
-    /// rewrite the queue on disk several times a second for the whole length
-    /// of every encode.
+    /// Currently encoding. The percentage is not persisted: a reloaded
+    /// `Encoding` job restarts from zero.
     Encoding {
         #[serde(skip)]
         progress: f64,
@@ -202,26 +195,22 @@ impl EncodingJob {
 
         let mut output = parent.join(format!("{stem}{suffix}.{container}"));
         if output == self.path {
-            // A misconfigured suffix must never aim the output at the source:
-            // FFmpeg refuses to edit in place, and the failed-encode cleanup
-            // would then be pointed at the user's original file.
+            // The output never lands on the source, whatever the suffix and
+            // container add up to.
             let fallback = crate::config::OutputConfig::default().suffix;
             output = parent.join(format!("{stem}{fallback}.{container}"));
         }
         self.output_path = Some(output);
     }
 
-    /// Bytes saved and the size change as a percentage, if both sizes are known.
-    ///
-    /// The percentage is negative when the encode came out *larger* than the
-    /// source, which does happen on already-efficient input; reporting it as a
-    /// flat 0% would quietly hide that.
+    /// Bytes saved and the size change as a percentage, if both sizes are
+    /// known. The percentage is negative when the encode came out larger than
+    /// the source.
     pub fn size_reduction(&self) -> Option<(u64, f64)> {
         match (self.source_size, self.output_size) {
             (Some(source), Some(output)) if source > 0 => {
                 let saved = source.saturating_sub(output);
-                // u128 keeps the ratio exact and avoids the u64→f64 precision
-                // lint; the result is a percentage, so it stays small.
+                // u128 keeps the ratio exact; the result is a percentage.
                 let percent = if output > source {
                     let grown = output - source;
                     let pct =
@@ -239,12 +228,9 @@ impl EncodingJob {
     }
 }
 
-/// Recursively collect video files under `dir`.
-///
-/// Symlinks are followed — media libraries are routinely assembled out of them
-/// — so directories and files are both tracked by their resolved path to keep a
-/// link cycle from recursing forever and to list a file reachable by two routes
-/// only once.
+/// Recursively collect video files under `dir`. Symlinks are followed, and
+/// directories and files are tracked by resolved path: link cycles terminate
+/// and a file reachable by two routes is listed once.
 pub fn collect_video_files(dir: &Path, paths: &mut Vec<PathBuf>) {
     collect_video_files_impl(dir, paths, None);
 }
@@ -319,8 +305,7 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
         let parent = output.parent().unwrap_or(Path::new("."));
         let stem = output.file_stem().unwrap_or_default().to_string_lossy();
         let extension = output.extension().map(|ext| ext.to_string_lossy());
-        // Bounded: a thousand files of one name in one directory is a mistake
-        // somewhere else, and silently counting to `i32::MAX` would only hide it.
+        // Bounded rather than counting up indefinitely.
         let free = (2..1000)
             .map(|n| {
                 let name = extension
@@ -336,9 +321,8 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
             used.insert(candidate.clone());
             job.output_path = Some(candidate);
         } else {
-            // Left pointing at the taken path on purpose: the encoder refuses to
-            // overwrite an existing output, so the job fails loudly instead of
-            // quietly writing over something.
+            // Left pointing at the taken path: the encoder refuses to overwrite
+            // an existing output, so the job fails rather than clobbering it.
             warn!(
                 "No free output name near {} for {}",
                 output.display(),
@@ -422,8 +406,7 @@ mod tests {
     use super::*;
     use crate::config::OutputConfig;
 
-    /// The output must never land on the source file, whatever the suffix and
-    /// container add up to: the failed-encode cleanup would delete it.
+    /// No suffix and container combination puts the output on the source file.
     #[test]
     fn output_path_never_collides_with_the_source() {
         let mut job = EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
@@ -458,8 +441,8 @@ mod tests {
         );
     }
 
-    /// Same-named sources in a shared output directory must not overwrite one
-    /// another, and no output may overwrite another queued source.
+    /// Same-named sources in one output directory get distinct outputs, and no
+    /// output collides with another queued source.
     #[test]
     fn output_paths_are_unique_across_the_queue() {
         let config = OutputConfig {
@@ -528,8 +511,8 @@ mod tests {
         );
     }
 
-    /// A symlink loop must not hang the scan, and a file reachable by two
-    /// routes is collected once.
+    /// A symlink loop terminates, and a file reachable by two routes is
+    /// collected once.
     #[test]
     fn recursive_collection_survives_symlink_cycles() {
         let root = std::env::temp_dir().join("av1c_scan_test");
@@ -573,7 +556,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
-    /// Remux keeps the source container, so it needs its own distinct suffix.
+    /// A remux output uses the remux suffix and the source container.
     #[test]
     fn remux_output_differs_from_the_source() {
         let mut job = EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));

@@ -32,12 +32,9 @@ pub fn serve(
 ) {
     while !shutdown.load(Ordering::SeqCst) {
         match server.recv_timeout(Duration::from_millis(500)) {
-            // A panic here must cost one request, not one of the workers. These
-            // threads are never replaced, so letting the unwind escape would
-            // quietly take the daemon from four handlers to none — and the
-            // mutex poison recovery in `state::lock` would hide the evidence.
-            // The request is consumed either way, so the client sees a dropped
-            // connection rather than a hung one.
+            // A panic costs one request, not the worker thread, which is never
+            // replaced. The request is consumed either way, so the client sees
+            // a dropped connection rather than a hung one.
             Ok(Some(request)) => {
                 if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     handle_request(request, shared, probe_tx);
@@ -329,9 +326,7 @@ mod tests {
         assert_eq!(query_param("", "path"), None);
     }
 
-    /// Only names a browser cannot repoint at us are trusted while the API is
-    /// unguarded: an attacker's `evil.com` rebound to 127.0.0.1 is the whole
-    /// reason this check exists.
+    /// Only IP literals and `localhost` count as pinned; real hostnames do not.
     #[test]
     fn only_unrebindable_hosts_are_pinned() {
         assert!(host_is_pinned("127.0.0.1:8399"));

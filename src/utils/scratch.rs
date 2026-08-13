@@ -4,21 +4,14 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tracing::warn;
 
-/// Directory to put progress files, ffmpeg stderr and VMAF logs in.
+/// Private directory for progress files, ffmpeg stderr and VMAF logs, created
+/// on first use and reused for the life of the process.
 ///
-/// These all have predictable names, and the system temp directory is usually
-/// world-writable: creating them there directly lets anyone else on the machine
-/// pre-plant a symlink under the name we are about to use and have us truncate
-/// whatever it points at. `mkdir` refuses to follow a final symlink and fails
-/// outright if the name is taken, so a directory we successfully created is one
-/// nobody else owns — and every name inside it is then ours alone.
-///
-/// The name is random rather than derived from the PID, so it cannot be
-/// occupied in advance to force a failure. `None` means no private directory
-/// could be created at all; callers must fail rather than fall back to the
-/// shared directory, which is the exact exposure this exists to close.
-///
-/// Created on first use and reused for the life of the process.
+/// Created with `mkdir` under a random name in the system temp directory:
+/// `mkdir` will not follow a final symlink and fails if the name is taken, so a
+/// directory created this way is owned by nobody else, and the random name
+/// cannot be occupied in advance. `None` means none could be created; callers
+/// fail rather than fall back to the shared temp directory.
 pub fn scratch_dir() -> Option<&'static Path> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -51,13 +44,11 @@ pub fn scratch_path(name: &str) -> Result<PathBuf, String> {
     })
 }
 
-/// Create `path` (and its parents) if missing, and make sure only this user can
-/// enter it.
+/// Create `path` (and its parents) if missing, restricted to this user.
 ///
-/// For directories that legitimately persist between runs — the data directory
-/// holding the daemon log, the PID file and the debug log. Those files record
-/// every path the tool touches, and the log appenders offer no way to set a
-/// mode per file, so the directory is where the restriction goes.
+/// For directories that persist between runs — the data directory holding the
+/// daemon log, the PID file and the debug log. The log appenders cannot set a
+/// mode per file, so the restriction goes on the directory.
 pub fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)?;
     #[cfg(unix)]
@@ -75,8 +66,7 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        // Set at creation rather than after, so there is no window in which the
-        // directory exists with wider permissions.
+        // Set at creation, leaving no window at wider permissions.
         builder.mode(0o700);
     }
     builder.create(path)
@@ -114,8 +104,7 @@ mod tests {
         }
     }
 
-    /// A name already taken is refused rather than reused — including when it
-    /// was taken by a symlink, which is the attack this exists to stop.
+    /// A name already taken is refused, including when taken by a symlink.
     #[test]
     fn an_occupied_name_is_refused() {
         let base = std::env::temp_dir().join(format!("av1c_scratch_{}", std::process::id()));

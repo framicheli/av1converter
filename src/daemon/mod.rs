@@ -24,8 +24,8 @@ use tracing::{info, warn};
 const TICK: Duration = Duration::from_millis(250);
 /// How long shutdown waits for the worker to acknowledge cancellation.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
-/// Requests are served concurrently: a recursive scan or a listing of a slow
-/// network mount would otherwise stall the dashboard poll behind it.
+/// Number of HTTP worker threads, so a slow scan or listing does not stall the
+/// dashboard poll behind it.
 const SERVER_THREADS: usize = 4;
 
 /// Run the headless daemon: web server + encoding orchestrator.
@@ -53,7 +53,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     let lang = config.language;
     let listen = config.daemon.listen_address();
 
-    // Authentication does not encrypt the token or the media paths in transit.
+    // Plain HTTP: the token and media paths travel unencrypted.
     if config.daemon.binds_publicly() {
         warn!("Daemon is network-facing over plain HTTP; use HTTPS termination or a trusted LAN");
     }
@@ -65,15 +65,9 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     let (probe_tx, probe_rx) = mpsc::channel::<(u64, String)>();
     let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>();
 
-    // One long-lived prober rather than a thread per add request: each probe
-    // forks ffprobe of its own, and a client adding several folders at once
-    // must not be able to decide how many of those run at a time.
-    //
-    // Because it is shared, it must not be possible to kill: a panic on one
-    // malformed file would otherwise take analysis down for the rest of the
-    // daemon's life, leaving every later file stuck in `Analyzing` with nothing
-    // reported. The panic is caught, blamed on the file that caused it, and the
-    // next one is picked up.
+    // One long-lived prober rather than a thread per add request, so a client
+    // does not get to decide how many ffprobe children run at once. A panic is
+    // caught, blamed on the file that caused it, and the next one picked up.
     let shutdown = Arc::new(AtomicBool::new(false));
     let analysis_handle = {
         let analysis_tx = analysis_tx.clone();
@@ -114,10 +108,9 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     }
 
     let server = Arc::new(server::bind(&listen)?);
-    // Deliberately the bare address, not `url()`: in background mode this
-    // process's stdout is the daemon log file, and the token has no business
-    // being written there. The tokenised URL is printed to the terminal by
-    // whoever started us.
+    // The bare address, not `url()`: stdout is the daemon log file in
+    // background mode, and the token stays out of it. The tokenised URL is
+    // printed to the terminal by whoever started us.
     println!("{} http://{listen}", t(lang, Msg::DaemonListening));
     info!("Web UI listening on http://{listen}");
     let server_handles: Vec<_> = (0..SERVER_THREADS)
@@ -185,9 +178,8 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         }
     }
 
-    // Cancellation changes every unfinished job to a terminal state. Save
-    // after applying it, otherwise a cleanly stopped daemon resurrects those
-    // jobs as interrupted work on its next launch.
+    // Cancellation moves every unfinished job to a terminal state, and is
+    // saved so the next launch does not resume them as interrupted work.
     persist_queue(
         &shared,
         &queue_file,
@@ -198,18 +190,16 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     for handle in server_handles {
         let _ = handle.join();
     }
-    // The analyzer owns ffprobe children. Closing its input and joining it is
-    // what guarantees a normal daemon stop cannot leave one behind.
+    // The analyzer owns ffprobe children; closing its input and joining it
+    // leaves none behind.
     drop(probe_tx);
     let _ = analysis_handle.join();
     Ok(())
 }
 
-/// Build the starting state from the queue this daemon last wrote.
-///
-/// Returns the state to run with, and the jobs that have to be handed back to
-/// the prober — reloaded files that were never analyzed, which nothing else
-/// would ever move out of `Pending`.
+/// Build the starting state from the queue this daemon last wrote. Returns the
+/// state to run with, and the reloaded files that were never analyzed, for the
+/// caller to hand back to the prober.
 fn restore_state(
     config: AppConfig,
     queue_file: &std::path::Path,
@@ -223,8 +213,8 @@ fn restore_state(
             Some(parent.join(output.file_name()?))
         });
         if source.is_none() || (job.output_path.is_some() && output.is_none()) {
-            // The queue API includes paths, so even completed history must not
-            // disclose a location excluded by a newly tightened root.
+            // The queue API includes paths, so completed history is dropped
+            // too when a newly tightened root excludes it.
             job.path = std::path::PathBuf::from("<outside browse_root>");
             job.output_path = None;
             if !is_terminal(&job.status) {
@@ -236,8 +226,7 @@ fn restore_state(
         } else if let Some(source) = source
             && !browse_root.is_empty()
         {
-            // Keep using the exact resolved paths that passed confinement.
-            // Retaining a symlink spelling would let it be repointed later.
+            // The resolved paths that passed confinement, not the spellings.
             job.path = source;
             if job.output_path.is_some() {
                 job.output_path = output;
@@ -269,12 +258,10 @@ fn restore_state(
     (state, reprobe)
 }
 
-/// Write the queue out if it has changed since the last write.
-///
-/// Comparing the serialized form is what makes this the only call site: every
-/// HTTP handler and every worker message mutates the queue behind the mutex,
-/// and none of them has to remember to save. `JobStatus::Encoding` does not
-/// persist its percentage, so a running encode does not churn the file.
+/// Write the queue out if its serialized form changed since the last write.
+/// The only save call site: handlers and worker messages mutate the queue
+/// behind the mutex without saving. `JobStatus::Encoding` does not persist its
+/// percentage, so a running encode does not churn the file.
 ///
 // ponytail: re-serializes the queue once per tick to compare. That is O(jobs)
 // four times a second; if a very large queue ever makes it show up, set a
@@ -301,8 +288,7 @@ fn persist_queue(
             *last_saved = json;
             *last_warning = None;
         }
-        // Keep retrying transient failures, but do not fill the log four times
-        // a second while a disk or mount remains unavailable.
+        // Retried every tick, but logged only once per outage.
         Err(e) => {
             if last_warning.is_none_or(|at| at.elapsed() >= Duration::from_mins(1)) {
                 warn!("Could not save the queue to {}: {e}", path.display());
@@ -354,10 +340,8 @@ fn add_paths(
         }
     }
 
-    // A job handed over is a job that will be reported on. If the prober is
-    // gone the queue must say so, rather than leaving jobs in `Analyzing`
-    // forever — a status that never resolves and, being non-terminal, would go
-    // on blocking every future attempt to add the same file.
+    // A dead prober is reported on the jobs themselves, which would otherwise
+    // sit in the non-terminal `Analyzing`, blocking re-adds of the same file.
     let mut orphaned: Vec<u64> = Vec::new();
     let mut requests = to_analyze.into_iter();
     for request in requests.by_ref() {
@@ -416,8 +400,7 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
             job.remux_only = is_av1;
             auto_select_tracks(job, &track_config, &audio_config);
             job.generate_output_path(&output_config);
-            // Mirrors `App::maybe_open_dv_dialog`; shared with the web API so
-            // the two cannot drift apart.
+            // Mirrors `App::maybe_open_dv_dialog`, shared with the web API.
             if !is_av1 && hdr_type == HdrType::DolbyVision {
                 job.dv_mode = Some(api::resolved_dv_mode(encoder, dv_profile));
             }
@@ -494,10 +477,8 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         }
     }
 
-    // Progress and ETA are reported for the session that is actually running.
-    // Carrying totals or a start time across sessions would leave the dashboard
-    // measuring against jobs that finished hours ago, with all the idle time in
-    // between counted as encoding time.
+    // Totals and start time are per-session, never carried across one, so
+    // progress and ETA measure only the run in flight.
     state.queue.state.total_jobs_to_encode = worker_jobs.len();
     state.queue.state.encoding_progress_done = 0;
     state.queue.state.start_time = Some(Instant::now());
@@ -513,11 +494,9 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
     let config = state.config.clone();
     let tx = worker_tx.clone();
     thread::spawn(move || {
-        // `run_worker` already contains a panic per job, so this is the
-        // last-resort net for a panic outside one. It matters because the
-        // channel cannot signal it: this daemon keeps its own sender alive, so
-        // a dead worker never disconnects, it just stops talking — and the
-        // session would stay open forever, blocking every later one.
+        // `run_worker` catches a panic per job; this covers one outside any
+        // job. The channel cannot report it — this daemon holds its own sender
+        // alive, so a dead worker stops talking without ever disconnecting.
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_worker(worker_jobs, &config, &cancel_flag, &tx);
         }))
@@ -600,8 +579,7 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
                         reason: "Cancelled".to_string(),
                     };
                     state.queue.state.skipped_count += 1;
-                    // A cancelled job is done as far as the session goes, so
-                    // progress still reaches 100% instead of stalling short.
+                    // A cancelled job counts as done for the session.
                     state.queue.state.encoding_progress_done += 1;
                 }
             }

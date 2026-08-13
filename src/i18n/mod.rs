@@ -2296,11 +2296,9 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
 /// The web UI's string table: the JSON key each element and script uses, and
 /// the [`Msg`] it resolves to.
 ///
-/// Only this subset is served to the browser — the TUI's several hundred other
-/// keys have no business crossing the wire on every page load. Keys reused
-/// from the TUI point at the existing [`Msg`] rather than a near-duplicate, so
-/// the two interfaces cannot drift into saying different things about the same
-/// concept.
+/// Only this subset is served to the browser, not the TUI's several hundred
+/// other keys. Keys reused from the TUI point at the existing [`Msg`] rather
+/// than a near-duplicate.
 pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("add_file", Msg::WebAddFile),
     ("add_folder", Msg::WebAddFolder),
@@ -2445,8 +2443,7 @@ mod tests {
     use super::{Language, WEB_KEYS, t};
     use std::collections::HashSet;
 
-    /// The web UI looks every string up by name, so a duplicate key would mean
-    /// one of the two silently never reaches the page.
+    /// Web keys are looked up by name, so each must be unique.
     #[test]
     fn web_keys_are_unique() {
         let mut seen: HashSet<&str> = HashSet::new();
@@ -2455,17 +2452,12 @@ mod tests {
         }
     }
 
-    /// Every served key has to resolve in every language. The match in `t` is
-    /// exhaustive over `Msg`, so a missing arm cannot compile — but an arm
-    /// left as an empty string would still ship a blank label, and a key that
-    /// resolves to the same English text in all six is a translation someone
-    /// forgot rather than one that genuinely does not vary.
+    /// Every served key resolves to a non-empty string in every language, and
+    /// to something other than the English text in at least one of them.
     #[test]
     fn every_web_key_is_translated() {
-        // The only strings that genuinely do not vary: the rate-factor tier
-        // labels are technical abbreviations ("RF 1080p HDR") written the same
-        // way in every locale. Everything else served to the browser has to
-        // differ somewhere across the six, or it is a translation nobody wrote.
+        // The rate-factor tier labels ("RF 1080p HDR") are technical
+        // abbreviations, written the same way in every locale.
         const INVARIANT: &[&str] = &[
             "rf_full_hd",
             "rf_full_hd_dv",
@@ -2497,8 +2489,7 @@ mod tests {
         }
     }
 
-    /// Placeholders are substituted by the browser, so a translation that drops
-    /// or renames one would render a literal `{n}` at the user.
+    /// Every translation keeps the placeholders the browser substitutes.
     #[test]
     fn placeholders_survive_every_translation() {
         for (key, msg) in WEB_KEYS {

@@ -411,8 +411,7 @@ pub struct AudioConfig {
     /// Opus bitrate allotted per channel, in kbps. The channel layout is never
     /// changed, so the stream bitrate is simply this times the channel count.
     pub opus_bitrate_per_channel: u16,
-    /// Leave tracks that are already Opus alone: re-encoding them would only
-    /// add generation loss.
+    /// Copy tracks that are already Opus instead of re-encoding them.
     pub skip_already_opus: bool,
 }
 

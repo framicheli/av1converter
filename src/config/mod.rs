@@ -70,9 +70,8 @@ impl AppConfig {
                     return config;
                 }
                 Err(e) => {
-                    // Never overwrite a file that failed to parse: a hand-edited
-                    // config with one typo would otherwise be silently replaced
-                    // by defaults, losing every setting in it.
+                    // A file that failed to parse is left untouched, not
+                    // overwritten with defaults.
                     warn!("Failed to load config: {e:?}. Using defaults.");
                     eprintln!(
                         "Could not parse {}: {e}\nUsing defaults; the file was left untouched.",
@@ -201,24 +200,22 @@ impl AppConfig {
             preset.amf_quality = preset.amf_quality.min(hw_max);
             preset.film_grain = preset.film_grain.min(50);
         }
-        // The suffix and container become part of the output filename, so a
-        // stray path separator would write outside the intended directory and
-        // an empty suffix would aim the output at the source file itself.
+        // The suffix and container become part of the output filename, so path
+        // separators are stripped out of both.
         strip_path_separators(&mut self.output.suffix);
         strip_path_separators(&mut self.output.container);
         self.output.container = self.output.container.trim_matches('.').to_string();
         if self.output.container.is_empty() {
             self.output.container = OutputConfig::default().container;
         }
-        // Writing next to the source with no suffix would collide with it.
+        // Next to the source, an empty suffix collides with the input.
         if self.output.same_directory && self.output.suffix.is_empty() {
             self.output.suffix = OutputConfig::default().suffix;
         }
         if self.daemon.port == 0 {
             self.daemon.port = DaemonConfig::default().port;
         }
-        // An address that cannot be parsed falls back to loopback rather than
-        // to a wildcard: a typo must never widen who can reach the daemon.
+        // An unparseable address falls back to loopback, never a wildcard.
         if self
             .daemon
             .bind_address
@@ -227,8 +224,8 @@ impl AppConfig {
         {
             self.daemon.bind_address = DaemonConfig::default().bind_address;
         }
-        // Opus bitrate is multiplied by the channel count, so an absurd
-        // per-channel value would ask libopus for a rate it rejects outright.
+        // Multiplied by the channel count, so it is clamped to a rate libopus
+        // accepts.
         self.audio.opus_bitrate_per_channel = self
             .audio
             .opus_bitrate_per_channel
@@ -408,8 +405,7 @@ mod tests {
         );
     }
 
-    /// An empty suffix next to the source would make the output path collide
-    /// with the input file, so `sanitize` restores the default.
+    /// `sanitize` restores the default suffix when writing next to the source.
     #[test]
     fn empty_suffix_is_repaired_when_writing_next_to_the_source() {
         let mut cfg = AppConfig::default();
@@ -442,9 +438,8 @@ mod tests {
         assert_eq!(cfg.output.container, "mkv");
     }
 
-    /// Invalid daemon values are repaired by `sanitize`. An unparseable bind
-    /// address falls back to loopback, never to a wildcard: a typo must not
-    /// widen who can reach the daemon.
+    /// `sanitize` repairs invalid daemon values, falling back to loopback and
+    /// never to a wildcard.
     #[test]
     fn daemon_sanitize_repairs_invalid_values() {
         let mut cfg = AppConfig::default();

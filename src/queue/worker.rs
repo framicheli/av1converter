@@ -29,7 +29,7 @@ pub enum WorkerMessage {
     Cancelled,
     /// Source file was deleted after successful encoding
     SourceDeleted(usize),
-    /// Source file was kept because VMAF was below the configured threshold
+    /// Source file was kept: VMAF was below the configured threshold
     SourceKeptLowVmaf(usize, f64),
 }
 
