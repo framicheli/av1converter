@@ -1,5 +1,6 @@
 use super::api;
 use super::state::SharedState;
+use crate::disc::worker::DiscEvent;
 use crate::error::AppError;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +29,7 @@ pub fn serve(
     server: &Server,
     shared: &SharedState,
     probe_tx: &Sender<(u64, String)>,
+    disc_tx: &Sender<DiscEvent>,
     shutdown: &AtomicBool,
 ) {
     while !shutdown.load(Ordering::SeqCst) {
@@ -37,7 +39,7 @@ pub fn serve(
             // a dropped connection rather than a hung one.
             Ok(Some(request)) => {
                 if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    handle_request(request, shared, probe_tx);
+                    handle_request(request, shared, probe_tx, disc_tx);
                 }))
                 .is_err()
                 {
@@ -121,7 +123,12 @@ fn has_json_content_type(headers: &[Header]) -> bool {
         .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
 }
 
-fn handle_request(mut request: Request, shared: &SharedState, probe_tx: &Sender<(u64, String)>) {
+fn handle_request(
+    mut request: Request,
+    shared: &SharedState,
+    probe_tx: &Sender<(u64, String)>,
+    disc_tx: &Sender<DiscEvent>,
+) {
     let url = request.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
 
@@ -187,6 +194,16 @@ fn handle_request(mut request: Request, shared: &SharedState, probe_tx: &Sender<
             Ok(body) => api::queue_remove(shared, &body),
             Err(resp) => resp,
         },
+        (Method::Get, "/api/discs") => api::discs_list(shared),
+        (Method::Post, "/api/discs/scan") => match read_json_body(&mut request) {
+            Ok(body) => api::discs_scan(shared, disc_tx, &body),
+            Err(resp) => resp,
+        },
+        (Method::Post, "/api/discs/rip") => match read_json_body(&mut request) {
+            Ok(body) => api::discs_rip(shared, disc_tx, &body),
+            Err(resp) => resp,
+        },
+        (Method::Post, "/api/discs/cancel") => api::discs_cancel(shared),
         (Method::Post, "/api/queue/cancel") => api::queue_cancel(shared),
         (Method::Post, "/api/queue/clear_finished") => api::queue_clear_finished(shared),
         (Method::Post, "/api/settings") => match read_json_body(&mut request) {
@@ -357,6 +374,72 @@ mod tests {
         assert!(has_json_content_type(&[json]));
         assert!(!has_json_content_type(&[text]));
         assert!(!has_json_content_type(&[]));
+    }
+
+    /// Every disc route sits behind the token, and none of them is a 404 once
+    /// the token is there.
+    #[test]
+    fn disc_routes_are_registered_and_token_guarded() {
+        use crate::config::AppConfig;
+        use crate::daemon::state::DaemonState;
+        use std::io::Write;
+        use std::net::TcpStream;
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex};
+
+        const TOKEN: &str = "a-token-long-enough-to-be-a-real-one";
+        let mut config = AppConfig::default();
+        config.daemon.auth_token = TOKEN.to_string();
+        let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(config)));
+        let server = Arc::new(bind("127.0.0.1:0").expect("an ephemeral port"));
+        let port = server.server_addr().to_ip().expect("an IP listener").port();
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (probe_tx, _probe_rx) = mpsc::channel();
+        let (disc_tx, _disc_rx) = mpsc::channel();
+        let worker = {
+            let server = server.clone();
+            let shared = shared.clone();
+            let shutdown = shutdown.clone();
+            std::thread::spawn(move || serve(&server, &shared, &probe_tx, &disc_tx, &shutdown))
+        };
+
+        let request = |method: &str, path: &str, token: Option<&str>| {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            let auth = token.map_or(String::new(), |t| format!("Authorization: Bearer {t}\r\n"));
+            write!(
+                stream,
+                "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}\
+                 Content-Type: application/json\r\nContent-Length: 2\r\n\
+                 Connection: close\r\n\r\n{{}}"
+            )
+            .expect("write");
+            let mut response = String::new();
+            std::io::Read::read_to_string(&mut stream, &mut response).expect("read");
+            response
+        };
+
+        let routes = [
+            ("GET", "/api/discs"),
+            ("POST", "/api/discs/scan"),
+            ("POST", "/api/discs/rip"),
+            ("POST", "/api/discs/cancel"),
+        ];
+        for (method, path) in routes {
+            let anonymous = request(method, path, None);
+            assert!(
+                anonymous.starts_with("HTTP/1.1 401"),
+                "{method} {path} answered an unauthenticated request: {anonymous}"
+            );
+            let authorized = request(method, path, Some(TOKEN));
+            assert!(
+                !authorized.starts_with("HTTP/1.1 404") && !authorized.starts_with("HTTP/1.1 401"),
+                "{method} {path} is not registered: {authorized}"
+            );
+        }
+
+        shutdown.store(true, Ordering::SeqCst);
+        worker.join().expect("the server thread");
     }
 
     #[test]

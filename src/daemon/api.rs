@@ -1,6 +1,7 @@
 use super::state::{SharedState, is_terminal, lock};
 use crate::analyzer::{DvMode, HdrType};
-use crate::config::{AppConfig, AudioConfig, DaemonConfig, Encoder, EncodingPreset};
+use crate::config::{AppConfig, AudioConfig, Encoder, EncodingPreset};
+use crate::disc::worker::DiscEvent;
 use crate::queue::{
     EncodingJob, JobStatus, collect_video_files, collect_video_files_within, is_video_file,
     make_output_paths_unique,
@@ -8,6 +9,7 @@ use crate::queue::{
 use crate::tracks::TrackSelection;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::Sender;
 
 /// Dashboard poll: overall daemon and encode-session status.
@@ -80,6 +82,36 @@ pub fn status(shared: &SharedState) -> Value {
         },
         "total_space_saved": { "bytes": saved_bytes, "human": saved_human },
         "current": current,
+        // Disc state rides along here; the dashboard already polls this.
+        "disc": disc_status(&state.disc),
+    })
+}
+
+fn disc_status(disc: &super::state::DiscSession) -> Value {
+    let titles: Vec<Value> = disc
+        .titles
+        .iter()
+        .map(|title| {
+            json!({
+                "id": title.id,
+                "name": title.name,
+                "duration_secs": title.duration.as_secs(),
+                "duration": crate::utils::format_duration(title.duration),
+                "size_bytes": title.size_bytes,
+                "size": crate::utils::format_file_size(title.size_bytes),
+                "chapters": title.chapters,
+                "tracks": title.tracks,
+            })
+        })
+        .collect();
+
+    json!({
+        "active": disc.active,
+        "scanning": disc.scanning,
+        "drive": disc.scanned_drive,
+        "disc_type": disc.disc_type,
+        "titles": titles,
+        "error": disc.error,
     })
 }
 
@@ -250,8 +282,8 @@ fn valid_indices(body: &Value, key: &str, known: &[usize]) -> Vec<usize> {
 
 /// Map one file's choices onto another file by track order. Extra target
 /// tracks keep their automatic selection instead of being silently dropped.
-// ponytail: order mapping targets same-layout batches; match language/title if
-// mixed-layout batches prove common enough to need a more complex rule.
+// Order mapping targets same-layout batches; matching language/title is the
+// upgrade for mixed-layout ones.
 fn mapped_selection(
     job: &EncodingJob,
     audio_modes: &[Option<bool>],
@@ -741,18 +773,204 @@ pub fn strings(shared: &SharedState) -> Value {
     map.into()
 }
 
+// Disc ripping. The drive is attached to this machine; the browser only ever
+// names ids this server handed out, never a path or a device.
+
+/// Every drive `MakeMKV` reports, and the label of whatever is loaded. The ids
+/// in the response are the only ones the other endpoints accept.
+pub fn discs_list(shared: &SharedState) -> (u16, Value) {
+    let (config, busy) = {
+        let state = lock(shared);
+        (state.config.clone(), state.disc.active)
+    };
+    if busy {
+        return (409, json!({"error": "a disc operation is already running"}));
+    }
+
+    let bin = match crate::disc::find_makemkvcon(&config) {
+        Ok(bin) => bin,
+        Err(e) => return disc_failure(&e, config.language),
+    };
+    // Listing takes a second or two and holds no lock.
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let drives = match crate::disc::list_drives(&bin, &cancel) {
+        Ok(drives) => drives,
+        Err(e) => return disc_failure(&e, config.language),
+    };
+
+    let payload: Vec<Value> = drives
+        .iter()
+        .map(|drive| {
+            json!({
+                "id": drive.id,
+                "name": drive.name,
+                "disc_label": drive.disc_label,
+            })
+        })
+        .collect();
+    lock(shared).disc.drives = drives;
+    (200, json!({ "drives": payload }))
+}
+
+/// Start scanning a drive. The titles arrive in `/api/status`.
+pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value) -> (u16, Value) {
+    let Some(drive) = body.get("drive").and_then(Value::as_u64).and_then(as_id) else {
+        return (400, json!({"error": "missing or invalid 'drive'"}));
+    };
+
+    let mut state = lock(shared);
+    if state.disc.active {
+        return (409, json!({"error": "a disc operation is already running"}));
+    }
+    if !state.disc.drives.iter().any(|known| known.id == drive) {
+        return (400, json!({"error": "unknown drive id"}));
+    }
+    let config = state.config.clone();
+    let bin = match crate::disc::find_makemkvcon(&config) {
+        Ok(bin) => bin,
+        Err(e) => return disc_failure(&e, config.language),
+    };
+
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    state.disc.cancel_flag = Some(cancel.clone());
+    state.disc.active = true;
+    state.disc.scanning = true;
+    state.disc.error = None;
+    state.disc.titles.clear();
+    state.disc.scanned_drive = Some(drive);
+    drop(state);
+
+    crate::disc::worker::spawn_scan(bin, drive, &cancel, disc_tx.clone());
+    (200, json!({"ok": true}))
+}
+
+/// Extract the named titles, one after another, into the staging directory.
+pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value) -> (u16, Value) {
+    let Some(drive) = body.get("drive").and_then(Value::as_u64).and_then(as_id) else {
+        return (400, json!({"error": "missing or invalid 'drive'"}));
+    };
+    let Some(requested) = body.get("titles").and_then(Value::as_array) else {
+        return (400, json!({"error": "missing 'titles'"}));
+    };
+    let ids: Option<Vec<u32>> = requested
+        .iter()
+        .map(|value| value.as_u64().and_then(as_id))
+        .collect();
+    let Some(ids) = ids.filter(|ids| !ids.is_empty()) else {
+        return (
+            400,
+            json!({"error": "'titles' must be a non-empty list of ids"}),
+        );
+    };
+
+    let mut state = lock(shared);
+    if state.disc.active {
+        return (409, json!({"error": "a disc operation is already running"}));
+    }
+    if state.disc.scanned_drive != Some(drive) {
+        return (
+            400,
+            json!({"error": "scan the drive before ripping from it"}),
+        );
+    }
+    // Only titles this server reported, and each of them once.
+    let mut titles = Vec::new();
+    for id in &ids {
+        let Some(title) = state.disc.titles.iter().find(|title| title.id == *id) else {
+            return (400, json!({"error": format!("unknown title id {id}")}));
+        };
+        if titles
+            .iter()
+            .any(|kept: &crate::disc::DiscTitle| kept.id == *id)
+        {
+            return (
+                400,
+                json!({"error": format!("title id {id} is listed twice")}),
+            );
+        }
+        titles.push(title.clone());
+    }
+    let Some(disc_drive) = state
+        .disc
+        .drives
+        .iter()
+        .find(|known| known.id == drive)
+        .cloned()
+    else {
+        return (400, json!({"error": "unknown drive id"}));
+    };
+
+    let config = state.config.clone();
+    if let Err(e) = crate::disc::staging::require_destination(&config) {
+        return disc_failure(&e, config.language);
+    }
+    let bin = match crate::disc::find_makemkvcon(&config) {
+        Ok(bin) => bin,
+        Err(e) => return disc_failure(&e, config.language),
+    };
+
+    // Each title is a queue job from the start, so a rip renders in the queue
+    // table like everything else. Its path is the title's name until the file
+    // it extracts to is known.
+    let job_ids: Vec<u64> = titles
+        .iter()
+        .map(|title| {
+            let mut job = EncodingJob::new(PathBuf::from(title.name.clone()));
+            job.status = JobStatus::Ripping { progress: 0.0 };
+            job.temporary = true;
+            state.queue.push(job)
+        })
+        .collect();
+
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    state.disc.cancel_flag = Some(cancel.clone());
+    state.disc.active = true;
+    state.disc.scanning = false;
+    state.disc.error = None;
+    state.disc.job_ids.clone_from(&job_ids);
+    drop(state);
+
+    crate::disc::worker::spawn_rips(bin, config, disc_drive, titles, &cancel, disc_tx.clone());
+    (200, json!({"ok": true, "jobs": job_ids}))
+}
+
+/// Stop the running scan or rip. The run reports its own cancellation.
+pub fn discs_cancel(shared: &SharedState) -> (u16, Value) {
+    lock(shared).disc.cancel();
+    (200, json!({"ok": true}))
+}
+
+/// Ids are `u32` on the wire; anything wider was never handed out.
+fn as_id(value: u64) -> Option<u32> {
+    u32::try_from(value).ok()
+}
+
+/// A disc failure in the user's language, with the status that fits it.
+fn disc_failure(error: &crate::disc::DiscError, lang: crate::i18n::Language) -> (u16, Value) {
+    let status = match error {
+        crate::disc::DiscError::NotInstalled
+        | crate::disc::DiscError::NoDrive
+        | crate::disc::DiscError::DriveEmpty
+        | crate::disc::DiscError::NoDestination => 400,
+        crate::disc::DiscError::PermissionDenied => 403,
+        _ => 500,
+    };
+    (status, json!({"error": error.message(lang)}))
+}
+
 /// Read the full configuration, minus the auth token.
 pub fn settings_get(shared: &SharedState) -> Value {
     redacted(&lock(shared).config)
 }
 
-/// Read a client-supplied configuration, keeping the live `[daemon]` block.
-/// `browse_root`, `auth_token`, bind address and port stay editable from the
-/// config file and the TUI only.
-fn merged_settings(body: &Value, live: &DaemonConfig) -> Result<AppConfig, String> {
+/// Read a client-supplied configuration, keeping the live `[daemon]` and
+/// `[disc]` blocks. `browse_root`, `auth_token`, bind address, port and the
+/// path to `makemkvcon` stay editable from the config file and the TUI only.
+fn merged_settings(body: &Value, live: &AppConfig) -> Result<AppConfig, String> {
     let mut config: AppConfig =
         serde_json::from_value(body.clone()).map_err(|e| format!("invalid settings: {e}"))?;
-    config.daemon = live.clone();
+    config.daemon = live.daemon.clone();
+    config.disc = live.disc.clone();
     validate_numeric_settings(&config)?;
     if let Some(presets) = config.quality_preset.presets() {
         config.presets = presets;
@@ -820,7 +1038,7 @@ fn validate_numeric_settings(config: &AppConfig) -> Result<(), String> {
 /// live copy. Changes apply from the next analysis/encode.
 pub fn settings_post(shared: &SharedState, body: &Value) -> (u16, Value) {
     let mut state = lock(shared);
-    let config = match merged_settings(body, &state.config.daemon) {
+    let config = match merged_settings(body, &state.config) {
         Ok(config) => config,
         Err(e) => return (400, json!({"error": e})),
     };
@@ -850,6 +1068,7 @@ fn status_json(status: &JobStatus) -> Value {
         JobStatus::AwaitingConfig => json!({"kind": "awaiting_config"}),
         JobStatus::Ready => json!({"kind": "ready"}),
         JobStatus::Encoding { progress } => json!({"kind": "encoding", "progress": progress}),
+        JobStatus::Ripping { progress } => json!({"kind": "ripping", "progress": progress}),
         JobStatus::Verifying => json!({"kind": "verifying"}),
         JobStatus::Done => json!({"kind": "done"}),
         JobStatus::DoneWithVmaf { score } => json!({"kind": "done_vmaf", "vmaf": score}),
@@ -946,14 +1165,159 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    mod discs {
+        use super::super::*;
+        use crate::daemon::state::DaemonState;
+        use crate::disc::{DiscDrive, DiscTitle};
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::time::Duration;
+
+        /// A daemon that has listed one drive and scanned it, as a client must
+        /// have done before it can ask for anything else.
+        fn scanned(output_directory: Option<String>) -> SharedState {
+            let config = AppConfig {
+                output: crate::config::OutputConfig {
+                    output_directory,
+                    ..crate::config::OutputConfig::default()
+                },
+                ..AppConfig::default()
+            };
+            let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(config)));
+            {
+                let mut state = lock(&shared);
+                state.disc.drives = vec![DiscDrive {
+                    id: 0,
+                    name: "BD-RE".to_string(),
+                    disc_label: Some("DISC".to_string()),
+                }];
+                state.disc.scanned_drive = Some(0);
+                state.disc.titles = vec![DiscTitle {
+                    id: 3,
+                    name: "Feature".to_string(),
+                    duration: Duration::from_mins(90),
+                    size_bytes: 1024,
+                    chapters: 12,
+                    tracks: vec!["Video AVC 1920x1080".to_string()],
+                }];
+            }
+            shared
+        }
+
+        fn rip(shared: &SharedState, body: &Value) -> (u16, Value) {
+            let (tx, _rx) = mpsc::channel();
+            discs_rip(shared, &tx, body)
+        }
+
+        /// Ids the server never handed out are refused before `MakeMKV` is
+        /// ever consulted.
+        #[test]
+        fn only_ids_the_server_issued_are_accepted() {
+            let shared = scanned(Some("/tmp".to_string()));
+            let (tx, _rx) = mpsc::channel();
+
+            assert_eq!(discs_scan(&shared, &tx, &json!({"drive": 7})).0, 400);
+            assert_eq!(discs_scan(&shared, &tx, &json!({})).0, 400);
+            assert_eq!(discs_scan(&shared, &tx, &json!({"drive": -1})).0, 400);
+
+            assert_eq!(rip(&shared, &json!({"drive": 7, "titles": [3]})).0, 400);
+            assert_eq!(rip(&shared, &json!({"drive": 0, "titles": [9]})).0, 400);
+            assert_eq!(rip(&shared, &json!({"drive": 0, "titles": []})).0, 400);
+            assert_eq!(rip(&shared, &json!({"drive": 0, "titles": [3, 3]})).0, 400);
+            assert_eq!(
+                rip(&shared, &json!({"drive": 0, "titles": ["../../etc"]})).0,
+                400
+            );
+            // Nothing was started, and no job was queued on the way out.
+            assert!(!lock(&shared).disc.active);
+            assert!(lock(&shared).queue.state.jobs.is_empty());
+        }
+
+        /// One drive, one run.
+        #[test]
+        fn a_second_run_is_refused_while_one_is_active() {
+            let shared = scanned(Some("/tmp".to_string()));
+            lock(&shared).disc.active = true;
+            let (tx, _rx) = mpsc::channel();
+
+            assert_eq!(discs_list(&shared).0, 409);
+            assert_eq!(discs_scan(&shared, &tx, &json!({"drive": 0})).0, 409);
+            assert_eq!(rip(&shared, &json!({"drive": 0, "titles": [3]})).0, 409);
+        }
+
+        /// Without a destination the encode would be written into the staging
+        /// directory that is deleted afterwards, so the rip never starts.
+        #[test]
+        fn a_rip_without_a_destination_is_refused_with_the_reason() {
+            let shared = scanned(None);
+            let (status, body) = rip(&shared, &json!({"drive": 0, "titles": [3]}));
+            assert_eq!(status, 400);
+            assert_eq!(
+                body["error"],
+                json!(
+                    crate::disc::DiscError::NoDestination.message(crate::i18n::Language::English)
+                )
+            );
+            assert!(lock(&shared).queue.state.jobs.is_empty());
+        }
+
+        /// A rip must be preceded by a scan of that same drive.
+        #[test]
+        fn ripping_an_unscanned_drive_is_refused() {
+            let shared = scanned(Some("/tmp".to_string()));
+            lock(&shared).disc.scanned_drive = None;
+            assert_eq!(rip(&shared, &json!({"drive": 0, "titles": [3]})).0, 400);
+        }
+
+        /// The dashboard poll carries disc state; there is no second poll.
+        #[test]
+        fn status_carries_the_disc_block() {
+            let shared = scanned(Some("/tmp".to_string()));
+            let value = status(&shared);
+            assert_eq!(value["disc"]["active"], json!(false));
+            assert_eq!(value["disc"]["drive"], json!(0));
+            assert_eq!(value["disc"]["titles"][0]["id"], json!(3));
+            assert_eq!(value["disc"]["titles"][0]["chapters"], json!(12));
+            assert_eq!(value["disc"]["error"], Value::Null);
+        }
+
+        /// Cancelling raises the flag the run is watching.
+        #[test]
+        fn cancelling_reaches_the_running_worker() {
+            let shared = scanned(Some("/tmp".to_string()));
+            let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            {
+                let mut state = lock(&shared);
+                state.disc.active = true;
+                state.disc.cancel_flag = Some(flag.clone());
+            }
+            assert_eq!(discs_cancel(&shared).0, 200);
+            assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
+            // The run stays active until its own event says it stopped.
+            assert!(lock(&shared).disc.active);
+        }
+    }
+
     mod settings {
         use super::super::*;
+        use crate::config::{DaemonConfig, DiscConfig};
 
         fn guarded() -> DaemonConfig {
             DaemonConfig {
                 auth_token: "s3cret".to_string(),
                 browse_root: "/media".to_string(),
                 ..DaemonConfig::default()
+            }
+        }
+
+        /// The live config a POST is merged onto.
+        fn live() -> AppConfig {
+            AppConfig {
+                daemon: guarded(),
+                disc: DiscConfig {
+                    makemkvcon_path: Some("/opt/makemkvcon".to_string()),
+                    ..DiscConfig::default()
+                },
+                ..AppConfig::default()
             }
         }
 
@@ -970,16 +1334,19 @@ mod tests {
             assert_eq!(value["daemon"]["browse_root"], json!("/media"));
         }
 
-        /// A client cannot change `browse_root` or `auth_token`.
+        /// A client cannot change `browse_root`, `auth_token`, or the path of
+        /// the binary the server executes.
         #[test]
         fn the_daemon_block_survives_a_hostile_post() {
             let mut hostile = serde_json::to_value(AppConfig::default()).unwrap();
             hostile["daemon"]["browse_root"] = json!("");
             hostile["daemon"]["auth_token"] = json!("");
             hostile["daemon"]["bind_address"] = json!("0.0.0.0");
+            hostile["disc"]["makemkvcon_path"] = json!("/tmp/evil.sh");
 
-            let merged = merged_settings(&hostile, &guarded()).unwrap();
+            let merged = merged_settings(&hostile, &live()).unwrap();
             assert_eq!(merged.daemon, guarded());
+            assert_eq!(merged.disc, live().disc);
         }
 
         /// Ordinary settings still apply, and are still sanitized on the way in.
@@ -988,7 +1355,7 @@ mod tests {
             let mut body = serde_json::to_value(AppConfig::default()).unwrap();
             body["output"]["suffix"] = json!("../escape");
 
-            let merged = merged_settings(&body, &DaemonConfig::default()).unwrap();
+            let merged = merged_settings(&body, &AppConfig::default()).unwrap();
             assert_eq!(merged.output.suffix, "..escape");
         }
 
@@ -996,14 +1363,14 @@ mod tests {
         fn out_of_range_numbers_are_rejected_instead_of_silently_clamped() {
             let mut body = serde_json::to_value(AppConfig::default()).unwrap();
             body["audio"]["opus_bitrate_per_channel"] = json!(9000);
-            assert!(merged_settings(&body, &DaemonConfig::default()).is_err());
+            assert!(merged_settings(&body, &AppConfig::default()).is_err());
         }
 
         #[test]
         fn invalid_nvenc_preset_is_rejected() {
             let mut body = serde_json::to_value(AppConfig::default()).unwrap();
             body["performance"]["nvenc_preset"] = json!("slowest");
-            assert!(merged_settings(&body, &DaemonConfig::default()).is_err());
+            assert!(merged_settings(&body, &AppConfig::default()).is_err());
         }
 
         #[test]
@@ -1022,10 +1389,26 @@ mod tests {
             let mut body = serde_json::to_value(AppConfig::default()).unwrap();
             body["output"]["same_directory"] = json!(false);
             body["output"]["output_directory"] = json!(outside);
-            assert!(merged_settings(&body, &daemon).is_err());
+            assert!(
+                merged_settings(
+                    &body,
+                    &AppConfig {
+                        daemon: daemon.clone(),
+                        ..AppConfig::default()
+                    }
+                )
+                .is_err()
+            );
 
             body["output"]["output_directory"] = json!(inside);
-            let merged = merged_settings(&body, &daemon).unwrap();
+            let merged = merged_settings(
+                &body,
+                &AppConfig {
+                    daemon: daemon.clone(),
+                    ..AppConfig::default()
+                },
+            )
+            .unwrap();
             assert_eq!(
                 merged.output.output_directory,
                 Some(
@@ -1044,7 +1427,7 @@ mod tests {
             let mut body = serde_json::to_value(AppConfig::default()).unwrap();
             body["output"]["same_directory"] = json!(false);
             body["output"]["output_directory"] = Value::Null;
-            assert!(merged_settings(&body, &DaemonConfig::default()).is_err());
+            assert!(merged_settings(&body, &AppConfig::default()).is_err());
         }
     }
 

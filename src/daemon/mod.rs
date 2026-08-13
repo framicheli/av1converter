@@ -64,6 +64,9 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     let (analysis_tx, analysis_rx) = mpsc::channel::<(u64, Result<AnalysisResult, AppError>)>();
     let (probe_tx, probe_rx) = mpsc::channel::<(u64, String)>();
     let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>();
+    // One channel for every disc run: the handlers start runs, this loop
+    // applies what they report.
+    let (disc_tx, disc_rx) = mpsc::channel::<crate::disc::worker::DiscEvent>();
 
     // One long-lived prober rather than a thread per add request, so a client
     // does not get to decide how many ffprobe children run at once. A panic is
@@ -118,8 +121,9 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
             let server = server.clone();
             let shared = shared.clone();
             let probe_tx = probe_tx.clone();
+            let disc_tx = disc_tx.clone();
             let shutdown = shutdown.clone();
-            thread::spawn(move || server::serve(&server, &shared, &probe_tx, &shutdown))
+            thread::spawn(move || server::serve(&server, &shared, &probe_tx, &disc_tx, &shutdown))
         })
         .collect();
 
@@ -140,6 +144,14 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
             apply_worker_message(&shared, msg);
         }
 
+        while let Ok(event) = disc_rx.try_recv() {
+            apply_disc_event(&shared, &probe_tx, event);
+        }
+
+        {
+            let mut state = lock(&shared);
+            crate::disc::staging::cleanup_finished(&mut state.queue.state.jobs);
+        }
         maybe_start_session(&shared, &worker_tx);
         persist_queue(
             &shared,
@@ -160,6 +172,21 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
             false
         }
     };
+
+    // A rip is waited out the same way: makemkvcon is a child of this process
+    // and exiting while it runs would leave it behind.
+    if lock(&shared).disc.active {
+        lock(&shared).disc.cancel();
+        println!("{}", t(lang, Msg::DaemonShuttingDown));
+        let deadline = Instant::now() + SHUTDOWN_GRACE;
+        while Instant::now() < deadline && lock(&shared).disc.active {
+            match disc_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(event) => apply_disc_event(&shared, &probe_tx, event),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    }
     if cancelling {
         println!("{}", t(lang, Msg::DaemonShuttingDown));
         let deadline = Instant::now() + SHUTDOWN_GRACE;
@@ -243,6 +270,12 @@ fn restore_state(
 
     let mut state = DaemonState::new(config);
     state.queue = state::DaemonQueue::from_persisted(restored);
+    // A rip cut short by a kill has nothing left tracking its file.
+    crate::disc::staging::sweep_orphans(
+        &state.config,
+        &state.queue.state.jobs,
+        crate::disc::staging::ACTIVE_RIP_WINDOW,
+    );
     for (id, _) in &reprobe {
         if let Some(job) = state.queue.job_by_id_mut(*id) {
             job.status = JobStatus::Analyzing;
@@ -258,14 +291,111 @@ fn restore_state(
     (state, reprobe)
 }
 
+/// Apply one event from a disc run, and hand each extracted file straight to
+/// the prober: the drive moves on to the next title while this one is probed.
+fn apply_disc_event(
+    shared: &SharedState,
+    probe_tx: &Sender<(u64, String)>,
+    event: crate::disc::worker::DiscEvent,
+) {
+    use crate::disc::worker::DiscEvent;
+
+    let mut ready = None;
+    {
+        let mut state = lock(shared);
+        let lang = state.config.language;
+        match event {
+            DiscEvent::TitlesFound(scan) => {
+                state.disc.disc_type = scan.disc_type;
+                state.disc.titles = scan.titles;
+                state.disc.settle();
+            }
+            DiscEvent::Ripping { index, progress } => {
+                if let Some(id) = state.disc.job_ids.get(index).copied()
+                    && let Some(job) = state.queue.job_by_id_mut(id)
+                {
+                    job.status = JobStatus::Ripping { progress };
+                }
+            }
+            DiscEvent::TitleReady { index, path } => {
+                if let Some(id) = state.disc.job_ids.get(index).copied()
+                    && let Some(job) = state.queue.job_by_id_mut(id)
+                {
+                    job.source_size = std::fs::metadata(&path).ok().map(|m| m.len());
+                    job.path = path;
+                    job.status = JobStatus::Analyzing;
+                    ready = job.path.to_str().map(|path| (id, path.to_string()));
+                }
+            }
+            DiscEvent::Error { index, error } => {
+                let message = error.message(lang);
+                info!("Disc run stopped: {message}");
+                let ids = state.disc.job_ids.clone();
+                for (position, id) in ids.into_iter().enumerate() {
+                    let failed = position == index;
+                    let Some(job) = state.queue.job_by_id_mut(id) else {
+                        continue;
+                    };
+                    if !matches!(job.status, JobStatus::Ripping { .. }) {
+                        continue;
+                    }
+                    job.status = if failed {
+                        JobStatus::Error {
+                            message: message.clone(),
+                        }
+                    } else {
+                        JobStatus::Skipped {
+                            reason: "Cancelled".to_string(),
+                        }
+                    };
+                    if failed {
+                        state.queue.state.error_count += 1;
+                    } else {
+                        state.queue.state.skipped_count += 1;
+                    }
+                }
+                state.disc.error = Some(message);
+                state.disc.settle();
+            }
+            DiscEvent::Cancelled => {
+                let ids = state.disc.job_ids.clone();
+                for id in ids {
+                    if let Some(job) = state.queue.job_by_id_mut(id)
+                        && matches!(job.status, JobStatus::Ripping { .. })
+                    {
+                        job.status = JobStatus::Skipped {
+                            reason: "Cancelled".to_string(),
+                        };
+                        state.queue.state.skipped_count += 1;
+                    }
+                }
+                state.disc.settle();
+            }
+            DiscEvent::Finished => state.disc.settle(),
+        }
+    }
+
+    if let Some((id, path)) = ready
+        && probe_tx.send((id, path)).is_err()
+    {
+        let mut state = lock(shared);
+        if let Some(job) = state.queue.job_by_id_mut(id) {
+            job.status = JobStatus::Error {
+                message: "Analysis is not running".to_string(),
+            };
+        }
+        state.queue.state.error_count += 1;
+    }
+}
+
 /// Write the queue out if its serialized form changed since the last write.
 /// The only save call site: handlers and worker messages mutate the queue
 /// behind the mutex without saving. `JobStatus::Encoding` does not persist its
 /// percentage, so a running encode does not churn the file.
 ///
-// ponytail: re-serializes the queue once per tick to compare. That is O(jobs)
-// four times a second; if a very large queue ever makes it show up, set a
-// dirty flag in `DaemonQueue`'s mutators instead.
+// Re-serializes the queue once per tick to compare: O(jobs) four times a
+// second. A dirty flag in `DaemonQueue`'s mutators is the upgrade if a very
+// large queue ever makes it show up.
 fn persist_queue(
     shared: &SharedState,
     path: &std::path::Path,
@@ -438,14 +568,20 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         let Some(source_identity) = job.source_identity.clone() else {
             continue;
         };
-        let output = job.output_path.clone().unwrap_or_else(|| {
-            let stem = job.path.file_stem().unwrap_or_default().to_string_lossy();
-            let parent = job.path.parent().unwrap_or(std::path::Path::new("."));
-            parent.join(format!(
-                "{}{}.{}",
-                stem, output_config.suffix, output_config.container
-            ))
-        });
+        // A ripped file has no next-to-the-source fallback: that is the staging
+        // directory.
+        let output = match job.output_path.clone() {
+            Some(output) => output,
+            None if job.temporary => continue,
+            None => {
+                let stem = job.path.file_stem().unwrap_or_default().to_string_lossy();
+                let parent = job.path.parent().unwrap_or(std::path::Path::new("."));
+                parent.join(format!(
+                    "{}{}.{}",
+                    stem, output_config.suffix, output_config.container
+                ))
+            }
+        };
         let selected_subs = crate::tracks::selected_subtitles(
             &job.subtitle_tracks,
             &job.track_selection.subtitle_indices,
@@ -617,6 +753,89 @@ fn finish_job(state: &mut DaemonState, id: Option<u64>, status: JobStatus) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An extracted title is repointed at its file and handed to the prober
+    /// right away, while the drive carries on with the next one.
+    #[test]
+    fn a_ripped_title_goes_straight_to_the_prober() {
+        use crate::disc::worker::DiscEvent;
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (probe_tx, probe_rx) = mpsc::channel();
+        let ids: Vec<u64> = {
+            let mut state = lock(&shared);
+            let ids = ["Title 0", "Title 1"]
+                .iter()
+                .map(|name| {
+                    let mut job = EncodingJob::new(std::path::PathBuf::from(*name));
+                    job.status = JobStatus::Ripping { progress: 0.0 };
+                    job.temporary = true;
+                    state.queue.push(job)
+                })
+                .collect();
+            state.disc.job_ids = ids;
+            state.disc.active = true;
+            state.disc.job_ids.clone()
+        };
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::Ripping {
+                index: 0,
+                progress: 42.0,
+            },
+        );
+        assert!(matches!(
+            lock(&shared).queue.job_by_id(ids[0]).unwrap().status,
+            JobStatus::Ripping { progress } if (progress - 42.0).abs() < f64::EPSILON
+        ));
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::TitleReady {
+                index: 0,
+                path: std::path::PathBuf::from("/staging/rip-a/DISC_t00.mkv"),
+            },
+        );
+        assert_eq!(
+            probe_rx.try_recv().unwrap(),
+            (ids[0], "/staging/rip-a/DISC_t00.mkv".to_string())
+        );
+        assert!(matches!(
+            lock(&shared).queue.job_by_id(ids[0]).unwrap().status,
+            JobStatus::Analyzing
+        ));
+        // The run is not over: the second title is still to come.
+        assert!(lock(&shared).disc.active);
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::Error {
+                index: 1,
+                error: crate::disc::DiscError::UnreadableDisc,
+            },
+        );
+        let state = lock(&shared);
+        assert!(matches!(
+            state.queue.job_by_id(ids[1]).unwrap().status,
+            JobStatus::Error { .. }
+        ));
+        assert!(!state.disc.active, "a failure ends the run");
+        assert!(state.disc.error.is_some());
+        assert_eq!(state.queue.state.error_count, 1);
+        // A title that never became a file is not left waiting to be encoded
+        // from one: only the extracted title is still in flight, at the prober.
+        assert!(
+            state.queue.state.jobs.iter().all(|job| !matches!(
+                job.status,
+                JobStatus::Ripping { .. } | JobStatus::Ready | JobStatus::Pending
+            )),
+            "a failed extraction left a job queued against a file that was never written"
+        );
+    }
 
     #[test]
     fn add_paths_reserves_each_source_once() {

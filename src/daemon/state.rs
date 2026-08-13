@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::disc::{DiscDrive, DiscTitle};
 use crate::queue::{EncodingJob, JobStatus, QueueState};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -120,6 +121,46 @@ pub struct EncodeSession {
     pub cancel_flag: Arc<AtomicBool>,
 }
 
+/// Disc scanning and ripping, as the API sees it.
+///
+/// One run at a time, scan or rip: there is one drive. `active` is set when a
+/// run starts and cleared only by the event that ends it, so a cancelled run
+/// cannot have its trailing events applied to the next one.
+#[derive(Default)]
+pub struct DiscSession {
+    /// Drives from the last listing. The only drive ids a request may name.
+    pub drives: Vec<DiscDrive>,
+    /// The drive last scanned, and what was found on it.
+    pub scanned_drive: Option<u32>,
+    pub disc_type: Option<String>,
+    pub titles: Vec<DiscTitle>,
+    /// Queue ids of the titles being extracted, in the order requested.
+    pub job_ids: Vec<u64>,
+    pub cancel_flag: Option<Arc<AtomicBool>>,
+    pub active: bool,
+    pub scanning: bool,
+    /// Why the last run stopped, in the user's language.
+    pub error: Option<String>,
+}
+
+impl DiscSession {
+    /// Ask the running scan or rip to stop. The run stays active until its
+    /// own event says otherwise.
+    pub fn cancel(&self) {
+        if let Some(flag) = self.cancel_flag.as_ref() {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// A run has ended, however it ended.
+    pub fn settle(&mut self) {
+        self.active = false;
+        self.scanning = false;
+        self.job_ids.clear();
+        self.cancel_flag = None;
+    }
+}
+
 /// Shared daemon state. HTTP handlers commit short mutations under the mutex;
 /// analysis and worker results are applied by the orchestrator loop.
 pub struct DaemonState {
@@ -128,6 +169,7 @@ pub struct DaemonState {
     pub encoding_active: bool,
     pub recursive_scan_active: bool,
     pub session: Option<EncodeSession>,
+    pub disc: DiscSession,
     pub started_at: Instant,
 }
 
@@ -139,6 +181,7 @@ impl DaemonState {
             encoding_active: false,
             recursive_scan_active: false,
             session: None,
+            disc: DiscSession::default(),
             started_at: Instant::now(),
         }
     }
