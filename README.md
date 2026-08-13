@@ -14,13 +14,14 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 - **VMAF quality verification** — Scores output quality after encoding; deletes the source only when a VMAF score actually met the threshold (never for remuxes, disabled VMAF, or tone-mapped DV profile 5)
 - **Track selection** — Auto-selects audio and subtitle tracks by preferred language; Selects all tracks or first track when no match is found
 - **Audio transcoding** — Copy audio tracks untouched (the default) or convert any of them to Opus at the source's own channel layout; per-track in both the TUI and the web UI
+- **Disc ripping** — Import titles straight from a DVD or Blu-ray through MakeMKV, ripping one title while the previous one encodes (see [Disc Ripping](#disc-ripping))
 - **Daemon mode with web UI** — Run headless and manage the queue from a browser (see [Daemon Mode](#daemon-mode-and-web-ui))
 - **Multi-language UI** — TUI and web UI available in English (default), Italian, Spanish, French, German, and Chinese; selectable in Settings
 - **Configurable** — All key settings adjustable through the built-in configuration screen or `~/.config/av1converter/config.toml`
 
 ## Prerequisites
 
-`ffmpeg` and `ffprobe` must be on your `PATH`. **FFmpeg 8.0 or newer is required** for Dolby Vision passthrough ("Dolby Vision profile 10 support in AV1" landed in 8.0; the tool is developed and tested against 8.1).
+`ffmpeg` and `ffprobe` must be on your `PATH`. (Ripping discs additionally needs MakeMKV — see [Disc Ripping](#disc-ripping); nothing else depends on it.) **FFmpeg 8.0 or newer is required** for Dolby Vision passthrough ("Dolby Vision profile 10 support in AV1" landed in 8.0; the tool is developed and tested against 8.1).
 
 Not every FFmpeg build includes every feature this tool uses. What you need depends on which features you use:
 
@@ -156,14 +157,17 @@ Usage: av1converter [OPTION]
   --daemon-foreground  run the daemon in the foreground, logging to stdout
   --stop               stop the background daemon
   --status             show whether the daemon is running
+  --scan-discs         list optical drives and the titles on the loaded disc
   --help               show this help
   --version            show the version
 ```
 
+`--scan-discs` is a diagnostic: it prints what MakeMKV reported, so a disc that lists oddly can be seen rather than guessed at.
+
 ### Workflow
 
-1. **Home menu** — Open a single file, a folder, or a folder recursively; or go to Configuration
-2. **File selection** — Navigate with arrow keys; `Space` to toggle, `Enter` to confirm
+1. **Home menu** — Open a single file, a folder, or a folder recursively; rip a DVD or Blu-ray; or go to Configuration
+2. **File selection** — Navigate with arrow keys; `Space` to toggle, `Enter` to confirm. For a disc, pick the drive (skipped when there is only one) and then the titles, and extraction feeds the same steps below
 3. **Track configuration** — Select audio and subtitle tracks to include, and switch the per-file mode (encode or demux/remux) with `r`
 4. **File review** — Confirm the queue before encoding starts
 5. **Encoding** — Monitor per-file and overall progress; `Esc` to cancel
@@ -236,9 +240,27 @@ Two things worth knowing:
 | `s` | Save configuration (config screen) |
 | `q` | Quit (with confirmation) |
 
+## Disc Ripping
+
+Titles can be imported straight from a DVD or Blu-ray: pick **Rip DVD / Blu-ray** on the home menu, or **+ Disc** in the web UI. Selected titles are extracted one at a time to a staging directory, then analyzed, track-configured and encoded exactly like a file you opened yourself. Ripping and encoding overlap — the next title reads from the disc while the previous one encodes — so peak disk use stays at one rip plus one encode.
+
+Ripping needs **MakeMKV**, which is not bundled:
+
+| Platform | What to install | Where `makemkvcon` ends up |
+|---|---|---|
+| macOS | The `.dmg` from [makemkv.com](https://www.makemkv.com/) | Inside the app bundle, at `/Applications/MakeMKV.app/Contents/MacOS/makemkvcon`. The GUI never has to be opened. |
+| Linux | `makemkv-oss` + `makemkv-bin` from source, or a distro package (AUR `makemkv`, the Ubuntu PPA) | On `PATH`. The GUI is optional: `./configure --disable-gui` skips Qt entirely. Your user must be in the `cdrom` group. |
+| Windows | The installer from makemkv.com | `C:\Program Files (x86)\MakeMKV\` |
+
+Set `makemkvcon_path` under `[disc]` if it lives somewhere else — a Flatpak install, for instance, needs a small wrapper script since it is run through `flatpak run`. Set `staging_directory` to a scratch drive: a Blu-ray title needs 100 GB or more, and the staging file is deleted once its encode succeeds. An output directory must be configured before a rip can start (a disc job cannot write next to its source, which is the staging directory).
+
+DVD decryption is free permanently. Blu-ray needs a purchased MakeMKV licence or the free beta key, and **that key expires every couple of months** — refresh it in MakeMKV when the app reports it as expired. That expiry is MakeMKV's, not this tool's.
+
+**Known limitation — Dolby Vision profile 7 (UHD Blu-ray).** MakeMKV extracts profile 7 discs with the Dolby Vision enhancement layer as a *separate* MKV track, and FFmpeg will not recombine it. Those discs encode from the HDR10 base layer, and the EL/RPU track shows up as a stray stream on the track screen. This is a MakeMKV/FFmpeg limitation, not a bug in the conversion.
+
 ## Daemon Mode and Web UI
 
-The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, cancel, remove, clear finished jobs), and a settings page. The queue is persisted, so jobs still waiting when the daemon stops are restored on the next start. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder. After analysis finishes, a centered dialog opens for the per-file choices; **Apply to remaining files** copies them to the other waiting jobs by track order, while extra tracks keep their automatic defaults.
+The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, import titles from a disc in the machine's own drive, cancel, remove, clear finished jobs), and a settings page. The queue is persisted, so jobs still waiting when the daemon stops are restored on the next start. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder. After analysis finishes, a centered dialog opens for the per-file choices; **Apply to remaining files** copies them to the other waiting jobs by track order, while extra tracks keep their automatic defaults.
 
 Enable it in Settings (or set `enabled = true` under `[daemon]`), then:
 
@@ -269,7 +291,7 @@ Two things are worth knowing before exposing the daemon to a network:
 
 The daemon serves plain HTTP. If it must be reachable beyond the local machine, put it behind an HTTPS reverse proxy with connection/request timeouts and rate limiting, and keep the direct daemon port firewalled from untrusted networks. The embedded server is intended for trusted local or LAN use, not direct internet exposure.
 
-`browse_root`, `auth_token`, `bind_address` and `port` are deliberately **not** editable from the web UI: a client that could rewrite them could widen its own access. Change them in `config.toml` or the TUI, then restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
+`browse_root`, `auth_token`, `bind_address`, `port` and the whole `[disc]` block are deliberately **not** editable from the web UI: a client that could rewrite them could widen its own access, and `makemkvcon_path` names a binary the daemon executes. Change them in `config.toml` or the TUI, then restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
 
 The token is also what stops a website you visit from reaching the daemon. A page that re-points its own hostname at `127.0.0.1` still cannot produce the bearer token. The API also requires JSON for mutations, rejects unsafe unauthenticated hostnames, caps request bodies, and confines restored as well as newly added jobs to `browse_root`.
 
@@ -339,6 +361,10 @@ bind_address = "127.0.0.1" # Loopback by default; see the security note below
 port = 8399
 browse_root = ""           # Confine the web file browser to this directory ("" = whole filesystem)
 auth_token = ""            # API secret (empty or under 32 bytes = regenerate on next start)
+
+[disc]
+makemkvcon_path = ""       # Unset: PATH, then the platform's MakeMKV install location
+staging_directory = ""     # Where ripped titles wait to be encoded (unset = system temp)
 ```
 
 If `config.toml` cannot be parsed it is left untouched and defaults are used for that run, so a typo never costs you your settings.
