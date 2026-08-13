@@ -2,6 +2,7 @@ mod analyzer;
 mod app;
 mod config;
 mod daemon;
+mod disc;
 mod encoder;
 mod error;
 mod i18n;
@@ -32,6 +33,7 @@ Usage: av1converter [OPTION]
   --daemon-foreground  run the daemon in the foreground, logging to stdout
   --stop               stop the background daemon
   --status             show whether the daemon is running
+  --scan-discs         list optical drives and the titles on the loaded disc
   --help               show this help
   --version            show the version
 ";
@@ -42,6 +44,7 @@ enum Cli {
     DaemonForeground,
     Stop,
     Status,
+    ScanDiscs,
     Help,
     Version,
     Unknown(String),
@@ -54,6 +57,7 @@ fn parse_cli() -> Cli {
         Some("--daemon-foreground") => Cli::DaemonForeground,
         Some("--stop") => Cli::Stop,
         Some("--status") => Cli::Status,
+        Some("--scan-discs") => Cli::ScanDiscs,
         Some("--help" | "-h") => Cli::Help,
         Some("--version" | "-V") => Cli::Version,
         Some(other) => Cli::Unknown(other.to_string()),
@@ -146,6 +150,61 @@ fn daemon_status_entry() {
     }
 }
 
+/// `--scan-discs`: print every drive and the titles of each loaded disc, as
+/// parsed from `MakeMKV`'s output. English, like `--help`.
+fn scan_discs_entry() {
+    let config = config::AppConfig::load();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let bin = match disc::find_makemkvcon(&config) {
+        Ok(bin) => bin,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    println!("makemkvcon: {}", bin.display());
+
+    let drives = match disc::list_drives(&bin, &cancel) {
+        Ok(drives) => drives,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    for drive in &drives {
+        println!(
+            "\ndrive {}: {} [{}]",
+            drive.id,
+            drive.name,
+            drive.disc_label.as_deref().unwrap_or("empty")
+        );
+        if drive.disc_label.is_none() {
+            continue;
+        }
+        match disc::scan_titles(&bin, drive.id, &cancel) {
+            Ok(scan) => {
+                if let Some(kind) = scan.disc_type {
+                    println!("  {kind}");
+                }
+                for title in scan.titles {
+                    println!(
+                        "  title {:>2}  {}  {}  {} chapters  {}",
+                        title.id,
+                        utils::format_duration(title.duration),
+                        utils::format_file_size(title.size_bytes),
+                        title.chapters,
+                        title.name
+                    );
+                    for track in &title.tracks {
+                        println!("            {track}");
+                    }
+                }
+            }
+            Err(e) => eprintln!("  {e}"),
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
     match parse_cli() {
         Cli::Tui => {}
@@ -157,6 +216,10 @@ fn main() -> io::Result<()> {
         }
         Cli::Status => {
             daemon_status_entry();
+            return Ok(());
+        }
+        Cli::ScanDiscs => {
+            scan_discs_entry();
             return Ok(());
         }
         Cli::Help => {
@@ -222,6 +285,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
     loop {
         app.process_progress_messages();
         app.process_analysis_messages();
+        app.process_disc_events();
         app.tick_message();
 
         terminal.draw(|f| {
@@ -233,6 +297,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     Screen::Home => ui::render_home(f, app),
                     Screen::FileExplorer { .. } => ui::render_explorer(f, app),
                     Screen::FileConfirm => ui::render_file_confirm(f, app),
+                    Screen::DiscDrives => ui::render_disc_drives(f, app),
+                    Screen::DiscTitles => ui::render_disc_titles(f, app),
                     Screen::TrackConfig => ui::render_track_config(f, app),
                     Screen::Queue => ui::render_queue(f, app),
                     Screen::Finish => ui::render_finish(f, app),
@@ -254,7 +320,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             handle_key(app, key.code);
         }
 
-        if app.should_quit && !app.encoding_active && app.analysis_receiver.is_none() {
+        // The rip is waited out too: quitting while makemkvcon still runs
+        // would leave the child behind.
+        if app.should_quit
+            && !app.encoding_active
+            && app.analysis_receiver.is_none()
+            && app.disc_receiver.is_none()
+        {
             return Ok(());
         }
     }
@@ -285,6 +357,7 @@ fn handle_key(app: &mut App, key: KeyCode) {
         Screen::Home => handle_home_key(app, key),
         Screen::FileExplorer { .. } => handle_explorer_key(app, key),
         Screen::FileConfirm => handle_file_confirm_key(app, key),
+        Screen::DiscDrives | Screen::DiscTitles => handle_disc_key(app, key),
         Screen::TrackConfig => handle_track_config_key(app, key),
         Screen::Queue => handle_queue_key(app, key),
         Screen::Finish => handle_finish_key(app, key),
@@ -352,6 +425,10 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             app.analysis_cancel_flag
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+            // An in-flight rip is killed here rather than outliving the TUI as
+            // an orphan makemkvcon.
+            app.disc_cancel_flag
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             app.should_quit = true;
         }
         ConfirmAction::AbandonTrackConfig => {
@@ -379,11 +456,29 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
             0 => app.navigate_to_explorer(false, false), // Open video file
             1 => app.navigate_to_explorer(true, false),  // Open folder
             2 => app.navigate_to_explorer(true, true),   // Open folder recursive
-            3 => app.navigate_to_configuration(),        // Configuration
-            4 => {
+            3 => app.start_disc_flow(),                  // Rip DVD / Blu-ray
+            4 => app.navigate_to_configuration(),        // Configuration
+            5 => {
                 app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
             }
             _ => {}
+        },
+        _ => {}
+    }
+}
+
+/// Drive and title selection. Esc during a scan cancels it and steps back.
+fn handle_disc_key(app: &mut App, key: KeyCode) {
+    app.clear_message();
+
+    match key {
+        KeyCode::Up | KeyCode::Char('k') => app.disc_move_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.disc_move_down(),
+        KeyCode::Esc => app.leave_disc_screen(),
+        KeyCode::Char(' ') if app.current_screen == Screen::DiscTitles => app.toggle_disc_title(),
+        KeyCode::Enter => match app.current_screen {
+            Screen::DiscDrives => app.scan_disc(app.disc_drive_cursor),
+            _ => app.start_disc_rip(),
         },
         _ => {}
     }
@@ -557,6 +652,9 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Up | KeyCode::Char('k') => app.queue_move_cursor(false),
         KeyCode::Down | KeyCode::Char('j') => app.queue_move_cursor(true),
+        // A title that finished ripping while an encode ran is waiting for its
+        // tracks; Enter opens it.
+        KeyCode::Enter if app.has_jobs_awaiting_config() => app.configure_next_job(),
         KeyCode::Enter if !app.encoding_active && app.analysis_receiver.is_none() => {
             app.navigate_to_finish();
         }
@@ -683,6 +781,12 @@ fn start_config_edit(app: &mut App) {
         ConfigField::DaemonPort => app.config.daemon.port.to_string(),
         ConfigField::DaemonBrowseRoot => app.config.daemon.browse_root.clone(),
         ConfigField::DaemonAuthToken => app.config.daemon.auth_token.clone(),
+        ConfigField::DiscStagingDirectory => app
+            .config
+            .disc
+            .staging_directory
+            .clone()
+            .unwrap_or_default(),
         _ => return,
     });
 }
@@ -728,6 +832,10 @@ fn commit_config_edit(app: &mut App) {
         // Both accept an empty value, which turns the feature off
         ConfigField::DaemonBrowseRoot => app.config.daemon.browse_root = value,
         ConfigField::DaemonAuthToken => app.config.daemon.auth_token = value,
+        // Empty means the system temp directory.
+        ConfigField::DiscStagingDirectory => {
+            app.config.disc.staging_directory = (!value.is_empty()).then_some(value);
+        }
         _ => {}
     }
 }
@@ -857,7 +965,8 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         | ConfigField::DaemonBindAddress
         | ConfigField::DaemonPort
         | ConfigField::DaemonBrowseRoot
-        | ConfigField::DaemonAuthToken => {}
+        | ConfigField::DaemonAuthToken
+        | ConfigField::DiscStagingDirectory => {}
     }
 }
 
