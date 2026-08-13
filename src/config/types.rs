@@ -374,6 +374,20 @@ impl Default for DaemonConfig {
     }
 }
 
+/// Disc ripping configuration
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DiscConfig {
+    /// Path to `makemkvcon`. Unset resolves through `PATH` and then the
+    /// platform's install location.
+    #[serde(default)]
+    pub makemkvcon_path: Option<String>,
+    /// Where ripped titles are staged until their encode finishes. A Blu-ray
+    /// title needs 100 GB or more, so this usually wants a scratch drive.
+    /// Unset stages under the system temp directory.
+    #[serde(default)]
+    pub staging_directory: Option<String>,
+}
+
 /// What to do with the audio tracks of a newly queued file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AudioMode {

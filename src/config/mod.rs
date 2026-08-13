@@ -40,6 +40,9 @@ pub struct AppConfig {
     /// Daemon / web UI settings
     #[serde(default)]
     pub daemon: DaemonConfig,
+    /// Disc ripping settings
+    #[serde(default)]
+    pub disc: DiscConfig,
 }
 
 /// Serde default for [`AppConfig::quality_preset`] on legacy config files.
