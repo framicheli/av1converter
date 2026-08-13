@@ -1,5 +1,7 @@
 use crate::analyzer::{self, AnalysisResult, DvMode, HdrType, is_av1_codec};
 use crate::config::{AppConfig, Encoder};
+use crate::disc::worker::DiscEvent;
+use crate::disc::{DiscDrive, DiscTitle};
 use crate::error::AppError;
 use crate::queue::{
     EncodingJob, JobStatus, QueueState, WorkerJob, WorkerMessage, auto_select_tracks,
@@ -21,10 +23,21 @@ pub enum Screen {
     Home,
     FileExplorer { select_folder: bool },
     FileConfirm,
+    DiscDrives,
+    DiscTitles,
     TrackConfig,
     Queue,
     Finish,
     Configuration,
+}
+
+/// What the title screen is showing while a disc is being read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscState {
+    Scanning,
+    Ready,
+    /// Already translated, ready to render.
+    Failed(String),
 }
 
 /// File selection mode
@@ -57,6 +70,7 @@ pub const HOME_MENU: &[&str] = &[
     "Open Video File",
     "Open Folder",
     "Open Folder (Recursive)",
+    "Rip DVD / Blu-ray",
     "Configuration",
     "Quit",
 ];
@@ -94,13 +108,32 @@ pub struct App {
     pub file_confirm_scroll: usize,
     pub file_confirm_list_state: ListState,
 
+    // Disc ripping
+    pub disc_drives: Vec<DiscDrive>,
+    pub disc_drive_cursor: usize,
+    pub disc_drive_list_state: ListState,
+    pub disc_titles: Vec<DiscTitle>,
+    pub disc_cursor: usize,
+    pub disc_list_state: ListState,
+    /// Title ids marked with Space, in the order they were marked.
+    pub disc_selected: Vec<u32>,
+    pub disc_state: DiscState,
+    pub disc_receiver: Option<Receiver<DiscEvent>>,
+    pub disc_cancel_flag: Arc<AtomicBool>,
+    /// The drive the current scan or rip belongs to.
+    pub disc_drive: Option<DiscDrive>,
+
     // Encoding
     pub encoding_active: bool,
     pub progress_receiver: Option<Receiver<WorkerMessage>>,
     pub cancel_flag: Arc<AtomicBool>,
 
-    // Background analysis
-    pub analysis_receiver: Option<Receiver<Vec<Result<AnalysisResult, AppError>>>>,
+    // Background analysis. Results are keyed by job index: a title that has
+    // just finished ripping joins the same channel while others still probe.
+    pub analysis_receiver: Option<Receiver<(usize, Result<AnalysisResult, AppError>)>>,
+    analysis_sender: Option<mpsc::Sender<(usize, Result<AnalysisResult, AppError>)>>,
+    /// Probes handed out and not yet applied.
+    analysis_outstanding: usize,
     /// Ask the analysis thread to stop spawning new ffprobe calls
     pub analysis_cancel_flag: Arc<AtomicBool>,
 
@@ -164,6 +197,10 @@ impl App {
         file_confirm_list_state.select(Some(0));
         let mut finish_list_state = ListState::default();
         finish_list_state.select(Some(0));
+        let mut disc_drive_list_state = ListState::default();
+        disc_drive_list_state.select(Some(0));
+        let mut disc_list_state = ListState::default();
+        disc_list_state.select(Some(0));
 
         let config = AppConfig::load();
         let deps = DependencyStatus::check();
@@ -192,10 +229,23 @@ impl App {
             selected_files: Vec::new(),
             file_confirm_scroll: 0,
             file_confirm_list_state,
+            disc_drives: Vec::new(),
+            disc_drive_cursor: 0,
+            disc_drive_list_state,
+            disc_titles: Vec::new(),
+            disc_cursor: 0,
+            disc_list_state,
+            disc_selected: Vec::new(),
+            disc_state: DiscState::Ready,
+            disc_receiver: None,
+            disc_cancel_flag: Arc::new(AtomicBool::new(false)),
+            disc_drive: None,
             encoding_active: false,
             progress_receiver: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             analysis_receiver: None,
+            analysis_sender: None,
+            analysis_outstanding: 0,
             analysis_cancel_flag: Arc::new(AtomicBool::new(false)),
             config,
             deps,
@@ -596,124 +646,154 @@ impl App {
     }
 
     fn analyze_jobs(&mut self) {
-        // Pre-validate paths
-        let mut paths: Vec<Result<String, AppError>> = Vec::new();
-        for job in &mut self.queue.jobs {
-            match job.path.to_string_lossy() {
-                p if job.path.to_str().is_some() => {
-                    paths.push(Ok(p.into_owned()));
-                    job.status = JobStatus::Analyzing;
-                }
-                _ => {
-                    // Path has non-UTF-8 bytes
-                    job.status = JobStatus::Error {
-                        message: "File path contains non-UTF-8 characters".to_string(),
-                    };
-                    paths.push(Err(AppError::Analysis(
-                        "File path contains non-UTF-8 characters".to_string(),
-                    )));
-                }
-            }
-        }
-
         self.analysis_cancel_flag = Arc::new(AtomicBool::new(false));
-        let cancel_flag = self.analysis_cancel_flag.clone();
-
-        let (tx, rx) = mpsc::channel();
-        self.analysis_receiver = Some(rx);
-
-        thread::spawn(move || {
-            let results = analyze_batch(&paths, &cancel_flag);
-            let _ = tx.send(results);
-        });
-
+        let indices: Vec<usize> = (0..self.queue.jobs.len()).collect();
+        self.analyze_indices(&indices);
         self.navigate_to_queue();
     }
 
-    /// Apply completed analysis results and advance to the next screen.
-    fn apply_analysis_results(&mut self, results: Vec<Result<AnalysisResult, AppError>>) {
+    /// Probe the jobs at `indices` on a worker thread. Probes already running
+    /// keep going: a title that has just finished ripping joins them rather
+    /// than waiting for a round to end.
+    fn analyze_indices(&mut self, indices: &[usize]) {
+        let mut work: Vec<(usize, String)> = Vec::new();
+        for &index in indices {
+            let Some(job) = self.queue.jobs.get_mut(index) else {
+                continue;
+            };
+            // A job that already failed or was skipped has nothing to probe,
+            // and keeps the status it reached.
+            if job.status.is_terminal() {
+                continue;
+            }
+            if let Some(path) = job.path.to_str() {
+                work.push((index, path.to_string()));
+                job.status = JobStatus::Analyzing;
+            } else {
+                job.status = JobStatus::Error {
+                    message: "File path contains non-UTF-8 characters".to_string(),
+                };
+                self.queue.error_count += 1;
+            }
+        }
+        if work.is_empty() {
+            return;
+        }
+
+        if self.analysis_receiver.is_none() {
+            let (tx, rx) = mpsc::channel();
+            self.analysis_receiver = Some(rx);
+            self.analysis_sender = Some(tx);
+        }
+        let Some(tx) = self.analysis_sender.clone() else {
+            return;
+        };
+        let cancel_flag = self.analysis_cancel_flag.clone();
+        self.analysis_outstanding += work.len();
+
+        thread::spawn(move || {
+            let paths: Vec<Result<String, AppError>> =
+                work.iter().map(|(_, path)| Ok(path.clone())).collect();
+            // A panic here would otherwise leave the caller counting probes
+            // that never arrive.
+            let results = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                analyze_batch(&paths, &cancel_flag)
+            }))
+            .unwrap_or_else(|_| {
+                work.iter()
+                    .map(|_| Err(AppError::Analysis("Analysis thread panicked".to_string())))
+                    .collect()
+            });
+            for ((index, _), result) in work.into_iter().zip(results) {
+                let _ = tx.send((index, result));
+            }
+        });
+    }
+
+    /// Apply one completed probe to its job.
+    fn apply_analysis_result(&mut self, index: usize, result: Result<AnalysisResult, AppError>) {
         let output_config = self.config.output.clone();
         let track_config = self.config.tracks.clone();
         let audio_config = self.config.audio.clone();
+        let Some(job) = self.queue.jobs.get_mut(index) else {
+            return;
+        };
 
-        for (job, result) in self.queue.jobs.iter_mut().zip(results) {
-            match result {
-                Ok(analysis) => {
-                    let is_av1 = is_av1_codec(&analysis.metadata.codec_name);
-                    job.source_size = Some(analysis.source_identity.size_bytes());
-                    job.source_identity = Some(analysis.source_identity);
-                    job.metadata = Some(analysis.metadata);
-                    job.audio_tracks = analysis.audio_tracks;
-                    job.subtitle_tracks = analysis.subtitle_tracks;
-                    job.remux_only = is_av1;
-                    auto_select_tracks(job, &track_config, &audio_config);
-                    job.generate_output_path(&output_config);
-                    job.status = JobStatus::AwaitingConfig;
-                }
-                Err(ref e) if e.to_string().contains("Cancelled") => {
-                    if matches!(job.status, JobStatus::Analyzing) {
-                        job.status = JobStatus::Skipped {
-                            reason: "Cancelled".to_string(),
-                        };
-                        self.queue.skipped_count += 1;
-                    }
-                }
-                Err(e) => {
-                    job.status = JobStatus::Error {
-                        message: e.to_string(),
+        match result {
+            Ok(analysis) => {
+                let is_av1 = is_av1_codec(&analysis.metadata.codec_name);
+                job.source_size = Some(analysis.source_identity.size_bytes());
+                job.source_identity = Some(analysis.source_identity);
+                job.metadata = Some(analysis.metadata);
+                job.audio_tracks = analysis.audio_tracks;
+                job.subtitle_tracks = analysis.subtitle_tracks;
+                job.remux_only = is_av1;
+                auto_select_tracks(job, &track_config, &audio_config);
+                job.generate_output_path(&output_config);
+                job.status = JobStatus::AwaitingConfig;
+            }
+            Err(ref e) if e.to_string().contains("Cancelled") => {
+                if matches!(job.status, JobStatus::Analyzing) {
+                    job.status = JobStatus::Skipped {
+                        reason: "Cancelled".to_string(),
                     };
-                    self.queue.error_count += 1;
+                    self.queue.skipped_count += 1;
                 }
             }
+            Err(e) => {
+                job.status = JobStatus::Error {
+                    message: e.to_string(),
+                };
+                self.queue.error_count += 1;
+            }
         }
+    }
+
+    /// Every probe handed out has come back: settle the queue and move on.
+    fn finish_analysis_round(&mut self) {
+        self.analysis_receiver = None;
+        self.analysis_sender = None;
         make_output_paths_unique(&mut self.queue.jobs);
 
-        // Find first job awaiting config
-        self.queue.config_job_index = self
+        let next_to_configure = self
             .queue
             .jobs
             .iter()
-            .position(|j| matches!(j.status, JobStatus::AwaitingConfig))
-            .unwrap_or(0);
+            .position(|j| matches!(j.status, JobStatus::AwaitingConfig));
+        self.queue.config_job_index = next_to_configure.unwrap_or(0);
 
-        if self
-            .queue
-            .jobs
-            .iter()
-            .any(|j| matches!(j.status, JobStatus::AwaitingConfig))
-        {
-            self.navigate_to_track_config();
-        } else {
+        if next_to_configure.is_some() {
+            // An encode already running keeps the screen; the job waits on the
+            // queue for the user to open it.
+            if !self.encoding_active {
+                self.navigate_to_track_config();
+            }
+        } else if !self.encoding_active && self.disc_receiver.is_none() {
+            // A rip still running has more titles to add to this queue.
             self.navigate_to_finish();
         }
     }
 
     /// Poll the analysis channel; called every frame from the main loop.
     pub fn process_analysis_messages(&mut self) {
-        let Some(ref rx) = self.analysis_receiver else {
+        let mut results = Vec::new();
+        if let Some(ref rx) = self.analysis_receiver {
+            while let Ok(result) = rx.try_recv() {
+                results.push(result);
+            }
+        } else {
             return;
-        };
+        }
+        if results.is_empty() {
+            return;
+        }
 
-        match rx.try_recv() {
-            Ok(results) => {
-                self.analysis_receiver = None;
-                self.apply_analysis_results(results);
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
-            // The analysis thread is gone without having sent anything, so no
-            // result is coming.
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.analysis_receiver = None;
-                for job in &mut self.queue.jobs {
-                    if !matches!(job.status, JobStatus::Error { .. }) {
-                        job.status = JobStatus::Error {
-                            message: "Analysis stopped unexpectedly".to_string(),
-                        };
-                        self.queue.error_count += 1;
-                    }
-                }
-                self.navigate_to_finish();
-            }
+        for (index, result) in results {
+            self.analysis_outstanding = self.analysis_outstanding.saturating_sub(1);
+            self.apply_analysis_result(index, result);
+        }
+        if self.analysis_outstanding == 0 {
+            self.finish_analysis_round();
         }
     }
 
@@ -722,6 +802,8 @@ impl App {
         // Signal the analysis thread to stop spawning new ffprobe calls
         self.analysis_cancel_flag.store(true, Ordering::Relaxed);
         self.analysis_receiver = None;
+        self.analysis_sender = None;
+        self.analysis_outstanding = 0;
         self.queue.reset();
         self.navigate_to_home();
     }
@@ -753,6 +835,10 @@ impl App {
         if let Some(idx) = next_index {
             self.queue.config_job_index = idx;
             self.reset_track_config_cursor();
+        } else if self.encoding_active {
+            // A session is already running with its job list fixed; this one
+            // joins the next session, started when that one ends.
+            self.navigate_to_queue();
         } else {
             self.start_encoding();
         }
@@ -824,14 +910,20 @@ impl App {
             .filter_map(|(i, j)| {
                 let metadata = j.metadata.clone()?;
                 let source_identity = j.source_identity.clone()?;
-                let output = j.output_path.clone().unwrap_or_else(|| {
-                    let stem = j.path.file_stem().unwrap_or_default().to_string_lossy();
-                    let parent = j.path.parent().unwrap_or(std::path::Path::new("."));
-                    parent.join(format!(
-                        "{}{}.{}",
-                        stem, output_config.suffix, output_config.container
-                    ))
-                });
+                // A ripped file has no next-to-the-source fallback: that is the
+                // staging directory.
+                let output = if j.temporary {
+                    j.output_path.clone()?
+                } else {
+                    j.output_path.clone().unwrap_or_else(|| {
+                        let stem = j.path.file_stem().unwrap_or_default().to_string_lossy();
+                        let parent = j.path.parent().unwrap_or(std::path::Path::new("."));
+                        parent.join(format!(
+                            "{}{}.{}",
+                            stem, output_config.suffix, output_config.container
+                        ))
+                    })
+                };
                 let selected_subs = crate::tracks::selected_subtitles(
                     &j.subtitle_tracks,
                     &j.track_selection.subtitle_indices,
@@ -873,6 +965,331 @@ impl App {
 
     pub fn cancel_encoding(&mut self) {
         self.cancel_flag.store(true, Ordering::Relaxed);
+        // A queue can hold a rip as well as an encode.
+        self.disc_cancel_flag.store(true, Ordering::Relaxed);
+    }
+
+    // Disc ripping
+
+    /// Home → drive selection. Listing drives takes a second or two, so it runs
+    /// here rather than on a thread; a title scan takes minutes and does not.
+    pub fn start_disc_flow(&mut self) {
+        let lang = self.config.language;
+        let bin = match crate::disc::find_makemkvcon(&self.config) {
+            Ok(bin) => bin,
+            Err(e) => {
+                self.set_message(&e.message(lang));
+                return;
+            }
+        };
+
+        self.disc_cancel_flag = Arc::new(AtomicBool::new(false));
+        match crate::disc::list_drives(&bin, &self.disc_cancel_flag) {
+            Ok(drives) => {
+                self.disc_drives = drives;
+                self.disc_drive_cursor = 0;
+                self.disc_drive_list_state.select(Some(0));
+                // A list of one is not a choice.
+                if self.disc_drives.len() == 1 {
+                    self.scan_disc(0);
+                } else {
+                    self.current_screen = Screen::DiscDrives;
+                }
+            }
+            Err(e) => self.set_message(&e.message(lang)),
+        }
+    }
+
+    /// Start scanning the drive at `index` and show the title screen.
+    ///
+    /// One drive, one run: a scan or rip already going is left alone.
+    pub fn scan_disc(&mut self, index: usize) {
+        let lang = self.config.language;
+        if self.disc_receiver.is_some() {
+            return;
+        }
+        let Some(drive) = self.disc_drives.get(index).cloned() else {
+            return;
+        };
+        let bin = match crate::disc::find_makemkvcon(&self.config) {
+            Ok(bin) => bin,
+            Err(e) => {
+                self.set_message(&e.message(lang));
+                return;
+            }
+        };
+
+        self.disc_drive = Some(drive.clone());
+        self.disc_titles.clear();
+        self.disc_selected.clear();
+        self.disc_cursor = 0;
+        self.disc_list_state.select(Some(0));
+        self.disc_state = DiscState::Scanning;
+        self.disc_cancel_flag = Arc::new(AtomicBool::new(false));
+
+        let (tx, rx) = mpsc::channel();
+        self.disc_receiver = Some(rx);
+        crate::disc::worker::spawn_scan(bin, drive.id, &self.disc_cancel_flag, tx);
+        self.current_screen = Screen::DiscTitles;
+    }
+
+    pub fn disc_move_up(&mut self) {
+        let cursor = if self.current_screen == Screen::DiscDrives {
+            &mut self.disc_drive_cursor
+        } else {
+            &mut self.disc_cursor
+        };
+        *cursor = cursor.saturating_sub(1);
+        self.sync_disc_list_state();
+    }
+
+    pub fn disc_move_down(&mut self) {
+        let (cursor, len) = if self.current_screen == Screen::DiscDrives {
+            (&mut self.disc_drive_cursor, self.disc_drives.len())
+        } else {
+            (&mut self.disc_cursor, self.disc_titles.len())
+        };
+        if *cursor + 1 < len {
+            *cursor += 1;
+        }
+        self.sync_disc_list_state();
+    }
+
+    fn sync_disc_list_state(&mut self) {
+        self.disc_drive_list_state
+            .select(Some(self.disc_drive_cursor));
+        self.disc_list_state.select(Some(self.disc_cursor));
+    }
+
+    /// Mark or unmark the title under the cursor.
+    pub fn toggle_disc_title(&mut self) {
+        let Some(title) = self.disc_titles.get(self.disc_cursor) else {
+            return;
+        };
+        if let Some(pos) = self.disc_selected.iter().position(|id| *id == title.id) {
+            self.disc_selected.remove(pos);
+        } else {
+            self.disc_selected.push(title.id);
+        }
+    }
+
+    /// Queue every marked title and start extracting them.
+    pub fn start_disc_rip(&mut self) {
+        let lang = self.config.language;
+        if self.disc_state != DiscState::Ready
+            || self.disc_selected.is_empty()
+            || self.disc_receiver.is_some()
+        {
+            return;
+        }
+        // Refused here rather than after the first forty-minute extraction.
+        if let Err(e) = crate::disc::staging::require_destination(&self.config) {
+            self.disc_state = DiscState::Failed(e.message(lang));
+            return;
+        }
+        let bin = match crate::disc::find_makemkvcon(&self.config) {
+            Ok(bin) => bin,
+            Err(e) => {
+                self.disc_state = DiscState::Failed(e.message(lang));
+                return;
+            }
+        };
+        let Some(drive) = self.disc_drive.clone() else {
+            return;
+        };
+
+        let titles: Vec<DiscTitle> = self
+            .disc_titles
+            .iter()
+            .filter(|title| self.disc_selected.contains(&title.id))
+            .cloned()
+            .collect();
+
+        // Each title is a queue job from the start, so the rip renders in the
+        // queue screen and shares its cancellation. The path is the title's
+        // name until the file it extracts to is known.
+        self.queue.reset();
+        for title in &titles {
+            let mut job = EncodingJob::new(PathBuf::from(title.name.clone()));
+            job.status = JobStatus::Ripping { progress: 0.0 };
+            job.temporary = true;
+            self.queue.jobs.push(job);
+        }
+
+        self.disc_cancel_flag = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        self.disc_receiver = Some(rx);
+        crate::disc::worker::spawn_rips(
+            bin,
+            self.config.clone(),
+            drive,
+            titles,
+            &self.disc_cancel_flag,
+            tx,
+        );
+        self.navigate_to_queue();
+    }
+
+    /// Esc: cancel whatever is running and step back one screen.
+    pub fn leave_disc_screen(&mut self) {
+        self.disc_cancel_flag.store(true, Ordering::Relaxed);
+        self.disc_receiver = None;
+        match self.current_screen {
+            Screen::DiscTitles if self.disc_drives.len() > 1 => {
+                self.current_screen = Screen::DiscDrives;
+            }
+            _ => self.navigate_to_home(),
+        }
+    }
+
+    /// Poll the disc channel; called every frame from the main loop.
+    pub fn process_disc_events(&mut self) {
+        let lang = self.config.language;
+        let mut events = Vec::new();
+        let mut worker_gone = false;
+        if let Some(ref rx) = self.disc_receiver {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => events.push(event),
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        worker_gone = true;
+                        break;
+                    }
+                }
+            }
+        } else {
+            return;
+        }
+
+        for event in events {
+            match event {
+                DiscEvent::TitlesFound(scan) => {
+                    self.disc_titles = scan.titles;
+                    self.disc_state = DiscState::Ready;
+                    self.disc_receiver = None;
+                }
+                DiscEvent::Ripping { index, progress } => {
+                    if let Some(job) = self.queue.jobs.get_mut(index) {
+                        job.status = JobStatus::Ripping { progress };
+                        if self.queue_cursor == self.queue.current_job_index {
+                            self.queue_cursor = index;
+                            self.queue_list_state.select(Some(index));
+                        }
+                        self.queue.current_job_index = index;
+                    }
+                }
+                // Probing starts now, while the drive moves on to the next
+                // title: that is what keeps peak disk at one rip plus one
+                // encode input.
+                DiscEvent::TitleReady { index, path } => {
+                    if let Some(job) = self.queue.jobs.get_mut(index) {
+                        job.source_size = std::fs::metadata(&path).ok().map(|m| m.len());
+                        job.path = path;
+                        job.status = JobStatus::Pending;
+                    }
+                    self.analyze_indices(&[index]);
+                }
+                DiscEvent::Error { index, error } => {
+                    self.disc_receiver = None;
+                    self.fail_disc_run(index, &error.message(lang));
+                }
+                DiscEvent::Cancelled => {
+                    self.disc_receiver = None;
+                    if self.disc_state == DiscState::Scanning {
+                        self.disc_state = DiscState::Ready;
+                    }
+                    self.skip_remaining_rips();
+                    self.settle_after_rips();
+                }
+                DiscEvent::Finished => {
+                    self.disc_receiver = None;
+                    self.settle_after_rips();
+                }
+            }
+        }
+
+        if worker_gone && self.disc_receiver.is_some() {
+            self.disc_receiver = None;
+            let message =
+                crate::disc::DiscError::Failed("the run stopped unexpectedly".to_string())
+                    .message(lang);
+            self.fail_disc_run(0, &message);
+        }
+    }
+
+    /// Report a failure where the user is looking: on the title screen while
+    /// scanning, on the queue once titles are being extracted.
+    fn fail_disc_run(&mut self, index: usize, message: &str) {
+        if self.disc_state == DiscState::Scanning || self.current_screen == Screen::DiscTitles {
+            self.disc_state = DiscState::Failed(message.to_string());
+            return;
+        }
+        self.fail_remaining_rips(index, message);
+        self.settle_after_rips();
+    }
+
+    /// Record the failure on the title that hit it, and close out the ones
+    /// behind it: the worker stops at the first failure.
+    fn fail_remaining_rips(&mut self, index: usize, message: &str) {
+        for (position, job) in self.queue.jobs.iter_mut().enumerate() {
+            if !matches!(job.status, JobStatus::Ripping { .. }) {
+                continue;
+            }
+            if position == index {
+                job.status = JobStatus::Error {
+                    message: message.to_string(),
+                };
+                self.queue.error_count += 1;
+            } else {
+                job.status = JobStatus::Skipped {
+                    reason: "Cancelled".to_string(),
+                };
+                self.queue.skipped_count += 1;
+            }
+        }
+    }
+
+    /// Whether any job is still waiting for its tracks to be chosen.
+    pub fn has_jobs_awaiting_config(&self) -> bool {
+        self.queue
+            .jobs
+            .iter()
+            .any(|job| matches!(job.status, JobStatus::AwaitingConfig))
+    }
+
+    /// Open track configuration for the first job that still needs it.
+    pub fn configure_next_job(&mut self) {
+        let Some(index) = self
+            .queue
+            .jobs
+            .iter()
+            .position(|job| matches!(job.status, JobStatus::AwaitingConfig))
+        else {
+            return;
+        };
+        self.queue.config_job_index = index;
+        self.navigate_to_track_config();
+    }
+
+    /// Titles that were queued but never extracted.
+    fn skip_remaining_rips(&mut self) {
+        for job in &mut self.queue.jobs {
+            if matches!(job.status, JobStatus::Ripping { .. }) {
+                job.status = JobStatus::Skipped {
+                    reason: "Cancelled".to_string(),
+                };
+                self.queue.skipped_count += 1;
+            }
+        }
+    }
+
+    /// The rip run is over. Probes for the titles it produced may still be
+    /// running, and they carry the queue on from here.
+    fn settle_after_rips(&mut self) {
+        if self.analysis_receiver.is_none() && self.current_screen != Screen::TrackConfig {
+            self.navigate_to_queue();
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1022,9 +1439,24 @@ impl App {
             should_finish = true;
         }
 
+        crate::disc::staging::cleanup_finished(&mut self.queue.jobs);
+
         if should_finish {
-            self.queue.end_time = Some(std::time::Instant::now());
-            self.navigate_to_finish();
+            // A title that finished ripping while this session ran is Ready
+            // but was not in its job list, so it gets a session of its own.
+            // Not after a worker died: that would restart the same failure.
+            let leftovers = !worker_gone
+                && self
+                    .queue
+                    .jobs
+                    .iter()
+                    .any(|job| matches!(job.status, JobStatus::Ready));
+            if leftovers {
+                self.start_encoding();
+            } else if self.disc_receiver.is_none() && self.analysis_receiver.is_none() {
+                self.queue.end_time = Some(std::time::Instant::now());
+                self.navigate_to_finish();
+            }
         }
     }
 

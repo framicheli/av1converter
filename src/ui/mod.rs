@@ -1,6 +1,7 @@
 pub mod common;
 pub mod config_screen;
 mod confirm_dialog;
+mod disc;
 mod dv_dialog;
 mod explorer;
 mod file_confirm;
@@ -11,6 +12,7 @@ mod track_config;
 
 pub use config_screen::render_config_screen;
 pub use confirm_dialog::render_confirm_dialog;
+pub use disc::{render_disc_drives, render_disc_titles};
 pub use dv_dialog::render_dv_dialog;
 pub use explorer::render_explorer;
 pub use file_confirm::render_file_confirm;

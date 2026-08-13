@@ -282,6 +282,15 @@ pub fn resume(queue: &mut PersistedQueue) {
         }
 
         match job.status {
+            // The file the rip was writing is incomplete, and the staging
+            // sweep deletes it: the job carries the failure, not the flag that
+            // would keep the directory alive.
+            JobStatus::Ripping { .. } => {
+                job.temporary = false;
+                job.status = JobStatus::Error {
+                    message: "the rip was interrupted by a restart".to_string(),
+                };
+            }
             JobStatus::Verifying => {
                 job.status = JobStatus::DoneVmafFailed {
                     reason: "interrupted by a daemon restart".to_string(),
@@ -580,6 +589,30 @@ mod tests {
                 (7, "/tmp/av1c-missing-legacy.mkv".to_string())
             ]
         );
+    }
+
+    /// A rip cut short by a restart has no file worth keeping: the job records
+    /// the failure and stops claiming its staging directory.
+    #[test]
+    fn an_interrupted_rip_does_not_come_back_as_a_job() {
+        let mut job = EncodingJob::new(PathBuf::from("/staging/rip-a1/DISC_t00.mkv"));
+        job.status = JobStatus::Ripping { progress: 0.0 };
+        job.temporary = true;
+        let mut state = QueueState::new();
+        state.jobs.push(job);
+        let mut queue = persisted(state, vec![1], 2);
+
+        resume(&mut queue);
+
+        assert!(matches!(
+            queue.state.jobs[0].status,
+            JobStatus::Error { .. }
+        ));
+        assert!(
+            !queue.state.jobs[0].temporary,
+            "the sweep must be free to delete the partial rip"
+        );
+        assert!(needs_analysis(&queue).is_empty());
     }
 
     /// Unparseable, misshapen and inconsistent queue files all load as empty.

@@ -40,8 +40,9 @@ pub fn render_home(f: &mut Frame, app: &App) {
         create_menu_item(t(lang, Msg::HomeOpenFile), 0, app.home_index),
         create_menu_item(t(lang, Msg::HomeOpenFolder), 1, app.home_index),
         create_menu_item(t(lang, Msg::HomeOpenFolderRecursive), 2, app.home_index),
-        create_menu_item(t(lang, Msg::Configuration), 3, app.home_index),
-        create_menu_item(t(lang, Msg::Quit), 4, app.home_index),
+        create_menu_item(t(lang, Msg::HomeRipDisc), 3, app.home_index),
+        create_menu_item(t(lang, Msg::Configuration), 4, app.home_index),
+        create_menu_item(t(lang, Msg::Quit), 5, app.home_index),
     ];
 
     let menu = List::new(menu_items)

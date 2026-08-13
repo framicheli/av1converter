@@ -99,6 +99,26 @@ pub enum Msg {
     HomeOpenFile,
     HomeOpenFolder,
     HomeOpenFolderRecursive,
+    HomeRipDisc,
+    DiscSelectDrive,
+    DiscSelectTitles,
+    DiscScanning,
+    DiscNoTitles,
+    DiscRipAction,
+    DiscScanAction,
+    DiscChapters,
+    WebAddDisc,
+    StatusRipping,
+    DiscNotInstalled,
+    DiscNoDrive,
+    DiscDriveEmpty,
+    DiscPermissionDenied,
+    DiscKeyExpired,
+    DiscUnreadable,
+    DiscInsufficientSpace,
+    DiscChanged,
+    DiscNoDestination,
+    DiscFailedPrefix,
     Configuration,
     EncoderLabel,
     VmafDisabled,
@@ -241,6 +261,7 @@ pub enum Msg {
     CfgDaemonBindAddress,
     CfgDaemonPort,
     CfgDaemonBrowseRoot,
+    CfgStagingDirectory,
     CfgDaemonAuthToken,
 
     // ── Daemon mode ──────────────────────────────────────────────────────────
@@ -595,6 +616,220 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Ouvrir un dossier (récursif)",
             De => "Ordner öffnen (rekursiv)",
             Zh => "打开文件夹（递归）",
+        },
+        Msg::HomeRipDisc => match lang {
+            En => "Rip DVD / Blu-ray",
+            It => "Estrai da DVD / Blu-ray",
+            Es => "Extraer de DVD / Blu-ray",
+            Fr => "Extraire un DVD / Blu-ray",
+            De => "DVD / Blu-ray auslesen",
+            Zh => "抓取 DVD / 蓝光",
+        },
+        Msg::DiscSelectDrive => match lang {
+            En => "Select Drive",
+            It => "Seleziona unità",
+            Es => "Seleccionar unidad",
+            Fr => "Choisir le lecteur",
+            De => "Laufwerk wählen",
+            Zh => "选择光驱",
+        },
+        Msg::DiscSelectTitles => match lang {
+            En => "Select Titles",
+            It => "Seleziona titoli",
+            Es => "Seleccionar títulos",
+            Fr => "Choisir les titres",
+            De => "Titel wählen",
+            Zh => "选择标题",
+        },
+        Msg::DiscScanning => match lang {
+            En => "Scanning disc…",
+            It => "Scansione del disco…",
+            Es => "Analizando el disco…",
+            Fr => "Analyse du disque…",
+            De => "Disc wird gelesen…",
+            Zh => "正在扫描光盘…",
+        },
+        Msg::DiscNoTitles => match lang {
+            En => "No titles found on this disc",
+            It => "Nessun titolo trovato su questo disco",
+            Es => "No se encontraron títulos en este disco",
+            Fr => "Aucun titre trouvé sur ce disque",
+            De => "Keine Titel auf dieser Disc gefunden",
+            Zh => "此光盘上未找到标题",
+        },
+        Msg::DiscRipAction => match lang {
+            En => "Rip",
+            It => "Estrai",
+            Es => "Extraer",
+            Fr => "Extraire",
+            De => "Auslesen",
+            Zh => "抓取",
+        },
+        Msg::DiscScanAction => match lang {
+            En => "Scan",
+            It => "Analizza",
+            Es => "Analizar",
+            Fr => "Analyser",
+            De => "Einlesen",
+            Zh => "扫描",
+        },
+        Msg::WebAddDisc => match lang {
+            En | De => "+ Disc",
+            It | Es => "+ Disco",
+            Fr => "+ Disque",
+            Zh => "+ 光盘",
+        },
+        Msg::DiscChapters => match lang {
+            En => "chapters",
+            It => "capitoli",
+            Es => "capítulos",
+            Fr => "chapitres",
+            De => "Kapitel",
+            Zh => "章节",
+        },
+        Msg::StatusRipping => match lang {
+            En => "Ripping",
+            It => "Estrazione",
+            Es => "Extrayendo",
+            Fr => "Extraction",
+            De => "Wird ausgelesen",
+            Zh => "抓取中",
+        },
+        Msg::DiscNotInstalled => match lang {
+            En => {
+                "MakeMKV was not found. Install it from makemkv.com, or set makemkvcon_path under [disc] in config.toml."
+            }
+            It => {
+                "MakeMKV non trovato. Installalo da makemkv.com oppure imposta makemkvcon_path in [disc] nel file config.toml."
+            }
+            Es => {
+                "No se encontró MakeMKV. Instálalo desde makemkv.com o define makemkvcon_path en [disc] dentro de config.toml."
+            }
+            Fr => {
+                "MakeMKV est introuvable. Installez-le depuis makemkv.com ou renseignez makemkvcon_path dans [disc] du fichier config.toml."
+            }
+            De => {
+                "MakeMKV wurde nicht gefunden. Installieren Sie es von makemkv.com oder tragen Sie makemkvcon_path unter [disc] in config.toml ein."
+            }
+            Zh => {
+                "未找到 MakeMKV。请从 makemkv.com 安装，或在 config.toml 的 [disc] 中设置 makemkvcon_path。"
+            }
+        },
+        Msg::DiscNoDrive => match lang {
+            En => "No optical drive was found",
+            It => "Nessuna unità ottica trovata",
+            Es => "No se encontró ninguna unidad óptica",
+            Fr => "Aucun lecteur optique trouvé",
+            De => "Kein optisches Laufwerk gefunden",
+            Zh => "未找到光驱",
+        },
+        Msg::DiscDriveEmpty => match lang {
+            En => "The drive is empty. Insert a disc and try again.",
+            It => "L'unità è vuota. Inserisci un disco e riprova.",
+            Es => "La unidad está vacía. Inserta un disco e inténtalo de nuevo.",
+            Fr => "Le lecteur est vide. Insérez un disque et réessayez.",
+            De => "Das Laufwerk ist leer. Legen Sie eine Disc ein und versuchen Sie es erneut.",
+            Zh => "光驱是空的。请放入光盘后重试。",
+        },
+        Msg::DiscPermissionDenied => match lang {
+            En => {
+                "The drive could not be opened: permission denied. On Linux, add your user to the 'cdrom' group."
+            }
+            It => {
+                "Impossibile aprire l'unità: permesso negato. Su Linux aggiungi il tuo utente al gruppo 'cdrom'."
+            }
+            Es => {
+                "No se pudo abrir la unidad: permiso denegado. En Linux, añade tu usuario al grupo 'cdrom'."
+            }
+            Fr => {
+                "Impossible d'ouvrir le lecteur : permission refusée. Sous Linux, ajoutez votre utilisateur au groupe « cdrom »."
+            }
+            De => {
+                "Das Laufwerk konnte nicht geöffnet werden: Zugriff verweigert. Fügen Sie Ihren Benutzer unter Linux der Gruppe „cdrom“ hinzu."
+            }
+            Zh => "无法打开光驱：权限被拒绝。在 Linux 上，请将您的用户加入 cdrom 组。",
+        },
+        Msg::DiscKeyExpired => match lang {
+            En => {
+                "MakeMKV's Blu-ray key has expired. Refresh it in MakeMKV; this is not a fault of this tool. DVDs are unaffected."
+            }
+            It => {
+                "La chiave Blu-ray di MakeMKV è scaduta. Aggiornala in MakeMKV: non è un difetto di questo programma. I DVD non sono interessati."
+            }
+            Es => {
+                "La clave Blu-ray de MakeMKV ha caducado. Actualízala en MakeMKV; no es un fallo de esta herramienta. Los DVD no se ven afectados."
+            }
+            Fr => {
+                "La clé Blu-ray de MakeMKV a expiré. Renouvelez-la dans MakeMKV ; ce n'est pas un défaut de cet outil. Les DVD ne sont pas concernés."
+            }
+            De => {
+                "Der Blu-ray-Schlüssel von MakeMKV ist abgelaufen. Erneuern Sie ihn in MakeMKV; das ist kein Fehler dieses Programms. DVDs sind nicht betroffen."
+            }
+            Zh => {
+                "MakeMKV 的蓝光密钥已过期。请在 MakeMKV 中更新，这不是本工具的问题。DVD 不受影响。"
+            }
+        },
+        Msg::DiscUnreadable => match lang {
+            En => {
+                "The disc could not be read. It may be damaged, unsupported, or have been ejected."
+            }
+            It => {
+                "Impossibile leggere il disco. Potrebbe essere danneggiato, non supportato o essere stato espulso."
+            }
+            Es => {
+                "No se pudo leer el disco. Puede estar dañado, no ser compatible o haber sido expulsado."
+            }
+            Fr => {
+                "Le disque n'a pas pu être lu. Il est peut-être endommagé, non pris en charge ou a été éjecté."
+            }
+            De => {
+                "Die Disc konnte nicht gelesen werden. Sie ist möglicherweise beschädigt, nicht unterstützt oder wurde ausgeworfen."
+            }
+            Zh => "无法读取光盘。它可能已损坏、不受支持或已被弹出。",
+        },
+        Msg::DiscInsufficientSpace => match lang {
+            En => "Not enough free space in the staging directory for this title",
+            It => "Spazio insufficiente nella cartella di staging per questo titolo",
+            Es => "No hay espacio suficiente en la carpeta temporal para este título",
+            Fr => "Espace insuffisant dans le dossier temporaire pour ce titre",
+            De => "Nicht genug freier Speicher im Zwischenordner für diesen Titel",
+            Zh => "暂存目录中没有足够空间存放此标题",
+        },
+        Msg::DiscChanged => match lang {
+            En => "The disc in the drive is not the one that was scanned. Scan it again.",
+            It => "Il disco nell'unità non è quello analizzato. Ripeti la scansione.",
+            Es => "El disco de la unidad no es el que se analizó. Vuelve a analizarlo.",
+            Fr => {
+                "Le disque dans le lecteur n'est pas celui qui a été analysé. Relancez l'analyse."
+            }
+            De => "Die Disc im Laufwerk ist nicht die zuvor gelesene. Lesen Sie sie erneut ein.",
+            Zh => "光驱中的光盘不是之前扫描的那张。请重新扫描。",
+        },
+        Msg::DiscNoDestination => match lang {
+            En => {
+                "Set an output directory in Settings before ripping: the encode cannot be written to the staging directory."
+            }
+            It => {
+                "Imposta una cartella di destinazione nelle impostazioni prima di estrarre: la codifica non può essere scritta nella cartella di staging."
+            }
+            Es => {
+                "Define una carpeta de salida en los ajustes antes de extraer: la codificación no puede escribirse en la carpeta temporal."
+            }
+            Fr => {
+                "Choisissez un dossier de sortie dans les réglages avant d'extraire : l'encodage ne peut pas être écrit dans le dossier temporaire."
+            }
+            De => {
+                "Legen Sie vor dem Auslesen einen Ausgabeordner in den Einstellungen fest: Die Kodierung kann nicht in den Zwischenordner geschrieben werden."
+            }
+            Zh => "抓取前请在设置中指定输出目录：编码结果不能写入暂存目录。",
+        },
+        Msg::DiscFailedPrefix => match lang {
+            En => "MakeMKV reported",
+            It => "MakeMKV ha segnalato",
+            Es => "MakeMKV informó",
+            Fr => "MakeMKV a signalé",
+            De => "MakeMKV meldet",
+            Zh => "MakeMKV 报告",
         },
         Msg::Configuration => match lang {
             En | Fr => "Configuration",
@@ -1546,6 +1781,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Daemon-Basisordner",
             Zh => "守护进程浏览根目录",
         },
+        Msg::CfgStagingDirectory => match lang {
+            En => "Disc Staging Directory",
+            It => "Cartella di staging dischi",
+            Es => "Carpeta temporal de discos",
+            Fr => "Dossier temporaire des disques",
+            De => "Zwischenordner für Discs",
+            Zh => "光盘暂存目录",
+        },
         Msg::CfgDaemonAuthToken => match lang {
             En => "Daemon Access Token",
             It => "Token di accesso daemon",
@@ -2302,6 +2545,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
 pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("add_file", Msg::WebAddFile),
     ("add_folder", Msg::WebAddFolder),
+    ("add_disc", Msg::WebAddDisc),
     ("add_folder_recursive", Msg::WebAddFolderRecursive),
     ("added_files", Msg::WebAddedFiles),
     ("already_opus_copied", Msg::WebAlreadyOpusCopied),
@@ -2318,6 +2562,18 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("badge_verifying", Msg::StatusVerifying),
     ("badge_vmaf_failed", Msg::WebVmafFailed),
     ("cancel", Msg::Cancel),
+    ("disc_chapters", Msg::DiscChapters),
+    ("disc_drive_empty", Msg::DiscDriveEmpty),
+    ("disc_no_drive", Msg::DiscNoDrive),
+    ("disc_no_titles", Msg::DiscNoTitles),
+    ("disc_rip", Msg::DiscRipAction),
+    ("disc_scan", Msg::DiscScanAction),
+    ("disc_scanning", Msg::DiscScanning),
+    ("disc_select_drive", Msg::DiscSelectDrive),
+    ("disc_select_titles", Msg::DiscSelectTitles),
+    ("disc_title", Msg::HomeRipDisc),
+    ("selected", Msg::SelectedWord),
+    ("status_ripping", Msg::StatusRipping),
     ("cancel_encoding", Msg::CancelEncodingTitle),
     ("cancel_encoding_prompt", Msg::CancelEncodingPrompt),
     ("cancelling", Msg::WebCancelling),

@@ -22,7 +22,7 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
     let detail_job = app.queue.jobs.get(app.queue_cursor);
     let is_live_gauge = matches!(
         detail_job.map(|j| &j.status),
-        Some(JobStatus::Encoding { .. })
+        Some(JobStatus::Encoding { .. } | JobStatus::Ripping { .. })
     );
     let detail_height = if is_live_gauge { 3 } else { 7 };
 
@@ -152,6 +152,21 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 .ratio(progress.clamp(0.0, 100.0) / 100.0)
                 .label(label);
             f.render_widget(gauge, chunks[2]);
+        } else if let JobStatus::Ripping { progress } = &job.status {
+            let gauge = Gauge::default()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray))
+                        .title(format!(" {} ", job.filename())),
+                )
+                .gauge_style(Style::default().fg(Color::Magenta).bg(Color::DarkGray))
+                .ratio(progress.clamp(0.0, 100.0) / 100.0)
+                .label(format!(
+                    "{progress:.1}%  |  {}",
+                    t(lang, Msg::StatusRipping)
+                ));
+            f.render_widget(gauge, chunks[2]);
         } else {
             let status_text = match &job.status {
                 JobStatus::Analyzing => t(lang, Msg::StatusAnalyzing).to_string(),
@@ -173,8 +188,8 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 ),
                 JobStatus::Skipped { reason } => translate_reason(lang, reason),
                 JobStatus::Error { message } => message.clone(),
-                // Handled by the `if let Encoding` branch above; unreachable here.
-                JobStatus::Encoding { .. } => String::new(),
+                // Handled by the gauge branches above; unreachable here.
+                JobStatus::Encoding { .. } | JobStatus::Ripping { .. } => String::new(),
             };
             let status = Paragraph::new(status_text)
                 .alignment(Alignment::Center)
@@ -255,6 +270,11 @@ fn create_queue_item(
             ListItem::new(format!("{prefix}▶ {name} {progress:.1}%{crf_str}"))
                 .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod))
         }
+        JobStatus::Ripping { progress } => ListItem::new(format!(
+            "{prefix}⟳ {name} {} {progress:.1}%",
+            t(lang, Msg::StatusRipping)
+        ))
+        .style(Style::default().fg(Color::Magenta).add_modifier(bold_mod)),
         JobStatus::Verifying => ListItem::new(format!(
             "{prefix}◈ {name} {}",
             t(lang, Msg::StatusVerifying)
