@@ -55,6 +55,12 @@ impl SourceIdentity {
 pub enum JobStatus {
     /// Waiting to be processed
     Pending,
+    /// Being extracted from a disc. The percentage is not persisted: a
+    /// reloaded `Ripping` job has no file to carry on from.
+    Ripping {
+        #[serde(skip)]
+        progress: f64,
+    },
     /// Being analyzed via ffprobe
     Analyzing,
     /// Waiting for track configuration
@@ -118,6 +124,10 @@ pub struct EncodingJob {
     pub remux_only: bool,
     /// Dolby Vision handling; `None` until the user has chosen (DV sources only)
     pub dv_mode: Option<DvMode>,
+    /// A ripped title staged for encoding, deleted once the encode finishes.
+    /// Absent from queues written before disc ripping existed.
+    #[serde(default)]
+    pub temporary: bool,
 }
 
 impl EncodingJob {
@@ -140,6 +150,7 @@ impl EncodingJob {
             source_kept_vmaf: None,
             remux_only: false,
             dv_mode: None,
+            temporary: false,
         }
     }
 
@@ -165,11 +176,29 @@ impl EncodingJob {
             .map_or("Unknown", VideoMetadata::hdr_string)
     }
 
-    /// Generate the output path based on config
+    /// Generate the output path based on config.
+    ///
+    /// A temporary source ignores `same_directory` and needs a configured
+    /// output directory: its own directory is the staging directory, which is
+    /// deleted as soon as the encode finishes. Without one the path is left as
+    /// it stands and the job does not encode.
     pub fn generate_output_path(&mut self, output_config: &crate::config::OutputConfig) {
         let stem = self.path.file_stem().unwrap_or_default().to_string_lossy();
         let default_parent = || self.path.parent().unwrap_or(Path::new(".")).to_path_buf();
-        let parent = if output_config.same_directory {
+        let parent = if self.temporary {
+            let Some(dir) = output_config
+                .output_directory
+                .as_deref()
+                .filter(|dir| !dir.is_empty())
+            else {
+                warn!(
+                    "No output directory configured for the ripped file {}",
+                    self.path.display()
+                );
+                return;
+            };
+            PathBuf::from(dir)
+        } else if output_config.same_directory {
             default_parent()
         } else if let Some(ref dir) = output_config.output_directory {
             std::path::PathBuf::from(dir)
@@ -554,6 +583,19 @@ mod tests {
         assert_eq!(found, vec![root.join("inside.mkv").canonicalize().unwrap()]);
 
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// A queue written before disc ripping existed has no `temporary` field.
+    #[test]
+    fn a_job_without_a_temporary_flag_loads_as_permanent() {
+        let mut job = EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
+        job.temporary = true;
+        let mut value = serde_json::to_value(&job).unwrap();
+        assert_eq!(value["temporary"], serde_json::json!(true));
+
+        value.as_object_mut().unwrap().remove("temporary");
+        let restored: EncodingJob = serde_json::from_value(value).unwrap();
+        assert!(!restored.temporary);
     }
 
     /// A remux output uses the remux suffix and the source container.

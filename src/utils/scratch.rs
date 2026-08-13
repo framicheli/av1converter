@@ -61,7 +61,7 @@ pub fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
 
 /// Create `path` as a fresh directory only this user can enter. Fails if the
 /// name already exists in any form.
-fn create_private_dir(path: &Path) -> std::io::Result<()> {
+pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
@@ -72,9 +72,8 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
     builder.create(path)
 }
 
-// ponytail: the directory itself is left behind at exit — the files inside are
-// removed as each job finishes, and an empty directory in the system temp folder
-// is what temp folders are for. Clean it up on shutdown if that ever bothers.
+// The directory itself is left behind at exit; the files inside are removed as
+// each job finishes.
 
 #[cfg(test)]
 mod tests {

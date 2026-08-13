@@ -55,6 +55,7 @@ pub enum ConfigField {
     DaemonPort,
     DaemonBrowseRoot,
     DaemonAuthToken,
+    DiscStagingDirectory,
 }
 
 /// Descriptor for a single row in the config screen.
@@ -216,6 +217,11 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         kind: ConfigItemKind::Text,
         field: ConfigField::DaemonAuthToken,
     },
+    ConfigItem {
+        label: Msg::CfgStagingDirectory,
+        kind: ConfigItemKind::Text,
+        field: ConfigField::DiscStagingDirectory,
+    },
 ];
 
 /// Whether a field is one of the per-resolution rate-factor rows.
@@ -328,6 +334,11 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::DaemonBindAddress => config.daemon.bind_address.clone(),
         ConfigField::DaemonPort => config.daemon.port.to_string(),
         ConfigField::DaemonBrowseRoot => empty_as_dash(&config.daemon.browse_root),
+        ConfigField::DiscStagingDirectory => config
+            .disc
+            .staging_directory
+            .as_deref()
+            .map_or_else(|| "—".to_string(), empty_as_dash),
         // Shown as a placeholder rather than the secret itself.
         ConfigField::DaemonAuthToken => {
             if config.daemon.auth_token.is_empty() {
