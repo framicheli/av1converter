@@ -3,11 +3,11 @@ pkgver=3.0.0
 pkgrel=1
 pkgdesc='Batch-convert video files to AV1 using FFmpeg'
 arch=('x86_64' 'aarch64')
-url='https://gitlab.com/francescomicheli/av1converter'
+url='https://github.com/framicheli/av1converter'
 license=('MIT')
 depends=('ffmpeg')
 makedepends=('cargo' 'git')
-source=("$pkgname::git+$url.git#commit=99ea137827ce660abb2c885b9f7174fd896804a5")
+source=("$pkgname::git+$url.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
 build() {

@@ -15,7 +15,7 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 - **Track selection** — Auto-selects audio and subtitle tracks by preferred language; Selects all tracks or first track when no match is found
 - **Audio transcoding** — Copy audio tracks untouched (the default) or convert any of them to Opus at the source's own channel layout; per-track in both the TUI and the web UI
 - **Daemon mode with web UI** — Run headless and manage the queue from a browser (see [Daemon Mode](#daemon-mode-and-web-ui))
-- **Multi-language UI** — Interface available in English (default), Italian, Spanish, French, German, and Chinese; selectable in Settings
+- **Multi-language UI** — TUI and web UI available in English (default), Italian, Spanish, French, German, and Chinese; selectable in Settings
 - **Configurable** — All key settings adjustable through the built-in configuration screen or `~/.config/av1converter/config.toml`
 
 ## Prerequisites
@@ -66,13 +66,13 @@ Maintainers must publish each release to crates.io with `cargo publish --locked`
 Run without installing:
 
 ```bash
-nix run gitlab:francescomicheli/av1converter
+nix run github:framicheli/av1converter
 ```
 
 Or install into your Nix profile:
 
 ```bash
-nix profile install gitlab:francescomicheli/av1converter
+nix profile install github:framicheli/av1converter
 ```
 
 ### Homebrew
@@ -98,7 +98,7 @@ makepkg -si
 
 ### Debian, Ubuntu, and Fedora
 
-Download the package for your release from the [GitLab release page](https://gitlab.com/francescomicheli/av1converter/-/releases), then install it:
+Download the package for your release from the [release page](https://github.com/framicheli/av1converter/releases), then install it:
 
 ```bash
 sudo apt install ./av1converter_VERSION_amd64.deb
@@ -112,7 +112,7 @@ Release archives are checksummed in `SHA256SUMS`. Extract the target-suffixed ex
 To build from source:
 
 ```bash
-git clone https://gitlab.com/francescomicheli/av1converter.git
+git clone https://github.com/framicheli/av1converter.git
 cd av1converter
 cargo build --release
 ```
@@ -162,12 +162,12 @@ Usage: av1converter [OPTION]
 
 ### Workflow
 
-1. **Home menu** — Choose to open a single file, a folder, or a folder recursively
+1. **Home menu** — Open a single file, a folder, or a folder recursively; or go to Configuration
 2. **File selection** — Navigate with arrow keys; `Space` to toggle, `Enter` to confirm
 3. **Track configuration** — Select audio and subtitle tracks to include, and switch the per-file mode (encode or demux/remux) with `r`
 4. **File review** — Confirm the queue before encoding starts
 5. **Encoding** — Monitor per-file and overall progress; `Esc` to cancel
-6. **VMAF verification** — Quality score is computed after each file; source is deleted if the score meets the threshold (encode mode only)
+6. **VMAF verification** — Quality score is computed after each file; the source is deleted only if `delete_source_on_success` is on and the score meets the threshold (encode mode only)
 7. **Finish** — View a summary of conversions, skipped files, and space saved
 
 ## Modes
@@ -238,7 +238,7 @@ Two things worth knowing:
 
 ## Daemon Mode and Web UI
 
-The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, cancel, remove), and a settings page. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder. After analysis finishes, a centered dialog opens for the per-file choices; **Apply to remaining files** copies them to the other waiting jobs by track order, while extra tracks keep their automatic defaults.
+The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, cancel, remove, clear finished jobs), and a settings page. The queue is persisted, so jobs still waiting when the daemon stops are restored on the next start. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder. After analysis finishes, a centered dialog opens for the per-file choices; **Apply to remaining files** copies them to the other waiting jobs by track order, while extra tracks keep their automatic defaults.
 
 Enable it in Settings (or set `enabled = true` under `[daemon]`), then:
 

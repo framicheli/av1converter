@@ -5,7 +5,7 @@ Version: %{av1converter_version}
 Release: 1%{?dist}
 Summary: Batch-convert video files to AV1 using FFmpeg
 License: MIT
-URL: https://gitlab.com/francescomicheli/av1converter
+URL: https://github.com/framicheli/av1converter
 Source0: av1converter
 Source1: LICENSE
 Requires: ffmpeg
