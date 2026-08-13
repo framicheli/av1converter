@@ -50,6 +50,9 @@ fn make_fixture(dir: &Path) -> Option<PathBuf> {
             "ac3",
             "-ac",
             "6",
+            // A title naming the source codec, as real releases carry
+            "-metadata:s:a:0",
+            "title=AC3 5.1 @ 640 kbps",
             "-shortest",
         ])
         .arg(&path)
@@ -98,7 +101,7 @@ fn surround_track() -> AudioTrack {
         channels: Some(6),
         // Exactly what ffprobe reports for the fixture.
         channel_layout: Some("5.1(side)".to_string()),
-        title: None,
+        title: Some("AC3 5.1 @ 640 kbps".to_string()),
         bitrate: None,
         sample_rate: None,
     }
@@ -168,6 +171,16 @@ fn encodes_a_surround_source_to_av1_and_opus() {
         probe(&output, "stream=channels"),
         vec!["6"],
         "the source's six channels must survive; no silent downmix"
+    );
+    assert_eq!(
+        probe(&output, "stream=channel_layout"),
+        vec!["5.1"],
+        "the Opus track must declare a real channel layout, not `unknown`"
+    );
+    assert_eq!(
+        probe(&output, "stream_tags=title"),
+        vec!["Opus 5.1"],
+        "the track title must name the codec the track actually is"
     );
 
     // The scratch file is renamed into place, never left lying around.

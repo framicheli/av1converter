@@ -1,6 +1,6 @@
 use crate::analyzer::{DvMode, Hdr10StaticMetadata, HdrType, ResolutionTier, VideoMetadata};
 use crate::config::{AppConfig, Encoder};
-use crate::tracks::{AudioStreamPlan, OutputTracks};
+use crate::tracks::{AudioStreamPlan, OpusLayout, OutputTracks};
 
 /// Parameters for encoding a video file
 #[derive(Debug, Clone)]
@@ -175,8 +175,19 @@ fn build_audio_args(plan: &[AudioStreamPlan]) -> Vec<String> {
             Some(kbps) => {
                 args.extend([format!("-c:a:{n}"), "libopus".to_string()]);
                 args.extend([format!("-b:a:{n}"), format!("{kbps}k")]);
-                if stream.independent_mapping {
-                    args.extend([format!("-mapping_family:a:{n}"), "255".to_string()]);
+                match stream.layout {
+                    OpusLayout::AsIs => {}
+                    OpusLayout::Relabel(layout) => args.extend([
+                        format!("-filter:a:{n}"),
+                        format!("aformat=channel_layouts={layout}"),
+                    ]),
+                    OpusLayout::Independent => {
+                        args.extend([format!("-mapping_family:a:{n}"), "255".to_string()]);
+                    }
+                }
+                // Overrides the source title, which FFmpeg copies by default.
+                if let Some(title) = &stream.title {
+                    args.extend([format!("-metadata:s:a:{n}"), format!("title={title}")]);
                 }
             }
         }
@@ -479,7 +490,8 @@ mod tests {
         AudioStreamPlan {
             source_index,
             opus_kbps,
-            independent_mapping: false,
+            layout: OpusLayout::AsIs,
+            title: None,
         }
     }
 
@@ -522,7 +534,7 @@ mod tests {
         let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
         params.tracks = OutputTracks {
             audio: vec![AudioStreamPlan {
-                independent_mapping: true,
+                layout: OpusLayout::Independent,
                 ..audio(0, Some(384))
             }],
             subtitle_indices: Vec::new(),
@@ -533,6 +545,47 @@ mod tests {
             Some("255")
         );
         assert!(!args.iter().any(|arg| arg.starts_with("-filter:a:")));
+    }
+
+    /// A relabelled layout is filtered, and keeps the standard mapping.
+    #[test]
+    fn relabelled_layout_keeps_the_standard_mapping() {
+        let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
+        params.tracks = OutputTracks {
+            audio: vec![AudioStreamPlan {
+                layout: OpusLayout::Relabel("5.1"),
+                ..audio(0, Some(384))
+            }],
+            subtitle_indices: Vec::new(),
+        };
+        let args = build_ffmpeg_args(&params);
+        assert_eq!(
+            arg_after(&args, "-filter:a:0").as_deref(),
+            Some("aformat=channel_layouts=5.1")
+        );
+        assert!(!args.iter().any(|arg| arg.starts_with("-mapping_family")));
+    }
+
+    /// Only a stream with a replacement title gets a `-metadata`.
+    #[test]
+    fn only_retitled_streams_override_the_source_tag() {
+        let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
+        params.tracks = OutputTracks {
+            audio: vec![
+                audio(0, None),
+                AudioStreamPlan {
+                    title: Some("Opus 5.1".to_string()),
+                    ..audio(1, Some(384))
+                },
+            ],
+            subtitle_indices: Vec::new(),
+        };
+        let args = build_ffmpeg_args(&params);
+        assert_eq!(
+            arg_after(&args, "-metadata:s:a:1").as_deref(),
+            Some("title=Opus 5.1")
+        );
+        assert!(!args.contains(&"-metadata:s:a:0".to_string()));
     }
 
     /// Remuxing leaves the video untouched but still honours the audio choice:

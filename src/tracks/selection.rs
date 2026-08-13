@@ -79,13 +79,19 @@ impl TrackSelection {
                 } else {
                     None
                 };
+                let layout = if opus_kbps.is_none() {
+                    OpusLayout::AsIs
+                } else {
+                    opus_layout(track.and_then(|t| t.channel_layout.as_deref()))
+                };
                 AudioStreamPlan {
                     source_index,
                     opus_kbps,
-                    independent_mapping: opus_kbps.is_some()
-                        && !track
-                            .and_then(|t| t.channel_layout.as_deref())
-                            .is_some_and(opus_supports_layout),
+                    layout,
+                    title: match (opus_kbps, track) {
+                        (Some(_), Some(t)) => retitle(t, layout),
+                        _ => None,
+                    },
                 }
             })
             .collect();
@@ -113,38 +119,87 @@ impl TrackSelection {
 }
 
 /// One audio stream in the output, in output order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AudioStreamPlan {
     /// Index among the source's audio streams (`-map 0:a:{source_index}`)
     pub source_index: usize,
     /// `None` copies the stream; `Some(kbps)` re-encodes it to Opus.
     pub opus_kbps: Option<u32>,
-    /// Use Opus mapping family 255 for layouts its standard mapping rejects.
-    /// This preserves channel count and order instead of downmixing/remapping.
-    pub independent_mapping: bool,
+    /// How the source's channel layout is handed to libopus.
+    pub layout: OpusLayout,
+    /// Track title to write, or `None` to keep the source's.
+    pub title: Option<String>,
 }
 
-/// Whether Opus' standard channel mapping covers this layout, in which case the
-/// stream is coded with proper inter-channel coupling.
-///
-/// These are the Vorbis layouts, and the match is exact on purpose. It is
-/// tempting to also accept the qualified spellings — `5.1(side)` is what
-/// ffprobe reports for most real surround tracks, and treating it as uncommon
-/// looks like it costs coupling for nothing. It does not: ffmpeg's libopus
-/// wrapper rejects them outright.
+/// How a transcoded stream's channel layout reaches libopus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpusLayout {
+    /// Copied stream, or a layout libopus already accepts.
+    #[default]
+    AsIs,
+    /// Relabel to this standard layout name before encoding.
+    Relabel(&'static str),
+    /// Mapping family 255: every channel kept, no channel positions declared.
+    Independent,
+}
+
+/// Codec names as they turn up in track titles, lowercased.
+const CODEC_NAMES: [&str; 14] = [
+    "e-ac-3", "e-ac3", "eac3", "ac-3", "ac3", "dd+", "ddp", "dts", "truehd", "atmos", "aac",
+    "flac", "mp3", "pcm",
+];
+
+/// The title for a transcoded stream: `Opus <layout>` when the source's title
+/// names a codec, `None` when it describes the content instead.
+fn retitle(track: &AudioTrack, layout: OpusLayout) -> Option<String> {
+    let title = track.title.as_deref()?.to_ascii_lowercase();
+    if !CODEC_NAMES.iter().any(|codec| title.contains(codec)) {
+        return None;
+    }
+    // The layout the output declares, which is not always the source's.
+    Some(match (layout, track.channel_layout.as_deref()) {
+        (OpusLayout::Relabel(relabelled), _) => format!("Opus {relabelled}"),
+        (_, Some(source)) => format!("Opus {source}"),
+        (_, None) => "Opus".to_string(),
+    })
+}
+
+/// How to hand this source layout to libopus.
+fn opus_layout(layout: Option<&str>) -> OpusLayout {
+    match layout {
+        Some(l) if opus_supports_layout(l) => OpusLayout::AsIs,
+        Some(l) => standard_spelling(l).map_or(OpusLayout::Independent, OpusLayout::Relabel),
+        None => OpusLayout::Independent,
+    }
+}
+
+/// Whether Opus' standard channel mapping covers this layout. These are the
+/// Vorbis layouts; libopus rejects any other spelling.
 ///
 /// ```text
 /// $ ffmpeg -i 5.1side.mkv -c:a libopus out.mkv
 /// [libopus] Invalid channel layout 5.1(side) for specified mapping family -1.
 /// ```
-///
-/// Mapping family 255 is what makes those files encodable at all, so a
-/// too-clever match here turns a working encode into a hard failure. Widening
-/// this list means relabelling the layout first (see [`AudioStreamPlan`]).
 fn opus_supports_layout(layout: &str) -> bool {
     ["mono", "stereo", "3.0", "quad", "5.0", "5.1", "6.1", "7.1"]
         .iter()
         .any(|supported| layout.eq_ignore_ascii_case(supported))
+}
+
+/// The standard name for a layout that differs from one only in spelling: the
+/// same channels in the same order, so `aformat` relabels without touching a
+/// sample. Layouts that differ by more than the name (`7.1(wide)` carries
+/// front-of-centre channels where 7.1 carries sides) are not listed — those
+/// would rematrix, and keep mapping family 255 instead.
+fn standard_spelling(layout: &str) -> Option<&'static str> {
+    [
+        ("5.0(side)", "5.0"),
+        ("5.1(side)", "5.1"),
+        ("6.1(back)", "6.1"),
+    ]
+    .iter()
+    .find(|(spelling, _)| layout.eq_ignore_ascii_case(spelling))
+    .map(|&(_, standard)| standard)
 }
 
 /// The audio and subtitle streams to write, already resolved from the user's
@@ -280,54 +335,101 @@ mod tests {
         assert!(plan.transcodes_audio());
     }
 
-    #[test]
-    fn uncommon_opus_layouts_use_independent_mapping() {
-        let mut standard = track(0, "aac", Some(6));
-        standard.channel_layout = Some("5.1".to_string());
-        let mut uncommon = track(1, "aac", Some(3));
-        uncommon.channel_layout = Some("2.1".to_string());
+    fn layout_of(layout: &str) -> OpusLayout {
+        let mut source = track(0, "eac3", Some(6));
+        source.channel_layout = Some(layout.to_string());
         let mut sel = TrackSelection::default();
         sel.set_audio_opus(0, true);
-        sel.set_audio_opus(1, true);
-
-        let plan = sel.resolve(&[standard, uncommon], &AudioConfig::default());
-        assert!(!plan.audio[0].independent_mapping);
-        assert!(plan.audio[1].independent_mapping);
+        sel.resolve(&[source], &AudioConfig::default()).audio[0].layout
     }
 
-    /// Regression guard. `5.1(side)` is what ffprobe reports for most real
-    /// surround tracks, and accepting it as a standard layout looks like an
-    /// easy win — but ffmpeg's libopus rejects it ("Invalid channel layout
-    /// 5.1(side) for specified mapping family -1") and the encode fails
-    /// outright. Independent mapping is what makes these files encodable.
     #[test]
-    fn qualified_surround_layouts_need_independent_mapping() {
-        for layout in ["5.1(side)", "7.1(wide)", "7.1(wide-side)", "5.0(side)"] {
-            let mut source = track(0, "dts", Some(6));
-            source.channel_layout = Some(layout.to_string());
-            let mut sel = TrackSelection::default();
-            sel.set_audio_opus(0, true);
+    fn standard_layouts_are_encoded_as_they_are() {
+        assert_eq!(layout_of("5.1"), OpusLayout::AsIs);
+        assert_eq!(layout_of("stereo"), OpusLayout::AsIs);
+    }
 
-            let plan = sel.resolve(&[source], &AudioConfig::default());
-            assert!(
-                plan.audio[0].independent_mapping,
-                "{layout} is not a layout libopus accepts under its standard mapping"
-            );
+    /// The spellings ffprobe reports for real AC-3/E-AC-3/DTS surround tracks
+    /// are relabelled, not left to mapping family 255.
+    #[test]
+    fn qualified_surround_spellings_are_relabelled_not_left_unmapped() {
+        assert_eq!(layout_of("5.1(side)"), OpusLayout::Relabel("5.1"));
+        assert_eq!(layout_of("5.0(side)"), OpusLayout::Relabel("5.0"));
+        assert_eq!(layout_of("6.1(back)"), OpusLayout::Relabel("6.1"));
+    }
+
+    /// Layouts a rename cannot reach keep independent streams.
+    #[test]
+    fn layouts_that_differ_by_more_than_a_name_stay_independent() {
+        for layout in [
+            "7.1(wide)",
+            "7.1(wide-side)",
+            "6.1(front)",
+            "2.1",
+            "22.2",
+            "hexadecagonal",
+        ] {
+            assert_eq!(layout_of(layout), OpusLayout::Independent, "{layout}");
         }
     }
 
-    /// A layout Opus has no standard mapping for still gets independent
-    /// streams rather than being downmixed to fit.
-    #[test]
-    fn genuinely_unmapped_layouts_stay_independent() {
-        for layout in ["2.1", "22.2", "hexadecagonal"] {
-            let mut source = track(0, "pcm", Some(3));
-            source.channel_layout = Some(layout.to_string());
-            let mut sel = TrackSelection::default();
-            sel.set_audio_opus(0, true);
+    fn titled(source_title: &str, layout: &str) -> Option<String> {
+        let mut source = track(0, "eac3", Some(6));
+        source.title = Some(source_title.to_string());
+        source.channel_layout = Some(layout.to_string());
+        let mut sel = TrackSelection::default();
+        sel.set_audio_opus(0, true);
+        sel.resolve(&[source], &AudioConfig::default()).audio[0]
+            .title
+            .clone()
+    }
 
-            let plan = sel.resolve(&[source], &AudioConfig::default());
-            assert!(plan.audio[0].independent_mapping, "{layout}");
-        }
+    /// A title naming the source codec becomes `Opus <output layout>`.
+    #[test]
+    fn titles_naming_the_old_codec_are_rewritten() {
+        assert_eq!(
+            titled("E-AC3 5.1 @ 640 kbps", "5.1(side)"),
+            Some("Opus 5.1".to_string())
+        );
+        assert_eq!(
+            titled("English DD+ 5.1", "5.1(side)"),
+            Some("Opus 5.1".to_string())
+        );
+        assert_eq!(titled("DTS-HD MA 7.1", "7.1"), Some("Opus 7.1".to_string()));
+    }
+
+    /// A title describing the content, not the encoding, is kept.
+    #[test]
+    fn descriptive_titles_are_left_alone() {
+        assert_eq!(titled("Director's commentary", "5.1(side)"), None);
+        assert_eq!(titled("English", "stereo"), None);
+    }
+
+    /// A copied stream keeps the title it came with.
+    #[test]
+    fn copied_streams_keep_their_title() {
+        let mut source = track(0, "eac3", Some(6));
+        source.title = Some("E-AC3 5.1".to_string());
+        let sel = TrackSelection {
+            audio_indices: vec![0],
+            ..TrackSelection::default()
+        };
+        assert_eq!(
+            sel.resolve(&[source], &AudioConfig::default()).audio[0].title,
+            None
+        );
+    }
+
+    /// A copied stream is never filtered or remapped, whatever its layout.
+    #[test]
+    fn copied_streams_keep_their_layout_untouched() {
+        let mut source = track(0, "eac3", Some(6));
+        source.channel_layout = Some("5.1(side)".to_string());
+        let sel = TrackSelection {
+            audio_indices: vec![0],
+            ..TrackSelection::default()
+        };
+        let plan = sel.resolve(&[source], &AudioConfig::default());
+        assert_eq!(plan.audio[0].layout, OpusLayout::AsIs);
     }
 }

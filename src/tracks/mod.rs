@@ -49,7 +49,7 @@ pub fn subtitle_codecs_for(
         .collect()
 }
 
-pub use selection::{AudioStreamPlan, OutputTracks, TrackSelection};
+pub use selection::{AudioStreamPlan, OpusLayout, OutputTracks, TrackSelection};
 
 #[cfg(test)]
 mod tests {
