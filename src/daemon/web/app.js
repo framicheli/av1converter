@@ -199,6 +199,7 @@ async function poll() {
     $("btn-cancel").disabled = !s.encoding_active;
 
     updateSummary(s);
+    onDiscStatus(s.disc);
 
     if (activeTab === "queue") await refreshQueue();
   } catch (e) {
@@ -302,7 +303,7 @@ document.addEventListener("visibilitychange", () => {
 
 const BADGE_CLASS = {
   pending: "", analyzing: "analyzing", awaiting_config: "", ready: "",
-  encoding: "encoding", verifying: "verifying",
+  ripping: "encoding", encoding: "encoding", verifying: "verifying",
   done: "done", done_vmaf: "done", done_vmaf_failed: "warn",
   skipped: "", error: "error", quality_warning: "warn",
 };
@@ -319,6 +320,7 @@ const BADGE_KEY = {
 function badgeText(st) {
   switch (st.kind) {
     case "encoding": return `${tr("status_encoding")} ${st.progress.toFixed(1)}%`;
+    case "ripping": return `${tr("status_ripping")} ${st.progress.toFixed(1)}%`;
     case "done_vmaf": return `${tr("badge_done")} · VMAF ${st.vmaf.toFixed(1)}`;
     case "done_vmaf_failed": return `${tr("badge_done")} · ${tr("badge_vmaf_failed")}`;
     case "quality_warning": return `${tr("badge_low_vmaf")} ${st.vmaf.toFixed(1)}`;
@@ -409,9 +411,10 @@ function updateRow(row, job) {
   if (detail) row.badge.setAttribute("aria-describedby", row.detail.id);
   else row.badge.removeAttribute("aria-describedby");
 
-  const encoding = job.status.kind === "encoding";
-  row.bar.classList.toggle("hidden", !encoding);
-  if (encoding) row.bar.value = job.status.progress;
+  // A rip fills the same bar as an encode: same shape of work, same row.
+  const live = ["encoding", "ripping"].includes(job.status.kind);
+  row.bar.classList.toggle("hidden", !live);
+  if (live) row.bar.value = job.status.progress;
 
   row.size.textContent = job.output_size != null
     ? `${fmtBytes(job.source_size)} → ${fmtBytes(job.output_size)}`
@@ -427,7 +430,7 @@ function updateRow(row, job) {
   }
 
   row.remove.disabled = row.remove.getAttribute("aria-busy") === "true"
-    || ["encoding", "verifying"].includes(job.status.kind);
+    || ["encoding", "verifying", "ripping"].includes(job.status.kind);
   row.remove.title = tr("remove_from_queue");
   row.remove.setAttribute("aria-label", `${tr("remove_from_queue")}: ${job.filename}`);
   row.tracks.textContent = tr("tracks_title");
@@ -950,6 +953,180 @@ async function addToQueue(path, mode) {
     addToQueue.running = false;
   }
 }
+
+// ── Disc import ─────────────────────────────────────────────────────
+//
+// The dialog holds the drive list it was opened with and the titles chosen so
+// far; everything else about the disc — scanning, the titles, the failure that
+// stopped it — comes from the status poll, which is already running.
+
+let disc = null;
+
+$("btn-add-disc").addEventListener("click", openDisc);
+$("disc-close").addEventListener("click", () => $("disc-modal").close());
+// Esc closes without going through the button, so the state is dropped on the
+// close event: the one place every path passes through. A scan still running
+// is called off, since it holds the drive.
+$("disc-modal").addEventListener("close", () => {
+  // A rip closes this dialog on its way to the queue, where it is cancelled
+  // like any other job; only an abandoned scan is called off here.
+  if (disc && !disc.ripping && discState.scanning) {
+    post("/api/discs/cancel").catch(() => {});
+  }
+  disc = null;
+});
+
+async function openDisc() {
+  if ($("disc-modal").open) return;
+  disc = { drives: [], drive: null, selected: new Set(), error: null, loading: true };
+  renderDisc();
+  $("disc-modal").showModal();
+  try {
+    const { drives } = await api("/api/discs");
+    disc.drives = drives;
+    disc.loading = false;
+    // A list of one is not a choice.
+    if (drives.length === 1) await scanDisc(drives[0].id);
+  } catch (e) {
+    disc.loading = false;
+    disc.error = e.message;
+  }
+  renderDisc();
+}
+
+async function scanDisc(id) {
+  disc.drive = id;
+  disc.selected.clear();
+  disc.error = null;
+  try {
+    await post("/api/discs/scan", { drive: id });
+  } catch (e) {
+    disc.error = e.message;
+  }
+  renderDisc();
+}
+
+// The last `disc` block from /api/status, so the dialog can render between
+// polls without asking for it again.
+let discState = { active: false, scanning: false, titles: [], error: null };
+
+function onDiscStatus(state) {
+  discState = state ?? discState;
+  if ($("disc-modal").open) renderDisc();
+}
+
+function renderDisc() {
+  const body = $("disc-body");
+  const note = $("disc-note");
+  const rip = $("disc-rip");
+  body.textContent = "";
+  note.textContent = "";
+  rip.disabled = true;
+  if (!disc) return;
+
+  // A failure from either side of the exchange reads the same way here.
+  const failure = disc.error ?? discState.error;
+  if (failure) body.appendChild(discNote(failure, true));
+
+  if (disc.loading) {
+    body.appendChild(discNote(tr("disc_scanning")));
+    return;
+  }
+  if (disc.drives.length === 0) {
+    if (!failure) body.appendChild(discNote(tr("disc_no_drive"), true));
+    return;
+  }
+
+  // More than one drive, and none picked yet: choose one first.
+  if (disc.drive == null) {
+    body.appendChild(groupHeading(tr("disc_select_drive")));
+    for (const drive of disc.drives) {
+      const row = document.createElement("button");
+      row.className = "disc-drive";
+      row.textContent = `${drive.name} — ${drive.disc_label ?? tr("disc_drive_empty")}`;
+      row.addEventListener("click", () => scanDisc(drive.id));
+      body.appendChild(row);
+    }
+    return;
+  }
+
+  const drive = disc.drives.find((d) => d.id === disc.drive);
+  const heading = [
+    drive?.name,
+    drive?.disc_label ?? tr("disc_drive_empty"),
+    discState.disc_type,
+  ].filter(Boolean).join(" · ");
+  body.appendChild(groupHeading(heading));
+
+  if (discState.scanning) {
+    body.appendChild(discNote(tr("disc_scanning")));
+    return;
+  }
+  if (discState.titles.length === 0) {
+    if (!failure) body.appendChild(discNote(tr("disc_no_titles")));
+    return;
+  }
+
+  for (const title of discState.titles) {
+    const row = document.createElement("label");
+    row.className = "track-row";
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = disc.selected.has(title.id);
+    box.addEventListener("change", () => {
+      if (box.checked) disc.selected.add(title.id);
+      else disc.selected.delete(title.id);
+      renderDisc();
+    });
+    row.appendChild(box);
+
+    const name = document.createElement("span");
+    name.className = "track-name";
+    name.textContent = title.name;
+    row.appendChild(name);
+
+    const meta = document.createElement("span");
+    meta.className = "muted";
+    meta.textContent = [
+      title.duration,
+      title.size,
+      `${title.chapters} ${tr("disc_chapters")}`,
+      ...title.tracks,
+    ].filter(Boolean).join(" · ");
+    row.appendChild(meta);
+
+    body.appendChild(row);
+  }
+
+  note.textContent = `${disc.selected.size} ${tr("selected")}`;
+  rip.disabled = disc.selected.size === 0 || discState.active;
+}
+
+function discNote(text, bad = false) {
+  const note = document.createElement("p");
+  note.className = bad ? "disc-error" : "muted";
+  note.textContent = text;
+  return note;
+}
+
+$("disc-rip").addEventListener("click", async () => {
+  if (!disc || disc.selected.size === 0) return;
+  const button = $("disc-rip");
+  button.disabled = true;
+  try {
+    await post("/api/discs/rip", {
+      drive: disc.drive,
+      titles: [...disc.selected],
+    });
+    disc.ripping = true;
+    $("disc-modal").close();
+    refreshQueue();
+  } catch (e) {
+    toast(e.message, true);
+    button.disabled = false;
+  }
+});
 
 // ── Settings ────────────────────────────────────────────────────────
 

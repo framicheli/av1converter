@@ -57,6 +57,7 @@
       <button id="btn-add-file" data-i18n="add_file">+ File</button>
       <button id="btn-add-folder" data-i18n="add_folder">+ Folder</button>
       <button id="btn-add-recursive" data-i18n="add_folder_recursive">+ Folder (recursive)</button>
+      <button id="btn-add-disc" data-i18n="add_disc">+ Disc</button>
       <span class="spacer"></span>
       <button id="btn-cancel" class="danger" data-i18n="cancel_encoding">Cancel encoding</button>
       <button id="btn-clear" data-i18n="clear_finished">Clear finished</button>
@@ -144,6 +145,20 @@
     </label>
     <span class="spacer"></span>
     <button id="tracks-save" data-i18n="save">Save tracks</button>
+  </div>
+</dialog>
+
+<!-- ── Disc import ─────────────────────────────────────────────── -->
+<dialog id="disc-modal" aria-labelledby="disc-title">
+  <div class="modal-head">
+    <span id="disc-title" data-i18n="disc_title">Rip DVD / Blu-ray</span>
+    <button id="disc-close" class="iconbtn" data-i18n-aria-label="cancel" aria-label="Cancel">✕</button>
+  </div>
+  <div id="disc-body" class="modal-body"></div>
+  <div class="modal-foot">
+    <span id="disc-note" class="muted"></span>
+    <span class="spacer"></span>
+    <button id="disc-rip" data-i18n="disc_rip" disabled>Rip</button>
   </div>
 </dialog>
 

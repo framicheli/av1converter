@@ -418,6 +418,16 @@ td.grew { color: var(--warn); }
 .track-row select:focus { border-color: var(--accent); }
 .track-target { font-size: 11px; color: var(--accent); white-space: nowrap; }
 
+/* ── Disc import ────────────────────────────────────────────────── */
+.track-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.disc-drive {
+  display: block;
+  width: 100%;
+  margin: 4px 0;
+  text-align: left;
+}
+.disc-error { color: var(--bad); overflow-wrap: anywhere; }
+
 /* ── Toast ──────────────────────────────────────────────────────── */
 .toast {
   position: fixed;
