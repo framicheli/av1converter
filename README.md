@@ -128,6 +128,14 @@ Stop a background daemon before removing the binary:
 av1converter --stop
 ```
 
+To also delete configuration and daemon state (queue, logs, access token), run:
+
+```bash
+av1converter --purge
+```
+
+It lists the directories it will remove and asks `Are you sure? [y/N]`. The binary, encoded files, and a custom disc staging directory are left alone. Package uninstall does not delete user data, so `--purge` has to run while the binary is still installed.
+
 Then use the same tool that installed it:
 
 ```bash
@@ -139,7 +147,7 @@ sudo apt remove av1converter
 sudo dnf remove av1converter
 ```
 
-For a manual installation, remove the binary you placed on `PATH`. Uninstalling deliberately preserves configuration and daemon state. To purge those too, delete `~/.config/av1converter` and `~/.local/share/av1converter` on Unix (or the equivalent directories under `XDG_CONFIG_HOME` and `XDG_DATA_HOME`), or the `av1converter` directories under `%APPDATA%` and `%LOCALAPPDATA%` on Windows.
+For a manual installation, remove the binary you placed on `PATH`.
 
 ## Usage
 
@@ -158,6 +166,7 @@ Usage: av1converter [OPTION]
   --stop               stop the background daemon
   --status             show whether the daemon is running
   --scan-discs         list optical drives and the titles on the loaded disc
+  --purge              delete configuration and daemon state after confirmation
   --help               show this help
   --version            show the version
 ```

@@ -16,9 +16,9 @@ const SPAWN_GRACE: Duration = Duration::from_millis(600);
 /// own `SHUTDOWN_GRACE` so a running encode can be cancelled cleanly.
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Data directory for the PID file and background log
+/// Data directory for the PID file, queue and background log
 /// (same location the debug logger uses).
-fn data_dir() -> PathBuf {
+pub fn data_dir() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))

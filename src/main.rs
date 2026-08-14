@@ -19,7 +19,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend, widgets::Clear};
-use std::io;
+use std::io::{self, Write};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::app::HOME_MENU;
@@ -34,6 +35,7 @@ Usage: av1converter [OPTION]
   --stop               stop the background daemon
   --status             show whether the daemon is running
   --scan-discs         list optical drives and the titles on the loaded disc
+  --purge              delete configuration and daemon state after confirmation
   --help               show this help
   --version            show the version
 ";
@@ -46,6 +48,7 @@ enum Cli {
     Stop,
     Status,
     ScanDiscs,
+    Purge,
     Help,
     Version,
 }
@@ -56,6 +59,7 @@ const FLAGS: &[&str] = &[
     "--stop",
     "--status",
     "--scan-discs",
+    "--purge",
     "--help",
     "-h",
     "--version",
@@ -69,6 +73,7 @@ fn parse_flag(arg: &str) -> Option<Cli> {
         "--stop" => Cli::Stop,
         "--status" => Cli::Status,
         "--scan-discs" => Cli::ScanDiscs,
+        "--purge" => Cli::Purge,
         "--help" | "-h" => Cli::Help,
         "--version" | "-V" => Cli::Version,
         _ => return None,
@@ -269,6 +274,73 @@ fn scan_discs_entry() {
     }
 }
 
+/// Directories `--purge` removes: config and daemon data. Deduped in case both
+/// resolve to the same path (no `HOME`/`XDG_*`, so both fall back to `.`).
+fn purge_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(dir) = config::AppConfig::config_path().parent() {
+        dirs.push(dir.to_path_buf());
+    }
+    let data = daemon::lifecycle::data_dir();
+    if !dirs.contains(&data) {
+        dirs.push(data);
+    }
+    dirs
+}
+
+fn is_purge_yes(line: &str) -> bool {
+    let line = line.trim();
+    line.eq_ignore_ascii_case("y") || line.eq_ignore_ascii_case("yes")
+}
+
+/// `--purge`: delete configuration and daemon state after confirmation.
+/// English, like `--help`. Does not load the config, which would create one.
+fn purge_entry() {
+    if let Some(pid) = daemon::lifecycle::running_pid() {
+        eprintln!(
+            "The daemon is still running (PID {pid}). Stop it first with: av1converter --stop"
+        );
+        std::process::exit(1);
+    }
+
+    let existing: Vec<PathBuf> = purge_dirs()
+        .into_iter()
+        .filter(|dir| dir.exists())
+        .collect();
+    if existing.is_empty() {
+        println!("Nothing to delete.");
+        return;
+    }
+
+    println!("This will permanently delete:");
+    for dir in &existing {
+        println!("  {}", dir.display());
+    }
+    print!("Are you sure? [y/N] ");
+    let _ = io::stdout().flush();
+
+    let mut line = String::new();
+    match io::stdin().read_line(&mut line) {
+        Ok(_) if is_purge_yes(&line) => {}
+        Ok(_) => {
+            println!("Cancelled.");
+            return;
+        }
+        Err(e) => {
+            eprintln!("Could not read confirmation: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    for dir in &existing {
+        if let Err(e) = std::fs::remove_dir_all(dir) {
+            eprintln!("Could not delete {}: {e}", dir.display());
+            std::process::exit(1);
+        }
+        println!("Deleted {}", dir.display());
+    }
+}
+
 fn main() -> io::Result<()> {
     match parse_cli(std::env::args().skip(1)) {
         Ok(Cli::Tui) => {}
@@ -284,6 +356,10 @@ fn main() -> io::Result<()> {
         }
         Ok(Cli::ScanDiscs) => {
             scan_discs_entry();
+            return Ok(());
+        }
+        Ok(Cli::Purge) => {
+            purge_entry();
             return Ok(());
         }
         Ok(Cli::Help) => {
@@ -1101,6 +1177,29 @@ mod tests {
     #[test]
     fn a_valid_flag_is_accepted() {
         assert_eq!(parse_cli(["--stop"]).unwrap(), Cli::Stop);
+        assert_eq!(parse_cli(["--purge"]).unwrap(), Cli::Purge);
+    }
+
+    #[test]
+    fn purge_confirmation_accepts_only_yes() {
+        assert!(is_purge_yes("y"));
+        assert!(is_purge_yes("Yes\n"));
+        assert!(!is_purge_yes("n"));
+        assert!(!is_purge_yes("\n"));
+        assert!(!is_purge_yes("yeah"));
+    }
+
+    #[test]
+    fn purge_dirs_are_unique() {
+        let dirs = purge_dirs();
+        assert!(!dirs.is_empty());
+        for (i, dir) in dirs.iter().enumerate() {
+            assert!(
+                !dirs[i + 1..].iter().any(|other| other == dir),
+                "duplicate purge path {}",
+                dir.display()
+            );
+        }
     }
 
     #[test]
