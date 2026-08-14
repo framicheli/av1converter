@@ -38,6 +38,7 @@ Usage: av1converter [OPTION]
   --version            show the version
 ";
 
+#[derive(Debug, PartialEq)]
 enum Cli {
     Tui,
     Daemon,
@@ -47,21 +48,84 @@ enum Cli {
     ScanDiscs,
     Help,
     Version,
-    Unknown(String),
 }
 
-fn parse_cli() -> Cli {
-    match std::env::args().nth(1).as_deref() {
-        None => Cli::Tui,
-        Some("--daemon") => Cli::Daemon,
-        Some("--daemon-foreground") => Cli::DaemonForeground,
-        Some("--stop") => Cli::Stop,
-        Some("--status") => Cli::Status,
-        Some("--scan-discs") => Cli::ScanDiscs,
-        Some("--help" | "-h") => Cli::Help,
-        Some("--version" | "-V") => Cli::Version,
-        Some(other) => Cli::Unknown(other.to_string()),
+const FLAGS: &[&str] = &[
+    "--daemon",
+    "--daemon-foreground",
+    "--stop",
+    "--status",
+    "--scan-discs",
+    "--help",
+    "-h",
+    "--version",
+    "-V",
+];
+
+fn parse_flag(arg: &str) -> Option<Cli> {
+    Some(match arg {
+        "--daemon" => Cli::Daemon,
+        "--daemon-foreground" => Cli::DaemonForeground,
+        "--stop" => Cli::Stop,
+        "--status" => Cli::Status,
+        "--scan-discs" => Cli::ScanDiscs,
+        "--help" | "-h" => Cli::Help,
+        "--version" | "-V" => Cli::Version,
+        _ => return None,
+    })
+}
+
+fn parse_cli(args: impl IntoIterator<Item = impl AsRef<str>>) -> Result<Cli, String> {
+    let mut args = args.into_iter();
+    let Some(first) = args.next() else {
+        return Ok(Cli::Tui);
+    };
+    let first = first.as_ref();
+    let Some(cli) = parse_flag(first) else {
+        return Err(unknown_arg_message(first));
+    };
+    if let Some(extra) = args.next() {
+        return Err(format!(
+            "Unexpected extra argument: {}\n{USAGE}",
+            extra.as_ref()
+        ));
     }
+    Ok(cli)
+}
+
+fn unknown_arg_message(arg: &str) -> String {
+    match suggest_flag(arg) {
+        Some(flag) => format!("Unknown argument: {arg}\nDid you mean `{flag}`?\n{USAGE}"),
+        None => format!("Unknown argument: {arg}\n{USAGE}"),
+    }
+}
+
+fn suggest_flag(arg: &str) -> Option<&'static str> {
+    let mut best: Option<(&'static str, usize)> = None;
+    for flag in FLAGS {
+        let d = edit_distance(arg, flag);
+        if (1..=2).contains(&d) && best.is_none_or(|(_, bd)| d < bd) {
+            best = Some((flag, d));
+        }
+    }
+    best.map(|(flag, _)| flag)
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, &ca) in a.iter().enumerate() {
+        let mut curr = vec![i + 1];
+        for (j, &cb) in b.iter().enumerate() {
+            curr.push(if ca == cb {
+                prev[j]
+            } else {
+                1 + prev[j].min(prev[j + 1]).min(curr[j])
+            });
+        }
+        prev = curr;
+    }
+    prev[b.len()]
 }
 
 /// Headless daemon entry: refuses to start unless enabled in the config or if
@@ -206,32 +270,32 @@ fn scan_discs_entry() {
 }
 
 fn main() -> io::Result<()> {
-    match parse_cli() {
-        Cli::Tui => {}
-        Cli::Daemon => return run_daemon_entry(false),
-        Cli::DaemonForeground => return run_daemon_entry(true),
-        Cli::Stop => {
+    match parse_cli(std::env::args().skip(1)) {
+        Ok(Cli::Tui) => {}
+        Ok(Cli::Daemon) => return run_daemon_entry(false),
+        Ok(Cli::DaemonForeground) => return run_daemon_entry(true),
+        Ok(Cli::Stop) => {
             stop_daemon_entry();
             return Ok(());
         }
-        Cli::Status => {
+        Ok(Cli::Status) => {
             daemon_status_entry();
             return Ok(());
         }
-        Cli::ScanDiscs => {
+        Ok(Cli::ScanDiscs) => {
             scan_discs_entry();
             return Ok(());
         }
-        Cli::Help => {
+        Ok(Cli::Help) => {
             print!("{USAGE}");
             return Ok(());
         }
-        Cli::Version => {
+        Ok(Cli::Version) => {
             println!("av1converter {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
-        Cli::Unknown(arg) => {
-            eprintln!("Unknown argument: {arg}\n{USAGE}");
+        Err(msg) => {
+            eprint!("{msg}");
             std::process::exit(2);
         }
     }
@@ -1022,5 +1086,39 @@ fn adjust_preset_rf(preset: &mut config::EncodingPreset, encoder: config::Encode
         *val = val.saturating_add(1).min(encoder.max_quality());
     } else {
         *val = val.saturating_sub(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_args_starts_the_tui() {
+        assert_eq!(parse_cli([] as [&str; 0]).unwrap(), Cli::Tui);
+    }
+
+    #[test]
+    fn a_valid_flag_is_accepted() {
+        assert_eq!(parse_cli(["--stop"]).unwrap(), Cli::Stop);
+    }
+
+    #[test]
+    fn a_typo_suggests_the_closest_flag() {
+        let err = parse_cli(["--stiop"]).unwrap_err();
+        assert!(err.contains("Did you mean `--stop`"), "{err}");
+    }
+
+    #[test]
+    fn extra_arguments_are_rejected() {
+        let err = parse_cli(["--stop", "foo"]).unwrap_err();
+        assert!(err.contains("Unexpected extra argument: foo"), "{err}");
+    }
+
+    #[test]
+    fn a_distant_unknown_flag_is_not_suggested() {
+        let err = parse_cli(["--foo"]).unwrap_err();
+        assert!(err.contains("Unknown argument: --foo"), "{err}");
+        assert!(!err.contains("Did you mean"), "{err}");
     }
 }
