@@ -51,6 +51,7 @@ pub enum ConfigField {
     OpusBitratePerChannel,
     SkipAlreadyOpus,
     DaemonEnabled,
+    DaemonAutostart,
     DaemonBindAddress,
     DaemonPort,
     DaemonBrowseRoot,
@@ -198,6 +199,11 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         field: ConfigField::DaemonEnabled,
     },
     ConfigItem {
+        label: Msg::CfgDaemonAutostart,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::DaemonAutostart,
+    },
+    ConfigItem {
         label: Msg::CfgDaemonBindAddress,
         kind: ConfigItemKind::Text,
         field: ConfigField::DaemonBindAddress,
@@ -262,6 +268,9 @@ pub fn visible_config_items(config: &AppConfig) -> Vec<&'static ConfigItem> {
             matches!(config.encoder, Encoder::Nvenc) || item.field != ConfigField::NvencPreset
         })
         .filter(|item| !config.output.same_directory || item.field != ConfigField::OutputDirectory)
+        .filter(|item| {
+            item.field != ConfigField::DaemonAutostart || crate::daemon::service::supported()
+        })
         .collect()
 }
 
@@ -331,6 +340,9 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
             bool_display(config.language, config.audio.skip_already_opus)
         }
         ConfigField::DaemonEnabled => bool_display(config.language, config.daemon.enabled),
+        ConfigField::DaemonAutostart => {
+            bool_display(config.language, crate::daemon::service::installed())
+        }
         ConfigField::DaemonBindAddress => config.daemon.bind_address.clone(),
         ConfigField::DaemonPort => config.daemon.port.to_string(),
         ConfigField::DaemonBrowseRoot => empty_as_dash(&config.daemon.browse_root),
@@ -441,11 +453,8 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
             .wrap(Wrap { trim: true })
             .block(Block::default().borders(Borders::NONE));
         f.render_widget(status, chunks[2]);
-    } else if visible_config_items(&app.config)
-        .get(app.config_selected)
-        .is_some_and(|item| item.field == ConfigField::DeleteSource)
-    {
-        let warning = Paragraph::new(t(lang, Msg::WebDeleteSourceWarning))
+    } else if let Some(hint) = selected_config_hint(app) {
+        let warning = Paragraph::new(t(lang, hint))
             .style(Style::default().fg(Color::Yellow))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true });
@@ -479,6 +488,18 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
             .block(Block::default().borders(Borders::NONE))
             .wrap(Wrap { trim: true });
         f.render_widget(help, chunks[2]);
+    }
+}
+
+/// Yellow footer for rows that need a warning rather than the key help.
+fn selected_config_hint(app: &App) -> Option<Msg> {
+    match visible_config_items(&app.config)
+        .get(app.config_selected)
+        .map(|item| item.field)
+    {
+        Some(ConfigField::DeleteSource) => Some(Msg::WebDeleteSourceWarning),
+        Some(ConfigField::DaemonAutostart) => Some(Msg::CfgDaemonAutostartHint),
+        _ => None,
     }
 }
 

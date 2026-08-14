@@ -1,6 +1,7 @@
 pub mod api;
 pub mod lifecycle;
 pub mod server;
+pub mod service;
 pub mod state;
 
 use crate::analyzer::{self, AnalysisResult, HdrType, is_av1_codec};

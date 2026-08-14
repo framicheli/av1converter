@@ -122,10 +122,11 @@ The compiled binary will be at `target/release/av1converter`.
 
 ### Uninstallation
 
-Stop a background daemon before removing the binary:
+Stop a background daemon before removing the binary, and drop login autostart if you enabled it:
 
 ```bash
 av1converter --stop
+av1converter --uninstall-service
 ```
 
 To also delete configuration and daemon state (queue, logs, access token), run:
@@ -134,7 +135,7 @@ To also delete configuration and daemon state (queue, logs, access token), run:
 av1converter --purge
 ```
 
-It lists the directories it will remove and asks `Are you sure? [y/N]`. The binary, encoded files, and a custom disc staging directory are left alone. Package uninstall does not delete user data, so `--purge` has to run while the binary is still installed.
+It lists the directories it will remove and asks `Are you sure? [y/N]`. Login autostart is removed too, without a second prompt. The binary, encoded files, and a custom disc staging directory are left alone. Package uninstall does not delete user data, so `--purge` has to run while the binary is still installed.
 
 Then use the same tool that installed it:
 
@@ -165,6 +166,8 @@ Usage: av1converter [OPTION]
   --daemon-foreground  run the daemon in the foreground, logging to stdout
   --stop               stop the background daemon
   --status             show whether the daemon is running
+  --install-service    start the daemon at login (Linux/macOS)
+  --uninstall-service  stop starting the daemon at login
   --scan-discs         list optical drives and the titles on the loaded disc
   --purge              delete configuration and daemon state after confirmation
   --help               show this help
@@ -278,6 +281,15 @@ av1converter --daemon      # start in the background
 av1converter --status      # is it running, and where
 av1converter --stop        # stop it, cancelling any encode cleanly
 ```
+
+To start it at login, turn on **Run at Startup** in Settings, or:
+
+```bash
+av1converter --install-service    # systemd user unit (Linux) or launchd agent (macOS)
+av1converter --uninstall-service  # remove it
+```
+
+`--stop` lasts until the next login; uninstall is what prevents it coming back. On a headless Linux machine the user unit dies at logout unless lingering is enabled (`loginctl enable-linger $USER`). Re-run `--install-service` after moving the binary so `ExecStart` stays correct.
 
 Background mode is Unix-only; elsewhere use `--daemon-foreground`. Logs go to `~/.local/share/av1converter/daemon.log`.
 

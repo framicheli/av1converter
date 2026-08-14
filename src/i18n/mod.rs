@@ -258,6 +258,8 @@ pub enum Msg {
     CfgSubtitleLanguages,
     CfgLanguage,
     CfgDaemonEnabled,
+    CfgDaemonAutostart,
+    CfgDaemonAutostartHint,
     CfgDaemonBindAddress,
     CfgDaemonPort,
     CfgDaemonBrowseRoot,
@@ -279,6 +281,13 @@ pub enum Msg {
     DaemonStopped,
     DaemonStopFailed,
     DaemonStopHint,
+    DaemonServiceInstalled,
+    DaemonServiceUninstalled,
+    DaemonServiceFailed,
+    DaemonServiceUnsupported,
+    DaemonServiceLingerHint,
+    DaemonAutostartOn,
+    DaemonAutostartOff,
 
     // ── Web UI ───────────────────────────────────────────────────────────────
     WebTabQueue,
@@ -1757,6 +1766,32 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Web-Daemon aktiviert",
             Zh => "启用 Web 守护进程",
         },
+        Msg::CfgDaemonAutostart => match lang {
+            En => "Run at Startup",
+            It => "Avvia all'accesso",
+            Es => "Ejecutar al iniciar",
+            Fr => "Démarrer à la connexion",
+            De => "Beim Anmelden starten",
+            Zh => "登录时启动",
+        },
+        Msg::CfgDaemonAutostartHint => match lang {
+            En => {
+                "Starts the web UI at login. A waiting queue will encode when the machine comes up. --stop lasts until the next login."
+            }
+            It => {
+                "Avvia l'interfaccia web all'accesso. Una coda in attesa verrà codificata all'avvio. --stop vale fino al prossimo accesso."
+            }
+            Es => {
+                "Arranca la interfaz web al iniciar sesión. Una cola pendiente se codificará al encender. --stop dura hasta el próximo inicio de sesión."
+            }
+            Fr => {
+                "Démarre l'interface web à la connexion. Une file d'attente sera encodée au démarrage. --stop tient jusqu'à la prochaine connexion."
+            }
+            De => {
+                "Startet die Web-UI bei der Anmeldung. Eine wartende Warteschlange wird beim Hochfahren kodiert. --stop gilt bis zur nächsten Anmeldung."
+            }
+            Zh => "登录时启动 Web 界面。等待中的队列会在开机后开始编码。--stop 只持续到下次登录。",
+        },
         Msg::CfgDaemonBindAddress => match lang {
             En => "Daemon Bind Address",
             It => "Indirizzo di ascolto daemon",
@@ -1954,6 +1989,64 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Arrêtez-le avec : av1converter --stop",
             De => "Beenden mit: av1converter --stop",
             Zh => "使用 av1converter --stop 停止",
+        },
+        Msg::DaemonServiceInstalled => match lang {
+            En => "Daemon will start at login",
+            It => "Il daemon si avvierà all'accesso",
+            Es => "El daemon se iniciará al iniciar sesión",
+            Fr => "Le daemon démarrera à la connexion",
+            De => "Daemon startet bei der Anmeldung",
+            Zh => "守护进程将在登录时启动",
+        },
+        Msg::DaemonServiceUninstalled => match lang {
+            En => "Daemon will no longer start at login",
+            It => "Il daemon non si avvierà più all'accesso",
+            Es => "El daemon ya no se iniciará al iniciar sesión",
+            Fr => "Le daemon ne démarrera plus à la connexion",
+            De => "Daemon startet nicht mehr bei der Anmeldung",
+            Zh => "守护进程不再于登录时启动",
+        },
+        Msg::DaemonServiceFailed => match lang {
+            En => "Could not update login autostart:",
+            It => "Impossibile aggiornare l'avvio automatico:",
+            Es => "No se pudo actualizar el inicio automático:",
+            Fr => "Impossible de mettre à jour le démarrage automatique :",
+            De => "Autostart konnte nicht geändert werden:",
+            Zh => "无法更新登录自启动：",
+        },
+        Msg::DaemonServiceUnsupported => match lang {
+            En => "Starting at login is only supported on Linux (systemd) and macOS",
+            It => "L'avvio all'accesso è supportato solo su Linux (systemd) e macOS",
+            Es => "El inicio de sesión automático solo está disponible en Linux (systemd) y macOS",
+            Fr => {
+                "Le démarrage à la connexion n'est pris en charge que sous Linux (systemd) et macOS"
+            }
+            De => "Start bei Anmeldung wird nur unter Linux (systemd) und macOS unterstützt",
+            Zh => "登录时启动仅支持 Linux（systemd）和 macOS",
+        },
+        Msg::DaemonServiceLingerHint => match lang {
+            En => "On a headless machine, run: loginctl enable-linger $USER",
+            It => "Su una macchina senza sessione grafica: loginctl enable-linger $USER",
+            Es => "En una máquina sin sesión gráfica: loginctl enable-linger $USER",
+            Fr => "Sur une machine sans session graphique : loginctl enable-linger $USER",
+            De => "Auf einem Rechner ohne grafische Sitzung: loginctl enable-linger $USER",
+            Zh => "在无图形会话的机器上请运行：loginctl enable-linger $USER",
+        },
+        Msg::DaemonAutostartOn => match lang {
+            En => "Starts at login",
+            It => "Si avvia all'accesso",
+            Es => "Se inicia al iniciar sesión",
+            Fr => "Démarre à la connexion",
+            De => "Startet bei der Anmeldung",
+            Zh => "登录时启动",
+        },
+        Msg::DaemonAutostartOff => match lang {
+            En => "Does not start at login",
+            It => "Non si avvia all'accesso",
+            Es => "No se inicia al iniciar sesión",
+            Fr => "Ne démarre pas à la connexion",
+            De => "Startet nicht bei der Anmeldung",
+            Zh => "登录时不启动",
         },
         // ── Web UI ───────────────────────────────────────────────────────────
         Msg::WebTabQueue => match lang {

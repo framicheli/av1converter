@@ -34,6 +34,8 @@ Usage: av1converter [OPTION]
   --daemon-foreground  run the daemon in the foreground, logging to stdout
   --stop               stop the background daemon
   --status             show whether the daemon is running
+  --install-service    start the daemon at login (Linux/macOS)
+  --uninstall-service  stop starting the daemon at login
   --scan-discs         list optical drives and the titles on the loaded disc
   --purge              delete configuration and daemon state after confirmation
   --help               show this help
@@ -47,6 +49,8 @@ enum Cli {
     DaemonForeground,
     Stop,
     Status,
+    InstallService,
+    UninstallService,
     ScanDiscs,
     Purge,
     Help,
@@ -58,6 +62,8 @@ const FLAGS: &[&str] = &[
     "--daemon-foreground",
     "--stop",
     "--status",
+    "--install-service",
+    "--uninstall-service",
     "--scan-discs",
     "--purge",
     "--help",
@@ -72,6 +78,8 @@ fn parse_flag(arg: &str) -> Option<Cli> {
         "--daemon-foreground" => Cli::DaemonForeground,
         "--stop" => Cli::Stop,
         "--status" => Cli::Status,
+        "--install-service" => Cli::InstallService,
+        "--uninstall-service" => Cli::UninstallService,
         "--scan-discs" => Cli::ScanDiscs,
         "--purge" => Cli::Purge,
         "--help" | "-h" => Cli::Help,
@@ -217,6 +225,78 @@ fn daemon_status_entry() {
         }
         None => println!("{}", t(lang, Msg::DaemonNotRunning)),
     }
+    if daemon::service::supported() {
+        println!(
+            "{}",
+            t(
+                lang,
+                if daemon::service::installed() {
+                    Msg::DaemonAutostartOn
+                } else {
+                    Msg::DaemonAutostartOff
+                }
+            )
+        );
+    }
+}
+
+/// Mint a token if needed, set `daemon.enabled`, and save. Shared by
+/// `--install-service` and the Settings row so the unit does not start into
+/// the disabled-gate.
+fn enable_daemon_config(config: &mut config::AppConfig) -> io::Result<bool> {
+    let mut generated = false;
+    config.daemon.enabled = true;
+    if config.daemon.auth_token.len() < 32 {
+        config.daemon.auth_token =
+            config::DaemonConfig::generate_token().map_err(io::Error::other)?;
+        generated = true;
+    }
+    config.save().map_err(io::Error::other)?;
+    Ok(generated)
+}
+
+/// `--install-service`: write a user unit/plist and start the daemon now.
+fn install_service_entry() -> io::Result<()> {
+    let mut config = config::AppConfig::load();
+    let lang = config.language;
+    if !daemon::service::supported() {
+        eprintln!("{}", t(lang, Msg::DaemonServiceUnsupported));
+        std::process::exit(1);
+    }
+    let generated = enable_daemon_config(&mut config)?;
+    if generated {
+        println!("{}", t(lang, Msg::DaemonTokenGenerated));
+    }
+    match daemon::service::install() {
+        Ok(outcome) => {
+            println!("{}", t(lang, Msg::DaemonServiceInstalled));
+            println!("{} {}", t(lang, Msg::DaemonListening), config.daemon.url());
+            if outcome.linger_hint {
+                println!("{}", t(lang, Msg::DaemonServiceLingerHint));
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("{} {e}", t(lang, Msg::DaemonServiceFailed));
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `--uninstall-service`: remove the user unit/plist and stop the daemon.
+fn uninstall_service_entry() {
+    let lang = config::AppConfig::load().language;
+    if !daemon::service::supported() {
+        eprintln!("{}", t(lang, Msg::DaemonServiceUnsupported));
+        std::process::exit(1);
+    }
+    match daemon::service::uninstall() {
+        Ok(()) => println!("{}", t(lang, Msg::DaemonServiceUninstalled)),
+        Err(e) => {
+            eprintln!("{} {e}", t(lang, Msg::DaemonServiceFailed));
+            std::process::exit(1);
+        }
+    }
 }
 
 /// `--scan-discs`: print every drive and the titles of each loaded disc, as
@@ -303,12 +383,22 @@ fn purge_entry() {
         std::process::exit(1);
     }
 
+    let had_service = daemon::service::installed();
+    if had_service && let Err(e) = daemon::service::uninstall() {
+        eprintln!("Could not remove the login service: {e}");
+        std::process::exit(1);
+    }
+
     let existing: Vec<PathBuf> = purge_dirs()
         .into_iter()
         .filter(|dir| dir.exists())
         .collect();
     if existing.is_empty() {
-        println!("Nothing to delete.");
+        if had_service {
+            println!("Removed the login service.");
+        } else {
+            println!("Nothing to delete.");
+        }
         return;
     }
 
@@ -352,6 +442,11 @@ fn main() -> io::Result<()> {
         }
         Ok(Cli::Status) => {
             daemon_status_entry();
+            return Ok(());
+        }
+        Ok(Cli::InstallService) => return install_service_entry(),
+        Ok(Cli::UninstallService) => {
+            uninstall_service_entry();
             return Ok(());
         }
         Ok(Cli::ScanDiscs) => {
@@ -988,6 +1083,44 @@ fn parse_lang_list(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Flip login autostart. Enabling saves the live config first so a port just
+/// typed in Settings is what the service binds, and sets `daemon.enabled`.
+fn apply_autostart(app: &mut App, enable: bool) {
+    let lang = app.config.language;
+    if !daemon::service::supported() {
+        app.set_timed_message(t(lang, Msg::DaemonServiceUnsupported), 5);
+        return;
+    }
+    if enable {
+        app.config.sanitize();
+        if let Err(e) = enable_daemon_config(&mut app.config) {
+            app.set_timed_message(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 5);
+            return;
+        }
+        app.config_snapshot = Some(app.config.clone());
+        match daemon::service::install() {
+            Ok(outcome) => {
+                let mut msg = t(lang, Msg::DaemonServiceInstalled).to_string();
+                if outcome.linger_hint {
+                    msg.push(' ');
+                    msg.push_str(t(lang, Msg::DaemonServiceLingerHint));
+                }
+                app.set_timed_message(&msg, 8);
+            }
+            Err(e) => {
+                app.set_timed_message(&format!("{} {e}", t(lang, Msg::DaemonServiceFailed)), 5);
+            }
+        }
+    } else {
+        match daemon::service::uninstall() {
+            Ok(()) => app.set_timed_message(t(lang, Msg::DaemonServiceUninstalled), 3),
+            Err(e) => {
+                app.set_timed_message(&format!("{} {e}", t(lang, Msg::DaemonServiceFailed)), 5);
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
     use crate::ui::config_screen::{ConfigField, visible_config_items};
@@ -1061,6 +1194,9 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         }
         ConfigField::DaemonEnabled => {
             app.config.daemon.enabled = !app.config.daemon.enabled;
+        }
+        ConfigField::DaemonAutostart => {
+            apply_autostart(app, !daemon::service::installed());
         }
         ConfigField::AudioDefaultMode => {
             app.config.audio.default_mode = if increase {
@@ -1178,6 +1314,14 @@ mod tests {
     fn a_valid_flag_is_accepted() {
         assert_eq!(parse_cli(["--stop"]).unwrap(), Cli::Stop);
         assert_eq!(parse_cli(["--purge"]).unwrap(), Cli::Purge);
+        assert_eq!(
+            parse_cli(["--install-service"]).unwrap(),
+            Cli::InstallService
+        );
+        assert_eq!(
+            parse_cli(["--uninstall-service"]).unwrap(),
+            Cli::UninstallService
+        );
     }
 
     #[test]

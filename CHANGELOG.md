@@ -11,6 +11,7 @@
   - Output files are named after the disc label (`<label>_t<NN>_av1.mkv`) rather than MakeMKV's `title_t00.mkv`.
 - `--scan-discs`, a diagnostic that prints the drives and the titles MakeMKV reports.
 - `--purge`, which deletes configuration and daemon state after confirmation. Refuses while the daemon is running.
+- **Run at Startup.** A Settings toggle (and `--install-service` / `--uninstall-service`) installs a systemd user unit on Linux or a launchd agent on macOS so the web UI comes up at login. Not stored in `config.toml`; `--status` reports whether it is installed. `--purge` removes the unit too.
 - `[disc]` configuration block: `makemkvcon_path` (unset resolves through `PATH` and the platform's install location) and `staging_directory` (unset stages under the system temp directory). Both are config/TUI-only, like `browse_root` and `auth_token` — the browser never names a binary the daemon executes.
 - Four token-guarded API endpoints — `GET /api/discs`, `POST /api/discs/{scan,rip,cancel}` — accepting only drive and title ids the server itself reported. Disc state rides in `/api/status`, so the page still has one poll loop.
 - Disc failures are reported in the user's language and told apart from one another: MakeMKV missing, no drive, empty drive, expired Blu-ray key, unreadable disc, permission denied, insufficient space, a swapped disc, and cancellation.
