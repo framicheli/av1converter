@@ -978,7 +978,7 @@ impl App {
         let bin = match crate::disc::find_makemkvcon(&self.config) {
             Ok(bin) => bin,
             Err(e) => {
-                self.set_message(&e.message(lang));
+                self.set_timed_message(&e.message(lang), 8);
                 return;
             }
         };
@@ -996,7 +996,7 @@ impl App {
                     self.current_screen = Screen::DiscDrives;
                 }
             }
-            Err(e) => self.set_message(&e.message(lang)),
+            Err(e) => self.set_timed_message(&e.message(lang), 8),
         }
     }
 
@@ -1011,10 +1011,12 @@ impl App {
         let Some(drive) = self.disc_drives.get(index).cloned() else {
             return;
         };
+        // A missing binary is reported as the title screen's failure state.
         let bin = match crate::disc::find_makemkvcon(&self.config) {
             Ok(bin) => bin,
             Err(e) => {
-                self.set_message(&e.message(lang));
+                self.disc_state = DiscState::Failed(e.message(lang));
+                self.current_screen = Screen::DiscTitles;
                 return;
             }
         };

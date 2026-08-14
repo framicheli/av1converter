@@ -14,6 +14,7 @@ pub fn render_home(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
+            Constraint::Length(if app.message.is_some() { 3 } else { 0 }),
             Constraint::Min(5),
             Constraint::Length(3),
             Constraint::Length(3),
@@ -33,9 +34,25 @@ pub fn render_home(f: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::NONE));
     f.render_widget(title, chunks[0]);
 
-    // Menu
     let lang = app.config.language;
-    let menu_area = centered_menu_area(chunks[1]);
+
+    // Notice area, shown only while a message is set
+    if let Some(ref msg) = app.message {
+        let message = Paragraph::new(msg.as_str())
+            .style(Style::default().fg(Color::Yellow))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow))
+                    .title(format!(" {} ", t(lang, Msg::Notice))),
+            );
+        f.render_widget(message, chunks[1]);
+    }
+
+    // Menu
+    let menu_area = centered_menu_area(chunks[2]);
     let menu_items: Vec<ListItem> = vec![
         create_menu_item(t(lang, Msg::HomeOpenFile), 0, app.home_index),
         create_menu_item(t(lang, Msg::HomeOpenFolder), 1, app.home_index),
@@ -61,14 +78,14 @@ pub fn render_home(f: &mut Frame, app: &App) {
     let status_widget = Paragraph::new(status_info)
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE));
-    f.render_widget(status_widget, chunks[2]);
+    f.render_widget(status_widget, chunks[3]);
 
     // VMAF Info line
     let vmaf_info = render_vmaf_info(app);
     let vmaf_widget = Paragraph::new(vmaf_info)
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE));
-    f.render_widget(vmaf_widget, chunks[3]);
+    f.render_widget(vmaf_widget, chunks[4]);
 
     // Help
     let help_text = Line::from(vec![
@@ -84,7 +101,7 @@ pub fn render_home(f: &mut Frame, app: &App) {
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE))
         .wrap(Wrap { trim: true });
-    f.render_widget(help, chunks[4]);
+    f.render_widget(help, chunks[5]);
 }
 
 fn render_status_info(app: &App) -> Line<'static> {
@@ -151,4 +168,36 @@ fn centered_menu_area(area: Rect) -> Rect {
             Constraint::Percentage(25),
         ])
         .split(vertical[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_home;
+    use crate::app::App;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn rendered(app: &App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| render_home(f, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    /// The home screen renders `app.message` above the menu.
+    #[test]
+    fn a_message_reaches_the_home_screen() {
+        let mut app = App::new();
+        assert!(!rendered(&app).contains("MakeMKV was not found"));
+
+        app.set_message("MakeMKV was not found");
+        let screen = rendered(&app);
+        assert!(screen.contains("MakeMKV was not found"));
+        // The menu still renders below it.
+        assert!(screen.contains("AV1 Video Converter"));
+    }
 }
