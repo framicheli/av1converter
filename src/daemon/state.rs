@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::disc::{DiscDrive, DiscTitle};
+use crate::disc::{DiscDrive, DiscSource, DiscTitle};
 use crate::queue::{EncodingJob, JobStatus, QueueState};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -130,8 +130,8 @@ pub struct EncodeSession {
 pub struct DiscSession {
     /// Drives from the last listing. The only drive ids a request may name.
     pub drives: Vec<DiscDrive>,
-    /// The drive last scanned, and what was found on it.
-    pub scanned_drive: Option<u32>,
+    /// What was last scanned, and what was found on it.
+    pub scanned_source: Option<DiscSource>,
     pub disc_type: Option<String>,
     pub titles: Vec<DiscTitle>,
     /// Queue ids of the titles being extracted, in the order requested.

@@ -2,7 +2,7 @@
 //! rip, the rename that gives the file the disc's name, and the cleanup rules
 //! for the temporary file afterwards.
 
-use super::{DiscDrive, DiscError, DiscTitle, RipProgress};
+use super::{DiscError, DiscSource, DiscTitle, RipProgress};
 use crate::config::AppConfig;
 use crate::queue::{EncodingJob, JobStatus};
 use std::collections::HashSet;
@@ -64,7 +64,7 @@ pub fn require_destination(config: &AppConfig) -> Result<PathBuf, DiscError> {
 pub fn rip_to_staging(
     bin: &Path,
     config: &AppConfig,
-    drive: &DiscDrive,
+    source: &DiscSource,
     title: &DiscTitle,
     on_progress: impl FnMut(RipProgress),
     cancel: &AtomicBool,
@@ -85,17 +85,19 @@ pub fn rip_to_staging(
     }
 
     // `makemkvcon mkv` re-scans the disc, so a title id only means anything for
-    // the disc physically in the drive.
-    let present = super::list_drives(bin, cancel)?;
-    if !present
-        .iter()
-        .any(|current| current.id == drive.id && current.disc_label == drive.disc_label)
-    {
-        return Err(DiscError::DiscChanged);
+    // the disc physically in the drive. A folder on disk cannot be swapped.
+    if let DiscSource::Drive(drive) = source {
+        let present = super::list_drives(bin, cancel)?;
+        if !present
+            .iter()
+            .any(|current| current.id == drive.id && current.disc_label == drive.disc_label)
+        {
+            return Err(DiscError::DiscChanged);
+        }
     }
 
     let dir = create_staging_dir(&root)?;
-    let ripped = match super::rip_title(bin, drive.id, title.id, &dir, on_progress, cancel) {
+    let ripped = match super::rip_title(bin, source, title.id, &dir, on_progress, cancel) {
         Ok(path) => path,
         Err(e) => {
             // A partial MKV is indistinguishable from a good one later.
@@ -104,7 +106,7 @@ pub fn rip_to_staging(
         }
     };
 
-    let named = dir.join(staged_name(drive.disc_label.as_deref(), title.id));
+    let named = dir.join(staged_name(source.label(), title.id));
     if let Err(e) = std::fs::rename(&ripped, &named) {
         warn!(
             "Could not rename {} to {}: {e}",
@@ -295,13 +297,13 @@ mod tests {
     /// The drive and title the shared fake reports, as a caller holds them
     /// after a listing and a scan.
     #[cfg(unix)]
-    fn disc(label: &str) -> (DiscDrive, DiscTitle) {
+    fn disc(label: &str) -> (DiscSource, DiscTitle) {
         (
-            DiscDrive {
+            DiscSource::Drive(super::super::DiscDrive {
                 id: 0,
                 name: "HL-DT-ST BD-RE WH16NS60".to_string(),
                 disc_label: Some(label.to_string()),
-            },
+            }),
             DiscTitle {
                 id: 0,
                 name: "Feature".to_string(),
@@ -511,13 +513,13 @@ mod tests {
         let mut config = config_with_root(&root);
         config.output.output_directory = Some(out.to_string_lossy().into_owned());
 
-        let (drive, title) = disc("THE_DISC");
+        let (source, title) = disc("THE_DISC");
         let bin = fake_makemkvcon(&base, &Fake::Rip);
         let mut seen = 0;
         let file = rip_to_staging(
             &bin,
             &config,
-            &drive,
+            &source,
             &title,
             |_| seen += 1,
             &AtomicBool::new(false),
@@ -534,6 +536,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// A folder source never asks which disc is in the drive: the fake's drive
+    /// listing fails, and the rip still lands.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_rip_never_looks_at_the_drives() {
+        let base = scratch("folder");
+        let out = base.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let root = base.join("staging");
+        let mut config = config_with_root(&root);
+        config.output.output_directory = Some(out.to_string_lossy().into_owned());
+
+        let ripped = base.join("THE_DISC");
+        std::fs::create_dir_all(ripped.join("BDMV")).unwrap();
+        let source = DiscSource::folder(&ripped).unwrap();
+        let bin = fake_makemkvcon(&base, &Fake::FolderScan);
+        assert_eq!(
+            super::super::list_drives(&bin, &AtomicBool::new(false)),
+            Err(DiscError::NoDrive),
+            "the fake has no drive to check against"
+        );
+
+        let (_, title) = disc("THE_DISC");
+        let file = rip_to_staging(
+            &bin,
+            &config,
+            &source,
+            &title,
+            |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert_eq!(file.file_name().unwrap(), "THE_DISC_t00.mkv");
+        assert!(file.is_file());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// A swapped disc invalidates the title ids the rip was asked for.
     #[cfg(unix)]
     #[test]
@@ -545,12 +586,12 @@ mod tests {
         let mut config = config_with_root(&root);
         config.output.output_directory = Some(out.to_string_lossy().into_owned());
 
-        let (drive, title) = disc("A_DIFFERENT_DISC");
+        let (source, title) = disc("A_DIFFERENT_DISC");
         let bin = fake_makemkvcon(&base, &Fake::Rip);
         let result = rip_to_staging(
             &bin,
             &config,
-            &drive,
+            &source,
             &title,
             |_| {},
             &AtomicBool::new(false),
@@ -573,12 +614,12 @@ mod tests {
         let mut config = config_with_root(&root);
         config.output.output_directory = Some(out.to_string_lossy().into_owned());
 
-        let (drive, title) = disc("THE_DISC");
+        let (source, title) = disc("THE_DISC");
         let bin = fake_makemkvcon(&base, &Fake::RipFails);
         let result = rip_to_staging(
             &bin,
             &config,
-            &drive,
+            &source,
             &title,
             |_| {},
             &AtomicBool::new(false),

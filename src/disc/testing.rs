@@ -29,6 +29,9 @@ pub enum Fake {
     ExpiredKey,
     /// A drive the daemon user cannot open.
     PermissionDenied,
+    /// Answers `file:` and `iso:` sources, recording the argv it was called
+    /// with. Its drive listing fails, as it does on a machine with no drive.
+    FolderScan,
 }
 
 impl Fake {
@@ -40,7 +43,7 @@ impl Fake {
              : > \"$dest/title_t00.mkv\"\n  exit 0";
         match self {
             Fake::Dvd => (DVD_SCAN, rip_ok),
-            Fake::Bluray | Fake::Rip => (BLURAY_SCAN, rip_ok),
+            Fake::Bluray | Fake::Rip | Fake::FolderScan => (BLURAY_SCAN, rip_ok),
             Fake::SlowRip => (
                 BLURAY_SCAN,
                 "  for step in 16384 32768 49152 65536; do\n    \
@@ -69,14 +72,25 @@ pub fn fake_makemkvcon(dir: &Path, mode: &Fake) -> PathBuf {
     let (scan, rip) = mode.behaviour();
     let drives = match mode {
         Fake::PermissionDenied => PERMISSION_DENIED,
+        Fake::FolderScan => NO_DRIVE,
         _ => DRIVE_LIST,
     };
-    // `mkv` is matched before `info`: the rip carries a destination path, and
-    // a path with "info" in it would otherwise answer with a scan.
+    // A folder source is answered like a scan, with the argv kept for the test
+    // to read back.
+    let folder = match mode {
+        Fake::FolderScan => format!(
+            "*file:*|*iso:*)\n  echo \"$*\" > \"$(dirname \"$0\")/argv\"\n{scan}\n  exit 0 ;;\n"
+        ),
+        _ => String::new(),
+    };
+    // Every subcommand is matched space-delimited, so a destination or source
+    // path containing "info" or "mkv" cannot answer with the wrong branch.
     let script = format!(
         "#!/bin/sh\ncase \"$*\" in\n*disc:9999*)\n{drives}\n  exit 1 ;;\n\
          *\\ mkv\\ *)\n  for dest; do :; done\n{rip} ;;\n\
-         *info*)\n{scan}\n  exit 0 ;;\nesac\n"
+         {folder}\
+         *\\ info\\ *)\n{scan}\n  exit 0 ;;\n\
+         *)\n  echo \"fake makemkvcon: unmatched argv: $*\" >&2\n  exit 1 ;;\nesac\n"
     );
 
     std::fs::create_dir_all(dir).unwrap();
@@ -94,7 +108,9 @@ pub fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-const DRIVE_LIST: &str = "  echo 'DRV:0,2,999,12,\"HL-DT-ST BD-RE WH16NS60\",\"THE_DISC\",\"/dev/sr0\"'\n  \
+const NO_DRIVE: &str = "  echo 'MSG:5010,0,0,\"No optical drive found\",\"x\"'";
+
+const DRIVE_LIST: &str ="  echo 'DRV:0,2,999,12,\"HL-DT-ST BD-RE WH16NS60\",\"THE_DISC\",\"/dev/sr0\"'\n  \
      echo 'DRV:1,256,999,0,\"\",\"\",\"\"'";
 
 /// A four-episode DVD with a short extra, as `makemkvcon -r info` reports one.

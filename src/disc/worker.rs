@@ -5,7 +5,7 @@
 //! finished extracting is announced and the next one starts immediately, so a
 //! slow consumer — analysis, then an encode — cannot stall the drive.
 
-use super::{DiscDrive, DiscError, DiscTitle, staging};
+use super::{DiscError, DiscSource, DiscTitle, staging};
 use crate::config::AppConfig;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -32,12 +32,17 @@ pub enum DiscEvent {
     Finished,
 }
 
-/// Scan the disc in `drive` and report its titles.
-pub fn spawn_scan(bin: PathBuf, drive: u32, cancel: &Arc<AtomicBool>, tx: Sender<DiscEvent>) {
+/// Scan `source` and report its titles.
+pub fn spawn_scan(
+    bin: PathBuf,
+    source: DiscSource,
+    cancel: &Arc<AtomicBool>,
+    tx: Sender<DiscEvent>,
+) {
     let cancel = cancel.clone();
     thread::spawn(move || {
         let scanned = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            super::scan_titles(&bin, drive, &cancel)
+            super::scan_titles(&bin, &source, &cancel)
         }));
         let _ = tx.send(match scanned {
             Ok(Ok(scan)) => DiscEvent::TitlesFound(scan),
@@ -59,7 +64,7 @@ pub fn spawn_scan(bin: PathBuf, drive: u32, cancel: &Arc<AtomicBool>, tx: Sender
 pub fn spawn_rips(
     bin: PathBuf,
     config: AppConfig,
-    drive: DiscDrive,
+    source: DiscSource,
     titles: Vec<DiscTitle>,
     cancel: &Arc<AtomicBool>,
     tx: Sender<DiscEvent>,
@@ -74,7 +79,7 @@ pub fn spawn_rips(
                 staging::rip_to_staging(
                     &bin,
                     &config,
-                    &drive,
+                    &source,
                     title,
                     |progress| {
                         let _ = progress_tx.send(DiscEvent::Ripping {
@@ -158,15 +163,15 @@ mod tests {
             },
             ..AppConfig::default()
         };
-        let drive = DiscDrive {
+        let source = DiscSource::Drive(crate::disc::DiscDrive {
             id: 0,
             name: "HL-DT-ST BD-RE WH16NS60".to_string(),
             disc_label: Some("THE_DISC".to_string()),
-        };
+        });
 
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        spawn_rips(bin, config, drive, two_titles(), &cancel, tx);
+        spawn_rips(bin, config, source, two_titles(), &cancel, tx);
 
         // Hold the first finished title, as a slow encode would.
         let mut ready = Vec::new();
@@ -230,15 +235,15 @@ mod tests {
             },
             ..AppConfig::default()
         };
-        let drive = DiscDrive {
+        let source = DiscSource::Drive(crate::disc::DiscDrive {
             id: 0,
             name: "HL-DT-ST BD-RE WH16NS60".to_string(),
             disc_label: Some("THE_DISC".to_string()),
-        };
+        });
 
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        spawn_rips(bin, config, drive, two_titles(), &cancel, tx);
+        spawn_rips(bin, config, source, two_titles(), &cancel, tx);
 
         let mut cancelled = false;
         while !cancelled {

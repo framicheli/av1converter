@@ -56,6 +56,70 @@ pub struct DiscDrive {
     pub disc_label: Option<String>,
 }
 
+/// Where `MakeMKV` reads a disc from: a drive, or a ripped folder or ISO image
+/// on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscSource {
+    Drive(DiscDrive),
+    Folder(PathBuf),
+}
+
+impl DiscSource {
+    /// A ripped disc folder or an ISO image on disk.
+    ///
+    /// A folder is one named `VIDEO_TS` or `BDMV`, or one holding either.
+    pub fn folder(path: impl Into<PathBuf>) -> Result<Self, DiscError> {
+        let path = path.into();
+        if path.to_str().is_none() {
+            return Err(DiscError::Failed(format!(
+                "{} is not a valid UTF-8 path",
+                path.display()
+            )));
+        }
+
+        let holds = |name: &str| {
+            path.file_name()
+                .is_some_and(|actual| actual.eq_ignore_ascii_case(name))
+                || path.join(name).is_dir()
+        };
+        let usable = if is_iso(&path) {
+            path.is_file()
+        } else {
+            path.is_dir() && (holds("VIDEO_TS") || holds("BDMV"))
+        };
+        if usable {
+            Ok(DiscSource::Folder(path))
+        } else {
+            Err(DiscError::NotADiscFolder)
+        }
+    }
+
+    /// The source argument `makemkvcon` takes.
+    pub fn to_arg(&self) -> String {
+        match self {
+            DiscSource::Drive(drive) => format!("disc:{}", drive.id),
+            DiscSource::Folder(path) => {
+                let scheme = if is_iso(path) { "iso" } else { "file" };
+                format!("{scheme}:{}", path.display())
+            }
+        }
+    }
+
+    /// What to call the disc: its volume name, or the name of the folder or
+    /// image it was read from.
+    pub fn label(&self) -> Option<&str> {
+        match self {
+            DiscSource::Drive(drive) => drive.disc_label.as_deref(),
+            DiscSource::Folder(path) => path.file_name().and_then(std::ffi::OsStr::to_str),
+        }
+    }
+}
+
+fn is_iso(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("iso"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscTitle {
     pub id: u32,
@@ -90,6 +154,9 @@ pub enum DiscError {
     DiscChanged,
     /// No output directory is configured for the encode to be written to.
     NoDestination,
+    /// The path given is neither a folder holding `VIDEO_TS` or `BDMV` nor an
+    /// ISO image.
+    NotADiscFolder,
     Cancelled,
     /// Whatever `MakeMKV` said, when none of the above fits.
     Failed(String),
@@ -127,6 +194,10 @@ impl std::fmt::Display for DiscError {
                 f,
                 "Set an output directory before ripping: the encode cannot be written into the staging directory"
             ),
+            DiscError::NotADiscFolder => write!(
+                f,
+                "That is not a ripped disc: pick a folder holding VIDEO_TS or BDMV, or an ISO image"
+            ),
             DiscError::Cancelled => write!(f, "Cancelled"),
             DiscError::Failed(message) => write!(f, "MakeMKV failed: {message}"),
         }
@@ -150,6 +221,7 @@ impl DiscError {
             DiscError::InsufficientSpace => Msg::DiscInsufficientSpace,
             DiscError::DiscChanged => Msg::DiscChanged,
             DiscError::NoDestination => Msg::DiscNoDestination,
+            DiscError::NotADiscFolder => Msg::DiscNotADiscFolder,
             DiscError::Cancelled => Msg::Cancelled,
             DiscError::Failed(message) => {
                 return format!("{}: {message}", t(lang, Msg::DiscFailedPrefix));
@@ -225,10 +297,14 @@ pub struct DiscScan {
     pub titles: Vec<DiscTitle>,
 }
 
-/// Scan the disc in `drive` and return its titles.
-pub fn scan_titles(bin: &Path, drive: u32, cancel: &AtomicBool) -> Result<DiscScan, DiscError> {
+/// Scan `source` and return its titles.
+pub fn scan_titles(
+    bin: &Path,
+    source: &DiscSource,
+    cancel: &AtomicBool,
+) -> Result<DiscScan, DiscError> {
     let minlength = format!("--minlength={MIN_TITLE_LENGTH_SECS}");
-    let disc = format!("disc:{drive}");
+    let disc = source.to_arg();
     let mut scan = TitleScan::default();
     let run = run_robot(
         bin,
@@ -254,7 +330,7 @@ pub fn scan_titles(bin: &Path, drive: u32, cancel: &AtomicBool) -> Result<DiscSc
 /// A partially written file is left in `dest` for its owner to deal with.
 pub fn rip_title(
     bin: &Path,
-    drive: u32,
+    source: &DiscSource,
     title: u32,
     dest: &Path,
     mut on_progress: impl FnMut(RipProgress),
@@ -264,7 +340,7 @@ pub fn rip_title(
         .to_str()
         .ok_or_else(|| DiscError::Failed("destination path is not valid UTF-8".to_string()))?;
     let minlength = format!("--minlength={MIN_TITLE_LENGTH_SECS}");
-    let disc = format!("disc:{drive}");
+    let disc = source.to_arg();
     let title_arg = title.to_string();
 
     let mut message = String::new();
@@ -491,6 +567,16 @@ mod tests {
     #[cfg(unix)]
     use super::testing::{Fake, fake_makemkvcon, scratch};
 
+    /// The first drive of the shared fake's listing.
+    #[cfg(unix)]
+    fn drive_source() -> DiscSource {
+        DiscSource::Drive(DiscDrive {
+            id: 0,
+            name: "HL-DT-ST BD-RE WH16NS60".to_string(),
+            disc_label: Some("THE_DISC".to_string()),
+        })
+    }
+
     #[test]
     fn a_configured_path_that_is_not_there_reads_as_not_installed() {
         let mut config = AppConfig::default();
@@ -523,7 +609,7 @@ mod tests {
     fn a_dvd_and_a_blu_ray_scan_come_out_structured() {
         let dvd = scan_titles(
             &fake_makemkvcon(&scratch("dvd"), &Fake::Dvd),
-            0,
+            &drive_source(),
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -544,7 +630,7 @@ mod tests {
 
         let bluray = scan_titles(
             &fake_makemkvcon(&scratch("bluray"), &Fake::Bluray),
-            0,
+            &drive_source(),
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -555,13 +641,76 @@ mod tests {
         assert_eq!(bluray.titles[1].name, "Commentary");
     }
 
+    /// A folder on disk is scanned through `file:`, not through a drive id.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_is_scanned_as_a_source_of_its_own() {
+        let dir = scratch("folder_scan");
+        let bin = fake_makemkvcon(&dir, &Fake::FolderScan);
+        let disc = dir.join("Blade Runner");
+        std::fs::create_dir_all(disc.join("BDMV")).unwrap();
+
+        let source = DiscSource::folder(&disc).unwrap();
+        let scan = scan_titles(&bin, &source, &AtomicBool::new(false)).unwrap();
+        assert_eq!(scan.titles.len(), 2);
+        assert_eq!(scan.titles[0].name, "Blade Runner, The \"Final\" Cut");
+
+        let argv = std::fs::read_to_string(dir.join("argv")).unwrap();
+        assert!(
+            argv.contains(&format!("file:{}", disc.display())),
+            "the folder went to makemkvcon as a file: source, got {argv}"
+        );
+        assert_eq!(source.label(), Some("Blade Runner"));
+    }
+
+    /// Only a folder MakeMKV can actually read is accepted, and the file name
+    /// decides `file:` from `iso:`.
+    #[cfg(unix)]
+    #[test]
+    fn a_disc_folder_is_told_apart_from_any_other_directory() {
+        let dir = scratch("folder_kinds");
+        let plain = dir.join("holiday photos");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(
+            DiscSource::folder(&plain),
+            Err(DiscError::NotADiscFolder),
+            "a directory with no disc structure is not a disc"
+        );
+        assert_eq!(
+            DiscSource::folder(dir.join("nowhere")),
+            Err(DiscError::NotADiscFolder)
+        );
+
+        // A folder holding the disc structure, and the structure folder itself.
+        let dvd = dir.join("SEASON_1");
+        std::fs::create_dir_all(dvd.join("VIDEO_TS")).unwrap();
+        assert_eq!(DiscSource::folder(&dvd).unwrap().to_arg(), {
+            format!("file:{}", dvd.display())
+        });
+        assert!(DiscSource::folder(dvd.join("VIDEO_TS")).is_ok());
+        let bluray = dir.join("THE_DISC");
+        std::fs::create_dir_all(bluray.join("BDMV")).unwrap();
+        assert!(DiscSource::folder(&bluray).is_ok());
+
+        let iso = dir.join("Movie.ISO");
+        std::fs::write(&iso, b"not really an image").unwrap();
+        let source = DiscSource::folder(&iso).unwrap();
+        assert_eq!(source.to_arg(), format!("iso:{}", iso.display()));
+        assert_eq!(source.label(), Some("Movie.ISO"));
+        // An ISO that is not there is no more usable than a plain directory.
+        assert_eq!(
+            DiscSource::folder(dir.join("missing.iso")),
+            Err(DiscError::NotADiscFolder)
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_expired_key_and_a_closed_drive_are_told_apart() {
         assert_eq!(
             scan_titles(
                 &fake_makemkvcon(&scratch("expired"), &Fake::ExpiredKey),
-                0,
+                &drive_source(),
                 &AtomicBool::new(false)
             ),
             Err(DiscError::KeyExpired)
@@ -583,7 +732,7 @@ mod tests {
         let mut seen = Vec::new();
         let file = rip_title(
             &bin,
-            0,
+            &drive_source(),
             0,
             &dest,
             |progress| seen.push((progress.percent, progress.message)),
@@ -602,7 +751,7 @@ mod tests {
         let dest = scratch("rip_fails");
         let bin = fake_makemkvcon(&dest, &Fake::RipFails);
         assert_eq!(
-            rip_title(&bin, 0, 0, &dest, |_| {}, &AtomicBool::new(false)),
+            rip_title(&bin, &drive_source(), 0, &dest, |_| {}, &AtomicBool::new(false)),
             Err(DiscError::UnreadableDisc)
         );
     }
@@ -616,7 +765,7 @@ mod tests {
         let started = std::time::Instant::now();
         let result = rip_title(
             &bin,
-            0,
+            &drive_source(),
             0,
             &dest,
             |_| cancel.store(true, Ordering::Relaxed),
@@ -642,6 +791,7 @@ mod tests {
             DiscError::InsufficientSpace,
             DiscError::DiscChanged,
             DiscError::NoDestination,
+            DiscError::NotADiscFolder,
             DiscError::Cancelled,
         ];
 

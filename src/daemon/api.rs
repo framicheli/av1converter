@@ -105,10 +105,20 @@ fn disc_status(disc: &super::state::DiscSession) -> Value {
         })
         .collect();
 
+    // A scan names the source it came from: a drive id, or the folder path.
+    let (drive, folder) = match disc.scanned_source.as_ref() {
+        Some(crate::disc::DiscSource::Drive(drive)) => (json!(drive.id), Value::Null),
+        Some(crate::disc::DiscSource::Folder(path)) => {
+            (Value::Null, json!(path.to_string_lossy()))
+        }
+        None => (Value::Null, Value::Null),
+    };
+
     json!({
         "active": disc.active,
         "scanning": disc.scanning,
-        "drive": disc.scanned_drive,
+        "drive": drive,
+        "folder": folder,
         "disc_type": disc.disc_type,
         "titles": titles,
         "error": disc.error,
@@ -812,20 +822,44 @@ pub fn discs_list(shared: &SharedState) -> (u16, Value) {
     (200, json!({ "drives": payload }))
 }
 
-/// Start scanning a drive. The titles arrive in `/api/status`.
+/// Start scanning a drive (`{"drive": N}`) or a disc folder on disk
+/// (`{"folder": "<path>"}`). The titles arrive in `/api/status`.
 pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value) -> (u16, Value) {
-    let Some(drive) = body.get("drive").and_then(Value::as_u64).and_then(as_id) else {
-        return (400, json!({"error": "missing or invalid 'drive'"}));
-    };
-
     let mut state = lock(shared);
     if state.disc.active {
         return (409, json!({"error": "a disc operation is already running"}));
     }
-    if !state.disc.drives.iter().any(|known| known.id == drive) {
-        return (400, json!({"error": "unknown drive id"}));
-    }
     let config = state.config.clone();
+
+    let source = if let Some(folder) = body.get("folder").and_then(Value::as_str) {
+        // The same boundary the file browser enforces: a client cannot read a
+        // disc from outside the browse root.
+        let Some(path) = confined_path(Path::new(folder), &config.daemon.browse_root) else {
+            return (
+                400,
+                json!({"error": "path is outside the configured browse root"}),
+            );
+        };
+        match crate::disc::DiscSource::folder(path) {
+            Ok(source) => source,
+            Err(e) => return disc_failure(&e, config.language),
+        }
+    } else {
+        let Some(drive) = body.get("drive").and_then(Value::as_u64).and_then(as_id) else {
+            return (400, json!({"error": "missing or invalid 'drive'"}));
+        };
+        let Some(disc_drive) = state
+            .disc
+            .drives
+            .iter()
+            .find(|known| known.id == drive)
+            .cloned()
+        else {
+            return (400, json!({"error": "unknown drive id"}));
+        };
+        crate::disc::DiscSource::Drive(disc_drive)
+    };
+
     let bin = match crate::disc::find_makemkvcon(&config) {
         Ok(bin) => bin,
         Err(e) => return disc_failure(&e, config.language),
@@ -837,18 +871,15 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
     state.disc.scanning = true;
     state.disc.error = None;
     state.disc.titles.clear();
-    state.disc.scanned_drive = Some(drive);
+    state.disc.scanned_source = Some(source.clone());
     drop(state);
 
-    crate::disc::worker::spawn_scan(bin, drive, &cancel, disc_tx.clone());
+    crate::disc::worker::spawn_scan(bin, source, &cancel, disc_tx.clone());
     (200, json!({"ok": true}))
 }
 
 /// Extract the named titles, one after another, into the staging directory.
 pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value) -> (u16, Value) {
-    let Some(drive) = body.get("drive").and_then(Value::as_u64).and_then(as_id) else {
-        return (400, json!({"error": "missing or invalid 'drive'"}));
-    };
     let Some(requested) = body.get("titles").and_then(Value::as_array) else {
         return (400, json!({"error": "missing 'titles'"}));
     };
@@ -867,12 +898,18 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
     if state.disc.active {
         return (409, json!({"error": "a disc operation is already running"}));
     }
-    if state.disc.scanned_drive != Some(drive) {
-        return (
-            400,
-            json!({"error": "scan the drive before ripping from it"}),
-        );
-    }
+    // Title ids only mean anything for the source they were scanned from, so
+    // the request has to name that same one.
+    let Some(source) = state.disc.scanned_source.clone().filter(|scanned| match scanned {
+        crate::disc::DiscSource::Drive(drive) => {
+            body.get("drive").and_then(Value::as_u64).and_then(as_id) == Some(drive.id)
+        }
+        crate::disc::DiscSource::Folder(path) => {
+            body.get("folder").and_then(Value::as_str) == path.to_str()
+        }
+    }) else {
+        return (400, json!({"error": "scan the disc before ripping from it"}));
+    };
     // Only titles this server reported, and each of them once.
     let mut titles = Vec::new();
     for id in &ids {
@@ -890,16 +927,6 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
         }
         titles.push(title.clone());
     }
-    let Some(disc_drive) = state
-        .disc
-        .drives
-        .iter()
-        .find(|known| known.id == drive)
-        .cloned()
-    else {
-        return (400, json!({"error": "unknown drive id"}));
-    };
-
     let config = state.config.clone();
     if let Err(e) = crate::disc::staging::require_destination(&config) {
         return disc_failure(&e, config.language);
@@ -930,7 +957,7 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
     state.disc.job_ids.clone_from(&job_ids);
     drop(state);
 
-    crate::disc::worker::spawn_rips(bin, config, disc_drive, titles, &cancel, disc_tx.clone());
+    crate::disc::worker::spawn_rips(bin, config, source, titles, &cancel, disc_tx.clone());
     (200, json!({"ok": true, "jobs": job_ids}))
 }
 
@@ -951,7 +978,8 @@ fn disc_failure(error: &crate::disc::DiscError, lang: crate::i18n::Language) -> 
         crate::disc::DiscError::NotInstalled
         | crate::disc::DiscError::NoDrive
         | crate::disc::DiscError::DriveEmpty
-        | crate::disc::DiscError::NoDestination => 400,
+        | crate::disc::DiscError::NoDestination
+        | crate::disc::DiscError::NotADiscFolder => 400,
         crate::disc::DiscError::PermissionDenied => 403,
         _ => 500,
     };
@@ -1190,7 +1218,8 @@ mod tests {
                     name: "BD-RE".to_string(),
                     disc_label: Some("DISC".to_string()),
                 }];
-                state.disc.scanned_drive = Some(0);
+                state.disc.scanned_source =
+                    Some(crate::disc::DiscSource::Drive(state.disc.drives[0].clone()));
                 state.disc.titles = vec![DiscTitle {
                     id: 3,
                     name: "Feature".to_string(),
@@ -1260,11 +1289,70 @@ mod tests {
             assert!(lock(&shared).queue.state.jobs.is_empty());
         }
 
+        /// A disc folder is read through the same boundary as the file
+        /// browser: a client cannot reach one outside the browse root.
+        #[cfg(unix)]
+        #[test]
+        fn a_folder_outside_the_browse_root_is_refused() {
+            use crate::disc::testing::{Fake, fake_makemkvcon};
+
+            let root = std::env::temp_dir().join("av1c_api_disc_root");
+            let outside = std::env::temp_dir().join("av1c_api_disc_outside");
+            for dir in [&root, &outside] {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            std::fs::create_dir_all(root.join("THE_DISC/BDMV")).unwrap();
+            std::fs::create_dir_all(outside.join("THE_DISC/BDMV")).unwrap();
+
+            let shared = scanned(Some("/tmp".to_string()));
+            {
+                let mut state = lock(&shared);
+                state.config.daemon.browse_root = root.to_string_lossy().into_owned();
+                let bin = fake_makemkvcon(&outside.join("bin"), &Fake::FolderScan);
+                state.config.disc.makemkvcon_path = Some(bin.to_string_lossy().into_owned());
+            }
+            let (tx, _rx) = mpsc::channel();
+
+            let (status, body) = discs_scan(
+                &shared,
+                &tx,
+                &json!({"folder": outside.join("THE_DISC").to_string_lossy()}),
+            );
+            assert_eq!(status, 400);
+            assert!(
+                body["error"].as_str().unwrap().contains("browse root"),
+                "{body}"
+            );
+            assert!(!lock(&shared).disc.active, "nothing was started");
+
+            // The same folder under the root is scanned, and the scan records
+            // the source the titles will belong to.
+            let inside = root.join("THE_DISC");
+            let (status, _) = discs_scan(
+                &shared,
+                &tx,
+                &json!({"folder": inside.to_string_lossy()}),
+            );
+            assert_eq!(status, 200);
+            let state = lock(&shared);
+            assert!(state.disc.active);
+            // The resolved path is what was checked, so it is what is stored.
+            assert_eq!(
+                state.disc.scanned_source,
+                Some(crate::disc::DiscSource::folder(inside.canonicalize().unwrap()).unwrap())
+            );
+            drop(state);
+
+            for dir in [&root, &outside] {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+
         /// A rip must be preceded by a scan of that same drive.
         #[test]
         fn ripping_an_unscanned_drive_is_refused() {
             let shared = scanned(Some("/tmp".to_string()));
-            lock(&shared).disc.scanned_drive = None;
+            lock(&shared).disc.scanned_source = None;
             assert_eq!(rip(&shared, &json!({"drive": 0, "titles": [3]})).0, 400);
         }
 

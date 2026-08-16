@@ -79,6 +79,7 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
     let title = match app.selection_mode {
         SelectionMode::File => t(lang, Msg::SelectVideoFile),
         SelectionMode::Folder | SelectionMode::FolderRecursive => t(lang, Msg::SelectFolder),
+        SelectionMode::DiscFolder => t(lang, Msg::DiscSelectFolder),
     };
 
     let list = List::new(items)
@@ -132,6 +133,18 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
             Span::raw(format!(" {}  ", t(lang, Msg::OpenFolderAction))),
             Span::styled("Space", Style::default().fg(Color::Yellow)),
             Span::raw(format!(" {}  ", t(lang, Msg::SelectThisFolder))),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(format!(" {}  ", t(lang, Msg::Back))),
+            Span::styled("q", Style::default().fg(Color::Yellow)),
+            Span::raw(format!(" {}", t(lang, Msg::Quit))),
+        ]),
+        SelectionMode::DiscFolder => Line::from(vec![
+            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+            Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(format!(" {}  ", t(lang, Msg::OpenFolderAction))),
+            Span::styled("Space", Style::default().fg(Color::Yellow)),
+            Span::raw(format!(" {}  ", t(lang, Msg::DiscScanThisFolder))),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(format!(" {}  ", t(lang, Msg::Back))),
             Span::styled("q", Style::default().fg(Color::Yellow)),
@@ -219,7 +232,9 @@ fn create_entry_item(
 
     // Dim non-selectable items in folder mode
     let style = match mode {
-        SelectionMode::Folder | SelectionMode::FolderRecursive if is_video => {
+        SelectionMode::Folder | SelectionMode::FolderRecursive | SelectionMode::DiscFolder
+            if is_video =>
+        {
             style.add_modifier(Modifier::DIM)
         }
         _ => style,

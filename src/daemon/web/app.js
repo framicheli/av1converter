@@ -831,7 +831,10 @@ $("btn-add-folder").addEventListener("click", () => openBrowser("folder"));
 $("btn-add-recursive").addEventListener("click", () => openBrowser("folder_recursive"));
 $("browser-close").addEventListener("click", () => $("browser").close());
 $("browser-hidden").addEventListener("change", () => loadDir(browser.path));
-$("browser-choose").addEventListener("click", () => addToQueue(browser.path, browser.mode));
+$("browser-choose").addEventListener("click", () => {
+  if (browser.mode === "disc") scanDiscFolder(browser.path);
+  else addToQueue(browser.path, browser.mode);
+});
 
 for (const dialog of document.querySelectorAll("dialog")) {
   dialog.addEventListener("click", (event) => {
@@ -843,7 +846,10 @@ function setBrowserMode(mode) {
   browser.mode = mode;
   $("browser-title").textContent =
     mode === "file" ? tr("select_video_file") :
-    mode === "folder" ? tr("select_folder") : tr("select_folder_recursive");
+    mode === "folder" ? tr("select_folder") :
+    mode === "disc" ? tr("disc_select_folder") : tr("select_folder_recursive");
+  $("browser-choose").textContent =
+    mode === "disc" ? tr("disc_scan_this_folder") : tr("select_this_folder");
   $("browser-choose").classList.toggle("hidden", mode === "file");
 }
 
@@ -961,6 +967,9 @@ async function addToQueue(path, mode) {
 // stopped it — comes from the status poll, which is already running.
 
 let disc = null;
+// Raised while the file browser is up in place of this dialog, so the close
+// below leaves the state alone and does not call off a scan.
+let discBrowsing = false;
 
 $("btn-add-disc").addEventListener("click", openDisc);
 $("disc-close").addEventListener("click", () => $("disc-modal").close());
@@ -968,6 +977,7 @@ $("disc-close").addEventListener("click", () => $("disc-modal").close());
 // close event: the one place every path passes through. A scan still running
 // is called off, since it holds the drive.
 $("disc-modal").addEventListener("close", () => {
+  if (discBrowsing) return;
   // A rip closes this dialog on its way to the queue, where it is cancelled
   // like any other job; only an abandoned scan is called off here.
   if (disc && !disc.ripping && discState.scanning) {
@@ -978,7 +988,7 @@ $("disc-modal").addEventListener("close", () => {
 
 async function openDisc() {
   if ($("disc-modal").open) return;
-  disc = { drives: [], drive: null, selected: new Set(), error: null, loading: true };
+  disc = { drives: [], drive: null, folder: null, selected: new Set(), error: null, loading: true };
   renderDisc();
   $("disc-modal").showModal();
   try {
@@ -994,7 +1004,36 @@ async function openDisc() {
   renderDisc();
 }
 
+// Two dialogs stack in the top layer in the order they were opened, so the
+// disc modal steps aside for the browser and comes back when it closes.
+$("disc-folder").addEventListener("click", () => {
+  discBrowsing = true;
+  $("disc-modal").close();
+  openBrowser("disc");
+});
+
+$("browser").addEventListener("close", () => {
+  if (!discBrowsing) return;
+  discBrowsing = false;
+  $("disc-modal").showModal();
+  renderDisc();
+});
+
+async function scanDiscFolder(path) {
+  disc.drive = null;
+  disc.folder = path;
+  disc.selected.clear();
+  disc.error = null;
+  try {
+    await post("/api/discs/scan", { folder: path });
+  } catch (e) {
+    disc.error = e.message;
+  }
+  $("browser").close();
+}
+
 async function scanDisc(id) {
+  disc.folder = null;
   disc.drive = id;
   disc.selected.clear();
   disc.error = null;
@@ -1023,6 +1062,7 @@ function renderDisc() {
   note.textContent = "";
   rip.disabled = true;
   if (!disc) return;
+  $("disc-folder").disabled = discState.active;
 
   // A failure from either side of the exchange reads the same way here.
   const failure = disc.error ?? discState.error;
@@ -1032,13 +1072,13 @@ function renderDisc() {
     body.appendChild(discNote(tr("disc_scanning")));
     return;
   }
-  if (disc.drives.length === 0) {
-    if (!failure) body.appendChild(discNote(tr("disc_no_drive"), true));
-    return;
-  }
-
-  // More than one drive, and none picked yet: choose one first.
-  if (disc.drive == null) {
+  // Nothing picked yet: choose a drive, or the folder button in the footer.
+  // No drive at all is a note rather than a failure, since that button remains.
+  if (disc.drive == null && disc.folder == null) {
+    if (disc.drives.length === 0) {
+      if (!failure) body.appendChild(discNote(tr("disc_no_drive")));
+      return;
+    }
     body.appendChild(groupHeading(tr("disc_select_drive")));
     for (const drive of disc.drives) {
       const row = document.createElement("button");
@@ -1051,11 +1091,10 @@ function renderDisc() {
   }
 
   const drive = disc.drives.find((d) => d.id === disc.drive);
-  const heading = [
-    drive?.name,
-    drive?.disc_label ?? tr("disc_drive_empty"),
-    discState.disc_type,
-  ].filter(Boolean).join(" · ");
+  const heading = (disc.folder != null
+    ? [disc.folder, discState.disc_type]
+    : [drive?.name, drive?.disc_label ?? tr("disc_drive_empty"), discState.disc_type]
+  ).filter(Boolean).join(" · ");
   body.appendChild(groupHeading(heading));
 
   if (discState.scanning) {
@@ -1116,7 +1155,7 @@ $("disc-rip").addEventListener("click", async () => {
   button.disabled = true;
   try {
     await post("/api/discs/rip", {
-      drive: disc.drive,
+      ...(disc.folder != null ? { folder: disc.folder } : { drive: disc.drive }),
       titles: [...disc.selected],
     });
     disc.ripping = true;

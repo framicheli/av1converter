@@ -102,6 +102,9 @@ pub enum Msg {
     HomeRipDisc,
     DiscSelectDrive,
     DiscSelectTitles,
+    DiscOpenFolder,
+    DiscSelectFolder,
+    DiscScanThisFolder,
     DiscScanning,
     DiscNoTitles,
     DiscRipAction,
@@ -118,6 +121,7 @@ pub enum Msg {
     DiscInsufficientSpace,
     DiscChanged,
     DiscNoDestination,
+    DiscNotADiscFolder,
     DiscFailedPrefix,
     Configuration,
     EncoderLabel,
@@ -650,6 +654,30 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Titel wählen",
             Zh => "选择标题",
         },
+        Msg::DiscOpenFolder => match lang {
+            En => "Open a disc folder…",
+            It => "Apri una cartella disco…",
+            Es => "Abrir una carpeta de disco…",
+            Fr => "Ouvrir un dossier de disque…",
+            De => "Disc-Ordner öffnen…",
+            Zh => "打开光盘文件夹…",
+        },
+        Msg::DiscSelectFolder => match lang {
+            En => "Select Disc Folder",
+            It => "Seleziona cartella disco",
+            Es => "Seleccionar carpeta de disco",
+            Fr => "Choisir le dossier du disque",
+            De => "Disc-Ordner wählen",
+            Zh => "选择光盘文件夹",
+        },
+        Msg::DiscScanThisFolder => match lang {
+            En => "Scan this disc",
+            It => "Analizza questo disco",
+            Es => "Analizar este disco",
+            Fr => "Analyser ce disque",
+            De => "Diese Disc lesen",
+            Zh => "扫描此光盘",
+        },
         Msg::DiscScanning => match lang {
             En => "Scanning disc…",
             It => "Scansione del disco…",
@@ -831,6 +859,24 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
                 "Legen Sie vor dem Auslesen einen Ausgabeordner in den Einstellungen fest: Die Kodierung kann nicht in den Zwischenordner geschrieben werden."
             }
             Zh => "抓取前请在设置中指定输出目录：编码结果不能写入暂存目录。",
+        },
+        Msg::DiscNotADiscFolder => match lang {
+            En => {
+                "That is not a ripped disc: pick a folder holding VIDEO_TS or BDMV, or an ISO image."
+            }
+            It => {
+                "Questo non è un disco copiato: scegli una cartella che contenga VIDEO_TS o BDMV, oppure un'immagine ISO."
+            }
+            Es => {
+                "Eso no es un disco copiado: elige una carpeta que contenga VIDEO_TS o BDMV, o una imagen ISO."
+            }
+            Fr => {
+                "Ce n'est pas un disque copié : choisissez un dossier contenant VIDEO_TS ou BDMV, ou une image ISO."
+            }
+            De => {
+                "Das ist keine kopierte Disc: Wählen Sie einen Ordner mit VIDEO_TS oder BDMV oder ein ISO-Abbild."
+            }
+            Zh => "这不是已复制的光盘：请选择包含 VIDEO_TS 或 BDMV 的文件夹，或一个 ISO 映像。",
         },
         Msg::DiscFailedPrefix => match lang {
             En => "MakeMKV reported",
@@ -2659,6 +2705,9 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("disc_drive_empty", Msg::DiscDriveEmpty),
     ("disc_no_drive", Msg::DiscNoDrive),
     ("disc_no_titles", Msg::DiscNoTitles),
+    ("disc_open_folder", Msg::DiscOpenFolder),
+    ("disc_scan_this_folder", Msg::DiscScanThisFolder),
+    ("disc_select_folder", Msg::DiscSelectFolder),
     ("disc_rip", Msg::DiscRipAction),
     ("disc_scan", Msg::DiscScanAction),
     ("disc_scanning", Msg::DiscScanning),

@@ -1,7 +1,7 @@
 use crate::analyzer::{self, AnalysisResult, DvMode, HdrType, is_av1_codec};
 use crate::config::{AppConfig, Encoder};
 use crate::disc::worker::DiscEvent;
-use crate::disc::{DiscDrive, DiscTitle};
+use crate::disc::{DiscDrive, DiscSource, DiscTitle};
 use crate::error::AppError;
 use crate::queue::{
     EncodingJob, JobStatus, QueueState, WorkerJob, WorkerMessage, auto_select_tracks,
@@ -46,6 +46,8 @@ pub enum SelectionMode {
     File,
     Folder,
     FolderRecursive,
+    /// Picking a ripped disc folder or an ISO image instead of a video file.
+    DiscFolder,
 }
 
 /// Track configuration focus
@@ -120,8 +122,8 @@ pub struct App {
     pub disc_state: DiscState,
     pub disc_receiver: Option<Receiver<DiscEvent>>,
     pub disc_cancel_flag: Arc<AtomicBool>,
-    /// The drive the current scan or rip belongs to.
-    pub disc_drive: Option<DiscDrive>,
+    /// What the current scan or rip is reading from.
+    pub disc_source: Option<DiscSource>,
 
     // Encoding
     pub encoding_active: bool,
@@ -239,7 +241,7 @@ impl App {
             disc_state: DiscState::Ready,
             disc_receiver: None,
             disc_cancel_flag: Arc::new(AtomicBool::new(false)),
-            disc_drive: None,
+            disc_source: None,
             encoding_active: false,
             progress_receiver: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
@@ -600,6 +602,13 @@ impl App {
                         }
                         self.navigate_to_file_confirm();
                     }
+                }
+            }
+            SelectionMode::DiscFolder => {
+                if selected == Path::new("..") || !selected.is_dir() {
+                    self.enter_directory();
+                } else {
+                    self.scan_disc_folder(&selected);
                 }
             }
             SelectionMode::Folder | SelectionMode::FolderRecursive => {
@@ -984,33 +993,53 @@ impl App {
         };
 
         self.disc_cancel_flag = Arc::new(AtomicBool::new(false));
-        match crate::disc::list_drives(&bin, &self.disc_cancel_flag) {
-            Ok(drives) => {
-                self.disc_drives = drives;
-                self.disc_drive_cursor = 0;
-                self.disc_drive_list_state.select(Some(0));
-                // A list of one is not a choice.
-                if self.disc_drives.len() == 1 {
-                    self.scan_disc(0);
-                } else {
-                    self.current_screen = Screen::DiscDrives;
-                }
+        self.disc_drives = match crate::disc::list_drives(&bin, &self.disc_cancel_flag) {
+            Ok(drives) => drives,
+            // A machine with no drive still reaches the folder row.
+            Err(crate::disc::DiscError::NoDrive) => Vec::new(),
+            Err(e) => {
+                self.set_timed_message(&e.message(lang), 8);
+                return;
             }
-            Err(e) => self.set_timed_message(&e.message(lang), 8),
-        }
+        };
+        self.disc_drive_cursor = 0;
+        self.disc_drive_list_state.select(Some(0));
+        self.current_screen = Screen::DiscDrives;
     }
 
-    /// Start scanning the drive at `index` and show the title screen.
-    ///
-    /// One drive, one run: a scan or rip already going is left alone.
+    /// Start scanning the drive at `index`, or open the file explorer for the
+    /// folder row that follows the last drive.
     pub fn scan_disc(&mut self, index: usize) {
-        let lang = self.config.language;
-        if self.disc_receiver.is_some() {
+        if index == self.disc_drives.len() {
+            self.selection_mode = SelectionMode::DiscFolder;
+            self.refresh_dir_entries();
+            self.current_screen = Screen::FileExplorer {
+                select_folder: true,
+            };
             return;
         }
         let Some(drive) = self.disc_drives.get(index).cloned() else {
             return;
         };
+        self.begin_disc_scan(DiscSource::Drive(drive));
+    }
+
+    /// Scan a ripped disc folder or ISO image picked in the explorer.
+    pub fn scan_disc_folder(&mut self, path: &Path) {
+        match DiscSource::folder(path) {
+            Ok(source) => self.begin_disc_scan(source),
+            Err(e) => self.set_timed_message(&e.message(self.config.language), 8),
+        }
+    }
+
+    /// Start scanning `source` and show the title screen.
+    ///
+    /// One disc, one run: a scan or rip already going is left alone.
+    fn begin_disc_scan(&mut self, source: DiscSource) {
+        let lang = self.config.language;
+        if self.disc_receiver.is_some() {
+            return;
+        }
         // A missing binary is reported as the title screen's failure state.
         let bin = match crate::disc::find_makemkvcon(&self.config) {
             Ok(bin) => bin,
@@ -1021,7 +1050,7 @@ impl App {
             }
         };
 
-        self.disc_drive = Some(drive.clone());
+        self.disc_source = Some(source.clone());
         self.disc_titles.clear();
         self.disc_selected.clear();
         self.disc_cursor = 0;
@@ -1031,7 +1060,7 @@ impl App {
 
         let (tx, rx) = mpsc::channel();
         self.disc_receiver = Some(rx);
-        crate::disc::worker::spawn_scan(bin, drive.id, &self.disc_cancel_flag, tx);
+        crate::disc::worker::spawn_scan(bin, source, &self.disc_cancel_flag, tx);
         self.current_screen = Screen::DiscTitles;
     }
 
@@ -1047,7 +1076,7 @@ impl App {
 
     pub fn disc_move_down(&mut self) {
         let (cursor, len) = if self.current_screen == Screen::DiscDrives {
-            (&mut self.disc_drive_cursor, self.disc_drives.len())
+            (&mut self.disc_drive_cursor, self.disc_drives.len() + 1)
         } else {
             (&mut self.disc_cursor, self.disc_titles.len())
         };
@@ -1096,7 +1125,7 @@ impl App {
                 return;
             }
         };
-        let Some(drive) = self.disc_drive.clone() else {
+        let Some(source) = self.disc_source.clone() else {
             return;
         };
 
@@ -1124,7 +1153,7 @@ impl App {
         crate::disc::worker::spawn_rips(
             bin,
             self.config.clone(),
-            drive,
+            source,
             titles,
             &self.disc_cancel_flag,
             tx,
@@ -1137,9 +1166,7 @@ impl App {
         self.disc_cancel_flag.store(true, Ordering::Relaxed);
         self.disc_receiver = None;
         match self.current_screen {
-            Screen::DiscTitles if self.disc_drives.len() > 1 => {
-                self.current_screen = Screen::DiscDrives;
-            }
+            Screen::DiscTitles => self.current_screen = Screen::DiscDrives,
             _ => self.navigate_to_home(),
         }
     }

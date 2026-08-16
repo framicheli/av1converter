@@ -330,7 +330,7 @@ fn scan_discs_entry() {
         if drive.disc_label.is_none() {
             continue;
         }
-        match disc::scan_titles(&bin, drive.id, &cancel) {
+        match disc::scan_titles(&bin, &disc::DiscSource::Drive(drive.clone()), &cancel) {
             Ok(scan) => {
                 if let Some(kind) = scan.disc_type {
                     println!("  {kind}");
@@ -728,15 +728,15 @@ fn handle_explorer_key(app: &mut App, key: KeyCode) {
         KeyCode::Down | KeyCode::Char('j') => app.explorer_move_down(),
         KeyCode::Enter => match app.selection_mode {
             app::SelectionMode::File => app.select_explorer_entry(),
-            app::SelectionMode::Folder | app::SelectionMode::FolderRecursive => {
-                app.enter_directory();
-            }
+            app::SelectionMode::Folder
+            | app::SelectionMode::FolderRecursive
+            | app::SelectionMode::DiscFolder => app.enter_directory(),
         },
         KeyCode::Char(' ') => match app.selection_mode {
             app::SelectionMode::File => app.toggle_file_selection(),
-            app::SelectionMode::Folder | app::SelectionMode::FolderRecursive => {
-                app.select_explorer_entry();
-            }
+            app::SelectionMode::Folder
+            | app::SelectionMode::FolderRecursive
+            | app::SelectionMode::DiscFolder => app.select_explorer_entry(),
         },
         _ => {}
     }

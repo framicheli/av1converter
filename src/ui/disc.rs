@@ -9,34 +9,41 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
-/// Drive selection. Only reached when more than one drive is present.
+/// Drive selection, with a last row for a disc backup on disk. Reached even
+/// when the machine has no drive at all.
 pub fn render_disc_drives(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
     let chunks = layout(f);
 
     f.render_widget(title_bar(t(lang, Msg::DiscSelectDrive)), chunks[0]);
 
-    let items: Vec<ListItem> = app
+    let rows = app
         .disc_drives
         .iter()
-        .enumerate()
-        .map(|(i, drive)| {
+        .map(|drive| {
             let label = drive
                 .disc_label
                 .as_deref()
                 .unwrap_or(t(lang, Msg::DiscDriveEmpty));
+            format!("{} — {label}", drive.name)
+        })
+        .chain(std::iter::once(t(lang, Msg::DiscOpenFolder).to_string()));
+
+    let items: Vec<ListItem> = rows
+        .enumerate()
+        .map(|(i, row)| {
             let prefix = if i == app.disc_drive_cursor {
                 "> "
             } else {
                 "  "
             };
-            ListItem::new(format!("{prefix}{} — {label}", drive.name)).style(
-                Style::default().add_modifier(if i == app.disc_drive_cursor {
+            ListItem::new(format!("{prefix}{row}")).style(Style::default().add_modifier(
+                if i == app.disc_drive_cursor {
                     Modifier::BOLD
                 } else {
                     Modifier::empty()
-                }),
-            )
+                },
+            ))
         })
         .collect();
 
@@ -62,10 +69,11 @@ pub fn render_disc_titles(f: &mut Frame, app: &mut App) {
     let chunks = layout(f);
 
     let disc = app
-        .disc_drive
+        .disc_source
         .as_ref()
-        .and_then(|drive| drive.disc_label.clone())
-        .unwrap_or_else(|| t(lang, Msg::Unknown).to_string());
+        .and_then(|source| source.label())
+        .unwrap_or(t(lang, Msg::Unknown))
+        .to_string();
     f.render_widget(
         title_bar(&format!("{} — {disc}", t(lang, Msg::DiscSelectTitles))),
         chunks[0],
