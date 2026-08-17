@@ -167,6 +167,7 @@ pub fn calculate_vmaf(
     let mut child = Command::new("ffmpeg")
         .args([
             "-nostdin",
+            "-nostats",
             "-i",
             &original.to_string_lossy(),
             "-i",

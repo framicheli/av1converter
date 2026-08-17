@@ -90,7 +90,12 @@ impl EncodingParams {
 
 /// Build `FFmpeg` arguments for encoding
 pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
-    let mut args = vec!["-y".to_string(), "-nostdin".to_string()];
+    // Stats go to the -progress file
+    let mut args = vec![
+        "-y".to_string(),
+        "-nostdin".to_string(),
+        "-nostats".to_string(),
+    ];
 
     // Profile 5 tone-mapping runs on the GPU via libplacebo (Vulkan)
     if !params.remux_only && params.needs_dv_tonemap() {
