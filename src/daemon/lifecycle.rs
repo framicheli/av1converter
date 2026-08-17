@@ -1,7 +1,7 @@
 //! Background daemon lifecycle: detaching from the terminal, the PID file,
 //! and stopping a running instance.
 //!
-//! Daemonization is Unix-only; on other platforms `--daemon` falls back to
+//! Daemonization is Unix-only; on other platforms use `--start-foreground`.
 //! running in the foreground.
 
 use std::fs::File;
@@ -175,7 +175,7 @@ fn alive(_pid: u32) -> bool {
     false
 }
 
-/// Re-exec ourselves as `--daemon-foreground`, detached in a new session with
+/// Re-exec ourselves as `--start-foreground`, detached in a new session with
 /// stdio redirected to [`log_file`]. Returns the daemon PID.
 #[cfg(unix)]
 pub fn spawn_background() -> io::Result<u32> {
@@ -196,7 +196,7 @@ pub fn spawn_background() -> io::Result<u32> {
     let log_err = log.try_clone()?;
 
     let mut cmd = Command::new(std::env::current_exe()?);
-    cmd.arg("--daemon-foreground")
+    cmd.arg("--start-foreground")
         .stdin(Stdio::null())
         .stdout(log)
         .stderr(log_err)
@@ -225,7 +225,7 @@ pub fn spawn_background() -> io::Result<u32> {
 #[cfg(not(unix))]
 pub fn spawn_background() -> io::Result<u32> {
     Err(io::Error::other(
-        "background mode is only supported on Unix; use --daemon-foreground",
+        "background mode is only supported on Unix; use --start-foreground",
     ))
 }
 

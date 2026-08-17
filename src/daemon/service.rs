@@ -215,7 +215,7 @@ pub(crate) fn systemd_unit(exe: &Path, path: &str) -> String {
          Description=AV1Converter web UI daemon\n\
          \n\
          [Service]\n\
-         ExecStart={exe} --daemon-foreground\n\
+         ExecStart={exe} --start-foreground\n\
          Restart=on-abnormal\n\
          Nice=10\n"
     );
@@ -319,7 +319,7 @@ pub(crate) fn launchd_plist(exe: &Path) -> String {
          \t<key>ProgramArguments</key>\n\
          \t<array>\n\
          \t\t<string>{exe}</string>\n\
-         \t\t<string>--daemon-foreground</string>\n\
+         \t\t<string>--start-foreground</string>\n\
          \t</array>\n\
          \t<key>RunAtLoad</key>\n\
          \t<true/>\n\
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn systemd_unit_runs_foreground_and_does_not_restart_on_exit_code() {
         let unit = systemd_unit(Path::new("/usr/bin/av1converter"), "/usr/bin");
-        assert!(unit.contains("ExecStart=/usr/bin/av1converter --daemon-foreground"));
+        assert!(unit.contains("ExecStart=/usr/bin/av1converter --start-foreground"));
         assert!(unit.contains("Restart=on-abnormal"));
         assert!(unit.contains("Nice=10"));
         assert!(unit.contains("WantedBy=default.target"));
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn systemd_unit_quotes_a_path_with_spaces() {
         let unit = systemd_unit(Path::new("/home/user/My Apps/av1converter"), "");
-        assert!(unit.contains("ExecStart=\"/home/user/My Apps/av1converter\" --daemon-foreground"));
+        assert!(unit.contains("ExecStart=\"/home/user/My Apps/av1converter\" --start-foreground"));
         assert!(!unit.contains("Environment="));
     }
 
@@ -370,7 +370,7 @@ mod tests {
     fn launchd_plist_starts_at_login_and_restarts_only_on_crash() {
         let plist = launchd_plist(Path::new("/usr/local/bin/av1converter"));
         assert!(plist.contains("<string>/usr/local/bin/av1converter</string>"));
-        assert!(plist.contains("<string>--daemon-foreground</string>"));
+        assert!(plist.contains("<string>--start-foreground</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<key>Crashed</key>"));
         assert!(!plist.contains("SuccessfulExit"));

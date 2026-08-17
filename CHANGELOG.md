@@ -4,6 +4,7 @@
 
 ### Added
 
+- `--start` and `--restart` daemon lifecycle commands. The former replaces `--daemon` in the documented interface, while `--daemon` remains a compatibility alias; `--start-foreground` likewise aliases the old foreground spelling.
 - **Disc ripping.** Import titles straight from a DVD or Blu-ray through MakeMKV, from the TUI (`Rip DVD / Blu-ray` on the home menu) or the web UI (`+ Disc`). Titles are extracted to a staging directory and then analyzed, track-configured and encoded exactly like a file opened by hand.
   - Ripping and encoding overlap: the next title reads from the disc while the previous one encodes, so peak disk use stays at one rip plus one encode input.
   - A rip appears in the queue as a job of its own, with progress and cancellation in the same place as everything else.

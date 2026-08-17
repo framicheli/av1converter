@@ -30,8 +30,9 @@ const USAGE: &str = "\
 Usage: av1converter [OPTION]
 
   (no option)          start the interactive TUI
-  --daemon             run the web-UI daemon in the background (must be enabled in Settings)
-  --daemon-foreground  run the daemon in the foreground, logging to stdout
+  --start              start the web-UI daemon in the background (must be enabled in Settings)
+  --start-foreground   start the daemon in the foreground, logging to stdout
+  --restart            stop the daemon gracefully, then start it again
   --stop               stop the background daemon
   --status             show whether the daemon is running
   --install-service    start the daemon at login (Linux/macOS)
@@ -40,13 +41,16 @@ Usage: av1converter [OPTION]
   --purge              delete configuration and daemon state after confirmation
   --help               show this help
   --version            show the version
+
+Legacy aliases: --daemon is --start; --daemon-foreground is --start-foreground
 ";
 
 #[derive(Debug, PartialEq)]
 enum Cli {
     Tui,
-    Daemon,
-    DaemonForeground,
+    Start,
+    StartForeground,
+    Restart,
     Stop,
     Status,
     InstallService,
@@ -58,6 +62,9 @@ enum Cli {
 }
 
 const FLAGS: &[&str] = &[
+    "--start",
+    "--start-foreground",
+    "--restart",
     "--daemon",
     "--daemon-foreground",
     "--stop",
@@ -74,8 +81,9 @@ const FLAGS: &[&str] = &[
 
 fn parse_flag(arg: &str) -> Option<Cli> {
     Some(match arg {
-        "--daemon" => Cli::Daemon,
-        "--daemon-foreground" => Cli::DaemonForeground,
+        "--start" | "--daemon" => Cli::Start,
+        "--start-foreground" | "--daemon-foreground" => Cli::StartForeground,
+        "--restart" => Cli::Restart,
         "--stop" => Cli::Stop,
         "--status" => Cli::Status,
         "--install-service" => Cli::InstallService,
@@ -212,6 +220,30 @@ fn stop_daemon_entry() {
             std::process::exit(1);
         }
     }
+}
+
+/// `--restart`: stop a running daemon cleanly and start a fresh background
+/// process. Like `--start`, this starts an inactive daemon too.
+fn restart_daemon_entry() -> io::Result<()> {
+    let config = config::AppConfig::load();
+    let lang = config.language;
+
+    if !config.daemon.enabled {
+        eprintln!("{}", t(lang, Msg::DaemonDisabledError));
+        std::process::exit(1);
+    }
+
+    if let Some(pid) = daemon::lifecycle::running_pid() {
+        match daemon::lifecycle::stop(pid) {
+            Ok(()) => println!("{} (PID {pid})", t(lang, Msg::DaemonStopped)),
+            Err(e) => {
+                eprintln!("{} {e}", t(lang, Msg::DaemonStopFailed));
+                std::process::exit(1);
+            }
+        }
+    }
+
+    run_daemon_entry(false)
 }
 
 /// `--status`: report whether the background daemon is running.
@@ -434,8 +466,9 @@ fn purge_entry() {
 fn main() -> io::Result<()> {
     match parse_cli(std::env::args().skip(1)) {
         Ok(Cli::Tui) => {}
-        Ok(Cli::Daemon) => return run_daemon_entry(false),
-        Ok(Cli::DaemonForeground) => return run_daemon_entry(true),
+        Ok(Cli::Start) => return run_daemon_entry(false),
+        Ok(Cli::StartForeground) => return run_daemon_entry(true),
+        Ok(Cli::Restart) => return restart_daemon_entry(),
         Ok(Cli::Stop) => {
             stop_daemon_entry();
             return Ok(());
@@ -1312,6 +1345,17 @@ mod tests {
 
     #[test]
     fn a_valid_flag_is_accepted() {
+        assert_eq!(parse_cli(["--start"]).unwrap(), Cli::Start);
+        assert_eq!(parse_cli(["--daemon"]).unwrap(), Cli::Start);
+        assert_eq!(
+            parse_cli(["--start-foreground"]).unwrap(),
+            Cli::StartForeground
+        );
+        assert_eq!(
+            parse_cli(["--daemon-foreground"]).unwrap(),
+            Cli::StartForeground
+        );
+        assert_eq!(parse_cli(["--restart"]).unwrap(), Cli::Restart);
         assert_eq!(parse_cli(["--stop"]).unwrap(), Cli::Stop);
         assert_eq!(parse_cli(["--purge"]).unwrap(), Cli::Purge);
         assert_eq!(

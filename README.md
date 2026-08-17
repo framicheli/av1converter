@@ -162,8 +162,9 @@ No command-line arguments are needed. All interaction happens through the TUI.
 Usage: av1converter [OPTION]
 
   (no option)          start the interactive TUI
-  --daemon             run the web-UI daemon in the background (must be enabled in Settings)
-  --daemon-foreground  run the daemon in the foreground, logging to stdout
+  --start              start the web-UI daemon in the background (must be enabled in Settings)
+  --start-foreground   start the daemon in the foreground, logging to stdout
+  --restart            stop the daemon gracefully, then start it again
   --stop               stop the background daemon
   --status             show whether the daemon is running
   --install-service    start the daemon at login (Linux/macOS)
@@ -277,7 +278,8 @@ The daemon runs headless with an embedded web UI for managing conversions from a
 Enable it in Settings (or set `enabled = true` under `[daemon]`), then:
 
 ```bash
-av1converter --daemon      # start in the background
+av1converter --start       # start in the background
+av1converter --restart     # stop cleanly, then start again
 av1converter --status      # is it running, and where
 av1converter --stop        # stop it, cancelling any encode cleanly
 ```
@@ -291,7 +293,7 @@ av1converter --uninstall-service  # remove it
 
 `--stop` lasts until the next login; uninstall is what prevents it coming back. On a headless Linux machine the user unit dies at logout unless lingering is enabled (`loginctl enable-linger $USER`). Re-run `--install-service` after moving the binary so `ExecStart` stays correct.
 
-Background mode is Unix-only; elsewhere use `--daemon-foreground`. Logs go to `~/.local/share/av1converter/daemon.log`.
+Both `--stop` and `--restart` cancel an active encode cleanly. Background mode is Unix-only; elsewhere use `--start-foreground`. The old `--daemon` and `--daemon-foreground` spellings remain available as compatibility aliases. Logs go to `~/.local/share/av1converter/daemon.log`.
 
 ### Security
 
@@ -377,7 +379,7 @@ opus_bitrate_per_channel = 64  # kbps per channel (16–256); stereo → 128k, 5
 skip_already_opus = true       # Leave tracks that are already Opus alone
 
 [daemon]
-enabled = false            # Required before `--daemon` will start
+enabled = false            # Required before `--start` will start the daemon
 bind_address = "127.0.0.1" # Loopback by default; see the security note below
 port = 8399
 browse_root = ""           # Confine the web file browser to this directory ("" = whole filesystem)

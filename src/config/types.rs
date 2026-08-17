@@ -287,7 +287,7 @@ impl Default for OutputConfig {
 /// Daemon / web UI configuration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DaemonConfig {
-    /// Whether `--daemon` is allowed to start
+    /// Whether `--start` is allowed to start the daemon
     pub enabled: bool,
     /// Bind address for the web server. Defaults to loopback: the web UI can
     /// queue encodes and delete sources, so reaching the network is opt-in.
