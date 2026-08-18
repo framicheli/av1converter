@@ -751,7 +751,14 @@ mod tests {
         let dest = scratch("rip_fails");
         let bin = fake_makemkvcon(&dest, &Fake::RipFails);
         assert_eq!(
-            rip_title(&bin, &drive_source(), 0, &dest, |_| {}, &AtomicBool::new(false)),
+            rip_title(
+                &bin,
+                &drive_source(),
+                0,
+                &dest,
+                |_| {},
+                &AtomicBool::new(false)
+            ),
             Err(DiscError::UnreadableDisc)
         );
     }

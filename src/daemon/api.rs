@@ -108,9 +108,7 @@ fn disc_status(disc: &super::state::DiscSession) -> Value {
     // A scan names the source it came from: a drive id, or the folder path.
     let (drive, folder) = match disc.scanned_source.as_ref() {
         Some(crate::disc::DiscSource::Drive(drive)) => (json!(drive.id), Value::Null),
-        Some(crate::disc::DiscSource::Folder(path)) => {
-            (Value::Null, json!(path.to_string_lossy()))
-        }
+        Some(crate::disc::DiscSource::Folder(path)) => (Value::Null, json!(path.to_string_lossy())),
         None => (Value::Null, Value::Null),
     };
 
@@ -898,17 +896,23 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
     if state.disc.active {
         return (409, json!({"error": "a disc operation is already running"}));
     }
-    // Title ids only mean anything for the source they were scanned from, so
-    // the request has to name that same one.
-    let Some(source) = state.disc.scanned_source.clone().filter(|scanned| match scanned {
-        crate::disc::DiscSource::Drive(drive) => {
-            body.get("drive").and_then(Value::as_u64).and_then(as_id) == Some(drive.id)
-        }
-        crate::disc::DiscSource::Folder(path) => {
-            body.get("folder").and_then(Value::as_str) == path.to_str()
-        }
-    }) else {
-        return (400, json!({"error": "scan the disc before ripping from it"}));
+    let Some(source) = state
+        .disc
+        .scanned_source
+        .clone()
+        .filter(|scanned| match scanned {
+            crate::disc::DiscSource::Drive(drive) => {
+                body.get("drive").and_then(Value::as_u64).and_then(as_id) == Some(drive.id)
+            }
+            crate::disc::DiscSource::Folder(path) => {
+                body.get("folder").and_then(Value::as_str) == path.to_str()
+            }
+        })
+    else {
+        return (
+            400,
+            json!({"error": "scan the disc before ripping from it"}),
+        );
     };
     // Only titles this server reported, and each of them once.
     let mut titles = Vec::new();
@@ -1328,15 +1332,11 @@ mod tests {
             // The same folder under the root is scanned, and the scan records
             // the source the titles will belong to.
             let inside = root.join("THE_DISC");
-            let (status, _) = discs_scan(
-                &shared,
-                &tx,
-                &json!({"folder": inside.to_string_lossy()}),
-            );
+            let (status, _) =
+                discs_scan(&shared, &tx, &json!({"folder": inside.to_string_lossy()}));
             assert_eq!(status, 200);
             let state = lock(&shared);
             assert!(state.disc.active);
-            // The resolved path is what was checked, so it is what is stored.
             assert_eq!(
                 state.disc.scanned_source,
                 Some(crate::disc::DiscSource::folder(inside.canonicalize().unwrap()).unwrap())

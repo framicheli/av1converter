@@ -110,7 +110,7 @@ pub fn scratch(name: &str) -> PathBuf {
 
 const NO_DRIVE: &str = "  echo 'MSG:5010,0,0,\"No optical drive found\",\"x\"'";
 
-const DRIVE_LIST: &str ="  echo 'DRV:0,2,999,12,\"HL-DT-ST BD-RE WH16NS60\",\"THE_DISC\",\"/dev/sr0\"'\n  \
+const DRIVE_LIST: &str = "  echo 'DRV:0,2,999,12,\"HL-DT-ST BD-RE WH16NS60\",\"THE_DISC\",\"/dev/sr0\"'\n  \
      echo 'DRV:1,256,999,0,\"\",\"\",\"\"'";
 
 /// A four-episode DVD with a short extra, as `makemkvcon -r info` reports one.

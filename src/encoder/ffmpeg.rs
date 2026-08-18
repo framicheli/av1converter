@@ -299,15 +299,13 @@ fn run_encode_loop(
 
                     let _ = std::fs::remove_file(output);
 
-                    let error_msg = if stderr.is_empty() {
-                        format!("ffmpeg failed with status: {status}")
-                    } else {
-                        let last_lines: Vec<&str> = stderr.lines().rev().take(5).collect();
-                        format!(
-                            "ffmpeg failed: {}",
-                            last_lines.into_iter().rev().collect::<Vec<_>>().join("\n")
-                        )
-                    };
+                    let last_lines: Vec<&str> = stderr.lines().rev().take(5).collect();
+                    let mut error_msg = format!("ffmpeg failed ({status})");
+                    if !last_lines.is_empty() {
+                        error_msg.push_str(": ");
+                        error_msg
+                            .push_str(&last_lines.into_iter().rev().collect::<Vec<_>>().join("\n"));
+                    }
 
                     return EncodeResult::Error(error_msg);
                 }
