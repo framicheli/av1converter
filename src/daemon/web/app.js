@@ -22,8 +22,8 @@ function fmtDuration(secs) {
 // aria-live are fixed in the markup and never reassigned.
 function announce(message, isError) {
   const region = $(isError ? "live-assertive" : "live-polite");
-  // A repeat of the current text gets a trailing space, so the region content
-  // differs and the announcement fires again.
+  // A repeat of the current text gets a trailing space; the region content
+  // then differs and the announcement fires again.
   region.textContent = region.textContent === message ? `${message} ` : message;
 }
 
@@ -288,6 +288,9 @@ async function poll() {
 
 let summaryDismissed = false;
 let wasActive = false;
+// Raised on the first encoding → idle transition this page observes. The
+// daemon's counters outlive any one page load.
+let sawCompletion = false;
 
 $("summary-dismiss").addEventListener("click", () => {
   summaryDismissed = true;
@@ -301,15 +304,18 @@ $("summary-dismiss").addEventListener("click", () => {
 // file in it would subtract its own error away and report zero. The figures
 // are labelled as totals and left as totals.
 function updateSummary(s) {
-  const { converted, skipped, errors } = s.counts;
+  const { converted, skipped, errors, cancelled = 0 } = s.counts;
   // A batch that started is a batch whose result has not been seen yet.
   if (s.counts.active > 0) summaryDismissed = false;
 
   const finished = s.counts.active === 0 && converted + skipped + errors > 0;
-  const summary = $("summary");
-  summary.classList.toggle("hidden", !finished || summaryDismissed);
+  if (wasActive && finished) sawCompletion = true;
 
-  if (finished) {
+  const summary = $("summary");
+  const show = finished && sawCompletion && !summaryDismissed;
+  summary.classList.toggle("hidden", !show);
+
+  if (show) {
     $("summary-converted").textContent = converted;
     $("summary-skipped").textContent = skipped;
     $("summary-errors").textContent = errors;
@@ -329,11 +335,14 @@ function updateSummary(s) {
 
   // Announced only on the observed encoding → idle transition, so reloading
   // the page — or a queue reloaded from disk at startup — does not replay a
-  // completion that already happened. Goes through the toast, which is
-  // already the page's aria-live region.
+  // completion that already happened.
   if (wasActive && finished) {
+    // Headline names the outcome: completed, errored, or stopped.
+    const headline = errors > 0 ? "summary_failed"
+      : cancelled > 0 ? "summary_stopped"
+      : "summary_complete";
     toast(
-      `${tr("summary_complete")} ${tr("session_totals")} — ` +
+      `${tr(headline)} ${tr("session_totals")} — ` +
       `${tr("summary_converted")}: ${converted}, ` +
       `${tr("badge_skipped")}: ${skipped}, ${tr("summary_errors")}: ${errors}`,
       errors > 0,
@@ -1359,7 +1368,7 @@ function renderDiscBody() {
     row.appendChild(box);
 
     // Name above its details, the layout the audio rows use. A flex sibling
-    // without min-width:0 takes its full intrinsic width and crushes the name.
+    // without min-width:0 takes its full intrinsic width.
     const info = document.createElement("div");
     info.className = "track-info";
     const name = document.createElement("div");
@@ -1519,7 +1528,7 @@ function setPath(obj, path, value) {
 function buildSettingsForm() {
   const form = $("settings-form");
   // Runs on every change to a field with dependants. Ids come from the config
-  // path and are stable across the rebuild, so focus is restored by id.
+  // path and are stable across the rebuild; focus is restored by id.
   const focused = document.activeElement?.id;
   form.textContent = "";
   // Each group entry opens a <fieldset><legend>; later fields append to it.

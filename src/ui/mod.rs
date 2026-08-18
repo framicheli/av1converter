@@ -244,7 +244,7 @@ mod disc_screen_tests {
         assert!(screen.contains("Esc"));
     }
 
-    /// Enter with nothing marked reports what is missing instead of doing nothing.
+    /// Enter with nothing marked sets a message and starts no rip.
     #[test]
     fn ripping_without_a_selection_says_so() {
         let mut app = with_titles();

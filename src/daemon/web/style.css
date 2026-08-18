@@ -344,7 +344,7 @@ fieldset.field-group > legend {
 .browser-head .muted { font-size: 12px; overflow-wrap: anywhere; }
 
 /* Path segments, wrapping across lines on a deep path. Separators are drawn
-   with ::after so they are not part of any button's accessible name. */
+   with ::after and stay out of every button's accessible name. */
 .crumbs { display: flex; flex-wrap: wrap; align-items: center; }
 .crumbs .crumb {
   background: none;

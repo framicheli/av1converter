@@ -386,6 +386,8 @@ pub enum Msg {
     WebSaving,
     WebBrowse,
     WebLoading,
+    WebFinishedWithErrors,
+    WebConversionStopped,
     TerminalTooSmall,
 }
 
@@ -2837,6 +2839,22 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Wird gespeichert…",
             Zh => "保存中…",
         },
+        Msg::WebFinishedWithErrors => match lang {
+            En => "Finished with errors.",
+            It => "Terminato con errori.",
+            Es => "Finalizado con errores.",
+            Fr => "Terminé avec des erreurs.",
+            De => "Mit Fehlern beendet.",
+            Zh => "已完成，但出现错误。",
+        },
+        Msg::WebConversionStopped => match lang {
+            En => "Conversion stopped.",
+            It => "Conversione interrotta.",
+            Es => "Conversión detenida.",
+            Fr => "Conversion interrompue.",
+            De => "Konvertierung abgebrochen.",
+            Zh => "转换已停止。",
+        },
         Msg::WebLoading => match lang {
             En => "Loading…",
             It => "Caricamento…",
@@ -3046,6 +3064,8 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("saving", Msg::WebSaving),
     ("browse", Msg::WebBrowse),
     ("loading", Msg::WebLoading),
+    ("summary_failed", Msg::WebFinishedWithErrors),
+    ("summary_stopped", Msg::WebConversionStopped),
     ("verifying_vmaf", Msg::StatusVerifying),
 ];
 

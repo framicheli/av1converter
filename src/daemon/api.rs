@@ -68,6 +68,13 @@ pub fn status(shared: &SharedState) -> Value {
         .iter()
         .filter(|j| !is_terminal(&j.status))
         .count();
+    // Cancelling marks the session's unfinished jobs Skipped with this reason.
+    // `skipped_count` counts them alongside files skipped for being AV1.
+    let cancelled = queue
+        .jobs
+        .iter()
+        .filter(|j| matches!(&j.status, JobStatus::Skipped { reason } if reason == "Cancelled"))
+        .count();
     let (saved_bytes, saved_human) = queue.total_space_saved();
 
     json!({
@@ -87,6 +94,7 @@ pub fn status(shared: &SharedState) -> Value {
             "ready": ready,
             "converted": queue.converted_count,
             "skipped": queue.skipped_count,
+            "cancelled": cancelled,
             "errors": queue.error_count,
         },
         "total_space_saved": { "bytes": saved_bytes, "human": saved_human },
