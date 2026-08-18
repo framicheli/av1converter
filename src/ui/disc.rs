@@ -1,3 +1,4 @@
+use super::common::message_color;
 use crate::app::{App, DiscState};
 use crate::i18n::{Msg, t};
 use crate::utils::{format_duration, format_file_size};
@@ -16,6 +17,32 @@ pub fn render_disc_drives(f: &mut Frame, app: &mut App) {
     let chunks = layout(f);
 
     f.render_widget(title_bar(t(lang, Msg::DiscSelectDrive)), chunks[0]);
+
+    if matches!(
+        app.disc_state,
+        DiscState::Discovering | DiscState::Cancelling
+    ) {
+        let message = if app.disc_state == DiscState::Discovering {
+            Msg::DiscDiscovering
+        } else {
+            Msg::Cancelling
+        };
+        f.render_widget(
+            Paragraph::new(t(lang, message))
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Yellow))
+                .block(bordered()),
+            chunks[1],
+        );
+        f.render_widget(Paragraph::new(""), chunks[2]);
+        let keys = if app.disc_state == DiscState::Discovering {
+            vec![("Esc", t(lang, Msg::Cancel)), ("q", t(lang, Msg::Quit))]
+        } else {
+            vec![("q", t(lang, Msg::Quit))]
+        };
+        f.render_widget(help(&keys), chunks[3]);
+        return;
+    }
 
     let rows = app
         .disc_drives
@@ -52,12 +79,22 @@ pub fn render_disc_drives(f: &mut Frame, app: &mut App) {
         chunks[1],
         &mut app.disc_drive_list_state,
     );
-    f.render_widget(Paragraph::new(""), chunks[2]);
+    if let Some(message) = app.message.as_deref() {
+        f.render_widget(
+            Paragraph::new(message)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(message_color(app.message_kind)))
+                .wrap(Wrap { trim: true })
+                .block(bordered().title(format!(" {} ", t(lang, Msg::Notice)))),
+            chunks[2],
+        );
+    }
     f.render_widget(
         help(&[
             ("↑↓", t(lang, Msg::Navigate)),
             ("Enter", t(lang, Msg::Select)),
             ("Esc", t(lang, Msg::Back)),
+            ("q", t(lang, Msg::Quit)),
         ]),
         chunks[3],
     );
@@ -83,6 +120,16 @@ pub fn render_disc_titles(f: &mut Frame, app: &mut App) {
         DiscState::Scanning => {
             f.render_widget(
                 Paragraph::new(t(lang, Msg::DiscScanning))
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(Color::Yellow))
+                    .block(bordered()),
+                chunks[1],
+            );
+        }
+        DiscState::Discovering => {}
+        DiscState::Cancelling => {
+            f.render_widget(
+                Paragraph::new(t(lang, Msg::Cancelling))
                     .alignment(Alignment::Center)
                     .style(Style::default().fg(Color::Yellow))
                     .block(bordered()),
@@ -148,28 +195,49 @@ pub fn render_disc_titles(f: &mut Frame, app: &mut App) {
 
     // Track summaries for the title under the cursor: enough to tell a feature
     // from a commentary angle before spending an hour on it.
-    let detail = app
-        .disc_titles
-        .get(app.disc_cursor)
-        .filter(|_| app.disc_state == DiscState::Ready)
-        .map(|title| title.tracks.join("\n"))
-        .unwrap_or_default();
+    let detail = app.message.clone().unwrap_or_else(|| {
+        app.disc_titles
+            .get(app.disc_cursor)
+            .filter(|_| app.disc_state == DiscState::Ready)
+            .map(|title| title.tracks.join("\n"))
+            .unwrap_or_default()
+    });
     f.render_widget(
         Paragraph::new(detail)
             .wrap(Wrap { trim: true })
+            .scroll((app.detail_scroll, 0))
             .block(bordered().title(format!(" {} ", t(lang, Msg::VideoInfo)))),
         chunks[2],
     );
 
-    f.render_widget(
-        help(&[
+    let keys: Vec<(&str, &str)> = if app.disc_state == DiscState::Cancelling {
+        vec![("q", t(lang, Msg::Quit))]
+    } else if matches!(app.disc_state, DiscState::Ready) && !app.disc_titles.is_empty() {
+        vec![
             ("↑↓", t(lang, Msg::Navigate)),
             ("Space", t(lang, Msg::Toggle)),
             ("Enter", t(lang, Msg::DiscRipAction)),
+            ("PgUp/PgDn", t(lang, Msg::VideoInfo)),
             ("Esc", t(lang, Msg::Back)),
-        ]),
-        chunks[3],
-    );
+            ("q", t(lang, Msg::Quit)),
+        ]
+    } else {
+        vec![
+            (
+                "Esc",
+                t(
+                    lang,
+                    if app.disc_state == DiscState::Scanning {
+                        Msg::Cancel
+                    } else {
+                        Msg::Back
+                    },
+                ),
+            ),
+            ("q", t(lang, Msg::Quit)),
+        ]
+    };
+    f.render_widget(help(&keys), chunks[3]);
 }
 
 fn layout(f: &Frame) -> std::rc::Rc<[ratatui::layout::Rect]> {
@@ -178,7 +246,7 @@ fn layout(f: &Frame) -> std::rc::Rc<[ratatui::layout::Rect]> {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(5),
+            Constraint::Length(7),
             Constraint::Length(3),
         ])
         .margin(1)
@@ -208,7 +276,7 @@ fn help(keys: &[(&str, &str)]) -> Paragraph<'static> {
         .flat_map(|(key, label)| {
             [
                 Span::styled((*key).to_string(), Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {label}  ")),
+                Span::raw(format!("\u{a0}{label}  ")),
             ]
         })
         .collect();

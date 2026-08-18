@@ -1,11 +1,11 @@
 use crate::analyzer::{self, AnalysisResult, DvMode, HdrType, is_av1_codec};
 use crate::config::{AppConfig, Encoder};
 use crate::disc::worker::DiscEvent;
-use crate::disc::{DiscDrive, DiscSource, DiscTitle};
+use crate::disc::{DiscDrive, DiscError, DiscSource, DiscTitle};
 use crate::error::AppError;
 use crate::queue::{
     EncodingJob, JobStatus, QueueState, WorkerJob, WorkerMessage, auto_select_tracks,
-    collect_video_files, is_video_file, make_output_paths_unique, run_worker,
+    is_video_file, make_output_paths_unique, run_worker,
 };
 use crate::utils::DependencyStatus;
 use ratatui::widgets::ListState;
@@ -31,13 +31,46 @@ pub enum Screen {
     Configuration,
 }
 
-/// What the title screen is showing while a disc is being read.
+/// Current disc discovery, scan, or rip UI state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiscState {
+    Discovering,
     Scanning,
+    Cancelling,
     Ready,
     /// Already translated, ready to render.
     Failed(String),
+}
+
+/// Cached metadata for one file-explorer row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub path: PathBuf,
+    pub is_dir: bool,
+    /// `None` for directories and for files whose metadata could not be read.
+    pub size: Option<u64>,
+}
+
+impl Entry {
+    /// The ".." row, which carries no metadata of its own.
+    fn parent() -> Self {
+        Self {
+            path: PathBuf::from(".."),
+            is_dir: true,
+            size: None,
+        }
+    }
+
+    pub fn is_parent(&self) -> bool {
+        self.path == Path::new("..")
+    }
+
+    pub fn name(&self) -> String {
+        self.path.file_name().map_or_else(
+            || self.path.to_string_lossy().to_string(),
+            |n| n.to_string_lossy().to_string(),
+        )
+    }
 }
 
 /// File selection mode
@@ -62,10 +95,19 @@ pub enum TrackFocus {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConfirmAction {
     CancelEncoding,
+    CancelDisc,
     ExitApp,
     AbandonTrackConfig,
     DiscardConfigChanges,
     CancelAnalysis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageKind {
+    Info,
+    Success,
+    Warning,
+    Error,
 }
 
 pub const HOME_MENU: &[&str] = &[
@@ -87,7 +129,7 @@ pub struct App {
 
     // File explorer
     pub current_dir: PathBuf,
-    pub dir_entries: Vec<PathBuf>,
+    pub dir_entries: Vec<Entry>,
     pub explorer_index: usize,
     pub explorer_list_state: ListState,
     // Queue state (replaces Vec<VideoFile>)
@@ -120,6 +162,7 @@ pub struct App {
     /// Title ids marked with Space, in the order they were marked.
     pub disc_selected: Vec<u32>,
     pub disc_state: DiscState,
+    pub disc_drive_receiver: Option<Receiver<Result<Vec<DiscDrive>, DiscError>>>,
     pub disc_receiver: Option<Receiver<DiscEvent>>,
     pub disc_cancel_flag: Arc<AtomicBool>,
     /// What the current scan or rip is reading from.
@@ -129,6 +172,8 @@ pub struct App {
     pub encoding_active: bool,
     pub progress_receiver: Option<Receiver<WorkerMessage>>,
     pub cancel_flag: Arc<AtomicBool>,
+    /// Queue indices assigned to the current encoding worker session.
+    encoding_session_indices: Vec<usize>,
 
     // Background analysis. Results are keyed by job index: a title that has
     // just finished ripping joins the same channel while others still probe.
@@ -138,6 +183,10 @@ pub struct App {
     analysis_outstanding: usize,
     /// Ask the analysis thread to stop spawning new ffprobe calls
     pub analysis_cancel_flag: Arc<AtomicBool>,
+
+    // Folder scan state
+    pub folder_scan_receiver: Option<Receiver<Result<Vec<PathBuf>, String>>>,
+    pub folder_scan_cancel_flag: Arc<AtomicBool>,
 
     // Configuration
     pub config: AppConfig,
@@ -150,14 +199,18 @@ pub struct App {
 
     // UI state
     pub message: Option<String>,
+    pub message_kind: MessageKind,
     pub message_expiry: Option<Instant>,
     pub confirm_dialog: Option<(ConfirmAction, bool)>,
     /// Dolby Vision mode dialog: selected option (0 = keep DV, 1 = HDR10)
     pub dv_dialog: Option<usize>,
+    /// Vertical offset for the active screen's detail panel.
+    pub detail_scroll: u16,
 
     // Config screen state
     pub config_selected: usize,
     pub config_edit_buffer: Option<String>,
+    pub config_edit_cursor: usize,
     pub config_snapshot: Option<AppConfig>,
 
     // Finish screen
@@ -239,26 +292,33 @@ impl App {
             disc_list_state,
             disc_selected: Vec::new(),
             disc_state: DiscState::Ready,
+            disc_drive_receiver: None,
             disc_receiver: None,
             disc_cancel_flag: Arc::new(AtomicBool::new(false)),
             disc_source: None,
             encoding_active: false,
             progress_receiver: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            encoding_session_indices: Vec::new(),
             analysis_receiver: None,
             analysis_sender: None,
             analysis_outstanding: 0,
             analysis_cancel_flag: Arc::new(AtomicBool::new(false)),
+            folder_scan_receiver: None,
+            folder_scan_cancel_flag: Arc::new(AtomicBool::new(false)),
             config,
             deps,
             vmaf_deps,
             opus_deps,
             message: None,
+            message_kind: MessageKind::Info,
             message_expiry: None,
             confirm_dialog: None,
             dv_dialog: None,
+            detail_scroll: 0,
             config_selected: 0,
             config_edit_buffer: None,
+            config_edit_cursor: 0,
             config_snapshot: None,
             finish_cursor: 0,
             finish_list_state,
@@ -268,13 +328,30 @@ impl App {
     // Message handling
 
     pub fn set_message(&mut self, msg: &str) {
+        self.set_message_kind(msg, MessageKind::Warning, None);
+    }
+
+    pub fn set_info_message(&mut self, msg: &str) {
+        self.set_message_kind(msg, MessageKind::Info, None);
+    }
+
+    pub fn set_timed_success(&mut self, msg: &str, secs: u64) {
+        self.set_message_kind(msg, MessageKind::Success, Some(secs));
+    }
+
+    pub fn set_timed_error(&mut self, msg: &str, secs: u64) {
+        self.set_message_kind(msg, MessageKind::Error, Some(secs));
+    }
+
+    fn set_message_kind(&mut self, msg: &str, kind: MessageKind, secs: Option<u64>) {
         self.message = Some(msg.to_string());
-        self.message_expiry = None;
+        self.message_kind = kind;
+        self.message_expiry =
+            secs.map(|secs| Instant::now() + std::time::Duration::from_secs(secs));
     }
 
     pub fn set_timed_message(&mut self, msg: &str, secs: u64) {
-        self.message = Some(msg.to_string());
-        self.message_expiry = Some(Instant::now() + std::time::Duration::from_secs(secs));
+        self.set_message_kind(msg, MessageKind::Warning, Some(secs));
     }
 
     pub fn clear_message(&mut self) {
@@ -414,6 +491,9 @@ impl App {
     }
 
     pub fn navigate_to_finish(&mut self) {
+        if self.work_active() || !self.queue.all_completed() {
+            return;
+        }
         // Update output sizes for all jobs that produced an output file
         for job in &mut self.queue.jobs {
             if matches!(
@@ -450,6 +530,17 @@ impl App {
         self.current_screen = Screen::FileConfirm;
     }
 
+    pub fn disc_operation_active(&self) -> bool {
+        self.disc_drive_receiver.is_some() || self.disc_receiver.is_some()
+    }
+
+    pub fn work_active(&self) -> bool {
+        self.encoding_active
+            || self.analysis_receiver.is_some()
+            || self.disc_operation_active()
+            || self.folder_scan_receiver.is_some()
+    }
+
     /// Move the queue list cursor up (`forward = false`) or down (`forward =
     /// true`), clamped within the job list bounds.
     pub fn queue_move_cursor(&mut self, forward: bool) {
@@ -460,6 +551,7 @@ impl App {
         } else if self.queue_cursor > 0 {
             self.queue_cursor -= 1;
         }
+        self.detail_scroll = 0;
     }
 
     /// Move the Finish screen results-list cursor up (`forward = false`) or
@@ -472,6 +564,7 @@ impl App {
         } else if self.finish_cursor > 0 {
             self.finish_cursor -= 1;
         }
+        self.detail_scroll = 0;
     }
 
     // File explorer
@@ -483,25 +576,41 @@ impl App {
         if let Some(parent) = self.current_dir.parent()
             && parent != self.current_dir
         {
-            self.dir_entries.push(PathBuf::from(".."));
+            self.dir_entries.push(Entry::parent());
         }
 
-        // Read directory contents
+        // Cached directory rows.
         if let Ok(entries) = std::fs::read_dir(&self.current_dir) {
-            let mut paths: Vec<PathBuf> = entries
+            let mut found: Vec<Entry> = entries
                 .filter_map(Result::ok)
-                .map(|e| e.path())
-                .filter(|p| p.is_dir() || is_video_file(p))
+                .filter_map(|e| {
+                    let path = e.path();
+                    let is_dir = e.file_type().map_or_else(
+                        |_| path.is_dir(),
+                        |file_type| file_type.is_dir() || (file_type.is_symlink() && path.is_dir()),
+                    );
+                    let selectable_disc_image = self.selection_mode == SelectionMode::DiscFolder
+                        && crate::disc::is_iso(&path);
+                    if !is_dir && !is_video_file(&path) && !selectable_disc_image {
+                        return None;
+                    }
+                    let size = if is_dir {
+                        None
+                    } else {
+                        e.metadata().ok().map(|m| m.len())
+                    };
+                    Some(Entry { path, is_dir, size })
+                })
                 .collect();
 
             // Sort: directories first, then files
-            paths.sort_by(|a, b| match (a.is_dir(), b.is_dir()) {
+            found.sort_by(|a, b| match (a.is_dir, b.is_dir) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
-                _ => a.file_name().cmp(&b.file_name()),
+                _ => a.path.file_name().cmp(&b.path.file_name()),
             });
 
-            self.dir_entries.extend(paths);
+            self.dir_entries.extend(found);
         }
 
         self.explorer_index = 0;
@@ -528,10 +637,11 @@ impl App {
             return;
         }
 
-        let selected = self.dir_entries[self.explorer_index].clone();
-        if selected == Path::new("..") || selected.is_dir() || !is_video_file(&selected) {
+        let entry = self.dir_entries[self.explorer_index].clone();
+        if entry.is_parent() || entry.is_dir || !is_video_file(&entry.path) {
             return;
         }
+        let selected = entry.path;
 
         if let Some(pos) = self.selected_files.iter().position(|f| f == &selected) {
             self.selected_files.remove(pos);
@@ -561,15 +671,15 @@ impl App {
             return;
         }
 
-        let selected = self.dir_entries[self.explorer_index].clone();
+        let entry = self.dir_entries[self.explorer_index].clone();
 
-        if selected == Path::new("..") {
+        if entry.is_parent() {
             if let Some(parent) = self.current_dir.parent() {
                 self.current_dir = parent.to_path_buf();
                 self.refresh_dir_entries();
             }
-        } else if selected.is_dir() {
-            self.current_dir = selected;
+        } else if entry.is_dir {
+            self.current_dir = entry.path;
             self.refresh_dir_entries();
         }
     }
@@ -579,11 +689,12 @@ impl App {
             return;
         }
 
-        let selected = self.dir_entries[self.explorer_index].clone();
+        let entry = self.dir_entries[self.explorer_index].clone();
+        let selected = entry.path.clone();
 
         match self.selection_mode {
             SelectionMode::File => {
-                if selected == Path::new("..") || selected.is_dir() {
+                if entry.is_parent() || entry.is_dir {
                     self.enter_directory();
                 } else if is_video_file(&selected) {
                     if self.selected_files.is_empty() {
@@ -605,9 +716,9 @@ impl App {
                 }
             }
             SelectionMode::DiscFolder => {
-                if selected == Path::new("..") || !selected.is_dir() {
+                if entry.is_parent() {
                     self.enter_directory();
-                } else {
+                } else if entry.is_dir || crate::disc::is_iso(&selected) {
                     self.scan_disc_folder(&selected);
                 }
             }
@@ -616,42 +727,103 @@ impl App {
                     self.enter_directory();
                 } else {
                     let recursive = self.selection_mode == SelectionMode::FolderRecursive;
-                    self.scan_folder(&selected, recursive);
-                    if self.queue.jobs.is_empty() {
-                        let msg =
-                            crate::i18n::t(self.config.language, crate::i18n::Msg::NoVideoFiles);
-                        self.set_message(msg);
-                    } else if self.queue.jobs.len() == 1 {
-                        // Single file in folder — proceed directly
-                        self.analyze_jobs();
-                    } else {
-                        // Multiple files — show confirmation
-                        self.navigate_to_file_confirm();
-                    }
+                    self.scan_folder(selected, recursive);
                 }
             }
         }
     }
 
-    pub fn scan_folder(&mut self, folder: &Path, recursive: bool) {
-        self.queue.reset();
-
-        let mut paths: Vec<PathBuf> = Vec::new();
-        if recursive {
-            collect_video_files(folder, &mut paths);
-        } else if let Ok(entries) = std::fs::read_dir(folder) {
-            paths.extend(
-                entries
-                    .filter_map(Result::ok)
-                    .map(|e| e.path())
-                    .filter(|p| is_video_file(p)),
-            );
+    pub fn scan_folder(&mut self, folder: PathBuf, recursive: bool) {
+        if self.folder_scan_receiver.is_some() {
+            return;
         }
+        self.folder_scan_cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel = self.folder_scan_cancel_flag.clone();
+        let (tx, rx) = mpsc::channel();
+        self.folder_scan_receiver = Some(rx);
+        self.set_info_message(crate::i18n::t(
+            self.config.language,
+            crate::i18n::Msg::ScanningFiles,
+        ));
 
-        paths.sort();
-        for path in paths {
-            self.queue.jobs.push(EncodingJob::new(path));
+        thread::spawn(move || {
+            let result = (|| -> std::io::Result<Vec<PathBuf>> {
+                let mut paths = Vec::new();
+                if recursive {
+                    crate::queue::collect_video_files_cancellable_result(
+                        &folder, &mut paths, &cancel,
+                    )?;
+                } else {
+                    for entry in std::fs::read_dir(&folder)? {
+                        if cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let path = entry?.path();
+                        if is_video_file(&path) {
+                            paths.push(path);
+                        }
+                    }
+                }
+                paths.sort();
+                Ok(paths)
+            })()
+            .map_err(|error| format!("{}: {error}", folder.display()));
+            let _ = tx.send(result);
+        });
+    }
+
+    pub fn cancel_folder_scan(&mut self) {
+        self.folder_scan_cancel_flag.store(true, Ordering::Relaxed);
+        self.set_info_message(crate::i18n::t(
+            self.config.language,
+            crate::i18n::Msg::Cancelling,
+        ));
+    }
+
+    pub fn process_folder_scan(&mut self) {
+        let result =
+            self.folder_scan_receiver
+                .as_ref()
+                .and_then(|receiver| match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Some(Err("folder scan stopped unexpectedly".to_string()))
+                    }
+                });
+        let Some(result) = result else {
+            return;
+        };
+        self.folder_scan_receiver = None;
+
+        if self.folder_scan_cancel_flag.load(Ordering::Relaxed) {
+            self.clear_message();
+            return;
         }
+        let Err(error) = &result else {
+            let paths = result.unwrap_or_default();
+            self.clear_message();
+            self.queue.reset();
+            for path in paths {
+                self.queue.jobs.push(EncodingJob::new(path));
+            }
+            if self.queue.jobs.is_empty() {
+                let msg = crate::i18n::t(self.config.language, crate::i18n::Msg::NoVideoFiles);
+                self.set_message(msg);
+            } else if self.queue.jobs.len() == 1 {
+                self.analyze_jobs();
+            } else {
+                self.navigate_to_file_confirm();
+            }
+            return;
+        };
+        self.set_timed_error(
+            &format!(
+                "{}: {error}",
+                crate::i18n::t(self.config.language, crate::i18n::Msg::FolderScanFailed)
+            ),
+            8,
+        );
     }
 
     fn analyze_jobs(&mut self) {
@@ -806,15 +978,26 @@ impl App {
         }
     }
 
-    /// Cancel an in-progress analysis and return to the home screen.
+    /// Cancel every outstanding probe without disturbing concurrent work.
     pub fn cancel_analysis(&mut self) {
-        // Signal the analysis thread to stop spawning new ffprobe calls
         self.analysis_cancel_flag.store(true, Ordering::Relaxed);
         self.analysis_receiver = None;
         self.analysis_sender = None;
         self.analysis_outstanding = 0;
-        self.queue.reset();
-        self.navigate_to_home();
+        if self.encoding_active || self.disc_operation_active() {
+            for job in &mut self.queue.jobs {
+                if matches!(job.status, JobStatus::Analyzing) {
+                    job.status = JobStatus::Skipped {
+                        reason: "Cancelled".to_string(),
+                    };
+                    self.queue.skipped_count += 1;
+                }
+            }
+            self.navigate_to_queue();
+        } else {
+            self.queue.reset();
+            self.navigate_to_home();
+        }
     }
 
     // Track configuration
@@ -828,9 +1011,18 @@ impl App {
     }
 
     pub fn confirm_track_config(&mut self) {
-        if let Some(job) = self.queue.jobs.get_mut(self.queue.config_job_index) {
-            job.status = JobStatus::Ready;
+        let editable = self
+            .queue
+            .jobs
+            .get(self.queue.config_job_index)
+            .is_some_and(|job| {
+                matches!(job.status, JobStatus::AwaitingConfig)
+                    || (!self.encoding_active && matches!(job.status, JobStatus::Ready))
+            });
+        if !editable {
+            return;
         }
+        self.queue.jobs[self.queue.config_job_index].status = JobStatus::Ready;
 
         // Find next job awaiting config
         let next_index = self
@@ -845,8 +1037,7 @@ impl App {
             self.queue.config_job_index = idx;
             self.reset_track_config_cursor();
         } else if self.encoding_active {
-            // A session is already running with its job list fixed; this one
-            // joins the next session, started when that one ends.
+            // Ready jobs added during an active session remain queued.
             self.navigate_to_queue();
         } else {
             self.start_encoding();
@@ -855,6 +1046,10 @@ impl App {
 
     /// Abandon the whole batch and return to Home, discarding the queue.
     pub fn cancel_track_config(&mut self) {
+        if self.encoding_active || self.disc_operation_active() {
+            self.navigate_to_queue();
+            return;
+        }
         self.queue.reset();
         self.navigate_to_home();
     }
@@ -880,11 +1075,9 @@ impl App {
             };
             idx = next;
 
-            let configurable = self.queue.jobs.get(idx).is_some_and(|j| {
-                !matches!(
-                    j.status,
-                    JobStatus::Error { .. } | JobStatus::Skipped { .. }
-                )
+            let configurable = self.queue.jobs.get(idx).is_some_and(|job| {
+                matches!(job.status, JobStatus::AwaitingConfig)
+                    || (!self.encoding_active && matches!(job.status, JobStatus::Ready))
             });
             if configurable {
                 self.queue.config_job_index = idx;
@@ -953,6 +1146,8 @@ impl App {
 
         info!("Jobs to encode: {}", worker_jobs.len());
 
+        self.encoding_session_indices = worker_jobs.iter().map(|job| job.index).collect();
+
         self.queue.start_time = Some(std::time::Instant::now());
         self.queue.total_jobs_to_encode = worker_jobs.len();
         self.queue.encoding_progress_done = 0;
@@ -980,36 +1175,78 @@ impl App {
 
     // Disc ripping
 
-    /// Home → drive selection. Listing drives takes a second or two, so it runs
-    /// here rather than on a thread; a title scan takes minutes and does not.
+    /// Start drive discovery and open the drive-selection screen.
     pub fn start_disc_flow(&mut self) {
         let lang = self.config.language;
         let bin = match crate::disc::find_makemkvcon(&self.config) {
             Ok(bin) => bin,
             Err(e) => {
-                self.set_timed_message(&e.message(lang), 8);
+                self.set_timed_error(&e.message(lang), 8);
                 return;
             }
         };
 
         self.disc_cancel_flag = Arc::new(AtomicBool::new(false));
-        self.disc_drives = match crate::disc::list_drives(&bin, &self.disc_cancel_flag) {
-            Ok(drives) => drives,
-            // A machine with no drive still reaches the folder row.
-            Err(crate::disc::DiscError::NoDrive) => Vec::new(),
-            Err(e) => {
-                self.set_timed_message(&e.message(lang), 8);
-                return;
-            }
-        };
+        let cancel = self.disc_cancel_flag.clone();
+        let (tx, rx) = mpsc::channel();
+        self.disc_drive_receiver = Some(rx);
+        self.disc_state = DiscState::Discovering;
+        self.disc_drives.clear();
         self.disc_drive_cursor = 0;
         self.disc_drive_list_state.select(Some(0));
         self.current_screen = Screen::DiscDrives;
+
+        thread::spawn(move || {
+            let _ = tx.send(crate::disc::list_drives(&bin, &cancel));
+        });
+    }
+
+    pub fn process_disc_drive_events(&mut self) {
+        let result =
+            self.disc_drive_receiver
+                .as_ref()
+                .and_then(|receiver| match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => Some(Err(DiscError::Failed(
+                        "drive discovery stopped unexpectedly".to_string(),
+                    ))),
+                });
+        let Some(result) = result else {
+            return;
+        };
+        self.disc_drive_receiver = None;
+
+        if self.disc_state == DiscState::Cancelling {
+            self.disc_state = DiscState::Ready;
+            self.navigate_to_home();
+            return;
+        }
+
+        match result {
+            Ok(drives) => {
+                self.disc_drives = drives;
+                self.clear_message();
+            }
+            Err(DiscError::NoDrive) => {
+                self.disc_drives.clear();
+                self.set_message(crate::i18n::t(
+                    self.config.language,
+                    crate::i18n::Msg::DiscNoDrive,
+                ));
+            }
+            Err(error) => {
+                self.disc_drives.clear();
+                self.set_timed_error(&error.message(self.config.language), 8);
+            }
+        }
+        self.disc_state = DiscState::Ready;
     }
 
     /// Start scanning the drive at `index`, or open the file explorer for the
     /// folder row that follows the last drive.
     pub fn scan_disc(&mut self, index: usize) {
+        self.clear_message();
         if index == self.disc_drives.len() {
             self.selection_mode = SelectionMode::DiscFolder;
             self.refresh_dir_entries();
@@ -1028,7 +1265,7 @@ impl App {
     pub fn scan_disc_folder(&mut self, path: &Path) {
         match DiscSource::folder(path) {
             Ok(source) => self.begin_disc_scan(source),
-            Err(e) => self.set_timed_message(&e.message(self.config.language), 8),
+            Err(e) => self.set_timed_error(&e.message(self.config.language), 8),
         }
     }
 
@@ -1071,6 +1308,7 @@ impl App {
             &mut self.disc_cursor
         };
         *cursor = cursor.saturating_sub(1);
+        self.detail_scroll = 0;
         self.sync_disc_list_state();
     }
 
@@ -1083,6 +1321,7 @@ impl App {
         if *cursor + 1 < len {
             *cursor += 1;
         }
+        self.detail_scroll = 0;
         self.sync_disc_list_state();
     }
 
@@ -1094,6 +1333,7 @@ impl App {
 
     /// Mark or unmark the title under the cursor.
     pub fn toggle_disc_title(&mut self) {
+        self.clear_message();
         let Some(title) = self.disc_titles.get(self.disc_cursor) else {
             return;
         };
@@ -1107,13 +1347,13 @@ impl App {
     /// Queue every marked title and start extracting them.
     pub fn start_disc_rip(&mut self) {
         let lang = self.config.language;
-        if self.disc_state != DiscState::Ready
-            || self.disc_selected.is_empty()
-            || self.disc_receiver.is_some()
-        {
+        if self.disc_state != DiscState::Ready || self.disc_receiver.is_some() {
             return;
         }
-        // Refused here rather than after the first forty-minute extraction.
+        if self.disc_selected.is_empty() {
+            self.set_message(crate::i18n::t(lang, crate::i18n::Msg::DiscNothingSelected));
+            return;
+        }
         if let Err(e) = crate::disc::staging::require_destination(&self.config) {
             self.disc_state = DiscState::Failed(e.message(lang));
             return;
@@ -1147,6 +1387,7 @@ impl App {
             self.queue.jobs.push(job);
         }
 
+        self.analysis_cancel_flag = Arc::new(AtomicBool::new(false));
         self.disc_cancel_flag = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         self.disc_receiver = Some(rx);
@@ -1163,11 +1404,21 @@ impl App {
 
     /// Esc: cancel whatever is running and step back one screen.
     pub fn leave_disc_screen(&mut self) {
-        self.disc_cancel_flag.store(true, Ordering::Relaxed);
-        self.disc_receiver = None;
+        self.clear_message();
+        if self.disc_operation_active() {
+            self.cancel_disc_operation();
+            return;
+        }
         match self.current_screen {
             Screen::DiscTitles => self.current_screen = Screen::DiscDrives,
             _ => self.navigate_to_home(),
+        }
+    }
+
+    pub fn cancel_disc_operation(&mut self) {
+        if self.disc_operation_active() {
+            self.disc_cancel_flag.store(true, Ordering::Relaxed);
+            self.disc_state = DiscState::Cancelling;
         }
     }
 
@@ -1224,12 +1475,7 @@ impl App {
                     self.fail_disc_run(index, &error.message(lang));
                 }
                 DiscEvent::Cancelled => {
-                    self.disc_receiver = None;
-                    if self.disc_state == DiscState::Scanning {
-                        self.disc_state = DiscState::Ready;
-                    }
-                    self.skip_remaining_rips();
-                    self.settle_after_rips();
+                    self.finish_disc_cancellation();
                 }
                 DiscEvent::Finished => {
                     self.disc_receiver = None;
@@ -1240,17 +1486,36 @@ impl App {
 
         if worker_gone && self.disc_receiver.is_some() {
             self.disc_receiver = None;
-            let message =
-                crate::disc::DiscError::Failed("the run stopped unexpectedly".to_string())
-                    .message(lang);
-            self.fail_disc_run(0, &message);
+            if self.disc_state == DiscState::Cancelling {
+                self.finish_disc_cancellation();
+            } else {
+                let message =
+                    crate::disc::DiscError::Failed("the run stopped unexpectedly".to_string())
+                        .message(lang);
+                self.fail_disc_run(0, &message);
+            }
+        }
+    }
+
+    /// Complete a cancelled title scan or rip run.
+    fn finish_disc_cancellation(&mut self) {
+        let return_to_drives = self.current_screen == Screen::DiscTitles;
+        self.disc_receiver = None;
+        self.disc_state = DiscState::Ready;
+        self.skip_remaining_rips();
+        if return_to_drives {
+            self.current_screen = Screen::DiscDrives;
+        } else {
+            self.settle_after_rips();
         }
     }
 
     /// Report a failure where the user is looking: on the title screen while
     /// scanning, on the queue once titles are being extracted.
     fn fail_disc_run(&mut self, index: usize, message: &str) {
-        if self.disc_state == DiscState::Scanning || self.current_screen == Screen::DiscTitles {
+        if matches!(self.disc_state, DiscState::Scanning | DiscState::Cancelling)
+            || self.current_screen == Screen::DiscTitles
+        {
             self.disc_state = DiscState::Failed(message.to_string());
             return;
         }
@@ -1342,7 +1607,7 @@ impl App {
             return;
         };
 
-        let mut should_finish = false;
+        let mut session_finished = false;
 
         for msg in messages {
             match msg {
@@ -1363,20 +1628,12 @@ impl App {
                         self.queue.converted_count += 1;
                         self.queue.encoding_progress_done += 1;
                     }
-                    if self.queue.all_completed() {
-                        self.encoding_active = false;
-                        should_finish = true;
-                    }
                 }
                 WorkerMessage::DoneWithVmaf(idx, score) => {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
                         job.status = JobStatus::DoneWithVmaf { score };
                         self.queue.converted_count += 1;
                         self.queue.encoding_progress_done += 1;
-                    }
-                    if self.queue.all_completed() {
-                        self.encoding_active = false;
-                        should_finish = true;
                     }
                 }
                 WorkerMessage::Error(idx, msg) => {
@@ -1385,20 +1642,12 @@ impl App {
                         self.queue.error_count += 1;
                         self.queue.encoding_progress_done += 1;
                     }
-                    if self.queue.all_completed() {
-                        self.encoding_active = false;
-                        should_finish = true;
-                    }
                 }
                 WorkerMessage::QualityWarning(idx, vmaf, threshold) => {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
                         job.status = JobStatus::QualityWarning { vmaf, threshold };
                         self.queue.converted_count += 1;
                         self.queue.encoding_progress_done += 1;
-                    }
-                    if self.queue.all_completed() {
-                        self.encoding_active = false;
-                        should_finish = true;
                     }
                 }
                 WorkerMessage::Verifying(idx) => {
@@ -1412,10 +1661,6 @@ impl App {
                         self.queue.converted_count += 1;
                         self.queue.encoding_progress_done += 1;
                     }
-                    if self.queue.all_completed() {
-                        self.encoding_active = false;
-                        should_finish = true;
-                    }
                 }
                 WorkerMessage::SourceDeleted(idx) => {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
@@ -1428,14 +1673,10 @@ impl App {
                     }
                 }
                 WorkerMessage::Cancelled => {
-                    for job in &mut self.queue.jobs {
-                        if matches!(
-                            job.status,
-                            JobStatus::Pending
-                                | JobStatus::Ready
-                                | JobStatus::Encoding { .. }
-                                | JobStatus::Verifying
-                        ) {
+                    for &index in &self.encoding_session_indices {
+                        if let Some(job) = self.queue.jobs.get_mut(index)
+                            && !job.status.is_terminal()
+                        {
                             job.status = JobStatus::Skipped {
                                 reason: "Cancelled".to_string(),
                             };
@@ -1444,7 +1685,11 @@ impl App {
                         }
                     }
                     self.encoding_active = false;
-                    should_finish = true;
+                    session_finished = true;
+                }
+                WorkerMessage::Finished => {
+                    self.encoding_active = false;
+                    session_finished = true;
                 }
             }
         }
@@ -1452,11 +1697,10 @@ impl App {
         // The worker is gone; close out whatever it left unfinished.
         if worker_gone && self.encoding_active {
             self.progress_receiver = None;
-            for job in &mut self.queue.jobs {
-                if matches!(
-                    job.status,
-                    JobStatus::Pending | JobStatus::Encoding { .. } | JobStatus::Verifying
-                ) {
+            for &index in &self.encoding_session_indices {
+                if let Some(job) = self.queue.jobs.get_mut(index)
+                    && !job.status.is_terminal()
+                {
                     job.status = JobStatus::Error {
                         message: "Encoding stopped unexpectedly".to_string(),
                     };
@@ -1465,26 +1709,31 @@ impl App {
                 }
             }
             self.encoding_active = false;
-            should_finish = true;
+            session_finished = true;
         }
 
         crate::disc::staging::cleanup_finished(&mut self.queue.jobs);
 
-        if should_finish {
-            // A title that finished ripping while this session ran is Ready
-            // but was not in its job list, so it gets a session of its own.
-            // Not after a worker died: that would restart the same failure.
-            let leftovers = !worker_gone
-                && self
-                    .queue
-                    .jobs
-                    .iter()
-                    .any(|job| matches!(job.status, JobStatus::Ready));
-            if leftovers {
+        if session_finished {
+            self.progress_receiver = None;
+            self.encoding_session_indices.clear();
+            if self
+                .queue
+                .jobs
+                .iter()
+                .any(|job| matches!(job.status, JobStatus::Ready))
+            {
                 self.start_encoding();
-            } else if self.disc_receiver.is_none() && self.analysis_receiver.is_none() {
+            } else if self.has_jobs_awaiting_config() {
+                self.navigate_to_queue();
+            } else if self.disc_receiver.is_none()
+                && self.analysis_receiver.is_none()
+                && self.queue.all_completed()
+            {
                 self.queue.end_time = Some(std::time::Instant::now());
                 self.navigate_to_finish();
+            } else {
+                self.navigate_to_queue();
             }
         }
     }
@@ -1494,6 +1743,8 @@ impl App {
         self.encoding_active = false;
         self.selected_files.clear();
         self.progress_receiver = None;
+        self.encoding_session_indices.clear();
+        self.analysis_cancel_flag = Arc::new(AtomicBool::new(false));
         self.navigate_to_home();
     }
 }
@@ -1558,5 +1809,183 @@ fn dv_mode_index(mode: DvMode) -> usize {
     match mode {
         DvMode::KeepDolbyVision => 0,
         DvMode::ToHdr10 => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_disc_work_blocks_the_finish_screen() {
+        let mut app = App::new();
+        let (_tx, rx) = mpsc::channel();
+        app.disc_receiver = Some(rx);
+        app.current_screen = Screen::Queue;
+
+        app.navigate_to_finish();
+
+        assert_eq!(app.current_screen, Screen::Queue);
+    }
+
+    #[test]
+    fn unfinished_jobs_block_the_finish_screen() {
+        let mut app = App::new();
+        app.current_screen = Screen::Queue;
+        app.queue
+            .jobs
+            .push(EncodingJob::new(PathBuf::from("waiting.mkv")));
+
+        app.navigate_to_finish();
+
+        assert_eq!(app.current_screen, Screen::Queue);
+    }
+
+    #[test]
+    fn a_finished_encode_session_leaves_late_titles_in_the_queue() {
+        let mut app = App::new();
+        let mut done = EncodingJob::new(PathBuf::from("done.mkv"));
+        done.status = JobStatus::Done;
+        let mut waiting = EncodingJob::new(PathBuf::from("late-title.mkv"));
+        waiting.status = JobStatus::AwaitingConfig;
+        app.queue.jobs = vec![done, waiting];
+        app.encoding_active = true;
+        app.encoding_session_indices = vec![0];
+        app.current_screen = Screen::Queue;
+        let (tx, rx) = mpsc::channel();
+        tx.send(WorkerMessage::Finished).unwrap();
+        drop(tx);
+        app.progress_receiver = Some(rx);
+
+        app.process_progress_messages();
+
+        assert!(!app.encoding_active);
+        assert_eq!(app.current_screen, Screen::Queue);
+        assert!(matches!(
+            app.queue.jobs[1].status,
+            JobStatus::AwaitingConfig
+        ));
+    }
+
+    #[test]
+    fn cancelling_analysis_preserves_a_concurrent_encode() {
+        let mut app = App::new();
+        let mut encoding = EncodingJob::new(PathBuf::from("encoding.mkv"));
+        encoding.status = JobStatus::Encoding { progress: 25.0 };
+        let mut analyzing = EncodingJob::new(PathBuf::from("analyzing.mkv"));
+        analyzing.status = JobStatus::Analyzing;
+        app.queue.jobs = vec![encoding, analyzing];
+        app.encoding_active = true;
+        let (_tx, rx) = mpsc::channel();
+        app.analysis_receiver = Some(rx);
+
+        app.cancel_analysis();
+
+        assert!(app.encoding_active);
+        assert!(matches!(
+            app.queue.jobs[0].status,
+            JobStatus::Encoding { .. }
+        ));
+        assert!(matches!(
+            app.queue.jobs[1].status,
+            JobStatus::Skipped { .. }
+        ));
+        assert_eq!(app.current_screen, Screen::Queue);
+    }
+
+    #[test]
+    fn reset_starts_with_a_fresh_analysis_token() {
+        let mut app = App::new();
+        app.analysis_cancel_flag.store(true, Ordering::Relaxed);
+
+        app.reset();
+
+        assert!(!app.analysis_cancel_flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn folder_scan_errors_are_not_reported_as_empty_folders() {
+        let mut app = App::new();
+        let (tx, rx) = mpsc::channel();
+        tx.send(Err("permission denied".to_string())).unwrap();
+        app.folder_scan_receiver = Some(rx);
+
+        app.process_folder_scan();
+
+        assert!(
+            app.message
+                .as_deref()
+                .unwrap()
+                .contains("permission denied")
+        );
+        assert_eq!(app.message_kind, MessageKind::Error);
+        assert!(app.queue.jobs.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explorer_lists_symlinked_directories_as_directories() {
+        let root =
+            std::env::temp_dir().join(format!("av1c_explorer_symlink_{}", std::process::id()));
+        let target = root.join("target");
+        let link = root.join("linked");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let mut app = App::new();
+        app.current_dir = root.clone();
+
+        app.refresh_dir_entries();
+
+        assert!(
+            app.dir_entries
+                .iter()
+                .any(|entry| entry.path == link && entry.is_dir)
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_disconnected_cancelled_disc_worker_settles_as_cancelled() {
+        let mut app = App::new();
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        app.disc_receiver = Some(rx);
+        app.disc_state = DiscState::Cancelling;
+        app.current_screen = Screen::Queue;
+        let mut job = EncodingJob::new(PathBuf::from("title.mkv"));
+        job.status = JobStatus::Ripping { progress: 20.0 };
+        app.queue.jobs.push(job);
+
+        app.process_disc_events();
+
+        assert_eq!(app.disc_state, DiscState::Ready);
+        assert!(app.disc_receiver.is_none());
+        assert!(matches!(
+            app.queue.jobs[0].status,
+            JobStatus::Skipped { .. }
+        ));
+    }
+
+    #[test]
+    fn track_confirmation_changes_only_configurable_jobs() {
+        let mut app = App::new();
+        let mut active = EncodingJob::new(PathBuf::from("active.mkv"));
+        active.status = JobStatus::Encoding { progress: 50.0 };
+        let mut waiting = EncodingJob::new(PathBuf::from("waiting.mkv"));
+        waiting.status = JobStatus::AwaitingConfig;
+        app.queue.jobs = vec![active, waiting];
+        app.encoding_active = true;
+
+        app.queue.config_job_index = 0;
+        app.confirm_track_config();
+        assert!(matches!(
+            app.queue.jobs[0].status,
+            JobStatus::Encoding { .. }
+        ));
+
+        app.queue.config_job_index = 1;
+        app.confirm_track_config();
+        assert!(matches!(app.queue.jobs[1].status, JobStatus::Ready));
     }
 }

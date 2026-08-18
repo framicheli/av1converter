@@ -7,6 +7,10 @@
    it is the border, not the fill, that has to carry the 3:1 boundary. */
 
 :root {
+  /* Checkboxes, select popups and scrollbars are drawn by the browser and
+     follow this property, not the custom colours below. */
+  color-scheme: dark;
+
   --bg: #080b10;
   --panel: #111721;
   --track: #1b232f;
@@ -20,6 +24,7 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
+h1, h2, h3 { font-size: inherit; font-weight: inherit; }
 html, body { overflow-x: clip; }
 
 body {
@@ -123,12 +128,16 @@ progress.bar {
   overflow: hidden;
 }
 progress.bar::-webkit-progress-bar { background: var(--track); }
+progress.bar:indeterminate::-webkit-progress-bar {
+  background: repeating-linear-gradient(90deg, var(--track) 0 12px, var(--accent) 12px 16px);
+}
 progress.bar::-webkit-progress-value {
   background: var(--accent);
   border-radius: 0 4px 4px 0;
   transition: width 0.5s linear;
 }
 progress.bar::-moz-progress-bar { background: var(--accent); border-radius: 0 4px 4px 0; }
+progress.bar:indeterminate { background: repeating-linear-gradient(90deg, var(--track) 0 12px, var(--accent) 12px 16px); }
 /* Figures are rewritten once a second. Tabular digits stop the percentages,
    sizes and ETA from jittering as their glyphs change width. */
 .bar-meta, .tile-value, table, .badge, #browser-list .size {
@@ -173,9 +182,13 @@ button {
   cursor: pointer;
   white-space: nowrap;
 }
+/* One accented button per surface, on the action that commits the work.
+   Destructive actions carry their colour at rest, not only on hover. */
+button.primary:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button.danger:not(:disabled) { border-color: var(--bad); color: var(--bad); }
 @media (hover: hover) {
   button:hover { border-color: var(--accent); }
-  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  button.danger:hover { background: var(--track); }
   #browser-list button:hover:not(:disabled) { background: var(--track); }
 }
 button:active:not(:disabled) { transform: translateY(1px); }
@@ -216,10 +229,13 @@ button:disabled { opacity: 0.4; cursor: default; border-color: var(--border); }
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
 table { width: 100%; border-collapse: collapse; background: var(--panel); }
 th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
-th { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-2); font-weight: 500; }
-tbody tr:last-child td { border-bottom: none; }
-td.filecell { max-width: 320px; overflow-wrap: anywhere; }
-td .subline { font-size: 11px; color: var(--ink-2); }
+thead th { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-2); font-weight: 500; }
+/* Row headers are <th scope="row"> carrying the filename. They take none of
+   the uppercase column-label treatment above. */
+#queue-body th { font-weight: 400; color: inherit; }
+tbody tr:last-child td, tbody tr:last-child th { border-bottom: none; }
+.filecell { max-width: 320px; overflow-wrap: anywhere; }
+.subline { font-size: 11px; color: var(--ink-2); }
 .status-detail { margin-top: 4px; max-width: 42ch; color: var(--bad); font-size: 11px; overflow-wrap: anywhere; }
 
 .badge {
@@ -240,7 +256,14 @@ td.grew { color: var(--warn); }
 
 .row-bar { margin-top: 4px; width: 140px; height: 5px; }
 
-.iconbtn { padding: 2px 8px; font-size: 12px; }
+.iconbtn {
+  padding: 2px 8px;
+  font-size: 12px;
+  /* WCAG 2.2 target size (minimum) is 24px. The coarse-pointer block below
+     raises these to 44px. */
+  min-width: 24px;
+  min-height: 24px;
+}
 
 /* ── Settings form ──────────────────────────────────────────────── */
 #settings-form { display: grid; gap: 4px; }
@@ -273,17 +296,27 @@ td.grew { color: var(--warn); }
 .field input:invalid { border-color: var(--bad); }
 .field input:disabled, .field select:disabled { opacity: 0.55; cursor: not-allowed; }
 .field-warning { grid-column: 2; color: var(--warn); font-size: 11px; max-width: 70ch; }
-.field-group {
+fieldset.field-group {
+  border: 0;
+  display: grid;
+  gap: 4px;
   margin-top: 10px;
+}
+fieldset.field-group > legend {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--ink-2);
+  padding: 0 0 4px;
 }
+.field-hint { grid-column: 2; color: var(--ink-2); font-size: 11px; max-width: 70ch; }
+.field-browse { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.field-browse input { flex: 1; min-width: 0; }
+.field-browse button { align-self: stretch; }
 
 @media (max-width: 640px) {
   .field { grid-template-columns: 1fr; gap: 4px; }
-  .field-warning { grid-column: 1; }
+  .field-warning, .field-hint { grid-column: 1; }
 }
 
 /* ── File browser dialog ────────────────────────────────────────── */
@@ -309,6 +342,27 @@ td.grew { color: var(--warn); }
   gap: 2px;
 }
 .browser-head .muted { font-size: 12px; overflow-wrap: anywhere; }
+
+/* Path segments, wrapping across lines on a deep path. Separators are drawn
+   with ::after so they are not part of any button's accessible name. */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; }
+.crumbs .crumb {
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  padding: 1px 4px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.crumbs .crumb + .crumb::after { content: none; }
+.crumbs .crumb:not(:last-child)::after { content: "/"; margin-left: 6px; color: var(--border); }
+.crumbs .crumb[aria-current] { color: var(--ink); opacity: 1; }
+@media (hover: hover) {
+  .crumbs .crumb:not(:disabled):hover { background: var(--track); color: var(--ink); border-color: transparent; }
+}
 
 #browser-list {
   list-style: none;
@@ -352,8 +406,8 @@ td.grew { color: var(--warn); }
   border-top: 1px solid var(--border);
 }
 
-/* ── Track selection dialog ─────────────────────────────────────── */
-#tracks-modal {
+/* ── Track selection and disc dialogs ───────────────────────────── */
+#tracks-modal, #disc-modal {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -362,11 +416,11 @@ td.grew { color: var(--warn); }
   width: min(720px, calc(100% - 40px));
   max-height: 85dvh;
 }
-#tracks-modal[open] {
+#tracks-modal[open], #disc-modal[open] {
   display: flex;
   flex-direction: column;
 }
-#tracks-modal::backdrop { background: rgba(0, 0, 0, 0.6); }
+#tracks-modal::backdrop, #disc-modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 
 .modal-head, .modal-foot {
   display: flex;
@@ -375,7 +429,11 @@ td.grew { color: var(--warn); }
   padding: 12px 16px;
 }
 .modal-head { border-bottom: 1px solid var(--border); font-weight: 600; }
-.modal-head span:first-child { overflow-wrap: anywhere; flex: 1; }
+.modal-head > h2 { overflow-wrap: anywhere; flex: 1; }
+/* Filename sits beside the task name in the dialog heading. */
+#tracks-filename { font-weight: 400; }
+/* Takes a full row of the wrapping footer, below the checkbox it describes. */
+#tracks-apply-hint { flex-basis: 100%; }
 .modal-foot { border-top: 1px solid var(--border); font-size: 12px; flex-wrap: wrap; }
 .apply-remaining { display: flex; align-items: center; gap: 6px; }
 .modal-body { overflow-y: auto; padding: 8px 16px 16px; }
@@ -419,7 +477,6 @@ td.grew { color: var(--warn); }
 .track-target { font-size: 11px; color: var(--accent); white-space: nowrap; }
 
 /* ── Disc import ────────────────────────────────────────────────── */
-.track-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .disc-drive {
   display: block;
   width: 100%;
@@ -457,19 +514,18 @@ td.grew { color: var(--warn); }
   .browser-foot .spacer { flex-basis: 100%; }
   .browser-foot button { flex: 1; }
 
-  #queue-table th:last-child,
-  #queue-body td:last-child {
+  /* The filename column stays in view while the rest of the row scrolls.
+     overflow-wrap:anywhere leaves a one-character min-content width, which the
+     auto table layout shrinks to; min-width holds the column open. */
+  #queue-table th:first-child,
+  #queue-body th:first-child {
     position: sticky;
-    right: 0;
-    min-width: 48px;
+    left: 0;
+    z-index: 1;
+    min-width: 11rem;
+    max-width: 45vw;
     background: var(--panel);
-  }
-  #queue-table th:nth-last-child(2),
-  #queue-body td:nth-last-child(2) {
-    position: sticky;
-    right: 48px;
-    background: var(--panel);
-    box-shadow: -1px 0 var(--border);
+    box-shadow: 1px 0 var(--border);
   }
 }
 

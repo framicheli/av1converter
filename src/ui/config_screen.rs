@@ -1,3 +1,4 @@
+use super::common::message_color;
 use crate::app::App;
 use crate::config::{AppConfig, AudioMode, Encoder, EncodingPreset, QualityPreset};
 use crate::i18n::{Msg, t};
@@ -79,21 +80,6 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         field: ConfigField::Encoder,
     },
     ConfigItem {
-        label: Msg::CfgVmafEnabled,
-        kind: ConfigItemKind::Toggle,
-        field: ConfigField::VmafEnabled,
-    },
-    ConfigItem {
-        label: Msg::CfgVmafThreshold,
-        kind: ConfigItemKind::Numeric,
-        field: ConfigField::VmafThreshold,
-    },
-    ConfigItem {
-        label: Msg::CfgDeleteSource,
-        kind: ConfigItemKind::Toggle,
-        field: ConfigField::DeleteSource,
-    },
-    ConfigItem {
         label: Msg::CfgSvtPreset,
         kind: ConfigItemKind::Numeric,
         field: ConfigField::SvtPreset,
@@ -107,6 +93,21 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         label: Msg::CfgQualityPreset,
         kind: ConfigItemKind::Cycle,
         field: ConfigField::QualityPreset,
+    },
+    ConfigItem {
+        label: Msg::CfgVmafEnabled,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VmafEnabled,
+    },
+    ConfigItem {
+        label: Msg::CfgVmafThreshold,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::VmafThreshold,
+    },
+    ConfigItem {
+        label: Msg::CfgDeleteSource,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::DeleteSource,
     },
     ConfigItem {
         label: Msg::CfgRfSd,
@@ -420,6 +421,8 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
         app.config_selected,
         app.config_edit_buffer.is_some(),
         app.config_edit_buffer.as_deref().unwrap_or(""),
+        app.config_edit_cursor,
+        chunks[1].width.saturating_sub(2) as usize,
     );
 
     // Use a ListState to handle scrolling automatically
@@ -431,64 +434,67 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(format!(
-                    " {} ({}) ",
-                    t(lang, Msg::Settings),
-                    AppConfig::config_path().display()
-                )),
+                .title(if app.config_is_dirty() {
+                    format!(
+                        " {} · {} ",
+                        t(lang, Msg::Settings),
+                        t(lang, Msg::UnsavedChanges)
+                    )
+                } else {
+                    format!(" {} ", t(lang, Msg::Settings))
+                }),
         )
         .highlight_style(Style::default());
 
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 
-    // Status bar: show save confirmation when present, otherwise show help
-    if let Some(ref msg) = app.message {
-        let status = Paragraph::new(msg.as_str())
-            .style(
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::NONE));
-        f.render_widget(status, chunks[2]);
-    } else if let Some(hint) = selected_config_hint(app) {
-        let warning = Paragraph::new(t(lang, hint))
-            .style(Style::default().fg(Color::Yellow))
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true });
-        f.render_widget(warning, chunks[2]);
+    let help_text = if app.config_edit_buffer.is_some() {
+        Line::from(vec![
+            Span::styled("←→", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Confirm))),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}", t(lang, Msg::Cancel))),
+        ])
     } else {
-        let help_text = if app.config_edit_buffer.is_some() {
-            Line::from(vec![
-                Span::styled("Enter", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}  ", t(lang, Msg::Confirm))),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}", t(lang, Msg::Cancel))),
-            ])
-        } else {
-            Line::from(vec![
-                Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
-                Span::styled("←→", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}  ", t(lang, Msg::Adjust))),
-                Span::styled("Enter", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}  ", t(lang, Msg::EditText))),
-                Span::styled("s", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}  ", t(lang, Msg::Save))),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}  ", t(lang, Msg::Back))),
-                Span::styled("q", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}", t(lang, Msg::Quit))),
-            ])
-        };
-        let help = Paragraph::new(help_text)
-            .alignment(Alignment::Center)
-            .block(Block::default().borders(Borders::NONE))
-            .wrap(Wrap { trim: true });
-        f.render_widget(help, chunks[2]);
+        Line::from(vec![
+            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+            Span::styled("←→", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Adjust))),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::EditText))),
+            Span::styled("s", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Save))),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
+            Span::styled("q", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
+        ])
+    };
+
+    let mut footer = Vec::new();
+    if let Some(ref msg) = app.message {
+        footer.push(Line::from(Span::styled(
+            msg.clone(),
+            Style::default()
+                .fg(message_color(app.message_kind))
+                .add_modifier(Modifier::BOLD),
+        )));
+    } else if let Some(hint) = selected_config_hint(app) {
+        footer.push(Line::from(Span::styled(
+            t(lang, hint),
+            Style::default().fg(Color::Yellow),
+        )));
     }
+    footer.push(help_text);
+    f.render_widget(
+        Paragraph::new(footer)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        chunks[2],
+    );
 }
 
 /// Yellow footer for rows that need a warning rather than the key help.
@@ -508,6 +514,8 @@ fn build_config_items(
     selected: usize,
     editing: bool,
     input_buffer: &str,
+    input_cursor: usize,
+    row_width: usize,
 ) -> Vec<ListItem<'static>> {
     visible_config_items(config)
         .iter()
@@ -516,18 +524,21 @@ fn build_config_items(
             let is_selected = i == selected;
             let is_text = item.kind == ConfigItemKind::Text;
 
-            // While editing, show the live buffer with a text cursor
-            let display_value = if is_selected && editing && is_text {
-                format!("{input_buffer}|")
-            } else {
-                get_config_value(config, i)
-            };
-
-            // Prompt the user how to open the editor for text fields
+            let prefix = if is_selected { "> " } else { "  " };
+            let label = format!("{}{}: ", prefix, t(config.language, item.label));
             let hint = if is_text && is_selected && !editing {
                 t(config.language, Msg::EnterToEdit)
             } else {
                 ""
+            };
+
+            let display_value = if is_selected && editing && is_text {
+                let value_width = row_width
+                    .saturating_sub(Line::raw(&label).width())
+                    .saturating_sub(Line::raw(hint).width());
+                edit_display(item.field, input_buffer, input_cursor, value_width)
+            } else {
+                get_config_value(config, i)
             };
 
             let label_style = if is_selected {
@@ -545,15 +556,125 @@ fn build_config_items(
                 Style::default().fg(Color::DarkGray)
             };
 
-            let prefix = if is_selected { "> " } else { "  " };
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{}{}: ", prefix, t(config.language, item.label)),
-                    label_style,
-                ),
+            let row = Line::from(vec![
+                Span::styled(label, label_style),
                 Span::styled(display_value, value_style),
                 Span::styled(hint.to_string(), Style::default().fg(Color::DarkGray)),
-            ]))
+            ]);
+            let mut lines = Vec::new();
+            if let Some(group) = config_group(item.field) {
+                lines.push(Line::from(Span::styled(
+                    t(config.language, group),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+            lines.push(row);
+            ListItem::new(lines)
         })
         .collect()
+}
+
+fn edit_display(field: ConfigField, value: &str, cursor: usize, max_width: usize) -> String {
+    if max_width < 2 {
+        return if max_width == 0 { "" } else { "|" }.to_string();
+    }
+    let mut characters: Vec<char> = if field == ConfigField::DaemonAuthToken {
+        value.chars().map(|_| '•').collect()
+    } else {
+        value.chars().collect()
+    };
+    let cursor = cursor.min(characters.len());
+    characters.insert(cursor, '|');
+    let full: String = characters.iter().collect();
+    if Line::raw(&full).width() <= max_width {
+        return full;
+    }
+
+    let mut start = 0;
+    while start < cursor {
+        let prefix_width = usize::from(start > 0);
+        let visible: String = characters[start..=cursor].iter().collect();
+        if prefix_width + Line::raw(&visible).width() <= max_width {
+            break;
+        }
+        start += 1;
+    }
+
+    let mut display = if start > 0 {
+        "…".to_string()
+    } else {
+        String::new()
+    };
+    for (index, character) in characters.iter().enumerate().skip(start) {
+        let more = index + 1 < characters.len();
+        let candidate = format!("{display}{character}{}", if more { "…" } else { "" });
+        if Line::raw(&candidate).width() > max_width {
+            if more && Line::raw(format!("{display}…")).width() <= max_width {
+                display.push('…');
+            }
+            break;
+        }
+        display.push(*character);
+    }
+    display
+}
+
+fn config_group(field: ConfigField) -> Option<Msg> {
+    match field {
+        ConfigField::Language => Some(Msg::WebGroupGeneral),
+        ConfigField::SvtPreset | ConfigField::NvencPreset => Some(Msg::WebGroupPerformance),
+        ConfigField::QualityPreset => Some(Msg::WebGroupQuality),
+        ConfigField::RfSd => Some(Msg::WebGroupRateFactors),
+        ConfigField::OutputSuffix => Some(Msg::WebGroupOutput),
+        ConfigField::AudioLanguages => Some(Msg::WebGroupAudio),
+        ConfigField::DaemonEnabled => Some(Msg::WebGroupDaemon),
+        ConfigField::DiscStagingDirectory => Some(Msg::CfgGroupDisc),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_tokens_are_masked_at_rest_and_while_editing() {
+        let mut config = AppConfig::default();
+        config.daemon.auth_token = "secret-value".to_string();
+        let index = visible_config_items(&config)
+            .iter()
+            .position(|item| item.field == ConfigField::DaemonAuthToken)
+            .unwrap();
+
+        assert!(!get_config_value(&config, index).contains("secret-value"));
+        assert!(
+            !edit_display(ConfigField::DaemonAuthToken, "secret-value", 6, 40)
+                .contains("secret-value")
+        );
+    }
+
+    #[test]
+    fn edited_values_keep_the_cursor_inside_the_visible_row() {
+        let display = edit_display(ConfigField::OutputDirectory, "/a/very/long/path", 17, 8);
+        assert!(display.contains('|'));
+        assert!(Line::raw(display).width() <= 8);
+    }
+
+    #[test]
+    fn configuration_rows_have_section_boundaries() {
+        assert_eq!(
+            config_group(ConfigField::Language),
+            Some(Msg::WebGroupGeneral)
+        );
+        assert_eq!(
+            config_group(ConfigField::DaemonEnabled),
+            Some(Msg::WebGroupDaemon)
+        );
+        assert_eq!(
+            config_group(ConfigField::DiscStagingDirectory),
+            Some(Msg::CfgGroupDisc)
+        );
+    }
 }

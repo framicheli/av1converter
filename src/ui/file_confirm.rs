@@ -85,11 +85,11 @@ pub fn render_file_confirm(f: &mut Frame, app: &mut App) {
     // Help
     let help_text = Line::from(vec![
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Proceed))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Proceed))),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Back))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
         Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}", t(lang, Msg::Quit))),
+        Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
     ]);
 
     let help = Paragraph::new(help_text)

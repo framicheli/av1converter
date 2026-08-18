@@ -1,4 +1,4 @@
-use super::common::create_menu_item;
+use super::common::{create_menu_item, message_color};
 use crate::app::App;
 use crate::i18n::{Msg, t};
 use ratatui::{
@@ -39,13 +39,13 @@ pub fn render_home(f: &mut Frame, app: &App) {
     // Notice area, shown only while a message is set
     if let Some(ref msg) = app.message {
         let message = Paragraph::new(msg.as_str())
-            .style(Style::default().fg(Color::Yellow))
+            .style(Style::default().fg(message_color(app.message_kind)))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow))
+                    .border_style(Style::default().fg(message_color(app.message_kind)))
                     .title(format!(" {} ", t(lang, Msg::Notice))),
             );
         f.render_widget(message, chunks[1]);
@@ -90,11 +90,11 @@ pub fn render_home(f: &mut Frame, app: &App) {
     // Help
     let help_text = Line::from(vec![
         Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Select))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Select))),
         Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}", t(lang, Msg::Quit))),
+        Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
     ]);
 
     let help = Paragraph::new(help_text)

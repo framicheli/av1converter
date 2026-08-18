@@ -239,21 +239,21 @@ impl EncodingJob {
         match (self.source_size, self.output_size) {
             (Some(source), Some(output)) if source > 0 => {
                 let saved = source.saturating_sub(output);
-                // u128 keeps the ratio exact; the result is a percentage.
-                let percent = if output > source {
-                    let grown = output - source;
-                    let pct =
-                        u32::try_from(u128::from(grown) * 100 / u128::from(source)).unwrap_or(100);
-                    -f64::from(pct)
-                } else {
-                    let pct =
-                        u32::try_from(u128::from(saved) * 100 / u128::from(source)).unwrap_or(100);
-                    f64::from(pct)
-                };
+                let change = i128::from(source) - i128::from(output);
+                let scaled = change.unsigned_abs().saturating_mul(10_000) / u128::from(source);
+                let magnitude = f64::from(u32::try_from(scaled).unwrap_or(u32::MAX)) / 100.0;
+                let percent = if change < 0 { -magnitude } else { magnitude };
                 Some((saved, percent))
             }
             _ => None,
         }
+    }
+
+    /// Signed byte change, positive for space saved and negative for growth.
+    pub fn size_change(&self) -> Option<i128> {
+        self.source_size
+            .zip(self.output_size)
+            .map(|(source, output)| i128::from(source) - i128::from(output))
     }
 }
 
@@ -261,7 +261,15 @@ impl EncodingJob {
 /// directories and files are tracked by resolved path: link cycles terminate
 /// and a file reachable by two routes is listed once.
 pub fn collect_video_files(dir: &Path, paths: &mut Vec<PathBuf>) {
-    collect_video_files_impl(dir, paths, None);
+    collect_video_files_impl(dir, paths, None, None);
+}
+
+pub fn collect_video_files_cancellable_result(
+    dir: &Path,
+    paths: &mut Vec<PathBuf>,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> std::io::Result<()> {
+    collect_video_files_result(dir, paths, None, Some(cancel))
 }
 
 /// Recursively collect video files without following links outside `root`.
@@ -269,13 +277,27 @@ pub fn collect_video_files_within(dir: &Path, root: &Path, paths: &mut Vec<PathB
     let Ok(root) = root.canonicalize() else {
         return;
     };
-    collect_video_files_impl(dir, paths, Some(&root));
+    collect_video_files_impl(dir, paths, Some(&root), None);
 }
 
-fn collect_video_files_impl(dir: &Path, paths: &mut Vec<PathBuf>, root: Option<&Path>) {
+fn collect_video_files_impl(
+    dir: &Path,
+    paths: &mut Vec<PathBuf>,
+    root: Option<&Path>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) {
+    let _ = collect_video_files_result(dir, paths, root, cancel);
+}
+
+fn collect_video_files_result(
+    dir: &Path,
+    paths: &mut Vec<PathBuf>,
+    root: Option<&Path>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> std::io::Result<()> {
     let mut seen_dirs = HashSet::new();
     let mut seen_files = HashSet::new();
-    collect_video_files_inner(dir, paths, &mut seen_dirs, &mut seen_files, root);
+    collect_video_files_inner(dir, paths, &mut seen_dirs, &mut seen_files, root, cancel)
 }
 
 fn collect_video_files_inner(
@@ -284,24 +306,27 @@ fn collect_video_files_inner(
     seen_dirs: &mut HashSet<PathBuf>,
     seen_files: &mut HashSet<PathBuf>,
     root: Option<&Path>,
-) {
-    let Ok(real_dir) = dir.canonicalize() else {
-        return;
-    };
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> std::io::Result<()> {
+    if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+        return Ok(());
+    }
+    let real_dir = dir.canonicalize()?;
     if root.is_some_and(|root| !real_dir.starts_with(root)) {
-        return;
+        return Ok(());
     }
     if !seen_dirs.insert(real_dir.clone()) {
-        return;
+        return Ok(());
     }
 
-    let Ok(entries) = std::fs::read_dir(real_dir) else {
-        return;
-    };
-    for entry in entries.filter_map(Result::ok) {
+    for entry in std::fs::read_dir(real_dir)? {
+        if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+            return Ok(());
+        }
+        let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_video_files_inner(&path, paths, seen_dirs, seen_files, root);
+            collect_video_files_inner(&path, paths, seen_dirs, seen_files, root, cancel)?;
         } else if is_video_file(&path) {
             let real = path.canonicalize().unwrap_or_else(|_| path.clone());
             if root.is_none_or(|root| real.starts_with(root)) && seen_files.insert(real.clone()) {
@@ -309,6 +334,7 @@ fn collect_video_files_inner(
             }
         }
     }
+    Ok(())
 }
 
 /// Make every generated output distinct from every queued source and output.
@@ -608,5 +634,38 @@ mod tests {
             job.output_path.unwrap(),
             PathBuf::from("/tmp/movie_remux.mkv")
         );
+    }
+
+    #[test]
+    fn cancelled_collection_returns_no_files() {
+        let dir = std::env::temp_dir().join(format!("av1c_cancel_scan_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("clip.mkv"), b"x").unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        let mut found = Vec::new();
+
+        collect_video_files_cancellable_result(&dir, &mut found, &cancel).unwrap();
+
+        assert!(found.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn size_reduction_reports_output_growth() {
+        let mut job = EncodingJob::new(PathBuf::from("movie.mkv"));
+        job.source_size = Some(100);
+        job.output_size = Some(125);
+
+        assert_eq!(job.size_reduction(), Some((0, -25.0)));
+    }
+
+    #[test]
+    fn size_reduction_keeps_fractional_percentages() {
+        let mut job = EncodingJob::new(PathBuf::from("movie.mkv"));
+        job.source_size = Some(10_000);
+        job.output_size = Some(9_950);
+
+        assert_eq!(job.size_reduction(), Some((50, 0.5)));
     }
 }

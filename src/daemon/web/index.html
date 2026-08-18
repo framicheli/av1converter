@@ -8,10 +8,17 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<div id="offline-banner" class="banner hidden" data-i18n="offline" role="alert" aria-live="assertive">Daemon unreachable — retrying…</div>
+<!-- Announcement regions. role and aria-live are fixed here and never
+     reassigned; app.js writes text into one or the other. -->
+<div id="live-polite" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="live-assertive" class="sr-only" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
+<div id="offline-banner" class="banner hidden" data-i18n="offline">Daemon unreachable — retrying…</div>
 
 <header>
   <h1 class="brand">AV1<span>Converter</span></h1>
+  <!-- Live region for phase changes. setText() in app.js writes it only when
+       the text differs, so a poll carrying no change announces nothing. -->
   <span id="status-pill" class="pill" role="status" aria-live="polite" aria-atomic="true">…</span>
   <nav aria-label="Primary" role="tablist">
     <button id="queue-tab" class="tab active" data-tab="queue" data-i18n="tab_queue"
@@ -25,14 +32,15 @@
 <main>
   <!-- ── Queue ─────────────────────────────────────────────────── -->
   <section id="tab-queue" role="tabpanel" aria-labelledby="queue-tab">
+    <h2 class="sr-only" data-i18n="tab_queue">Queue</h2>
     <div class="overview">
       <div class="tiles">
-        <div class="tile"><div class="tile-label" data-i18n="stat_in_queue">In queue</div><div class="tile-value" id="stat-total">0</div></div>
-        <div class="tile"><div class="tile-label" data-i18n="stat_space_saved">Space saved</div><div class="tile-value" id="stat-saved">0 B</div></div>
+        <div class="tile"><h3 class="tile-label" data-i18n="stat_in_queue">In queue</h3><div class="tile-value" id="stat-total">0</div></div>
+        <div class="tile"><h3 class="tile-label" data-i18n="stat_space_saved">Space saved</h3><div class="tile-value" id="stat-saved">0 B</div></div>
       </div>
 
       <div class="panel">
-        <div class="panel-title" id="current-label" data-i18n="current_file">Current file</div>
+        <h3 class="panel-title" id="current-label" data-i18n="current_file">Current file</h3>
         <div id="current-file" class="filename" data-i18n="idle_nothing">Idle — nothing encoding</div>
         <progress class="bar" id="current-progress" aria-labelledby="current-label"
                   max="100" value="0">0%</progress>
@@ -43,7 +51,7 @@
       </div>
 
       <div class="panel">
-        <div class="panel-title" id="overall-label" data-i18n="overall_progress">Overall progress</div>
+        <h3 class="panel-title" id="overall-label" data-i18n="overall_progress">Overall progress</h3>
         <progress class="bar" id="overall-progress" aria-labelledby="overall-label"
                   max="100" value="0">0%</progress>
         <div class="bar-meta">
@@ -64,7 +72,7 @@
     </div>
     <!-- Session totals. Hidden while work remains or until a result exists. -->
     <div id="summary" class="summary hidden">
-      <span class="summary-title" data-i18n="summary_title">Summary</span>
+      <h3 class="summary-title" data-i18n="session_totals">Session totals</h3>
       <span class="summary-figure good">
         <span class="summary-label" data-i18n="summary_converted">Converted</span>
         <span id="summary-converted" class="summary-value">0</span>
@@ -92,7 +100,7 @@
     <div class="table-wrap">
       <table id="queue-table">
         <thead>
-          <tr><th data-i18n="col_file">File</th><th data-i18n="col_source">Source</th><th data-i18n="col_status">Status</th><th data-i18n="col_size">Size</th><th data-i18n="col_saved">Saved</th><th><span class="sr-only" data-i18n="tracks_title">Tracks</span></th><th><span class="sr-only" data-i18n="remove_from_queue">Remove from queue</span></th></tr>
+          <tr><th scope="col" data-i18n="col_file">File</th><th scope="col" data-i18n="col_source">Source</th><th scope="col" data-i18n="col_status">Status</th><th scope="col" data-i18n="col_size">Size</th><th scope="col" data-i18n="col_saved">Saved</th><th scope="col"><span class="sr-only" data-i18n="tracks_title">Tracks</span></th><th scope="col"><span class="sr-only" data-i18n="remove_from_queue">Remove from queue</span></th></tr>
         </thead>
         <tbody id="queue-body"></tbody>
         <tbody id="queue-empty">
@@ -104,9 +112,10 @@
 
   <!-- ── Settings ──────────────────────────────────────────────── -->
   <section id="tab-settings" class="hidden" role="tabpanel" aria-labelledby="settings-tab">
+    <h2 class="sr-only" data-i18n="tab_settings">Settings</h2>
     <form id="settings-form" autocomplete="off"></form>
     <div class="toolbar">
-      <button id="btn-save-settings" type="button" data-i18n="save" disabled>Save settings</button>
+      <button id="btn-save-settings" type="button" class="primary" data-i18n="save_settings" disabled>Save settings</button>
       <button id="btn-reset-settings" type="button" data-i18n="discard_changes" disabled>Discard changes</button>
       <span class="muted" data-i18n="settings_note">Changes apply to the next encode; daemon address/port need a restart.</span>
     </div>
@@ -118,14 +127,16 @@
 <!-- ── Server-side file browser ────────────────────────────────── -->
 <dialog id="browser" aria-labelledby="browser-title">
   <div class="browser-head">
-    <span id="browser-title" data-i18n="select_video_file">Select a video file</span>
-    <span id="browser-path" class="muted"></span>
+    <h2 id="browser-title" data-i18n="select_video_file">Select a video file</h2>
+    <!-- Filled by loadDir() with one button per path segment. -->
+    <div id="browser-path" class="crumbs"></div>
+    <span id="browser-busy" class="muted hidden" data-i18n="loading">Loading…</span>
   </div>
   <ul id="browser-list"></ul>
   <div class="browser-foot">
     <label class="muted"><input type="checkbox" id="browser-hidden"> <span data-i18n="hidden_files">Hidden files</span></label>
     <span class="spacer"></span>
-    <button id="browser-choose" class="hidden" data-i18n="select_this_folder">Add this folder</button>
+    <button id="browser-choose" class="primary hidden" data-i18n="select_this_folder">Add this folder</button>
     <button id="browser-close" data-i18n="cancel">Cancel</button>
   </div>
 </dialog>
@@ -133,25 +144,27 @@
 <!-- ── Per-job track selection ─────────────────────────────────── -->
 <dialog id="tracks-modal" aria-labelledby="tracks-title">
   <div class="modal-head">
-    <span id="tracks-title" data-i18n="tracks_title">Tracks</span>
+    <h2 id="tracks-title"><span data-i18n="tracks_title">Tracks</span><span id="tracks-filename" class="muted"></span></h2>
     <button id="tracks-close" class="iconbtn" data-i18n-aria-label="tracks_close" aria-label="Close track selection">✕</button>
   </div>
   <div id="tracks-body" class="modal-body"></div>
   <div class="modal-foot">
     <span id="tracks-note" class="muted"></span>
     <label id="tracks-apply-wrap" class="apply-remaining hidden">
-      <input type="checkbox" id="tracks-apply-remaining">
+      <input type="checkbox" id="tracks-apply-remaining" aria-describedby="tracks-apply-hint">
       <span data-i18n="apply_remaining">Apply to remaining files</span>
     </label>
+    <span id="tracks-apply-hint" class="muted hidden" data-i18n="apply_remaining_hint">Matches tracks by order — best for files with the same track layout.</span>
     <span class="spacer"></span>
-    <button id="tracks-save" data-i18n="save">Save tracks</button>
+    <button id="tracks-back" data-i18n="back_to_queue">Back to queue</button>
+    <button id="tracks-save" class="primary" data-i18n="confirm_tracks">Confirm tracks</button>
   </div>
 </dialog>
 
 <!-- ── Disc import ─────────────────────────────────────────────── -->
 <dialog id="disc-modal" aria-labelledby="disc-title">
   <div class="modal-head">
-    <span id="disc-title" data-i18n="disc_title">Rip DVD / Blu-ray</span>
+    <h2 id="disc-title" data-i18n="disc_title">Rip DVD / Blu-ray</h2>
     <button id="disc-close" class="iconbtn" data-i18n-aria-label="cancel" aria-label="Cancel">✕</button>
   </div>
   <div id="disc-body" class="modal-body"></div>
@@ -159,11 +172,11 @@
     <span id="disc-note" class="muted"></span>
     <span class="spacer"></span>
     <button id="disc-folder" data-i18n="disc_open_folder">Open a folder…</button>
-    <button id="disc-rip" data-i18n="disc_rip" disabled>Rip</button>
+    <button id="disc-rip" class="primary" data-i18n="disc_rip" disabled>Rip</button>
   </div>
 </dialog>
 
-<div id="toast" class="toast hidden" role="status" aria-live="polite" aria-atomic="true" popover="manual">
+<div id="toast" class="toast hidden" popover="manual">
   <span id="toast-message"></span>
   <button id="toast-close" class="iconbtn" data-i18n-aria-label="dismiss" aria-label="Dismiss">✕</button>
 </div>

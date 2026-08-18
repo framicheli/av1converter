@@ -1,5 +1,5 @@
 use super::common::{get_vmaf_color, translate_reason};
-use crate::app::App;
+use crate::app::{App, DiscState};
 use crate::i18n::{Language, Msg, t};
 use crate::queue::JobStatus;
 use crate::utils::format_duration;
@@ -24,7 +24,16 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
         detail_job.map(|j| &j.status),
         Some(JobStatus::Encoding { .. } | JobStatus::Ripping { .. })
     );
-    let detail_height = if is_live_gauge { 3 } else { 7 };
+    let detail_height = if is_live_gauge {
+        3
+    } else if matches!(
+        detail_job.map(|job| &job.status),
+        Some(JobStatus::Error { .. })
+    ) {
+        (f.area().height / 2).clamp(7, 12)
+    } else {
+        7
+    };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -45,7 +54,12 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
             .queue
             .jobs
             .iter()
-            .filter(|j| !matches!(j.status, JobStatus::Analyzing))
+            .filter(|job| {
+                !matches!(
+                    job.status,
+                    JobStatus::Pending | JobStatus::Ripping { .. } | JobStatus::Analyzing
+                )
+            })
             .count();
         let total = app.queue.jobs.len();
         format!("{} ({analyzed}/{total})", t(lang, Msg::AnalyzingFilesTitle))
@@ -153,6 +167,11 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 .label(label);
             f.render_widget(gauge, chunks[2]);
         } else if let JobStatus::Ripping { progress } = &job.status {
+            let label = if app.disc_state == DiscState::Cancelling {
+                t(lang, Msg::Cancelling)
+            } else {
+                t(lang, Msg::StatusRipping)
+            };
             let gauge = Gauge::default()
                 .block(
                     Block::default()
@@ -162,10 +181,7 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 )
                 .gauge_style(Style::default().fg(Color::Magenta).bg(Color::DarkGray))
                 .ratio(progress.clamp(0.0, 100.0) / 100.0)
-                .label(format!(
-                    "{progress:.1}%  |  {}",
-                    t(lang, Msg::StatusRipping)
-                ));
+                .label(format!("{progress:.1}%  |  {label}"));
             f.render_widget(gauge, chunks[2]);
         } else {
             let status_text = match &job.status {
@@ -194,6 +210,7 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
             let status = Paragraph::new(status_text)
                 .alignment(Alignment::Center)
                 .wrap(Wrap { trim: true })
+                .scroll((app.detail_scroll, 0))
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
@@ -205,25 +222,45 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
     }
 
     // Help
-    let help_text = if app.analysis_receiver.is_some() || app.encoding_active {
-        Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::Cancel))),
-            Span::styled("q", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}", t(lang, Msg::Quit))),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::Continue))),
-            Span::styled("q", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}", t(lang, Msg::Quit))),
-        ])
-    };
+    let mut help_spans = vec![
+        Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+    ];
+    if app.has_jobs_awaiting_config() {
+        help_spans.push(Span::styled("Enter", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::WebConfirmTracks)
+        )));
+    } else if !app.work_active() {
+        help_spans.push(Span::styled("Enter", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Continue))));
+    }
+    if app.disc_state == DiscState::Cancelling {
+        help_spans.push(Span::styled(
+            t(lang, Msg::Cancelling),
+            Style::default().fg(Color::Yellow),
+        ));
+        help_spans.push(Span::raw("  "));
+    } else if app.work_active() {
+        help_spans.push(Span::styled("Esc", Style::default().fg(Color::Yellow)));
+        let cancel_action = if app.disc_operation_active() {
+            Msg::CancelDiscTitle
+        } else if app.analysis_receiver.is_some() {
+            Msg::CancelAnalysisTitle
+        } else {
+            Msg::CancelEncodingTitle
+        };
+        help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, cancel_action))));
+    }
+    help_spans.push(Span::styled(
+        "PgUp/PgDn",
+        Style::default().fg(Color::Yellow),
+    ));
+    help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Status))));
+    help_spans.push(Span::styled("q", Style::default().fg(Color::Yellow)));
+    help_spans.push(Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))));
+    let help_text = Line::from(help_spans);
 
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)

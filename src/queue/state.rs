@@ -22,8 +22,8 @@ pub struct QueueState {
     pub skipped_count: usize,
     pub error_count: usize,
     pub encoding_progress_done: usize,
-    /// Bytes saved by finished jobs that are no longer in `jobs`.
-    pub cleared_saved_bytes: u64,
+    /// Net byte change from finished jobs no longer in `jobs`.
+    pub cleared_saved_bytes: i128,
 }
 
 impl QueueState {
@@ -110,16 +110,20 @@ impl QueueState {
         })
     }
 
-    /// Get total space saved across all completed jobs, including jobs that
-    /// have since been removed from the queue.
-    pub fn total_space_saved(&self) -> (u64, String) {
-        let listed: u64 = self
-            .jobs
-            .iter()
-            .filter_map(|j| j.size_reduction().map(|(saved, _)| saved))
-            .sum();
+    /// Net byte change across completed jobs, including removed jobs.
+    pub fn total_space_saved(&self) -> (i128, String) {
+        let listed: i128 = self.jobs.iter().filter_map(EncodingJob::size_change).sum();
         let total_saved = listed.saturating_add(self.cleared_saved_bytes);
-        (total_saved, format_file_size(total_saved))
+        let magnitude = u64::try_from(total_saved.unsigned_abs()).unwrap_or(u64::MAX);
+        let human = format_file_size(magnitude);
+        (
+            total_saved,
+            if total_saved < 0 {
+                format!("-{human}")
+            } else {
+                human
+            },
+        )
     }
 
     /// Reset the queue for a new session
@@ -365,6 +369,15 @@ mod tests {
         state.total_jobs_to_encode = 3;
         state.encoding_progress_done = 3;
         assert!((state.overall_progress() - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn total_space_accounts_for_outputs_that_grew() {
+        let mut state = QueueState::new();
+        state.jobs.push(finished_job(100, 40));
+        state.jobs.push(finished_job(100, 180));
+
+        assert_eq!(state.total_space_saved(), (-20, "-20 B".to_string()));
     }
 
     /// A scratch directory of this test's own, cleaned up on the way out.

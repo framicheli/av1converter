@@ -20,11 +20,15 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
             format!(" {} ", t(lang, Msg::CancelEncodingTitle)),
             t(lang, Msg::CancelEncodingPrompt),
         ),
+        ConfirmAction::CancelDisc => (
+            format!(" {} ", t(lang, Msg::CancelDiscTitle)),
+            t(lang, Msg::CancelDiscPrompt),
+        ),
         ConfirmAction::ExitApp => (
             format!(" {} ", t(lang, Msg::ExitAppTitle)),
             t(
                 lang,
-                if app.encoding_active || app.analysis_receiver.is_some() {
+                if app.work_active() {
                     Msg::ExitAppActivePrompt
                 } else {
                     Msg::ExitAppPrompt
@@ -46,7 +50,11 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
     };
 
     // Calculate dialog area (wide/tall enough for longer, wrapped prompts)
-    let area = centered_rect(70, 40, f.area());
+    let area = if f.area().width < 50 || f.area().height < 12 {
+        f.area()
+    } else {
+        centered_rect(70, 40, f.area())
+    };
 
     // Clear area behind the dialog
     f.render_widget(Clear, area);
@@ -73,6 +81,23 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
                 .add_modifier(Modifier::BOLD),
         );
     f.render_widget(block, area);
+
+    if area.height < 7 {
+        let controls = Line::from(vec![
+            Span::styled("y", Style::default().fg(Color::Red)),
+            Span::raw(format!(" {}  ", t(lang, Msg::Yes))),
+            Span::styled("n", Style::default().fg(Color::Green)),
+            Span::raw(format!(" {}", t(lang, Msg::No))),
+        ]);
+        f.render_widget(
+            Paragraph::new(controls).alignment(Alignment::Center),
+            area.inner(ratatui::layout::Margin {
+                horizontal: 1,
+                vertical: 1,
+            }),
+        );
+        return;
+    }
 
     // Message
     let msg = Paragraph::new(message)

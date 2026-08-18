@@ -194,7 +194,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         while Instant::now() < deadline {
             match worker_rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(msg) => {
-                    let done = matches!(msg, WorkerMessage::Cancelled);
+                    let done = matches!(msg, WorkerMessage::Cancelled | WorkerMessage::Finished);
                     apply_worker_message(&shared, msg);
                     if done {
                         break;
@@ -721,6 +721,7 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
                 }
             }
         }
+        WorkerMessage::Finished => {}
     }
 
     // Session over when every job in it reached a terminal state

@@ -91,9 +91,9 @@ impl DaemonQueue {
         };
         self.ids.remove(index);
         let job = self.state.jobs.remove(index);
-        // A job leaving the queue hands its savings to the running total.
-        if let Some((saved, _)) = job.size_reduction() {
-            self.state.cleared_saved_bytes = self.state.cleared_saved_bytes.saturating_add(saved);
+        // Removed jobs keep their size change in the running total.
+        if let Some(change) = job.size_change() {
+            self.state.cleared_saved_bytes = self.state.cleared_saved_bytes.saturating_add(change);
         }
         // Keep the "currently encoding" pointer aimed at the same job
         if index < self.state.current_job_index && self.state.current_job_index > 0 {

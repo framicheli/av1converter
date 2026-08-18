@@ -17,22 +17,31 @@ pub fn status(shared: &SharedState) -> Value {
     let state = lock(shared);
     let queue = &state.queue.state;
 
-    let current = queue
-        .jobs
-        .get(queue.current_job_index)
-        .filter(|job| {
-            matches!(
-                job.status,
-                JobStatus::Encoding { .. } | JobStatus::Verifying
-            )
+    // Current is the encoding index while it holds an encode or a verify, and
+    // otherwise the first ripping or analyzing job in the queue.
+    let current_index = Some(queue.current_job_index)
+        .filter(|i| {
+            queue.jobs.get(*i).is_some_and(|job| {
+                matches!(
+                    job.status,
+                    JobStatus::Encoding { .. } | JobStatus::Verifying
+                )
+            })
         })
-        .map(|job| {
+        .or_else(|| {
+            queue.jobs.iter().position(|job| {
+                matches!(job.status, JobStatus::Ripping { .. } | JobStatus::Analyzing)
+            })
+        });
+    let current = current_index.and_then(|i| {
+        queue.jobs.get(i).map(|job| {
             json!({
-                "id": state.queue.ids().get(queue.current_job_index),
+                "id": state.queue.ids().get(i),
                 "filename": job.filename(),
                 "status": status_json(&job.status),
             })
-        });
+        })
+    });
 
     let ready = queue
         .jobs
@@ -1117,11 +1126,45 @@ fn status_json(status: &JobStatus) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{RecursiveScanGuard, queue_add, within_root};
+    use super::{RecursiveScanGuard, queue_add, status, within_root};
     use crate::config::{AppConfig, DaemonConfig};
     use crate::daemon::state::{DaemonState, lock};
-    use std::path::Path;
+    use crate::queue::{EncodingJob, JobStatus};
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
+
+    /// Ripping, analyzing, verifying and encoding each report as the current job.
+    #[test]
+    fn every_working_phase_is_reported_as_current() {
+        for (phase, kind) in [
+            (JobStatus::Ripping { progress: 12.5 }, "ripping"),
+            (JobStatus::Analyzing, "analyzing"),
+            (JobStatus::Verifying, "verifying"),
+            (JobStatus::Encoding { progress: 40.0 }, "encoding"),
+        ] {
+            let mut state = DaemonState::new(AppConfig::default());
+            let mut job = EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
+            job.status = phase;
+            state.queue.push(job);
+            let shared = Arc::new(Mutex::new(state));
+
+            let current = &status(&shared)["current"];
+            assert_eq!(current["filename"], "movie.mkv", "for {kind}");
+            assert_eq!(current["status"]["kind"], kind);
+        }
+    }
+
+    /// A queue holding only non-working states reports no current job.
+    #[test]
+    fn a_waiting_queue_has_no_current_job() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut job = EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
+        job.status = JobStatus::AwaitingConfig;
+        state.queue.push(job);
+        let shared = Arc::new(Mutex::new(state));
+
+        assert!(status(&shared)["current"].is_null());
+    }
 
     /// An empty root allows everything; a configured one confines to itself.
     #[test]

@@ -18,12 +18,20 @@ function fmtDuration(secs) {
   return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
+// Writes into one of the two live regions in index.html. Their role and
+// aria-live are fixed in the markup and never reassigned.
+function announce(message, isError) {
+  const region = $(isError ? "live-assertive" : "live-polite");
+  // A repeat of the current text gets a trailing space, so the region content
+  // differs and the announcement fires again.
+  region.textContent = region.textContent === message ? `${message} ` : message;
+}
+
 function toast(message, isError) {
   const el = $("toast");
   $("toast-message").textContent = message;
   el.classList.toggle("error", Boolean(isError));
-  el.setAttribute("role", isError ? "alert" : "status");
-  el.setAttribute("aria-live", isError ? "assertive" : "polite");
+  announce(message, isError);
   el.classList.remove("hidden");
   // Popovers share the browser's top layer with dialogs. Reopening moves an
   // existing toast above a modal, so failures are never hidden by its backdrop.
@@ -157,44 +165,99 @@ function setProgress(name, pct) {
   progress.textContent = `${Math.round(pct)}%`;
 }
 
+// A progress element without a value attribute is indeterminate.
+function setIndeterminate(name) {
+  const progress = $(`${name}-progress`);
+  progress.removeAttribute("value");
+  progress.textContent = "";
+}
+
+// Label shown beside the current-file bar, one per working status.
+const PHASE_KEY = {
+  ripping: "status_ripping", analyzing: "badge_analyzing",
+  encoding: "status_encoding", verifying: "verifying_vmaf",
+};
+
+// Poll updates leave unchanged text nodes intact.
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
+}
+
+// Offline mode keeps cached values visible and disables server mutations.
+let offline = false;
+function setOffline(next) {
+  if (offline === next) return;
+  offline = next;
+  $("offline-banner").classList.toggle("hidden", !next);
+  if (next) $("queue-table").setAttribute("aria-describedby", "offline-banner");
+  else $("queue-table").removeAttribute("aria-describedby");
+  for (const button of document.querySelectorAll("#tab-queue .toolbar button")) {
+    button.disabled = next;
+  }
+  updateClearFinished();
+  updateSettingsActions();
+  for (const row of rows.values()) row.applyDisabled();
+  updateModalActions();
+  if (next) announce($("offline-banner").textContent, true);
+}
+
+function updateModalActions() {
+  $("browser-list").inert = offline;
+  $("browser-hidden").disabled = offline;
+  $("tracks-body").inert = offline;
+  $("tracks-apply-remaining").disabled = offline || !trackEditor?.editable;
+  $("tracks-save").disabled = offline || !trackEditor?.editable || Boolean(trackEditor?.saving);
+  $("disc-body").inert = offline;
+  updateBrowserChoose();
+  updateDiscFooter();
+}
+
 let pollInFlight = false;
 async function poll() {
   if (pollInFlight) return;
   pollInFlight = true;
   try {
     const s = await api("/api/status");
-    $("offline-banner").classList.add("hidden");
+    setOffline(false);
 
     const pill = $("status-pill");
-    const statusKey = s.encoding_active ? "status_encoding"
+    const ripping = s.current?.status.kind === "ripping";
+    const statusKey = ripping ? "status_ripping"
+      : s.encoding_active ? "status_encoding"
       : s.counts.analyzing > 0 ? "badge_analyzing"
-      : s.counts.awaiting_config > 0 ? "badge_awaiting_config"
+      // AwaitingConfig requires track confirmation before queue processing continues.
+      : s.counts.awaiting_config > 0 ? "confirm_tracks"
       : s.counts.ready > 0 ? "badge_ready"
       : s.counts.pending > 0 ? "badge_pending"
       : "status_idle";
-    pill.textContent = tr(statusKey);
+    setText(pill, tr(statusKey));
     pill.className = `pill ${s.counts.active > 0 ? "encoding" : ""}`;
 
     if (s.current) {
-      $("current-file").textContent = s.current.filename;
       const st = s.current.status;
-      const pct = st.kind === "encoding" ? st.progress : 100;
-      setProgress("current", pct);
-      $("current-pct").textContent = st.kind === "encoding" ? `${st.progress.toFixed(1)}%` : "";
-      $("current-stage").textContent = st.kind === "verifying" ? tr("verifying_vmaf") : "";
+      setText($("current-file"), s.current.filename);
+      // Encoding and ripping carry a percentage; the other phases do not.
+      if (st.kind === "encoding" || st.kind === "ripping") {
+        setProgress("current", st.progress);
+        setText($("current-pct"), `${st.progress.toFixed(1)}%`);
+      } else {
+        setIndeterminate("current");
+        setText($("current-pct"), "");
+      }
+      setText($("current-stage"), tr(PHASE_KEY[st.kind] ?? ""));
     } else {
-      $("current-file").textContent = tr("idle_nothing");
+      setText($("current-file"), tr("idle_nothing"));
       setProgress("current", 0);
-      $("current-pct").textContent = "";
-      $("current-stage").textContent = "";
+      setText($("current-pct"), "");
+      setText($("current-stage"), "");
     }
 
     setProgress("overall", s.overall_progress);
-    $("overall-pct").textContent = `${s.overall_progress.toFixed(1)}%`;
-    $("eta").textContent = s.eta_secs != null ? `${tr("eta")} ${fmtDuration(s.eta_secs)}` : "";
+    setText($("overall-pct"), `${s.overall_progress.toFixed(1)}%`);
+    setText($("eta"), s.eta_secs != null ? `${tr("eta")} ${fmtDuration(s.eta_secs)}` : "");
 
-    $("stat-total").textContent = s.counts.total;
-    $("stat-saved").textContent = s.total_space_saved.human;
+    setText($("stat-total"), String(s.counts.total));
+    setText($("stat-saved"), s.total_space_saved.human);
 
     $("btn-cancel").disabled = !s.encoding_active;
 
@@ -205,11 +268,13 @@ async function poll() {
   } catch (e) {
     // A refused token is not an unreachable daemon. Reporting both as
     // "unreachable" sent people hunting for a process that was answering fine.
-    const banner = $("offline-banner");
-    banner.textContent = e.unauthorized
-      ? e.message
-      : tr("offline", "Daemon unreachable — retrying…");
-    banner.classList.remove("hidden");
+    // Runs once per second for the length of an outage. The text is set before
+    // setOffline() reads it for the announcement.
+    setText(
+      $("offline-banner"),
+      e.unauthorized ? e.message : tr("offline", "Daemon unreachable — retrying…"),
+    );
+    setOffline(true);
   } finally {
     pollInFlight = false;
   }
@@ -268,7 +333,8 @@ function updateSummary(s) {
   // already the page's aria-live region.
   if (wasActive && finished) {
     toast(
-      `${tr("summary_complete")} ${tr("summary_converted")}: ${converted}, ` +
+      `${tr("summary_complete")} ${tr("session_totals")} — ` +
+      `${tr("summary_converted")}: ${converted}, ` +
       `${tr("badge_skipped")}: ${skipped}, ${tr("summary_errors")}: ${errors}`,
       errors > 0,
     );
@@ -302,7 +368,7 @@ document.addEventListener("visibilitychange", () => {
 // ── Queue table ─────────────────────────────────────────────────────
 
 const BADGE_CLASS = {
-  pending: "", analyzing: "analyzing", awaiting_config: "", ready: "",
+  pending: "", analyzing: "analyzing", awaiting_config: "warn", ready: "",
   ripping: "encoding", encoding: "encoding", verifying: "verifying",
   done: "done", done_vmaf: "done", done_vmaf_failed: "warn",
   skipped: "", error: "error", quality_warning: "warn",
@@ -312,7 +378,7 @@ const BADGE_CLASS = {
 // invent English from the wire value.
 const BADGE_KEY = {
   pending: "badge_pending", analyzing: "badge_analyzing",
-  awaiting_config: "badge_awaiting_config", ready: "badge_ready",
+  awaiting_config: "confirm_tracks", ready: "badge_ready",
   verifying: "badge_verifying", done: "badge_done",
   skipped: "badge_skipped", error: "badge_error",
 };
@@ -339,8 +405,10 @@ let openingTracks = false;
 function createRow(job) {
   const row = document.createElement("tr");
 
-  const file = row.insertCell();
+  const file = document.createElement("th");
+  file.scope = "row";
   file.className = "filecell";
+  row.appendChild(file);
   const name = document.createElement("div");
   const sub = document.createElement("div");
   sub.className = "subline";
@@ -357,7 +425,11 @@ function createRow(job) {
   const detail = document.createElement("div");
   detail.id = `status-detail-${job.id}`;
   detail.className = "status-detail hidden";
-  statusCell.append(badge, bar, detail);
+  const confirm = document.createElement("button");
+  confirm.className = "badge warn hidden";
+  confirm.textContent = tr("confirm_tracks");
+  confirm.addEventListener("click", () => openTracks(job.id));
+  statusCell.append(badge, confirm, bar, detail);
 
   const size = row.insertCell();
   const saved = row.insertCell();
@@ -390,7 +462,15 @@ function createRow(job) {
   });
   row.insertCell().appendChild(remove);
 
-  return { tr: row, name, sub, source, badge, detail, bar, size, saved, tracks, remove };
+  const entry = { tr: row, name, sub, source, badge, confirm, detail, bar, size, saved, tracks, remove, kind: job.status.kind };
+  entry.applyDisabled = () => {
+    entry.remove.disabled = offline
+      || entry.remove.getAttribute("aria-busy") === "true"
+      || ["encoding", "verifying", "ripping"].includes(entry.kind);
+    entry.tracks.disabled = offline || !["ready", "awaiting_config"].includes(entry.kind);
+    entry.confirm.disabled = offline;
+  };
+  return entry;
 }
 
 function updateRow(row, job) {
@@ -403,6 +483,11 @@ function updateRow(row, job) {
 
   row.badge.className = `badge ${BADGE_CLASS[job.status.kind] || ""}`;
   row.badge.textContent = badgeText(job.status);
+  const awaitingTracks = job.status.kind === "awaiting_config";
+  row.badge.classList.toggle("hidden", awaitingTracks);
+  row.confirm.classList.toggle("hidden", !awaitingTracks);
+  row.confirm.textContent = tr("confirm_tracks");
+  row.confirm.setAttribute("aria-label", `${tr("confirm_tracks")}: ${job.filename}`);
   const detail = job.status.kind === "error" ? job.status.message
     : job.status.kind === "done_vmaf_failed" ? job.status.reason
     : "";
@@ -420,26 +505,27 @@ function updateRow(row, job) {
     ? `${fmtBytes(job.source_size)} → ${fmtBytes(job.output_size)}`
     : fmtBytes(job.source_size);
 
-  // Negative means the output grew, so show the direction rather than "−0%".
   if (job.saved_percent == null) {
     row.saved.textContent = "";
     row.saved.className = "";
   } else {
-    row.saved.textContent = `${job.saved_percent < 0 ? "+" : "−"}${Math.abs(job.saved_percent).toFixed(0)}%`;
+    const percent = Math.round(Math.abs(job.saved_percent));
+    row.saved.textContent = percent === 0
+      ? "0%"
+      : `${job.saved_percent < 0 ? "+" : "−"}${percent}%`;
     row.saved.className = job.saved_percent < 0 ? "grew" : "";
   }
 
-  row.remove.disabled = row.remove.getAttribute("aria-busy") === "true"
-    || ["encoding", "verifying", "ripping"].includes(job.status.kind);
+  row.kind = job.status.kind;
+  row.applyDisabled();
   row.remove.title = tr("remove_from_queue");
   row.remove.setAttribute("aria-label", `${tr("remove_from_queue")}: ${job.filename}`);
   row.tracks.textContent = tr("tracks_title");
   row.tracks.title = tr("tracks_hint");
   row.tracks.setAttribute("aria-label", `${tr("tracks_hint")}: ${job.filename}`);
   row.bar.setAttribute("aria-label", `${tr("status_encoding")}: ${job.filename}`);
-  // Tracks are only editable before the encode starts; afterwards the
-  // selection is already baked into the running FFmpeg command.
-  row.tracks.disabled = !["ready", "awaiting_config"].includes(job.status.kind);
+  // The Tracks button is the accented action on a row that awaits config.
+  row.tracks.classList.toggle("primary", job.status.kind === "awaiting_config");
 }
 
 let queueRefresh = null;
@@ -448,7 +534,7 @@ let hasFinishedJobs = false;
 $("btn-clear").disabled = true;
 
 function updateClearFinished() {
-  $("btn-clear").disabled = clearingFinished || !hasFinishedJobs;
+  $("btn-clear").disabled = offline || clearingFinished || !hasFinishedJobs;
 }
 
 function refreshQueue() {
@@ -462,7 +548,7 @@ async function refreshQueueNow() {
   try {
     data = await api("/api/queue");
   } catch {
-    return; // offline banner is handled by the status poll
+    return; // the status poll owns the offline banner
   }
   const tbody = $("queue-body");
   $("queue-empty").classList.toggle("hidden", data.jobs.length > 0);
@@ -493,7 +579,7 @@ async function refreshQueueNow() {
   const next = !data.jobs.some((job) => job.status.kind === "analyzing")
     && data.jobs.find((job) =>
       job.status.kind === "awaiting_config" && !promptedTrackJobs.has(job.id));
-  if (next && !openingTracks && !$("tracks-modal").open) {
+  if (next && !openingTracks && !document.querySelector("dialog[open]")) {
     promptedTrackJobs.add(next.id);
     if (!await openTracks(next.id)) promptedTrackJobs.delete(next.id);
   }
@@ -525,15 +611,11 @@ $("btn-clear").addEventListener("click", async () => {
 
 // ── Per-job track selection ─────────────────────────────────────────
 
-// The modal owns its own copy of the selection while it is open. The queue
-// poll keeps running underneath and rewrites rows in place; it must never
-// reach in here and discard choices the user has not saved yet.
+// The modal keeps an editable copy of one job's track selection.
 let trackEditor = null;
 
 $("tracks-close").addEventListener("click", closeTracks);
-// <dialog> gives focus trapping, Esc and an inert background for free. Esc
-// closes without going through closeTracks(), so the editor is discarded on
-// the close event instead — the one place every path passes through.
+$("tracks-back").addEventListener("click", closeTracks);
 $("tracks-modal").addEventListener("close", () => { trackEditor = null; });
 
 function closeTracks() {
@@ -548,26 +630,28 @@ async function openTracks(id) {
   try {
     if (!settingsLoaded) await loadSettings();
     const data = await api(`/api/job/tracks?id=${id}`);
-    trackEditor = {
+    const editor = trackEditor = {
       id,
       audio: data.audio.map((t) => ({ ...t, mode: t.selected ? (t.opus ? "opus" : "copy") : "off" })),
       subtitles: data.subtitles.map((t) => ({ ...t })),
       editable: data.editable,
       remuxOnly: data.remux_only,
-      // null for anything that is not a Dolby Vision source — there is no RPU
-      // to keep, so the choice is not offered at all.
       dv: data.dv,
       dvMode: data.dv ? data.dv.mode : null,
     };
-    $("tracks-title").textContent = data.filename;
-    $("tracks-save").disabled = !data.editable;
+    $("tracks-filename").textContent = ` — ${data.filename}`;
+    $("tracks-save").disabled = offline || !data.editable;
+    $("tracks-save").removeAttribute("aria-busy");
     $("tracks-note").textContent = data.editable
       ? ""
       : tr("tracks_locked");
     $("tracks-apply-remaining").checked = false;
-    $("tracks-apply-remaining").disabled = !data.editable;
+    $("tracks-apply-remaining").disabled = offline || !data.editable;
     $("tracks-apply-wrap").classList.toggle("hidden", data.remaining === 0);
+    // The server maps the selection onto other files by track order.
+    $("tracks-apply-hint").classList.toggle("hidden", data.remaining === 0);
     renderTracks();
+    if (trackEditor !== editor) return false;
     $("tracks-modal").showModal();
     $("tracks-body")
       .querySelector("input:not(:disabled), select:not(:disabled), button:not(:disabled)")
@@ -581,15 +665,14 @@ async function openTracks(id) {
   }
 }
 
-// Opus keeps the source channel layout, so the bitrate is simply the
-// per-channel allowance times the channel count.
+// Track projections use the last settings accepted by the daemon.
 function projectedKbps(track) {
-  const perChannel = config?.audio?.opus_bitrate_per_channel ?? 64;
+  const perChannel = savedConfig?.audio?.opus_bitrate_per_channel ?? 64;
   return (track.channels || 2) * perChannel;
 }
 
 function isAlreadyOpus(track) {
-  return (config?.audio?.skip_already_opus ?? true)
+  return (savedConfig?.audio?.skip_already_opus ?? true)
     && (track.codec || "").toLowerCase() === "opus";
 }
 
@@ -697,7 +780,7 @@ function setTarget(node, track) {
 }
 
 function groupHeading(text, toggle) {
-  const node = document.createElement("div");
+  const node = document.createElement("h3");
   node.className = "track-group";
   const label = document.createElement("span");
   label.textContent = text;
@@ -706,18 +789,17 @@ function groupHeading(text, toggle) {
   return node;
 }
 
-// `allSelected` decides the label and what the press does, so one press always
-// undoes the last one.
-function toggleAllButton(id, allSelected, apply) {
+function toggleAllButton(id, allSelected, apply, options = {}) {
+  const { enabled = trackEditor?.editable ?? true, rerender = renderTracks } = options;
   const button = document.createElement("button");
   button.id = id;
   button.type = "button";
   button.className = "iconbtn";
   button.textContent = allSelected ? tr("clear_all") : tr("select_all");
-  button.disabled = !trackEditor.editable;
+  button.disabled = !enabled;
   button.addEventListener("click", () => {
     apply(!allSelected);
-    renderTracks();
+    rerender();
     $(id).focus();
   });
   return button;
@@ -754,7 +836,6 @@ function remuxRow() {
   box.disabled = !trackEditor.editable;
   box.addEventListener("change", () => {
     trackEditor.remuxOnly = box.checked;
-    // The DV choice only applies to a real encode, so its row changes state.
     renderTracks();
     $("opt-remux").focus();
   });
@@ -768,8 +849,6 @@ function dvRow() {
     const option = document.createElement("option");
     option.value = value;
     option.textContent = text;
-    // Only SVT-AV1 can write the RPU; the server refuses the rest, so the
-    // option is not offered rather than offered and rejected.
     option.disabled = value === "keep" && !dv.can_keep;
     select.appendChild(option);
   }
@@ -794,9 +873,13 @@ function emptyNote(text) {
 
 $("tracks-save").addEventListener("click", async () => {
   if (!trackEditor) return;
+  const editor = trackEditor;
+  if (editor.saving) return;
+  editor.saving = true;
   const save = $("tracks-save");
   save.disabled = true;
-  const { id, audio, subtitles, remuxOnly, dv, dvMode } = trackEditor;
+  save.setAttribute("aria-busy", "true");
+  const { id, audio, subtitles, remuxOnly, dv, dvMode } = editor;
   try {
     const r = await post("/api/job/tracks", {
       id,
@@ -805,23 +888,26 @@ $("tracks-save").addEventListener("click", async () => {
       subtitle_indices: subtitles.filter((t) => t.selected).map((t) => t.index),
       remux_only: remuxOnly,
       apply_to_remaining: $("tracks-apply-remaining").checked,
-      // Omitted entirely for a non-DV source, which the server rejects.
       ...(dv ? { dv_mode: dvMode } : {}),
     });
-    closeTracks();
+    if (trackEditor === editor) closeTracks();
     toast(r.applied > 1
       ? trf("tracks_applied", { n: r.applied })
       : tr("tracks_updated"));
     refreshQueue();
   } catch (e) { toast(e.message, true); }
   finally {
-    if (trackEditor) save.disabled = !trackEditor.editable;
+    editor.saving = false;
+    if (trackEditor === editor) {
+      save.removeAttribute("aria-busy");
+      save.disabled = offline || !editor.editable;
+    }
   }
 });
 
 // ── File browser ────────────────────────────────────────────────────
 
-const browser = { mode: "file", path: "" };
+const browser = { mode: "file", path: "", session: 0 };
 
 // Join a directory and an entry name without doubling the separator at root.
 const joinPath = (dir, name) => (dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`);
@@ -832,18 +918,29 @@ $("btn-add-recursive").addEventListener("click", () => openBrowser("folder_recur
 $("browser-close").addEventListener("click", () => $("browser").close());
 $("browser-hidden").addEventListener("change", () => loadDir(browser.path));
 $("browser-choose").addEventListener("click", () => {
-  if (browser.mode === "disc") scanDiscFolder(browser.path);
+  // Picker mode returns the path to its caller; queue modes act on it here.
+  if (browser.onPick) {
+    const pick = browser.onPick;
+    $("browser").close();
+    pick(browser.path);
+  } else if (browser.mode === "disc") scanDiscFolder(browser.path);
   else addToQueue(browser.path, browser.mode);
+});
+$("browser").addEventListener("close", () => {
+  browser.session += 1;
+  browser.onPick = null;
 });
 
 for (const dialog of document.querySelectorAll("dialog")) {
+  if (dialog.id === "tracks-modal") continue;
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) dialog.close();
   });
 }
 
-function setBrowserMode(mode) {
+function setBrowserMode(mode, onPick) {
   browser.mode = mode;
+  browser.onPick = onPick ?? null;
   $("browser-title").textContent =
     mode === "file" ? tr("select_video_file") :
     mode === "folder" ? tr("select_folder") :
@@ -851,30 +948,45 @@ function setBrowserMode(mode) {
   $("browser-choose").textContent =
     mode === "disc" ? tr("disc_scan_this_folder") : tr("select_this_folder");
   $("browser-choose").classList.toggle("hidden", mode === "file");
+  updateBrowserChoose();
 }
 
-function openBrowser(mode) {
-  setBrowserMode(mode);
-  loadDir(browser.path);
+function openBrowser(mode, onPick, startPath = browser.path) {
+  browser.session += 1;
+  setBrowserMode(mode, onPick);
   $("browser").showModal();
+  loadDir(startPath || browser.path, true);
 }
 
-async function loadDir(path) {
+function updateBrowserChoose() {
+  $("browser-choose").disabled = offline
+    || Boolean(addToQueue.running)
+    || Boolean(scanDiscFolder.running);
+}
+
+async function loadDir(path, takeFocus = false) {
   const request = loadDir.request = (loadDir.request || 0) + 1;
+  const session = browser.session;
   $("browser").setAttribute("aria-busy", "true");
+  $("browser-busy").classList.remove("hidden");
   let data;
   try {
     data = await api(`/api/fs?path=${encodeURIComponent(path)}${$("browser-hidden").checked ? "&hidden=1" : ""}`);
   } catch (e) {
-    if (request === loadDir.request) toast(e.message, true);
+    if (request === loadDir.request && session === browser.session) toast(e.message, true);
     return;
   } finally {
-    if (request === loadDir.request) $("browser").removeAttribute("aria-busy");
+    if (request === loadDir.request && session === browser.session) {
+      $("browser").removeAttribute("aria-busy");
+      $("browser-busy").classList.add("hidden");
+    }
   }
-  if (request !== loadDir.request) return;
+  if (request !== loadDir.request || session !== browser.session) return;
 
   browser.path = data.path;
-  $("browser-path").textContent = data.path;
+  renderCrumbs(data.path);
+  // Focus target for a directory with no selectable entries.
+  $("browser-title").tabIndex = -1;
   const list = $("browser-list");
   list.textContent = "";
 
@@ -885,9 +997,7 @@ async function loadDir(path) {
     const li = document.createElement("li");
     const button = document.createElement("button");
     button.type = "button";
-    // The mark is decorative, so the kind it conveys visually has to reach a
-    // screen reader through the accessible name instead.
-    button.setAttribute("aria-label", `${label}, ${kind}`);
+    button.setAttribute("aria-label", [label, kind, sizeText].filter(Boolean).join(", "));
 
     const marker = document.createElement("span");
     marker.className = "mark";
@@ -931,19 +1041,56 @@ async function loadDir(path) {
       addEntry(mark, f.name, `${kind}, ${tr("kind_not_selectable")}`, null, fmtBytes(f.size));
     }
   }
+
+  // Focus moves to the first row on the initial load, and whenever the element
+  // that held it was removed by the rebuild. The Hidden files checkbox reloads
+  // the list and keeps focus.
+  const active = document.activeElement;
+  if (takeFocus || !active || active === document.body || !active.isConnected) {
+    (list.querySelector("button:not(:disabled)") ?? $("browser-title")).focus();
+  }
+}
+
+// One button per segment of the current path, rooted at "/". The segment for
+// the directory on screen is inert and marked aria-current.
+function renderCrumbs(path) {
+  const crumbs = $("browser-path");
+  crumbs.textContent = "";
+  const segments = path.split("/").filter(Boolean);
+  const add = (label, target, isCurrent) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "crumb";
+    button.textContent = label;
+    button.setAttribute("aria-label", `${tr("kind_folder")}: ${label}`);
+    if (isCurrent) {
+      button.setAttribute("aria-current", "true");
+      button.disabled = true;
+    } else {
+      button.addEventListener("click", () => loadDir(target));
+    }
+    crumbs.appendChild(button);
+  };
+  add("/", "/", segments.length === 0);
+  let walked = "";
+  segments.forEach((segment, index) => {
+    walked += `/${segment}`;
+    add(segment, walked, index === segments.length - 1);
+  });
 }
 
 async function addToQueue(path, mode) {
   if (addToQueue.running) return;
   addToQueue.running = true;
+  const session = browser.session;
   const choose = $("browser-choose");
-  choose.disabled = true;
+  updateBrowserChoose();
   $("browser").setAttribute("aria-busy", "true");
   const previous = choose.textContent;
   if (mode === "folder_recursive") choose.textContent = tr("scanning");
   try {
     const r = await post("/api/queue/add", { path, mode });
-    $("browser").close();
+    if (browser.session === session && $("browser").open) $("browser").close();
     const skipped = r.already_queued
       ? `, ${trf("already_queued", { n: r.already_queued })}`
       : "";
@@ -953,10 +1100,12 @@ async function addToQueue(path, mode) {
     refreshQueue();
   } catch (e) { toast(e.message, true); }
   finally {
-    choose.disabled = false;
-    choose.textContent = previous;
-    $("browser").removeAttribute("aria-busy");
     addToQueue.running = false;
+    if (browser.session === session) {
+      choose.textContent = previous;
+      $("browser").removeAttribute("aria-busy");
+    }
+    updateBrowserChoose();
   }
 }
 
@@ -980,33 +1129,40 @@ $("disc-modal").addEventListener("close", () => {
   if (discBrowsing) return;
   // A rip closes this dialog on its way to the queue, where it is cancelled
   // like any other job; only an abandoned scan is called off here.
-  if (disc && !disc.ripping && discState.scanning) {
+  if (disc && !disc.ripping && (disc.scanPending || discState.scanning)) {
     post("/api/discs/cancel").catch(() => {});
   }
   disc = null;
+  discShapeRendered = null;
 });
 
 async function openDisc() {
   if ($("disc-modal").open) return;
-  disc = { drives: [], drive: null, folder: null, selected: new Set(), error: null, loading: true };
+  const session = disc = {
+    drives: [], drive: null, folder: null, selected: new Set(),
+    error: null, loading: true, scanPending: false,
+  };
   renderDisc();
   $("disc-modal").showModal();
   try {
     const { drives } = await api("/api/discs");
-    disc.drives = drives;
-    disc.loading = false;
+    if (disc !== session) return;
+    session.drives = drives;
+    session.loading = false;
     // A list of one is not a choice.
     if (drives.length === 1) await scanDisc(drives[0].id);
   } catch (e) {
-    disc.loading = false;
-    disc.error = e.message;
+    if (disc !== session) return;
+    session.loading = false;
+    session.error = e.message;
   }
-  renderDisc();
+  if (disc === session) renderDisc();
 }
 
 // Two dialogs stack in the top layer in the order they were opened, so the
 // disc modal steps aside for the browser and comes back when it closes.
 $("disc-folder").addEventListener("click", () => {
+  if (!disc || offline) return;
   discBrowsing = true;
   $("disc-modal").close();
   openBrowser("disc");
@@ -1020,29 +1176,56 @@ $("browser").addEventListener("close", () => {
 });
 
 async function scanDiscFolder(path) {
-  disc.drive = null;
-  disc.folder = path;
-  disc.selected.clear();
-  disc.error = null;
+  if (!disc || disc.loading || scanDiscFolder.running) return;
+  const session = disc;
+  const browserSession = browser.session;
+  scanDiscFolder.running = true;
+  session.drive = null;
+  session.folder = path;
+  session.selected.clear();
+  session.error = null;
+  session.loading = true;
+  session.scanPending = true;
+  updateBrowserChoose();
   try {
     await post("/api/discs/scan", { folder: path });
+    if (disc !== session) post("/api/discs/cancel").catch(() => {});
   } catch (e) {
-    disc.error = e.message;
+    if (disc === session) {
+      session.error = e.message;
+      session.loading = false;
+      session.scanPending = false;
+    }
+  } finally {
+    scanDiscFolder.running = false;
+    updateBrowserChoose();
   }
-  $("browser").close();
+  if (disc === session && browser.session === browserSession && $("browser").open) {
+    $("browser").close();
+  }
 }
 
 async function scanDisc(id) {
-  disc.folder = null;
-  disc.drive = id;
-  disc.selected.clear();
-  disc.error = null;
+  if (!disc || disc.loading) return;
+  const session = disc;
+  session.folder = null;
+  session.drive = id;
+  session.selected.clear();
+  session.error = null;
+  session.loading = true;
+  session.scanPending = true;
+  renderDisc();
   try {
     await post("/api/discs/scan", { drive: id });
+    if (disc !== session) post("/api/discs/cancel").catch(() => {});
   } catch (e) {
-    disc.error = e.message;
+    if (disc === session) {
+      session.error = e.message;
+      session.loading = false;
+      session.scanPending = false;
+    }
   }
-  renderDisc();
+  if (disc === session) renderDisc();
 }
 
 // The last `disc` block from /api/status, so the dialog can render between
@@ -1051,18 +1234,57 @@ let discState = { active: false, scanning: false, titles: [], error: null };
 
 function onDiscStatus(state) {
   discState = state ?? discState;
+  // Held until the poll reports the scan, its titles or its failure. The window
+  // between the request returning and the next poll reports neither.
+  if (disc?.loading
+      && (discState.scanning || discState.titles.length > 0 || discState.error)) {
+    disc.loading = false;
+  }
+  if (disc?.scanPending && !discState.scanning
+      && (discState.titles.length > 0 || discState.error)) {
+    disc.scanPending = false;
+  }
   if ($("disc-modal").open) renderDisc();
 }
 
+// Signature of everything the body shows apart from which titles are ticked.
+// renderDisc() rebuilds the body only when this value changes; it is called on
+// every status poll.
+function discShape() {
+  return JSON.stringify([
+    disc && [disc.loading, disc.drive, disc.folder, disc.error, disc.drives.map((d) => d.id)],
+    discState.scanning,
+    discState.active,
+    discState.error,
+    discState.disc_type,
+    discState.titles.map((t) => t.id),
+  ]);
+}
+
+let discShapeRendered = null;
+
 function renderDisc() {
+  const shape = discShape();
+  if (shape !== discShapeRendered) {
+    discShapeRendered = shape;
+    renderDiscBody();
+  }
+  updateDiscFooter();
+}
+
+// Repaints the selected count and the Rip button. Leaves the title list.
+function updateDiscFooter() {
+  const listed = Boolean(disc) && !disc.loading && !discState.scanning
+    && discState.titles.length > 0;
+  $("disc-note").textContent = listed ? `${disc.selected.size} ${tr("selected")}` : "";
+  $("disc-rip").disabled = offline || !listed || disc.selected.size === 0 || discState.active;
+  $("disc-folder").disabled = offline || (Boolean(disc) && (discState.active || disc.loading));
+}
+
+function renderDiscBody() {
   const body = $("disc-body");
-  const note = $("disc-note");
-  const rip = $("disc-rip");
   body.textContent = "";
-  note.textContent = "";
-  rip.disabled = true;
   if (!disc) return;
-  $("disc-folder").disabled = discState.active;
 
   // A failure from either side of the exchange reads the same way here.
   const failure = disc.error ?? discState.error;
@@ -1091,20 +1313,35 @@ function renderDisc() {
   }
 
   const drive = disc.drives.find((d) => d.id === disc.drive);
-  const heading = (disc.folder != null
+  const source = (disc.folder != null
     ? [disc.folder, discState.disc_type]
     : [drive?.name, drive?.disc_label ?? tr("disc_drive_empty"), discState.disc_type]
   ).filter(Boolean).join(" · ");
-  body.appendChild(groupHeading(heading));
 
   if (discState.scanning) {
+    body.appendChild(groupHeading(source));
     body.appendChild(discNote(tr("disc_scanning")));
     return;
   }
   if (discState.titles.length === 0) {
+    body.appendChild(groupHeading(source));
     if (!failure) body.appendChild(discNote(tr("disc_no_titles")));
     return;
   }
+
+  // Select-all toggle shared with the track dialog, wording shared with the TUI.
+  body.appendChild(groupHeading(
+    `${tr("disc_select_titles")} — ${source}`,
+    toggleAllButton(
+      "toggle-all-titles",
+      discState.titles.every((t) => disc.selected.has(t.id)),
+      (selectAll) => {
+        disc.selected.clear();
+        if (selectAll) for (const t of discState.titles) disc.selected.add(t.id);
+      },
+      { enabled: !discState.active, rerender: () => { discShapeRendered = null; renderDisc(); } },
+    ),
+  ));
 
   for (const title of discState.titles) {
     const row = document.createElement("label");
@@ -1113,33 +1350,34 @@ function renderDisc() {
     const box = document.createElement("input");
     box.type = "checkbox";
     box.checked = disc.selected.has(title.id);
+    box.disabled = discState.active;
     box.addEventListener("change", () => {
       if (box.checked) disc.selected.add(title.id);
       else disc.selected.delete(title.id);
-      renderDisc();
+      updateDiscFooter();
     });
     row.appendChild(box);
 
-    const name = document.createElement("span");
-    name.className = "track-name";
+    // Name above its details, the layout the audio rows use. A flex sibling
+    // without min-width:0 takes its full intrinsic width and crushes the name.
+    const info = document.createElement("div");
+    info.className = "track-info";
+    const name = document.createElement("div");
+    name.className = "name";
     name.textContent = title.name;
-    row.appendChild(name);
-
-    const meta = document.createElement("span");
-    meta.className = "muted";
+    const meta = document.createElement("div");
+    meta.className = "sub";
     meta.textContent = [
       title.duration,
       title.size,
       `${title.chapters} ${tr("disc_chapters")}`,
       ...title.tracks,
     ].filter(Boolean).join(" · ");
-    row.appendChild(meta);
+    info.append(name, meta);
+    row.appendChild(info);
 
     body.appendChild(row);
   }
-
-  note.textContent = `${disc.selected.size} ${tr("selected")}`;
-  rip.disabled = disc.selected.size === 0 || discState.active;
 }
 
 function discNote(text, bad = false) {
@@ -1151,19 +1389,22 @@ function discNote(text, bad = false) {
 
 $("disc-rip").addEventListener("click", async () => {
   if (!disc || disc.selected.size === 0) return;
+  const session = disc;
   const button = $("disc-rip");
   button.disabled = true;
   try {
     await post("/api/discs/rip", {
-      ...(disc.folder != null ? { folder: disc.folder } : { drive: disc.drive }),
-      titles: [...disc.selected],
+      ...(session.folder != null ? { folder: session.folder } : { drive: session.drive }),
+      titles: [...session.selected],
     });
-    disc.ripping = true;
-    $("disc-modal").close();
+    if (disc === session) {
+      session.ripping = true;
+      $("disc-modal").close();
+    }
     refreshQueue();
   } catch (e) {
     toast(e.message, true);
-    button.disabled = false;
+    if (disc === session) updateDiscFooter();
   }
 });
 
@@ -1173,14 +1414,23 @@ let settingsLoaded = false;
 let config = null;
 let savedConfig = null;
 let settingsSaving = false;
+let settingsLoad = null;
 
 const cloneConfig = (value) => JSON.parse(JSON.stringify(value));
 
+const settingsDirty = () =>
+  savedConfig != null && JSON.stringify(config) !== JSON.stringify(savedConfig);
+
 function updateSettingsActions() {
-  const dirty = savedConfig != null && JSON.stringify(config) !== JSON.stringify(savedConfig);
-  $("btn-save-settings").disabled = settingsSaving || !dirty;
+  const dirty = settingsDirty();
+  $("btn-save-settings").disabled = offline || settingsSaving || !dirty;
   $("btn-reset-settings").disabled = settingsSaving || !dirty;
 }
+
+// Edits are held in memory until Save; a reload discards them.
+addEventListener("beforeunload", (event) => {
+  if (settingsDirty()) event.preventDefault();
+});
 
 // Native language names and product names are not translated — they read the
 // same in every locale.
@@ -1239,7 +1489,7 @@ function settingsFields(cfg) {
     { path: "output.suffix", label: tr("cfg_output_suffix"), type: "text" },
     { path: "output.container", label: tr("cfg_output_container"), type: "text" },
     { path: "output.same_directory", label: tr("cfg_same_directory"), type: "checkbox", rebuild: true },
-    { path: "output.output_directory", label: tr("cfg_output_directory"), type: "text", nullable: true, disabled: cfg.output.same_directory, required: !cfg.output.same_directory },
+    { path: "output.output_directory", label: tr("cfg_output_directory"), type: "text", nullable: true, disabled: cfg.output.same_directory, required: !cfg.output.same_directory, browse: true },
     { group: tr("group_tracks") },
     { path: "tracks.preferred_audio_languages", label: tr("cfg_audio_languages"), type: "list" },
     { path: "tracks.preferred_subtitle_languages", label: tr("cfg_subtitle_languages"), type: "list" },
@@ -1268,20 +1518,27 @@ function setPath(obj, path, value) {
 
 function buildSettingsForm() {
   const form = $("settings-form");
+  // Runs on every change to a field with dependants. Ids come from the config
+  // path and are stable across the rebuild, so focus is restored by id.
+  const focused = document.activeElement?.id;
   form.textContent = "";
+  // Each group entry opens a <fieldset><legend>; later fields append to it.
+  let group = form;
   for (const field of settingsFields(config)) {
     if (field.group) {
-      const heading = document.createElement("div");
-      heading.className = "field-group";
-      heading.textContent = field.group;
-      form.appendChild(heading);
+      group = document.createElement("fieldset");
+      group.className = "field-group";
+      const legend = document.createElement("legend");
+      legend.textContent = field.group;
+      group.appendChild(legend);
+      form.appendChild(group);
       continue;
     }
     if (field.note) {
       const note = document.createElement("div");
       note.className = "muted";
       note.textContent = field.note;
-      form.appendChild(note);
+      group.appendChild(note);
       continue;
     }
     const row = document.createElement("div");
@@ -1344,7 +1601,27 @@ function buildSettingsForm() {
       updateSettingsActions();
     });
 
-    row.appendChild(input);
+    if (field.browse) {
+      const wrap = document.createElement("div");
+      wrap.className = "field-browse";
+      const browse = document.createElement("button");
+      browse.type = "button";
+      browse.className = "iconbtn";
+      // Picking rebuilds the form; focus is restored by this id.
+      browse.id = `${inputId}-browse`;
+      browse.textContent = tr("browse");
+      browse.disabled = Boolean(field.disabled);
+      browse.setAttribute("aria-label", `${tr("browse")}: ${field.label}`);
+      browse.addEventListener("click", () => openBrowser("folder", (path) => {
+        setPath(config, field.path, path);
+        buildSettingsForm();
+        updateSettingsActions();
+      }, input.value.trim()));
+      wrap.append(input, browse);
+      row.appendChild(wrap);
+    } else {
+      row.appendChild(input);
+    }
     if (field.warning) {
       const warning = document.createElement("div");
       warning.id = `${inputId}-warning`;
@@ -1353,12 +1630,20 @@ function buildSettingsForm() {
       input.setAttribute("aria-describedby", warning.id);
       row.appendChild(warning);
     }
-    form.appendChild(row);
+    group.appendChild(row);
   }
+  if (focused) $(focused)?.focus();
   updateSettingsActions();
 }
 
-async function loadSettings() {
+function loadSettings() {
+  if (!settingsLoad) {
+    settingsLoad = loadSettingsNow().finally(() => { settingsLoad = null; });
+  }
+  return settingsLoad;
+}
+
+async function loadSettingsNow() {
   try {
     config = await api("/api/settings");
     savedConfig = cloneConfig(config);
@@ -1375,22 +1660,31 @@ $("btn-save-settings").addEventListener("click", async () => {
   form.setAttribute("aria-busy", "true");
   updateSettingsActions();
   const languageChanged = savedConfig?.language !== config.language;
+  const save = $("btn-save-settings");
+  save.textContent = tr("saving");
   try {
     config = await post("/api/settings", config);
     savedConfig = cloneConfig(config);
     if (languageChanged) {
-      strings = await api("/api/strings");
-      applyStrings();
-      document.documentElement.lang = strings.html_lang ?? document.documentElement.lang;
+      try {
+        strings = await api("/api/strings");
+        applyStrings();
+        document.documentElement.lang = strings.html_lang ?? document.documentElement.lang;
+      } catch (e) {
+        toast(`${tr("saved_exclaim")} ${e.message}`, true);
+      }
     }
     buildSettingsForm();
     updateSettingsActions();
-    toast(tr("saved_exclaim"));
+    // Save and Discard disabling is the on-screen confirmation; the announcement
+    // carries it to a screen reader.
+    announce(tr("saved_exclaim"));
   } catch (e) { toast(e.message, true); }
   finally {
     settingsSaving = false;
     form.inert = false;
     form.removeAttribute("aria-busy");
+    save.textContent = tr("save_settings");
     updateSettingsActions();
   }
 });

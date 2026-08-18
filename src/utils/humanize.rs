@@ -14,22 +14,41 @@ pub fn format_duration(duration: Duration) -> String {
     }
 }
 
-/// Format a file size in human-readable form
+/// Format a file size in human-readable form.
+///
+/// Units are binary (1024-based) and carry the matching IEC labels. The web UI
+/// formats the sizes it computes itself the same way.
 pub fn format_file_size(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * KB;
-    const GB: u64 = 1024 * MB;
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
 
     let b = u128::from(bytes);
-    if bytes >= GB {
-        let h = b * 100 / u128::from(GB);
-        format!("{}.{:02} GB", h / 100, h % 100)
-    } else if bytes >= MB {
-        let h = b * 10 / u128::from(MB);
-        format!("{}.{} MB", h / 10, h % 10)
-    } else if bytes >= KB {
-        format!("{} KB", bytes / KB)
+    if bytes >= GIB {
+        let h = b * 100 / u128::from(GIB);
+        format!("{}.{:02} GiB", h / 100, h % 100)
+    } else if bytes >= MIB {
+        let h = b * 10 / u128::from(MIB);
+        format!("{}.{} MiB", h / 10, h % 10)
+    } else if bytes >= KIB {
+        format!("{} KiB", bytes / KIB)
     } else {
         format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_file_size;
+
+    /// Divisors are 1024, and the labels say so.
+    #[test]
+    fn sizes_carry_binary_labels() {
+        assert_eq!(format_file_size(512), "512 B");
+        assert_eq!(format_file_size(1024), "1 KiB");
+        assert_eq!(format_file_size(1024 * 1024), "1.0 MiB");
+        assert_eq!(format_file_size(1024 * 1024 * 1024), "1.00 GiB");
+        // 24.1 GB on the box is 22.44 GiB.
+        assert_eq!(format_file_size(24_100_000_000), "22.44 GiB");
     }
 }

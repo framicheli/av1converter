@@ -14,7 +14,7 @@ mod verifier;
 
 use app::{App, ConfirmAction, Screen, TrackFocus};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -553,12 +553,16 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
     loop {
         app.process_progress_messages();
         app.process_analysis_messages();
+        app.process_folder_scan();
+        app.process_disc_drive_events();
         app.process_disc_events();
         app.tick_message();
 
         terminal.draw(|f| {
             f.render_widget(Clear, f.area());
-            if ui::terminal_too_small(f.area()) {
+            if app.should_quit {
+                ui::render_shutting_down(f, app.config.language);
+            } else if ui::terminal_too_small(app.current_screen, f.area()) {
                 ui::render_too_small(f, app.config.language);
             } else {
                 match app.current_screen {
@@ -583,9 +587,22 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
+            && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
         {
-            handle_key(app, key.code);
+            let compact = ui::terminal_too_small(app.current_screen, terminal.size()?.into());
+            let control_c =
+                key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
+            if !compact
+                || app.confirm_dialog.is_some()
+                || key.code == KeyCode::Char('q')
+                || control_c
+            {
+                if control_c {
+                    app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+                } else {
+                    handle_key(app, key.code);
+                }
+            }
         }
 
         // The rip is waited out too: quitting while makemkvcon still runs
@@ -593,6 +610,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         if app.should_quit
             && !app.encoding_active
             && app.analysis_receiver.is_none()
+            && app.folder_scan_receiver.is_none()
+            && app.disc_drive_receiver.is_none()
             && app.disc_receiver.is_none()
         {
             return Ok(());
@@ -643,9 +662,14 @@ fn handle_confirm_dialog_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('n' | 'N') | KeyCode::Esc => {
             app.confirm_dialog = None;
         }
-        KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l') => {
+        KeyCode::Left | KeyCode::Char('h') => {
             if let Some((_, sel)) = &mut app.confirm_dialog {
-                *sel = !*sel;
+                *sel = true;
+            }
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            if let Some((_, sel)) = &mut app.confirm_dialog {
+                *sel = false;
             }
         }
         KeyCode::Enter => {
@@ -688,14 +712,16 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
         ConfirmAction::CancelEncoding => {
             app.cancel_encoding();
         }
+        ConfirmAction::CancelDisc => app.cancel_disc_operation(),
         ConfirmAction::ExitApp => {
             app.cancel_flag
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             app.analysis_cancel_flag
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            // An in-flight rip is killed here rather than outliving the TUI as
-            // an orphan makemkvcon.
+            // Disc worker cancellation.
             app.disc_cancel_flag
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            app.folder_scan_cancel_flag
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             app.should_quit = true;
         }
@@ -737,11 +763,15 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
 
 /// Drive and title selection. Esc during a scan cancels it and steps back.
 fn handle_disc_key(app: &mut App, key: KeyCode) {
-    app.clear_message();
+    if app.disc_state == app::DiscState::Cancelling {
+        return;
+    }
 
     match key {
         KeyCode::Up | KeyCode::Char('k') => app.disc_move_up(),
         KeyCode::Down | KeyCode::Char('j') => app.disc_move_down(),
+        KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(1),
+        KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
         KeyCode::Esc => app.leave_disc_screen(),
         KeyCode::Char(' ') if app.current_screen == Screen::DiscTitles => app.toggle_disc_title(),
         KeyCode::Enter => match app.current_screen {
@@ -753,6 +783,12 @@ fn handle_disc_key(app: &mut App, key: KeyCode) {
 }
 
 fn handle_explorer_key(app: &mut App, key: KeyCode) {
+    if app.folder_scan_receiver.is_some() {
+        if key == KeyCode::Esc {
+            app.cancel_folder_scan();
+        }
+        return;
+    }
     app.clear_message();
 
     match key {
@@ -761,6 +797,14 @@ fn handle_explorer_key(app: &mut App, key: KeyCode) {
         KeyCode::Down | KeyCode::Char('j') => app.explorer_move_down(),
         KeyCode::Enter => match app.selection_mode {
             app::SelectionMode::File => app.select_explorer_entry(),
+            app::SelectionMode::DiscFolder
+                if app
+                    .dir_entries
+                    .get(app.explorer_index)
+                    .is_some_and(|entry| disc::is_iso(&entry.path)) =>
+            {
+                app.select_explorer_entry();
+            }
             app::SelectionMode::Folder
             | app::SelectionMode::FolderRecursive
             | app::SelectionMode::DiscFolder => app.enter_directory(),
@@ -802,7 +846,11 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
 
     match key {
         KeyCode::Esc => {
-            app.confirm_dialog = Some((ConfirmAction::AbandonTrackConfig, false));
+            if app.encoding_active || app.disc_operation_active() {
+                app.navigate_to_queue();
+            } else {
+                app.confirm_dialog = Some((ConfirmAction::AbandonTrackConfig, false));
+            }
         }
         KeyCode::Left | KeyCode::Char('h') => app.step_track_config_job(false),
         KeyCode::Right | KeyCode::Char('l') => app.step_track_config_job(true),
@@ -873,7 +921,7 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 }
             }
         }
-        KeyCode::Char('o') => {
+        KeyCode::Char('o') if app.track_focus == TrackFocus::Audio => {
             let cursor = app.audio_cursor;
             if let Some(job) = app.current_config_job_mut()
                 && let Some(track) = job.audio_tracks.get(cursor)
@@ -912,6 +960,10 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
 
 fn handle_queue_key(app: &mut App, key: KeyCode) {
     match key {
+        KeyCode::Esc if app.disc_state == app::DiscState::Cancelling => {}
+        KeyCode::Esc if app.disc_operation_active() => {
+            app.confirm_dialog = Some((ConfirmAction::CancelDisc, false));
+        }
         KeyCode::Esc if app.analysis_receiver.is_some() => {
             app.confirm_dialog = Some((ConfirmAction::CancelAnalysis, false));
         }
@@ -920,10 +972,12 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Up | KeyCode::Char('k') => app.queue_move_cursor(false),
         KeyCode::Down | KeyCode::Char('j') => app.queue_move_cursor(true),
+        KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(1),
+        KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
         // A title that finished ripping while an encode ran is waiting for its
         // tracks; Enter opens it.
         KeyCode::Enter if app.has_jobs_awaiting_config() => app.configure_next_job(),
-        KeyCode::Enter if !app.encoding_active && app.analysis_receiver.is_none() => {
+        KeyCode::Enter if !app.work_active() => {
             app.navigate_to_finish();
         }
         _ => {}
@@ -934,6 +988,8 @@ fn handle_finish_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Up | KeyCode::Char('k') => app.finish_move_cursor(false),
         KeyCode::Down | KeyCode::Char('j') => app.finish_move_cursor(true),
+        KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(1),
+        KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
         KeyCode::Enter => app.reset(),
         _ => {}
     }
@@ -945,17 +1001,26 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
             KeyCode::Enter => commit_config_edit(app),
             KeyCode::Esc => {
                 app.config_edit_buffer = None;
+                app.config_edit_cursor = 0;
             }
-            KeyCode::Backspace => {
-                if let Some(buf) = &mut app.config_edit_buffer {
-                    buf.pop();
-                }
+            KeyCode::Left => app.config_edit_cursor = app.config_edit_cursor.saturating_sub(1),
+            KeyCode::Right => {
+                let len = app
+                    .config_edit_buffer
+                    .as_deref()
+                    .map_or(0, |value| value.chars().count());
+                app.config_edit_cursor = (app.config_edit_cursor + 1).min(len);
             }
-            KeyCode::Char(c) => {
-                if let Some(buf) = &mut app.config_edit_buffer {
-                    buf.push(c);
-                }
+            KeyCode::Home => app.config_edit_cursor = 0,
+            KeyCode::End => {
+                app.config_edit_cursor = app
+                    .config_edit_buffer
+                    .as_deref()
+                    .map_or(0, |value| value.chars().count());
             }
+            KeyCode::Backspace => edit_config_backspace(app),
+            KeyCode::Delete => edit_config_delete(app),
+            KeyCode::Char(c) => edit_config_insert(app, c),
             _ => {}
         }
         return;
@@ -1003,7 +1068,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                     .as_deref()
                     .is_some_and(|path| std::path::Path::new(path).is_dir())
             {
-                app.set_timed_message(
+                app.set_timed_error(
                     &format!(
                         "{}: {}",
                         t(lang, Msg::SaveFailed),
@@ -1015,10 +1080,10 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
             }
             if let Err(e) = app.config.save() {
                 tracing::warn!("Failed to save config: {:?}", e);
-                app.set_timed_message(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 3);
+                app.set_timed_error(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 3);
             } else {
                 app.config_snapshot = Some(app.config.clone());
-                app.set_timed_message(t(lang, Msg::SavedExclaim), 3);
+                app.set_timed_success(t(lang, Msg::SavedExclaim), 3);
             }
         }
         _ => {}
@@ -1034,7 +1099,7 @@ fn start_config_edit(app: &mut App) {
     else {
         return;
     };
-    app.config_edit_buffer = Some(match item.field {
+    let buffer = match item.field {
         ConfigField::OutputSuffix => app.config.output.suffix.clone(),
         ConfigField::OutputContainer => app.config.output.container.clone(),
         ConfigField::OutputDirectory => app
@@ -1056,13 +1121,15 @@ fn start_config_edit(app: &mut App) {
             .clone()
             .unwrap_or_default(),
         _ => return,
-    });
+    };
+    app.config_edit_cursor = buffer.chars().count();
+    app.config_edit_buffer = Some(buffer);
 }
 
 /// Write the edit buffer back to the appropriate config field.
 fn commit_config_edit(app: &mut App) {
     use crate::ui::config_screen::{ConfigField, visible_config_items};
-    let Some(buf) = app.config_edit_buffer.take() else {
+    let Some(buf) = app.config_edit_buffer.clone() else {
         return;
     };
     let Some(item) = visible_config_items(&app.config)
@@ -1084,18 +1151,24 @@ fn commit_config_edit(app: &mut App) {
         ConfigField::SubtitleLanguages => {
             app.config.tracks.preferred_subtitle_languages = parse_lang_list(&value);
         }
-        // Invalid addresses/ports keep the previous value
+        // Validated network fields.
         ConfigField::DaemonBindAddress => {
-            if value.parse::<std::net::IpAddr>().is_ok() {
-                app.config.daemon.bind_address = value;
+            if value.parse::<std::net::IpAddr>().is_err() {
+                app.set_timed_error(t(app.config.language, Msg::InvalidAddress), 5);
+                return;
             }
+            app.config.daemon.bind_address = value;
         }
         ConfigField::DaemonPort => {
-            if let Ok(port) = value.parse::<u16>()
-                && port != 0
-            {
-                app.config.daemon.port = port;
+            let Ok(port) = value.parse::<u16>() else {
+                app.set_timed_error(t(app.config.language, Msg::InvalidPort), 5);
+                return;
+            };
+            if port == 0 {
+                app.set_timed_error(t(app.config.language, Msg::InvalidPort), 5);
+                return;
             }
+            app.config.daemon.port = port;
         }
         // Both accept an empty value, which turns the feature off
         ConfigField::DaemonBrowseRoot => app.config.daemon.browse_root = value,
@@ -1105,6 +1178,48 @@ fn commit_config_edit(app: &mut App) {
             app.config.disc.staging_directory = (!value.is_empty()).then_some(value);
         }
         _ => {}
+    }
+    app.config_edit_buffer = None;
+    app.config_edit_cursor = 0;
+}
+
+fn config_byte_index(value: &str, cursor: usize) -> usize {
+    value
+        .char_indices()
+        .nth(cursor)
+        .map_or(value.len(), |(index, _)| index)
+}
+
+fn edit_config_insert(app: &mut App, character: char) {
+    let Some(buffer) = &mut app.config_edit_buffer else {
+        return;
+    };
+    let index = config_byte_index(buffer, app.config_edit_cursor);
+    buffer.insert(index, character);
+    app.config_edit_cursor += 1;
+}
+
+fn edit_config_backspace(app: &mut App) {
+    if app.config_edit_cursor == 0 {
+        return;
+    }
+    let Some(buffer) = &mut app.config_edit_buffer else {
+        return;
+    };
+    let start = config_byte_index(buffer, app.config_edit_cursor - 1);
+    let end = config_byte_index(buffer, app.config_edit_cursor);
+    buffer.replace_range(start..end, "");
+    app.config_edit_cursor -= 1;
+}
+
+fn edit_config_delete(app: &mut App) {
+    let Some(buffer) = &mut app.config_edit_buffer else {
+        return;
+    };
+    let start = config_byte_index(buffer, app.config_edit_cursor);
+    let end = config_byte_index(buffer, app.config_edit_cursor + 1);
+    if start < end {
+        buffer.replace_range(start..end, "");
     }
 }
 
@@ -1127,7 +1242,7 @@ fn apply_autostart(app: &mut App, enable: bool) {
     if enable {
         app.config.sanitize();
         if let Err(e) = enable_daemon_config(&mut app.config) {
-            app.set_timed_message(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 5);
+            app.set_timed_error(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 5);
             return;
         }
         app.config_snapshot = Some(app.config.clone());
@@ -1138,17 +1253,17 @@ fn apply_autostart(app: &mut App, enable: bool) {
                     msg.push(' ');
                     msg.push_str(t(lang, Msg::DaemonServiceLingerHint));
                 }
-                app.set_timed_message(&msg, 8);
+                app.set_timed_success(&msg, 8);
             }
             Err(e) => {
-                app.set_timed_message(&format!("{} {e}", t(lang, Msg::DaemonServiceFailed)), 5);
+                app.set_timed_error(&format!("{} {e}", t(lang, Msg::DaemonServiceFailed)), 5);
             }
         }
     } else {
         match daemon::service::uninstall() {
-            Ok(()) => app.set_timed_message(t(lang, Msg::DaemonServiceUninstalled), 3),
+            Ok(()) => app.set_timed_success(t(lang, Msg::DaemonServiceUninstalled), 3),
             Err(e) => {
-                app.set_timed_message(&format!("{} {e}", t(lang, Msg::DaemonServiceFailed)), 5);
+                app.set_timed_error(&format!("{} {e}", t(lang, Msg::DaemonServiceFailed)), 5);
             }
         }
     }
@@ -1407,5 +1522,50 @@ mod tests {
         let err = parse_cli(["--foo"]).unwrap_err();
         assert!(err.contains("Unknown argument: --foo"), "{err}");
         assert!(!err.contains("Did you mean"), "{err}");
+    }
+
+    #[test]
+    fn config_editor_changes_unicode_at_character_boundaries() {
+        let mut app = App::new();
+        app.config_edit_buffer = Some("åb".to_string());
+        app.config_edit_cursor = 1;
+
+        edit_config_insert(&mut app, '中');
+        assert_eq!(app.config_edit_buffer.as_deref(), Some("å中b"));
+        edit_config_backspace(&mut app);
+        assert_eq!(app.config_edit_buffer.as_deref(), Some("åb"));
+        edit_config_delete(&mut app);
+        assert_eq!(app.config_edit_buffer.as_deref(), Some("å"));
+    }
+
+    #[test]
+    fn invalid_daemon_port_stays_in_the_editor() {
+        use crate::ui::config_screen::{ConfigField, visible_config_items};
+
+        let mut app = App::new();
+        let original = app.config.daemon.port;
+        app.config_selected = visible_config_items(&app.config)
+            .iter()
+            .position(|item| item.field == ConfigField::DaemonPort)
+            .unwrap();
+        app.config_edit_buffer = Some("0".to_string());
+        app.config_edit_cursor = 1;
+
+        commit_config_edit(&mut app);
+
+        assert_eq!(app.config.daemon.port, original);
+        assert_eq!(app.config_edit_buffer.as_deref(), Some("0"));
+        assert_eq!(app.message_kind, app::MessageKind::Error);
+    }
+
+    #[test]
+    fn confirm_arrows_select_the_button_in_their_direction() {
+        let mut app = App::new();
+        app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+
+        handle_confirm_dialog_key(&mut app, KeyCode::Left);
+        assert!(app.confirm_dialog.as_ref().unwrap().1);
+        handle_confirm_dialog_key(&mut app, KeyCode::Right);
+        assert!(!app.confirm_dialog.as_ref().unwrap().1);
     }
 }

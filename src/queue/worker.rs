@@ -27,6 +27,8 @@ pub enum WorkerMessage {
     QualityWarning(usize, f64, f64),
     /// Encoding was cancelled
     Cancelled,
+    /// Every job assigned to this worker session has finished
+    Finished,
     /// Source file was deleted after successful encoding
     SourceDeleted(usize),
     /// Source file was kept: VMAF was below the configured threshold
@@ -60,7 +62,7 @@ pub fn run_worker(
     for job in jobs {
         if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
             let _ = tx.send(WorkerMessage::Cancelled);
-            break;
+            return;
         }
 
         let _ = tx.send(WorkerMessage::Progress(job.index, 0.0));
@@ -122,7 +124,7 @@ pub fn run_worker(
             }
             FullEncodeResult::Cancelled => {
                 let _ = tx.send(WorkerMessage::Cancelled);
-                break;
+                return;
             }
             FullEncodeResult::Error(e) => {
                 let _ = tx.send(WorkerMessage::Error(job.index, e));
@@ -139,5 +141,24 @@ pub fn run_worker(
                 let _ = tx.send(WorkerMessage::QualityWarning(job.index, score, threshold));
             }
         }
+    }
+    let _ = tx.send(WorkerMessage::Finished);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_worker_session_reports_completion() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        run_worker(
+            Vec::new(),
+            &AppConfig::default(),
+            &Arc::new(AtomicBool::new(false)),
+            &tx,
+        );
+
+        assert!(matches!(rx.recv().unwrap(), WorkerMessage::Finished));
     }
 }

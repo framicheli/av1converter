@@ -30,7 +30,7 @@ pub fn render_dv_dialog(f: &mut Frame, app: &App) {
     let is_p5 = dv_profile == Some(5);
     let recommended = usize::from(is_p5);
 
-    let area = centered_rect(76, 60, f.area());
+    let area = centered_rect(90, 85, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -124,9 +124,11 @@ pub fn render_dv_dialog(f: &mut Frame, app: &App) {
 
     let help = Line::from(vec![
         Span::styled("↑↓/1-2", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Select))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Select))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}", t(lang, Msg::Confirm))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Confirm))),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}", t(lang, Msg::UseRecommended))),
     ]);
     f.render_widget(Paragraph::new(help).alignment(Alignment::Center), chunks[4]);
 }

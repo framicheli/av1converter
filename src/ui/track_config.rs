@@ -302,29 +302,29 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
 
     let mut help_spans = vec![
         Span::styled("Tab", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::SwitchPanel))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::SwitchPanel))),
         Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
         Span::styled("Space", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Toggle))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Toggle))),
         Span::styled("r", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::SwitchMode))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::SwitchMode))),
         Span::styled("a", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::AllAudio))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::AllAudio))),
         Span::styled("s", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::AllSubs))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::AllSubs))),
         Span::styled("o", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::ToOpus))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::ToOpus))),
         Span::styled("O", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::AllOpus))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::AllOpus))),
     ];
     if hdr_string == "Dolby Vision" {
         help_spans.push(Span::styled("d", Style::default().fg(Color::Yellow)));
-        help_spans.push(Span::raw(format!(" {}  ", t(lang, Msg::DvModeHelp))));
+        help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::DvModeHelp))));
     }
     if total_jobs > 1 {
         help_spans.push(Span::styled("←→", Style::default().fg(Color::Yellow)));
-        help_spans.push(Span::raw(format!(" {}  ", t(lang, Msg::SwitchFile))));
+        help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::SwitchFile))));
     }
     help_spans.push(Span::styled(" [", Style::default().fg(Color::DarkGray)));
     help_spans.push(Span::styled(
@@ -333,7 +333,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
     ));
     help_spans.push(Span::styled("]  ", Style::default().fg(Color::DarkGray)));
     help_spans.push(Span::styled("q", Style::default().fg(Color::Yellow)));
-    help_spans.push(Span::raw(format!(" {}", t(lang, Msg::Quit))));
+    help_spans.push(Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))));
 
     let help_text = Line::from(help_spans);
 
@@ -350,9 +350,7 @@ struct AudioRow {
     bitrate: String,
     sample_rate: String,
     selected: bool,
-    /// The user asked for Opus on this track
     marked_opus: bool,
-    /// The bitrate it will actually be encoded at, or `None` when it is copied
     opus_kbps: Option<u32>,
 }
 
@@ -361,8 +359,6 @@ fn create_audio_track_item(
     is_cursor: bool,
     lang: crate::i18n::Language,
 ) -> ListItem<'static> {
-    // A track marked for Opus that resolves to no bitrate is one that is
-    // already Opus, so it stays a plain copy and says why.
     let checkbox = match (row.selected, row.opus_kbps) {
         (false, _) => "[ ]",
         (true, None) => "[x]",

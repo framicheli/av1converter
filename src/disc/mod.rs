@@ -115,7 +115,7 @@ impl DiscSource {
     }
 }
 
-fn is_iso(path: &Path) -> bool {
+pub(crate) fn is_iso(path: &Path) -> bool {
     path.extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("iso"))
 }

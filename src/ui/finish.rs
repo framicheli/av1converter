@@ -189,15 +189,33 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
         ]));
     }
     if let Some((saved, percent)) = job.size_reduction() {
+        let grew = percent < 0.0;
+        let amount = if grew {
+            job.output_size
+                .zip(job.source_size)
+                .map_or(0, |(output, source)| output.saturating_sub(source))
+        } else {
+            saved
+        };
         lines.push(Line::from(vec![
             Span::styled(
-                format!("{}: ", t(lang, Msg::ReductionLabel)),
+                format!(
+                    "{}: ",
+                    t(
+                        lang,
+                        if grew {
+                            Msg::SizeIncrease
+                        } else {
+                            Msg::ReductionLabel
+                        }
+                    )
+                ),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                format!("{} ({:.1}%)", format_file_size(saved), percent),
+                format!("{} ({:.1}%)", format_file_size(amount), percent.abs()),
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(if grew { Color::Red } else { Color::Green })
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -233,6 +251,7 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
 
     let summary = Paragraph::new(lines)
         .alignment(Alignment::Center)
+        .scroll((app.detail_scroll, 0))
         .wrap(Wrap { trim: true })
         .block(
             Block::default()
@@ -244,10 +263,12 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
 
     // Help
     let help_text = Line::from(vec![
+        Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Status))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::NewConversion))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::NewConversion))),
         Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}", t(lang, Msg::Quit))),
+        Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
     ]);
 
     let help = Paragraph::new(help_text)
@@ -260,11 +281,13 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
 #[allow(clippy::too_many_lines)]
 fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
+    let detail_height = f.area().height.saturating_sub(17).clamp(5, 12);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(7),
             Constraint::Min(5),
+            Constraint::Length(detail_height),
             Constraint::Length(3),
         ])
         .margin(1)
@@ -317,16 +340,27 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
         ]),
     ];
 
-    if total_saved > 0 {
+    if total_saved != 0 {
+        let grew = total_saved < 0;
         summary_lines.push(Line::from(vec![
             Span::styled(
-                format!("{}: ", t(lang, Msg::TotalSpaceSaved)),
+                format!(
+                    "{}: ",
+                    t(
+                        lang,
+                        if grew {
+                            Msg::TotalSpaceIncreased
+                        } else {
+                            Msg::TotalSpaceSaved
+                        }
+                    )
+                ),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                saved_str,
+                saved_str.trim_start_matches('-').to_string(),
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(if grew { Color::Red } else { Color::Green })
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -370,21 +404,50 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
     app.finish_list_state.select(Some(app.finish_cursor));
     f.render_stateful_widget(list, chunks[1], &mut app.finish_list_state);
 
+    if let Some(job) = app.queue.jobs.get(app.finish_cursor) {
+        let detail = Paragraph::new(result_detail(job, lang))
+            .wrap(Wrap { trim: true })
+            .scroll((app.detail_scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(format!(" {} ", t(lang, Msg::Status))),
+            );
+        f.render_widget(detail, chunks[2]);
+    }
+
     // Help
     let help_text = Line::from(vec![
         Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+        Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Status))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::NewConversion))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::NewConversion))),
         Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}", t(lang, Msg::Quit))),
+        Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
     ]);
 
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE))
         .wrap(Wrap { trim: true });
-    f.render_widget(help, chunks[2]);
+    f.render_widget(help, chunks[3]);
+}
+
+fn result_detail(job: &crate::queue::EncodingJob, lang: Language) -> String {
+    match &job.status {
+        JobStatus::Done => t(lang, Msg::Success).to_string(),
+        JobStatus::DoneWithVmaf { score } => format!("VMAF {score:.1}"),
+        JobStatus::DoneVmafFailed { reason } => reason.clone(),
+        JobStatus::Skipped { reason } => super::common::translate_reason(lang, reason),
+        JobStatus::Error { message } => message.clone(),
+        JobStatus::QualityWarning { vmaf, threshold } => {
+            format!("VMAF {vmaf:.1} < {threshold:.0}")
+        }
+        _ => t(lang, Msg::Unknown).to_string(),
+    }
 }
 
 fn create_result_item(
@@ -468,8 +531,10 @@ fn create_result_item(
             super::common::translate_reason(lang, reason)
         ))
         .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
-        JobStatus::Error { message } => ListItem::new(format!("{prefix}✗ {name}: {message}"))
-            .style(Style::default().fg(Color::Red).add_modifier(bold_mod)),
+        JobStatus::Error { .. } => {
+            ListItem::new(format!("{prefix}✗ {name}: {}", t(lang, Msg::Error)))
+                .style(Style::default().fg(Color::Red).add_modifier(bold_mod))
+        }
         JobStatus::QualityWarning { vmaf, threshold } => {
             let vmaf_color = get_vmaf_color(*vmaf);
             let mut spans = vec![

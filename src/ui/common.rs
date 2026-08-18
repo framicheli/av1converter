@@ -1,3 +1,4 @@
+use crate::app::MessageKind;
 use crate::i18n::{Language, Msg, t};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -52,6 +53,15 @@ pub fn get_vmaf_color(score: f64) -> Color {
         Color::Rgb(255, 165, 0)
     } else {
         Color::Red
+    }
+}
+
+pub fn message_color(kind: MessageKind) -> Color {
+    match kind {
+        MessageKind::Info => Color::Cyan,
+        MessageKind::Success => Color::Green,
+        MessageKind::Warning => Color::Yellow,
+        MessageKind::Error => Color::Red,
     }
 }
 

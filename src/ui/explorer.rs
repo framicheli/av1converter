@@ -1,4 +1,6 @@
-use crate::app::{App, SelectionMode};
+use super::common::message_color;
+use crate::app::{App, Entry, SelectionMode};
+use crate::disc::is_iso;
 use crate::i18n::{Msg, t};
 use crate::queue::is_video_file;
 use crate::utils::format_file_size;
@@ -9,7 +11,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
-use std::path::PathBuf;
 
 #[allow(clippy::too_many_lines)]
 pub fn render_explorer(f: &mut Frame, app: &mut App) {
@@ -53,13 +54,13 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
     // Message (if any)
     if let Some(ref msg) = app.message {
         let message = Paragraph::new(msg.as_str())
-            .style(Style::default().fg(Color::Yellow))
+            .style(Style::default().fg(message_color(app.message_kind)))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow))
+                    .border_style(Style::default().fg(message_color(app.message_kind)))
                     .title(format!(" {} ", t(lang, Msg::Notice))),
             );
         f.render_widget(message, chunks[1]);
@@ -70,9 +71,15 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
         .dir_entries
         .iter()
         .enumerate()
-        .map(|(i, path)| {
-            let is_toggled = app.selected_files.contains(path);
-            create_entry_item(path, i, app.explorer_index, &app.selection_mode, is_toggled)
+        .map(|(i, entry)| {
+            let is_toggled = app.selected_files.contains(&entry.path);
+            create_entry_item(
+                entry,
+                i,
+                app.explorer_index,
+                &app.selection_mode,
+                is_toggled,
+            )
         })
         .collect();
 
@@ -101,15 +108,15 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
         SelectionMode::File => {
             let mut spans = vec![
                 Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
+                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
                 Span::styled("Space", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}  ", t(lang, Msg::Toggle))),
+                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Toggle))),
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}  ", t(lang, Msg::Proceed))),
+                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Proceed))),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}  ", t(lang, Msg::Back))),
+                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
                 Span::styled("q", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(" {}", t(lang, Msg::Quit))),
+                Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
             ];
             if !app.selected_files.is_empty() {
                 spans.push(Span::raw("  "));
@@ -128,28 +135,44 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
         }
         SelectionMode::Folder | SelectionMode::FolderRecursive => Line::from(vec![
             Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::OpenFolderAction))),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::OpenFolderAction))),
             Span::styled("Space", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::SelectThisFolder))),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::SelectThisFolder))),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::Back))),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
             Span::styled("q", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}", t(lang, Msg::Quit))),
+            Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
         ]),
-        SelectionMode::DiscFolder => Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::OpenFolderAction))),
-            Span::styled("Space", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::DiscScanThisFolder))),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::Back))),
-            Span::styled("q", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}", t(lang, Msg::Quit))),
-        ]),
+        SelectionMode::DiscFolder => {
+            let image_selected = app
+                .dir_entries
+                .get(app.explorer_index)
+                .is_some_and(|entry| is_iso(&entry.path));
+            let enter_action = if image_selected {
+                Msg::DiscScanThisImage
+            } else {
+                Msg::OpenFolderAction
+            };
+            let scan_action = if image_selected {
+                Msg::DiscScanThisImage
+            } else {
+                Msg::DiscScanThisFolder
+            };
+            Line::from(vec![
+                Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("\u{a0}{}  ", t(lang, enter_action))),
+                Span::styled("Space", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("\u{a0}{}  ", t(lang, scan_action))),
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
+                Span::styled("q", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
+            ])
+        }
     };
 
     let help = Paragraph::new(help_text)
@@ -159,58 +182,50 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
     f.render_widget(help, chunks[3]);
 }
 
-/// Truncate `path` to `max_width` characters, keeping the *end* of the path
-/// (the current folder, which is the most relevant part) and prefixing an
-/// ellipsis when characters were dropped from the start.
+/// Fit a path to terminal-cell width, preserving its trailing component.
 fn truncate_path_start(path: &str, max_width: usize) -> String {
-    let char_count = path.chars().count();
-    if max_width == 0 || char_count <= max_width {
+    if max_width == 0 {
+        return String::new();
+    }
+    if Line::raw(path).width() <= max_width {
         return path.to_string();
     }
 
-    let ellipsis = '…';
-    let keep = max_width.saturating_sub(1);
-    let tail: String = path
-        .chars()
-        .rev()
-        .take(keep)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    format!("{ellipsis}{tail}")
+    let mut start = path.len();
+    for (index, _) in path.char_indices().rev() {
+        if Line::raw(&path[index..]).width() + 1 > max_width {
+            break;
+        }
+        start = index;
+    }
+    format!("…{}", &path[start..])
 }
 
 fn create_entry_item(
-    path: &PathBuf,
+    entry: &Entry,
     index: usize,
     selected: usize,
     mode: &SelectionMode,
     is_toggled: bool,
 ) -> ListItem<'static> {
     let is_selected = index == selected;
-    let is_parent = path == &PathBuf::from("..");
-    let is_dir = path.is_dir() || is_parent;
-    let is_video = is_video_file(path);
+    let is_parent = entry.is_parent();
+    let is_dir = entry.is_dir;
+    let is_video = !is_dir && is_video_file(&entry.path);
+    let is_disc_image = !is_dir && is_iso(&entry.path);
 
     let name = if is_parent {
         "..".to_string()
     } else {
-        path.file_name().map_or_else(
-            || path.to_string_lossy().to_string(),
-            |n| n.to_string_lossy().to_string(),
-        )
+        entry.name()
     };
 
-    // Add file metadata for video files
-    let metadata_str = if is_video && !is_parent {
-        path.metadata()
-            .ok()
-            .map(|m| format!("  [{}]", format_file_size(m.len())))
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
+    // Cached file size.
+    let metadata_str = entry
+        .size
+        .filter(|_| is_video)
+        .map(|size| format!("  [{}]", format_file_size(size)))
+        .unwrap_or_default();
 
     let (icon, color) = if is_parent {
         ("↑ ", Color::Yellow)
@@ -220,6 +235,8 @@ fn create_entry_item(
         ("✓ ", Color::Cyan)
     } else if is_video {
         ("▷ ", Color::Green)
+    } else if is_disc_image {
+        ("◉ ", Color::Magenta)
     } else {
         ("  ", Color::White)
     };
@@ -242,4 +259,17 @@ fn create_entry_item(
 
     let prefix = if is_selected { "> " } else { "  " };
     ListItem::new(format!("{prefix}{icon}{name}{metadata_str}")).style(style)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_truncation_uses_terminal_cell_width() {
+        let value = truncate_path_start("/資料/movie", 8);
+        assert!(Line::raw(&value).width() <= 8);
+        assert_eq!(value, "…/movie");
+        assert_eq!(truncate_path_start("/movie", 0), "");
+    }
 }
