@@ -129,6 +129,18 @@ impl QueueState {
     /// Reset the queue for a new session
     pub fn reset(&mut self) {
         self.jobs.clear();
+        self.reset_session();
+        self.cleared_saved_bytes = 0;
+    }
+
+    /// Reset results when fresh work follows a fully settled queue.
+    pub fn reset_session_if_finished(&mut self) {
+        if self.all_completed() {
+            self.reset_session();
+        }
+    }
+
+    fn reset_session(&mut self) {
         self.current_job_index = 0;
         self.config_job_index = 0;
         self.start_time = None;
@@ -138,7 +150,6 @@ impl QueueState {
         self.skipped_count = 0;
         self.error_count = 0;
         self.encoding_progress_done = 0;
-        self.cleared_saved_bytes = 0;
     }
 }
 
@@ -316,11 +327,7 @@ pub fn resume(queue: &mut PersistedQueue) {
     }
 
     // Session counters start over; banked savings from cleared jobs stand.
-    queue.state.current_job_index = 0;
-    queue.state.total_jobs_to_encode = 0;
-    queue.state.encoding_progress_done = 0;
-    queue.state.start_time = None;
-    queue.state.end_time = None;
+    queue.state.reset_session();
 }
 
 /// Jobs that still need analysis, as `(index, path)`. [`resume`] leaves
@@ -443,6 +450,9 @@ mod tests {
         done.output_size = Some(400);
         state.jobs.push(done);
         state.cleared_saved_bytes = 777;
+        state.converted_count = 7;
+        state.skipped_count = 9;
+        state.error_count = 3;
 
         save(
             &path,
@@ -487,6 +497,9 @@ mod tests {
             back.state.jobs[1].status,
             JobStatus::DoneWithVmaf { .. }
         ));
+        assert_eq!(back.state.converted_count, 0);
+        assert_eq!(back.state.skipped_count, 0);
+        assert_eq!(back.state.error_count, 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

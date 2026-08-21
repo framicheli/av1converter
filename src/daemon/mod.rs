@@ -440,6 +440,7 @@ fn add_paths(
     let mut to_analyze: Vec<(u64, String)> = Vec::new();
     {
         let mut state = lock(shared);
+        state.queue.state.reset_session_if_finished();
         // Paths already queued and not yet finished are skipped
         let mut existing: std::collections::HashSet<std::path::PathBuf> = state
             .queue
@@ -859,6 +860,37 @@ mod tests {
         );
         assert_eq!(add_paths(&shared, &tx, vec![path]), (0, 1));
         assert_eq!(lock(&shared).queue.state.jobs.len(), 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn adding_after_finished_queue_starts_fresh_totals() {
+        let dir = std::env::temp_dir().join(format!("av1c_daemon_fresh_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("new.mkv");
+        std::fs::write(&path, b"not a real video").unwrap();
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        {
+            let mut state = lock(&shared);
+            let mut old = EncodingJob::new(std::path::PathBuf::from("/tmp/old.mkv"));
+            old.status = JobStatus::Error {
+                message: "old failure".to_string(),
+            };
+            state.queue.push(old);
+            state.queue.state.converted_count = 7;
+            state.queue.state.skipped_count = 9;
+            state.queue.state.error_count = 3;
+        }
+        let (tx, _rx) = mpsc::channel();
+
+        assert_eq!(add_paths(&shared, &tx, vec![path]), (1, 0));
+        let state = lock(&shared);
+        assert_eq!(state.queue.state.converted_count, 0);
+        assert_eq!(state.queue.state.skipped_count, 0);
+        assert_eq!(state.queue.state.error_count, 0);
 
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -957,6 +957,8 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
         Err(e) => return disc_failure(&e, config.language),
     };
 
+    state.queue.state.reset_session_if_finished();
+
     // Each title is a queue job from the start, so a rip renders in the queue
     // table like everything else. Its path is the title's name until the file
     // it extracts to is known.
@@ -1659,7 +1661,16 @@ mod tests {
 
             assert!(merged.daemon.enabled);
             assert_eq!(merged.daemon.auth_token, current.daemon.auth_token);
-            assert_eq!(merged.disc.staging_directory.as_deref(), Some("/tmp"));
+            assert_eq!(
+                merged.disc.staging_directory,
+                Some(
+                    Path::new("/tmp")
+                        .canonicalize()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                )
+            );
         }
 
         #[test]

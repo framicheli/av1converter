@@ -297,12 +297,8 @@ $("summary-dismiss").addEventListener("click", () => {
   $("summary").classList.add("hidden");
 });
 
-// These are the daemon's running totals, not one batch's: it has no notion of
-// a batch, and its counters run for the life of the process. Reporting a
-// delta against the moment encoding started was tried and is worse — analysis
-// failures are counted before any encode begins, so a batch with a corrupt
-// file in it would subtract its own error away and report zero. The figures
-// are labelled as totals and left as totals.
+// The daemon resets these totals when fresh work follows a settled queue,
+// before analysis starts, so failures during analysis belong to the new batch.
 function updateSummary(s) {
   const { converted, skipped, errors, cancelled = 0 } = s.counts;
   // A batch that started is a batch whose result has not been seen yet.
