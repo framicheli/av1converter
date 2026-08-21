@@ -81,6 +81,22 @@ pub fn uninstall() -> io::Result<()> {
     }
 }
 
+/// Remove autostart without stopping the daemon serving the current session.
+pub fn uninstall_keep_running() -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_uninstall_keep_running()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        remove_plist()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        Ok(())
+    }
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn unsupported() -> io::Error {
     io::Error::other("starting at login is only supported on Linux (systemd) and macOS")
@@ -148,6 +164,17 @@ fn linux_install(exe: &Path, path: &str) -> io::Result<()> {
 #[cfg(target_os = "linux")]
 fn linux_uninstall() -> io::Result<()> {
     let _ = systemctl(&["disable", "--now", UNIT_NAME]);
+    remove_unit()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_uninstall_keep_running() -> io::Result<()> {
+    systemctl(&["disable", UNIT_NAME])?;
+    remove_unit()
+}
+
+#[cfg(target_os = "linux")]
+fn remove_unit() -> io::Result<()> {
     if let Some(path) = unit_path() {
         match std::fs::remove_file(&path) {
             Ok(()) => {}
@@ -276,6 +303,11 @@ fn macos_uninstall() -> io::Result<()> {
     // SAFETY: getuid is always safe.
     let domain = format!("gui/{}", unsafe { libc::getuid() });
     let _ = launchctl(&["bootout", &format!("{domain}/{PLIST_LABEL}")]);
+    remove_plist()
+}
+
+#[cfg(target_os = "macos")]
+fn remove_plist() -> io::Result<()> {
     if let Some(path) = plist_path() {
         match std::fs::remove_file(&path) {
             Ok(()) => {}

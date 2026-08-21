@@ -281,7 +281,7 @@ td.grew { color: var(--warn); }
    inside this column; a compound long enough to beat the column on its own
    breaks rather than pushing the control off the row. */
 .field label { color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere; }
-.field input[type="text"], .field input[type="number"], .field select {
+.field input[type="text"], .field input[type="password"], .field input[type="number"], .field select {
   background: var(--track);
   border: 1px solid var(--border);
   color: var(--ink);

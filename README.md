@@ -293,6 +293,8 @@ av1converter --uninstall-service  # remove it
 
 `--stop` lasts until the next login; uninstall is what prevents it coming back. On a headless Linux machine the user unit dies at logout unless lingering is enabled (`loginctl enable-linger $USER`). Re-run `--install-service` after moving the binary so `ExecStart` stays correct.
 
+Turning **Run at Startup** off from the web settings page leaves the current daemon session running and prevents it from starting at the next login.
+
 Both `--stop` and `--restart` cancel an active encode cleanly. Background mode is Unix-only; elsewhere use `--start-foreground`. The old `--daemon` and `--daemon-foreground` spellings remain available as compatibility aliases. Logs go to `~/.local/share/av1converter/daemon.log`.
 
 ### Security
@@ -314,7 +316,9 @@ Two things are worth knowing before exposing the daemon to a network:
 
 The daemon serves plain HTTP. If it must be reachable beyond the local machine, put it behind an HTTPS reverse proxy with connection/request timeouts and rate limiting, and keep the direct daemon port firewalled from untrusted networks. The embedded server is intended for trusted local or LAN use, not direct internet exposure.
 
-`browse_root`, `auth_token`, `bind_address`, `port` and the whole `[disc]` block are deliberately **not** editable from the web UI: a client that could rewrite them could widen its own access, and `makemkvcon_path` names a binary the daemon executes. Change them in `config.toml` or the TUI, then restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
+All configuration fields are shown in both the TUI and web settings pages. Settings that can widen host access or select an executable — the `[daemon]` and `[disc]` blocks — are writable in the web UI only when it is opened through a loopback origin such as `http://127.0.0.1:8399/` or `http://localhost:8399/`. They remain visible but read-only to LAN and reverse-proxy clients. Bind-address and port changes take effect after a daemon restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
+
+The current access token is never returned to a browser. A local web session can leave the token field blank to keep it or enter a replacement containing at least 32 characters. The accepted replacement becomes the browser session token immediately.
 
 The token is also what stops a website you visit from reaching the daemon. A page that re-points its own hostname at `127.0.0.1` still cannot produce the bearer token. The API also requires JSON for mutations, rejects unsafe unauthenticated hostnames, caps request bodies, and confines restored as well as newly added jobs to `browse_root`.
 
@@ -392,9 +396,9 @@ staging_directory = ""     # Where ripped titles wait to be encoded (unset = sys
 
 If `config.toml` cannot be parsed it is left untouched and defaults are used for that run, so a typo never costs you your settings.
 
-Each resolution preset also exposes per-encoder quality values (`crf`, `nvenc_cq`, `qsv_quality`, `amf_quality`) and `film_grain` synthesis strength.
+Each resolution preset exposes per-encoder quality values (`crf`, `nvenc_cq`, `qsv_quality`, `amf_quality`) and `film_grain` synthesis strength in both settings interfaces.
 
-`quality_preset` controls how those per-resolution values are managed: `low`, `medium`, and `high` apply built-in CRF/CQ values shifted across every tier at once (overwriting the `presets` table), while `custom` leaves the `presets` table untouched and editable, either directly in the file or via the RF fields on the configuration screen.
+`quality_preset` controls how those per-resolution values are managed: `low`, `medium`, and `high` apply built-in values across every tier at once (overwriting the `presets` table), while `custom` leaves the complete preset matrix editable in either settings interface or the configuration file.
 
 When `same_directory` is disabled, `output_directory` is required. It can be entered in the TUI configuration screen or edited directly in the file; the web settings page also exposes it within `browse_root`.
 

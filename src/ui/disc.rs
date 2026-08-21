@@ -101,6 +101,7 @@ pub fn render_disc_drives(f: &mut Frame, app: &mut App) {
 }
 
 /// Title selection, with scanning and failure as states of the same screen.
+#[allow(clippy::too_many_lines)]
 pub fn render_disc_titles(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
     let chunks = layout(f);

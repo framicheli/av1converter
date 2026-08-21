@@ -1,6 +1,6 @@
 use super::state::{SharedState, is_terminal, lock};
 use crate::analyzer::{DvMode, HdrType};
-use crate::config::{AppConfig, AudioConfig, Encoder, EncodingPreset};
+use crate::config::{AppConfig, Encoder};
 use crate::disc::worker::DiscEvent;
 use crate::queue::{
     EncodingJob, JobStatus, collect_video_files, collect_video_files_within, is_video_file,
@@ -1012,15 +1012,48 @@ pub fn settings_get(shared: &SharedState) -> Value {
     redacted(&lock(shared).config)
 }
 
-/// Read a client-supplied configuration, keeping the live `[daemon]` and
-/// `[disc]` blocks. `browse_root`, `auth_token`, bind address, port and the
-/// path to `makemkvcon` stay editable from the config file and the TUI only.
-fn merged_settings(body: &Value, live: &AppConfig) -> Result<AppConfig, String> {
+/// Report host-level settings capabilities for the current connection.
+pub fn settings_access(shared: &SharedState, local_request: bool) -> Value {
+    json!({
+        "local": local_request,
+        "autostart_supported": crate::daemon::service::supported(),
+        "autostart": crate::daemon::service::installed(),
+        "auth_token_set": !lock(shared).config.daemon.auth_token.is_empty(),
+        "setting_paths": crate::config::settings::SERIALIZED_SETTING_PATHS,
+        "local_only_paths": crate::config::settings::LOCAL_ONLY_SETTING_PATHS,
+    })
+}
+
+/// Merge client settings while preserving host-sensitive fields for remote requests.
+fn merged_settings(
+    body: &Value,
+    live: &AppConfig,
+    local_request: bool,
+) -> Result<AppConfig, String> {
     let mut config: AppConfig =
         serde_json::from_value(body.clone()).map_err(|e| format!("invalid settings: {e}"))?;
-    config.daemon = live.daemon.clone();
-    config.disc = live.disc.clone();
-    validate_numeric_settings(&config)?;
+    if local_request {
+        if config.daemon.auth_token.trim().is_empty() {
+            config.daemon.auth_token.clone_from(&live.daemon.auth_token);
+        } else if config.daemon.auth_token.trim().len() < 32 {
+            return Err("daemon access token must contain at least 32 characters".to_string());
+        }
+        config.disc.makemkvcon_path = config
+            .disc
+            .makemkvcon_path
+            .take()
+            .and_then(|path| (!path.trim().is_empty()).then(|| path.trim().to_string()));
+        config.disc.staging_directory = config
+            .disc
+            .staging_directory
+            .take()
+            .and_then(|path| (!path.trim().is_empty()).then(|| path.trim().to_string()));
+        config.normalize_changed_host_paths(live)?;
+    } else {
+        config.daemon = live.daemon.clone();
+        config.disc = live.disc.clone();
+    }
+    config.validate_settings()?;
     if let Some(presets) = config.quality_preset.presets() {
         config.presets = presets;
     }
@@ -1044,53 +1077,29 @@ fn merged_settings(body: &Value, live: &AppConfig) -> Result<AppConfig, String> 
     Ok(config)
 }
 
-fn validate_numeric_settings(config: &AppConfig) -> Result<(), String> {
-    if !config.quality.vmaf_threshold.is_finite()
-        || !(0.0..=100.0).contains(&config.quality.vmaf_threshold)
-    {
-        return Err("VMAF threshold must be between 0 and 100".to_string());
-    }
-    if config.performance.svt_preset > 13 {
-        return Err("SVT preset must be between 0 and 13".to_string());
-    }
-    if !crate::config::PerformanceConfig::valid_nvenc_preset(&config.performance.nvenc_preset) {
-        return Err("NVENC preset must be between p1 and p7".to_string());
-    }
-    if !(AudioConfig::MIN_PER_CHANNEL..=AudioConfig::MAX_PER_CHANNEL)
-        .contains(&config.audio.opus_bitrate_per_channel)
-    {
-        return Err("Opus bitrate per channel must be between 16 and 256".to_string());
-    }
-    let presets: [&EncodingPreset; 8] = [
-        &config.presets.sd,
-        &config.presets.hd,
-        &config.presets.full_hd,
-        &config.presets.full_hd_hdr,
-        &config.presets.full_hd_dv,
-        &config.presets.uhd,
-        &config.presets.uhd_hdr,
-        &config.presets.uhd_dv,
-    ];
-    if presets.iter().any(|preset| {
-        preset.crf > Encoder::SvtAv1.max_quality()
-            || preset.nvenc_cq > Encoder::Nvenc.max_quality()
-            || preset.qsv_quality > Encoder::Qsv.max_quality()
-            || preset.amf_quality > Encoder::Amf.max_quality()
-            || preset.film_grain > 50
-    }) {
-        return Err("one or more rate-factor or film-grain values are out of range".to_string());
-    }
-    Ok(())
-}
-
 /// Replace the configuration: sanitize, persist to config.toml, and swap the
 /// live copy. Changes apply from the next analysis/encode.
-pub fn settings_post(shared: &SharedState, body: &Value) -> (u16, Value) {
+pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) -> (u16, Value) {
     let mut state = lock(shared);
-    let config = match merged_settings(body, &state.config) {
+    let config = match merged_settings(body, &state.config, local_request) {
         Ok(config) => config,
         Err(e) => return (400, json!({"error": e})),
     };
+    if state.config.daemon.browse_root != config.daemon.browse_root
+        && state.queue.state.jobs.iter().any(|job| {
+            (!job.temporary && !within_root(&job.path, &config.daemon.browse_root))
+                || job
+                    .output_path
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .is_some_and(|parent| !within_root(parent, &config.daemon.browse_root))
+        })
+    {
+        return (
+            409,
+            json!({"error": "browse root excludes one or more queued jobs"}),
+        );
+    }
     if let Err(e) = config.save() {
         return (500, json!({"error": format!("failed to save: {e}")}));
     }
@@ -1107,6 +1116,73 @@ pub fn settings_post(shared: &SharedState, body: &Value) -> (u16, Value) {
         make_output_paths_unique(&mut state.queue.state.jobs);
     }
     (200, saved)
+}
+
+/// Install or remove the user-level daemon autostart service.
+pub fn settings_service_post(
+    shared: &SharedState,
+    body: &Value,
+    local_request: bool,
+) -> (u16, Value) {
+    if !local_request {
+        return (
+            403,
+            json!({"error": "autostart can only be changed locally"}),
+        );
+    }
+    if !crate::daemon::service::supported() {
+        return (
+            400,
+            json!({"error": "autostart is not supported on this platform"}),
+        );
+    }
+    let Some(enabled) = body.get("enabled").and_then(Value::as_bool) else {
+        return (400, json!({"error": "enabled must be a boolean"}));
+    };
+    let enabled_config = if enabled {
+        let mut state = lock(shared);
+        if state.config.daemon.enabled {
+            false
+        } else {
+            let mut config = state.config.clone();
+            config.daemon.enabled = true;
+            if let Err(error) = config.save() {
+                return (
+                    500,
+                    json!({"error": format!("failed to enable daemon: {error}")}),
+                );
+            }
+            state.config = config;
+            true
+        }
+    } else {
+        false
+    };
+    let result = if enabled {
+        crate::daemon::service::install().map(|_| ())
+    } else {
+        crate::daemon::service::uninstall_keep_running()
+    };
+    match result {
+        Ok(()) => (
+            200,
+            json!({
+                "enabled": crate::daemon::service::installed(),
+                "daemon_enabled": lock(shared).config.daemon.enabled,
+            }),
+        ),
+        Err(error) => {
+            if enabled_config {
+                let mut state = lock(shared);
+                let mut config = state.config.clone();
+                config.daemon.enabled = false;
+                if config.save().is_ok() {
+                    state.config = config;
+                }
+            }
+            (500, json!({"error": error.to_string()}))
+        }
+    }
 }
 
 /// Serialize a job status as a tagged JSON object.
@@ -1483,7 +1559,7 @@ mod tests {
             hostile["daemon"]["bind_address"] = json!("0.0.0.0");
             hostile["disc"]["makemkvcon_path"] = json!("/tmp/evil.sh");
 
-            let merged = merged_settings(&hostile, &live()).unwrap();
+            let merged = merged_settings(&hostile, &live(), false).unwrap();
             assert_eq!(merged.daemon, guarded());
             assert_eq!(merged.disc, live().disc);
         }
@@ -1494,7 +1570,7 @@ mod tests {
             let mut body = serde_json::to_value(AppConfig::default()).unwrap();
             body["output"]["suffix"] = json!("../escape");
 
-            let merged = merged_settings(&body, &AppConfig::default()).unwrap();
+            let merged = merged_settings(&body, &AppConfig::default(), false).unwrap();
             assert_eq!(merged.output.suffix, "..escape");
         }
 
@@ -1502,14 +1578,14 @@ mod tests {
         fn out_of_range_numbers_are_rejected_instead_of_silently_clamped() {
             let mut body = serde_json::to_value(AppConfig::default()).unwrap();
             body["audio"]["opus_bitrate_per_channel"] = json!(9000);
-            assert!(merged_settings(&body, &AppConfig::default()).is_err());
+            assert!(merged_settings(&body, &AppConfig::default(), false).is_err());
         }
 
         #[test]
         fn invalid_nvenc_preset_is_rejected() {
             let mut body = serde_json::to_value(AppConfig::default()).unwrap();
             body["performance"]["nvenc_preset"] = json!("slowest");
-            assert!(merged_settings(&body, &AppConfig::default()).is_err());
+            assert!(merged_settings(&body, &AppConfig::default(), false).is_err());
         }
 
         #[test]
@@ -1534,7 +1610,8 @@ mod tests {
                     &AppConfig {
                         daemon: daemon.clone(),
                         ..AppConfig::default()
-                    }
+                    },
+                    false,
                 )
                 .is_err()
             );
@@ -1546,6 +1623,7 @@ mod tests {
                     daemon: daemon.clone(),
                     ..AppConfig::default()
                 },
+                false,
             )
             .unwrap();
             assert_eq!(
@@ -1566,7 +1644,44 @@ mod tests {
             let mut body = serde_json::to_value(AppConfig::default()).unwrap();
             body["output"]["same_directory"] = json!(false);
             body["output"]["output_directory"] = Value::Null;
-            assert!(merged_settings(&body, &AppConfig::default()).is_err());
+            assert!(merged_settings(&body, &AppConfig::default(), false).is_err());
+        }
+
+        #[test]
+        fn local_settings_can_update_guarded_fields_without_exposing_the_token() {
+            let current = live();
+            let mut body = serde_json::to_value(&current).unwrap();
+            body["daemon"]["enabled"] = json!(true);
+            body["daemon"]["auth_token"] = json!("");
+            body["disc"]["staging_directory"] = json!("/tmp");
+
+            let merged = merged_settings(&body, &current, true).unwrap();
+
+            assert!(merged.daemon.enabled);
+            assert_eq!(merged.daemon.auth_token, current.daemon.auth_token);
+            assert_eq!(merged.disc.staging_directory.as_deref(), Some("/tmp"));
+        }
+
+        #[test]
+        fn local_token_replacement_requires_a_strong_value() {
+            let current = live();
+            let mut body = serde_json::to_value(&current).unwrap();
+            body["daemon"]["auth_token"] = json!("too-short");
+            assert!(merged_settings(&body, &current, true).is_err());
+
+            let replacement = "0123456789abcdef0123456789abcdef";
+            body["daemon"]["auth_token"] = json!(replacement);
+            let merged = merged_settings(&body, &current, true).unwrap();
+            assert_eq!(merged.daemon.auth_token, replacement);
+        }
+
+        #[test]
+        fn remote_clients_cannot_change_autostart() {
+            let shared = Arc::new(std::sync::Mutex::new(
+                crate::daemon::state::DaemonState::new(AppConfig::default()),
+            ));
+            let (status, _) = settings_service_post(&shared, &json!({"enabled": true}), false);
+            assert_eq!(status, 403);
         }
     }
 

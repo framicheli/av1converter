@@ -337,7 +337,7 @@ fn run_encode_loop(
     }
 }
 
-/// `message`, followed by the last few lines FFmpeg wrote to stderr.
+/// `message`, followed by the last few lines `FFmpeg` wrote to stderr.
 fn with_stderr(message: &str, stderr_path: &Path) -> String {
     let stderr = read_file_tail(stderr_path).unwrap_or_default();
     let last_lines: Vec<&str> = stderr.lines().rev().take(5).collect();
@@ -546,8 +546,8 @@ mod tests {
         assert_eq!(shortfall(0.0, 240.0), None);
     }
 
-    /// With no output to probe, the progress log stands in — via out_time, or
-    /// via the frame count when the source reports out_time=N/A.
+    /// With no output to probe, the progress log stands in — via `out_time`, or
+    /// via the frame count when the source reports `out_time=N/A`.
     #[test]
     fn the_progress_log_stands_in_for_an_unprobeable_output() {
         let cancel = std::sync::atomic::AtomicBool::new(false);

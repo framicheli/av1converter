@@ -215,7 +215,7 @@ mod disc_screen_tests {
         app.disc_titles = vec![DiscTitle {
             id: 1,
             name: "title01.mkv".to_string(),
-            duration: std::time::Duration::from_secs(3600),
+            duration: std::time::Duration::from_hours(1),
             size_bytes: 24_100_000_000,
             chapters: 12,
             tracks: vec!["eng TrueHD 7.1".to_string()],

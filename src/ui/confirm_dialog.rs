@@ -9,6 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
+#[allow(clippy::too_many_lines)]
 pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
     let Some((action, selected)) = &app.confirm_dialog else {
         return;

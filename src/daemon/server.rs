@@ -92,6 +92,31 @@ fn host_is_pinned(host: &str) -> bool {
     name.eq_ignore_ascii_case("localhost") || name.parse::<std::net::IpAddr>().is_ok()
 }
 
+/// Whether the connection and requested origin both identify this host.
+fn request_is_local(request: &Request) -> bool {
+    let peer_is_loopback = request
+        .remote_addr()
+        .is_some_and(|address| address.ip().is_loopback());
+    let host_is_loopback = request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("Host"))
+        .is_some_and(|header| host_is_loopback(header.value.as_str()));
+    peer_is_loopback && host_is_loopback
+}
+
+/// Whether a `Host` header names a loopback origin.
+fn host_is_loopback(host: &str) -> bool {
+    let name = host.strip_prefix('[').map_or_else(
+        || host.split(':').next().unwrap_or(""),
+        |rest| rest.split(']').next().unwrap_or(""),
+    );
+    name.eq_ignore_ascii_case("localhost")
+        || name
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
 /// Whether this `Host` header can be trusted to actually mean *this* daemon.
 ///
 /// A DNS rebinding attack has to reach us through a name the attacker controls:
@@ -131,6 +156,7 @@ fn handle_request(
 ) {
     let url = request.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
+    let local_request = request_is_local(&request);
 
     if path.starts_with("/api") {
         let token = super::state::lock(shared).config.daemon.auth_token.clone();
@@ -178,6 +204,7 @@ fn handle_request(
             query_param(query, "hidden").as_deref() == Some("1"),
         ),
         (Method::Get, "/api/settings") => (200, api::settings_get(shared)),
+        (Method::Get, "/api/settings/access") => (200, api::settings_access(shared, local_request)),
         (Method::Get, "/api/strings") => (200, api::strings(shared)),
         (Method::Get, "/api/job/tracks") => {
             api::job_tracks(shared, &query_param(query, "id").unwrap_or_default())
@@ -207,7 +234,11 @@ fn handle_request(
         (Method::Post, "/api/queue/cancel") => api::queue_cancel(shared),
         (Method::Post, "/api/queue/clear_finished") => api::queue_clear_finished(shared),
         (Method::Post, "/api/settings") => match read_json_body(&mut request) {
-            Ok(body) => api::settings_post(shared, &body),
+            Ok(body) => api::settings_post(shared, &body, local_request),
+            Err(resp) => resp,
+        },
+        (Method::Post, "/api/settings/service") => match read_json_body(&mut request) {
+            Ok(body) => api::settings_service_post(shared, &body, local_request),
             Err(resp) => resp,
         },
         _ => (404, serde_json::json!({"error": "not found"})),
@@ -357,6 +388,15 @@ mod tests {
         assert!(!host_is_pinned("nas.lan"));
         assert!(!host_is_pinned("localhost.evil.com"));
         assert!(!host_is_pinned(""));
+    }
+
+    #[test]
+    fn local_admin_hosts_are_limited_to_loopback_origins() {
+        assert!(host_is_loopback("127.0.0.1:8399"));
+        assert!(host_is_loopback("[::1]:8399"));
+        assert!(host_is_loopback("localhost:8399"));
+        assert!(!host_is_loopback("192.168.1.10:8399"));
+        assert!(!host_is_loopback("media.example.com"));
     }
 
     #[test]

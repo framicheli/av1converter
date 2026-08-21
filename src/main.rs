@@ -1057,36 +1057,51 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                 start_config_edit(app);
             }
         }
-        KeyCode::Char('s') => {
-            let lang = app.config.language;
-            app.config.sanitize();
-            if !app.config.output.same_directory
-                && !app
-                    .config
-                    .output
-                    .output_directory
-                    .as_deref()
-                    .is_some_and(|path| std::path::Path::new(path).is_dir())
-            {
-                app.set_timed_error(
-                    &format!(
-                        "{}: {}",
-                        t(lang, Msg::SaveFailed),
-                        t(lang, Msg::WebCfgOutputDirectory)
-                    ),
-                    3,
-                );
-                return;
-            }
-            if let Err(e) = app.config.save() {
-                tracing::warn!("Failed to save config: {:?}", e);
-                app.set_timed_error(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 3);
-            } else {
-                app.config_snapshot = Some(app.config.clone());
-                app.set_timed_success(t(lang, Msg::SavedExclaim), 3);
-            }
-        }
+        KeyCode::Char('s') => save_config(app),
         _ => {}
+    }
+}
+
+/// Validate and persist the configuration screen values.
+fn save_config(app: &mut App) {
+    let lang = app.config.language;
+    let previous = app
+        .config_snapshot
+        .clone()
+        .unwrap_or_else(|| app.config.clone());
+    if let Err(error) = app.config.normalize_changed_host_paths(&previous) {
+        app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
+        return;
+    }
+    if let Err(error) = app.config.validate_settings() {
+        app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
+        return;
+    }
+    app.config.sanitize();
+    if !app.config.output.same_directory
+        && !app
+            .config
+            .output
+            .output_directory
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path).is_dir())
+    {
+        app.set_timed_error(
+            &format!(
+                "{}: {}",
+                t(lang, Msg::SaveFailed),
+                t(lang, Msg::WebCfgOutputDirectory)
+            ),
+            3,
+        );
+        return;
+    }
+    if let Err(error) = app.config.save() {
+        tracing::warn!("Failed to save config: {error:?}");
+        app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
+    } else {
+        app.config_snapshot = Some(app.config.clone());
+        app.set_timed_success(t(lang, Msg::SavedExclaim), 3);
     }
 }
 
@@ -1114,6 +1129,9 @@ fn start_config_edit(app: &mut App) {
         ConfigField::DaemonPort => app.config.daemon.port.to_string(),
         ConfigField::DaemonBrowseRoot => app.config.daemon.browse_root.clone(),
         ConfigField::DaemonAuthToken => app.config.daemon.auth_token.clone(),
+        ConfigField::DiscMakemkvconPath => {
+            app.config.disc.makemkvcon_path.clone().unwrap_or_default()
+        }
         ConfigField::DiscStagingDirectory => app
             .config
             .disc
@@ -1173,6 +1191,10 @@ fn commit_config_edit(app: &mut App) {
         // Both accept an empty value, which turns the feature off
         ConfigField::DaemonBrowseRoot => app.config.daemon.browse_root = value,
         ConfigField::DaemonAuthToken => app.config.daemon.auth_token = value,
+        // Empty uses PATH and the platform installation location.
+        ConfigField::DiscMakemkvconPath => {
+            app.config.disc.makemkvcon_path = (!value.is_empty()).then_some(value);
+        }
         // Empty means the system temp directory.
         ConfigField::DiscStagingDirectory => {
             app.config.disc.staging_directory = (!value.is_empty()).then_some(value);
@@ -1367,18 +1389,12 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         ConfigField::SkipAlreadyOpus => {
             app.config.audio.skip_already_opus = !app.config.audio.skip_already_opus;
         }
-        ConfigField::RfSd
-        | ConfigField::RfHd
-        | ConfigField::RfFullHd
-        | ConfigField::RfFullHdHdr
-        | ConfigField::RfFullHdDv
-        | ConfigField::RfUhd
-        | ConfigField::RfUhdHdr
-        | ConfigField::RfUhdDv => {
-            let encoder = app.config.encoder;
-            if let Some(preset) = preset_for_rf_field(&mut app.config.presets, field) {
-                adjust_preset_rf(preset, encoder, increase);
-            }
+        ConfigField::SelectAllFallback => {
+            app.config.tracks.select_all_fallback = !app.config.tracks.select_all_fallback;
+        }
+        ConfigField::Preset(tier, metric) => {
+            let preset = preset_for_tier_mut(&mut app.config.presets, tier);
+            adjust_preset_value(preset, metric, increase);
         }
         // Text fields are edited via Enter, not ← →
         ConfigField::OutputSuffix
@@ -1390,6 +1406,7 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         | ConfigField::DaemonPort
         | ConfigField::DaemonBrowseRoot
         | ConfigField::DaemonAuthToken
+        | ConfigField::DiscMakemkvconPath
         | ConfigField::DiscStagingDirectory => {}
     }
 }
@@ -1415,37 +1432,41 @@ fn cycle_quality_preset(app: &mut App, increase: bool) {
     }
 }
 
-/// Map a per-resolution rate-factor field to its mutable preset, if any.
-fn preset_for_rf_field(
+/// Select the mutable preset for a resolution tier.
+fn preset_for_tier_mut(
     presets: &mut config::EncodingPresetsConfig,
-    field: ui::config_screen::ConfigField,
-) -> Option<&mut config::EncodingPreset> {
-    use crate::ui::config_screen::ConfigField;
-    Some(match field {
-        ConfigField::RfSd => &mut presets.sd,
-        ConfigField::RfHd => &mut presets.hd,
-        ConfigField::RfFullHd => &mut presets.full_hd,
-        ConfigField::RfFullHdHdr => &mut presets.full_hd_hdr,
-        ConfigField::RfFullHdDv => &mut presets.full_hd_dv,
-        ConfigField::RfUhd => &mut presets.uhd,
-        ConfigField::RfUhdHdr => &mut presets.uhd_hdr,
-        ConfigField::RfUhdDv => &mut presets.uhd_dv,
-        _ => return None,
-    })
+    tier: ui::config_screen::PresetTier,
+) -> &mut config::EncodingPreset {
+    use crate::ui::config_screen::PresetTier;
+    match tier {
+        PresetTier::Sd => &mut presets.sd,
+        PresetTier::Hd => &mut presets.hd,
+        PresetTier::FullHd => &mut presets.full_hd,
+        PresetTier::FullHdHdr => &mut presets.full_hd_hdr,
+        PresetTier::FullHdDv => &mut presets.full_hd_dv,
+        PresetTier::Uhd => &mut presets.uhd,
+        PresetTier::UhdHdr => &mut presets.uhd_hdr,
+        PresetTier::UhdDv => &mut presets.uhd_dv,
+    }
 }
 
-fn adjust_preset_rf(preset: &mut config::EncodingPreset, encoder: config::Encoder, increase: bool) {
-    use crate::config::Encoder;
-    let val = match encoder {
-        Encoder::SvtAv1 => &mut preset.crf,
-        Encoder::Nvenc => &mut preset.nvenc_cq,
-        Encoder::Qsv => &mut preset.qsv_quality,
-        Encoder::Amf => &mut preset.amf_quality,
+fn adjust_preset_value(
+    preset: &mut config::EncodingPreset,
+    metric: ui::config_screen::PresetMetric,
+    increase: bool,
+) {
+    use crate::ui::config_screen::PresetMetric;
+    let (value, maximum) = match metric {
+        PresetMetric::Crf => (&mut preset.crf, config::Encoder::SvtAv1.max_quality()),
+        PresetMetric::FilmGrain => (&mut preset.film_grain, 50),
+        PresetMetric::NvencCq => (&mut preset.nvenc_cq, config::Encoder::Nvenc.max_quality()),
+        PresetMetric::QsvQuality => (&mut preset.qsv_quality, config::Encoder::Qsv.max_quality()),
+        PresetMetric::AmfQuality => (&mut preset.amf_quality, config::Encoder::Amf.max_quality()),
     };
     if increase {
-        *val = val.saturating_add(1).min(encoder.max_quality());
+        *value = value.saturating_add(1).min(maximum);
     } else {
-        *val = val.saturating_sub(1);
+        *value = value.saturating_sub(1);
     }
 }
 

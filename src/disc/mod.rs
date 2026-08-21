@@ -663,7 +663,7 @@ mod tests {
         assert_eq!(source.label(), Some("Blade Runner"));
     }
 
-    /// Only a folder MakeMKV can actually read is accepted, and the file name
+    /// Only a folder `MakeMKV` can actually read is accepted, and the file name
     /// decides `file:` from `iso:`.
     #[cfg(unix)]
     #[test]

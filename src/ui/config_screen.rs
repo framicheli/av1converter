@@ -1,6 +1,6 @@
 use super::common::message_color;
 use crate::app::App;
-use crate::config::{AppConfig, AudioMode, Encoder, EncodingPreset, QualityPreset};
+use crate::config::{AppConfig, AudioMode, EncodingPreset, QualityPreset};
 use crate::i18n::{Msg, t};
 use ratatui::{
     Frame,
@@ -34,20 +34,14 @@ pub enum ConfigField {
     SvtPreset,
     NvencPreset,
     QualityPreset,
-    RfSd,
-    RfHd,
-    RfFullHd,
-    RfFullHdHdr,
-    RfFullHdDv,
-    RfUhd,
-    RfUhdHdr,
-    RfUhdDv,
+    Preset(PresetTier, PresetMetric),
     OutputSuffix,
     OutputContainer,
     SameDirectory,
     OutputDirectory,
     AudioLanguages,
     SubtitleLanguages,
+    SelectAllFallback,
     AudioDefaultMode,
     OpusBitratePerChannel,
     SkipAlreadyOpus,
@@ -57,7 +51,31 @@ pub enum ConfigField {
     DaemonPort,
     DaemonBrowseRoot,
     DaemonAuthToken,
+    DiscMakemkvconPath,
     DiscStagingDirectory,
+}
+
+/// Resolution and dynamic-range tier used by an encoding preset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetTier {
+    Sd,
+    Hd,
+    FullHd,
+    FullHdHdr,
+    FullHdDv,
+    Uhd,
+    UhdHdr,
+    UhdDv,
+}
+
+/// Encoder property stored for each resolution tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetMetric {
+    Crf,
+    FilmGrain,
+    NvencCq,
+    QsvQuality,
+    AmfQuality,
 }
 
 /// Descriptor for a single row in the config screen.
@@ -112,42 +130,202 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
     ConfigItem {
         label: Msg::CfgRfSd,
         kind: ConfigItemKind::Numeric,
-        field: ConfigField::RfSd,
+        field: ConfigField::Preset(PresetTier::Sd, PresetMetric::Crf),
+    },
+    ConfigItem {
+        label: Msg::CfgRfSd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::Sd, PresetMetric::FilmGrain),
+    },
+    ConfigItem {
+        label: Msg::CfgRfSd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::Sd, PresetMetric::NvencCq),
+    },
+    ConfigItem {
+        label: Msg::CfgRfSd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::Sd, PresetMetric::QsvQuality),
+    },
+    ConfigItem {
+        label: Msg::CfgRfSd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::Sd, PresetMetric::AmfQuality),
     },
     ConfigItem {
         label: Msg::CfgRfHd,
         kind: ConfigItemKind::Numeric,
-        field: ConfigField::RfHd,
+        field: ConfigField::Preset(PresetTier::Hd, PresetMetric::Crf),
+    },
+    ConfigItem {
+        label: Msg::CfgRfHd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::Hd, PresetMetric::FilmGrain),
+    },
+    ConfigItem {
+        label: Msg::CfgRfHd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::Hd, PresetMetric::NvencCq),
+    },
+    ConfigItem {
+        label: Msg::CfgRfHd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::Hd, PresetMetric::QsvQuality),
+    },
+    ConfigItem {
+        label: Msg::CfgRfHd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::Hd, PresetMetric::AmfQuality),
     },
     ConfigItem {
         label: Msg::CfgRfFullHd,
         kind: ConfigItemKind::Numeric,
-        field: ConfigField::RfFullHd,
+        field: ConfigField::Preset(PresetTier::FullHd, PresetMetric::Crf),
+    },
+    ConfigItem {
+        label: Msg::CfgRfFullHd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::FullHd, PresetMetric::FilmGrain),
+    },
+    ConfigItem {
+        label: Msg::CfgRfFullHd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::FullHd, PresetMetric::NvencCq),
+    },
+    ConfigItem {
+        label: Msg::CfgRfFullHd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::FullHd, PresetMetric::QsvQuality),
+    },
+    ConfigItem {
+        label: Msg::CfgRfFullHd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::FullHd, PresetMetric::AmfQuality),
     },
     ConfigItem {
         label: Msg::CfgRfFullHdHdr,
         kind: ConfigItemKind::Numeric,
-        field: ConfigField::RfFullHdHdr,
+        field: ConfigField::Preset(PresetTier::FullHdHdr, PresetMetric::Crf),
+    },
+    ConfigItem {
+        label: Msg::CfgRfFullHdHdr,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::FullHdHdr, PresetMetric::FilmGrain),
+    },
+    ConfigItem {
+        label: Msg::CfgRfFullHdHdr,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::FullHdHdr, PresetMetric::NvencCq),
+    },
+    ConfigItem {
+        label: Msg::CfgRfFullHdHdr,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::FullHdHdr, PresetMetric::QsvQuality),
+    },
+    ConfigItem {
+        label: Msg::CfgRfFullHdHdr,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::FullHdHdr, PresetMetric::AmfQuality),
     },
     ConfigItem {
         label: Msg::CfgRfFullHdDv,
         kind: ConfigItemKind::Numeric,
-        field: ConfigField::RfFullHdDv,
+        field: ConfigField::Preset(PresetTier::FullHdDv, PresetMetric::Crf),
+    },
+    ConfigItem {
+        label: Msg::CfgRfFullHdDv,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::FullHdDv, PresetMetric::FilmGrain),
+    },
+    ConfigItem {
+        label: Msg::CfgRfFullHdDv,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::FullHdDv, PresetMetric::NvencCq),
+    },
+    ConfigItem {
+        label: Msg::CfgRfFullHdDv,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::FullHdDv, PresetMetric::QsvQuality),
+    },
+    ConfigItem {
+        label: Msg::CfgRfFullHdDv,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::FullHdDv, PresetMetric::AmfQuality),
     },
     ConfigItem {
         label: Msg::CfgRfUhd,
         kind: ConfigItemKind::Numeric,
-        field: ConfigField::RfUhd,
+        field: ConfigField::Preset(PresetTier::Uhd, PresetMetric::Crf),
+    },
+    ConfigItem {
+        label: Msg::CfgRfUhd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::Uhd, PresetMetric::FilmGrain),
+    },
+    ConfigItem {
+        label: Msg::CfgRfUhd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::Uhd, PresetMetric::NvencCq),
+    },
+    ConfigItem {
+        label: Msg::CfgRfUhd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::Uhd, PresetMetric::QsvQuality),
+    },
+    ConfigItem {
+        label: Msg::CfgRfUhd,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::Uhd, PresetMetric::AmfQuality),
     },
     ConfigItem {
         label: Msg::CfgRfUhdHdr,
         kind: ConfigItemKind::Numeric,
-        field: ConfigField::RfUhdHdr,
+        field: ConfigField::Preset(PresetTier::UhdHdr, PresetMetric::Crf),
+    },
+    ConfigItem {
+        label: Msg::CfgRfUhdHdr,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::UhdHdr, PresetMetric::FilmGrain),
+    },
+    ConfigItem {
+        label: Msg::CfgRfUhdHdr,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::UhdHdr, PresetMetric::NvencCq),
+    },
+    ConfigItem {
+        label: Msg::CfgRfUhdHdr,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::UhdHdr, PresetMetric::QsvQuality),
+    },
+    ConfigItem {
+        label: Msg::CfgRfUhdHdr,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::UhdHdr, PresetMetric::AmfQuality),
     },
     ConfigItem {
         label: Msg::CfgRfUhdDv,
         kind: ConfigItemKind::Numeric,
-        field: ConfigField::RfUhdDv,
+        field: ConfigField::Preset(PresetTier::UhdDv, PresetMetric::Crf),
+    },
+    ConfigItem {
+        label: Msg::CfgRfUhdDv,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::UhdDv, PresetMetric::FilmGrain),
+    },
+    ConfigItem {
+        label: Msg::CfgRfUhdDv,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::UhdDv, PresetMetric::NvencCq),
+    },
+    ConfigItem {
+        label: Msg::CfgRfUhdDv,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::UhdDv, PresetMetric::QsvQuality),
+    },
+    ConfigItem {
+        label: Msg::CfgRfUhdDv,
+        kind: ConfigItemKind::Numeric,
+        field: ConfigField::Preset(PresetTier::UhdDv, PresetMetric::AmfQuality),
     },
     ConfigItem {
         label: Msg::CfgOutputSuffix,
@@ -178,6 +356,11 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         label: Msg::CfgSubtitleLanguages,
         kind: ConfigItemKind::Text,
         field: ConfigField::SubtitleLanguages,
+    },
+    ConfigItem {
+        label: Msg::WebCfgSelectAllFallback,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::SelectAllFallback,
     },
     ConfigItem {
         label: Msg::AudioMode,
@@ -225,6 +408,11 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         field: ConfigField::DaemonAuthToken,
     },
     ConfigItem {
+        label: Msg::CfgMakemkvconPath,
+        kind: ConfigItemKind::Text,
+        field: ConfigField::DiscMakemkvconPath,
+    },
+    ConfigItem {
         label: Msg::CfgStagingDirectory,
         kind: ConfigItemKind::Text,
         field: ConfigField::DiscStagingDirectory,
@@ -233,17 +421,60 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
 
 /// Whether a field is one of the per-resolution rate-factor rows.
 fn is_rf_field(field: ConfigField) -> bool {
-    matches!(
-        field,
-        ConfigField::RfSd
-            | ConfigField::RfHd
-            | ConfigField::RfFullHd
-            | ConfigField::RfFullHdHdr
-            | ConfigField::RfFullHdDv
-            | ConfigField::RfUhd
-            | ConfigField::RfUhdHdr
-            | ConfigField::RfUhdDv
-    )
+    matches!(field, ConfigField::Preset(_, _))
+}
+
+#[cfg(test)]
+fn config_field_path(field: ConfigField) -> Option<String> {
+    let path = match field {
+        ConfigField::Language => "language",
+        ConfigField::Encoder => "encoder",
+        ConfigField::VmafThreshold => "quality.vmaf_threshold",
+        ConfigField::VmafEnabled => "quality.vmaf_enabled",
+        ConfigField::DeleteSource => "quality.delete_source_on_success",
+        ConfigField::SvtPreset => "performance.svt_preset",
+        ConfigField::NvencPreset => "performance.nvenc_preset",
+        ConfigField::QualityPreset => "quality_preset",
+        ConfigField::OutputSuffix => "output.suffix",
+        ConfigField::OutputContainer => "output.container",
+        ConfigField::SameDirectory => "output.same_directory",
+        ConfigField::OutputDirectory => "output.output_directory",
+        ConfigField::AudioLanguages => "tracks.preferred_audio_languages",
+        ConfigField::SubtitleLanguages => "tracks.preferred_subtitle_languages",
+        ConfigField::SelectAllFallback => "tracks.select_all_fallback",
+        ConfigField::AudioDefaultMode => "audio.default_mode",
+        ConfigField::OpusBitratePerChannel => "audio.opus_bitrate_per_channel",
+        ConfigField::SkipAlreadyOpus => "audio.skip_already_opus",
+        ConfigField::DaemonEnabled => "daemon.enabled",
+        ConfigField::DaemonBindAddress => "daemon.bind_address",
+        ConfigField::DaemonPort => "daemon.port",
+        ConfigField::DaemonBrowseRoot => "daemon.browse_root",
+        ConfigField::DaemonAuthToken => "daemon.auth_token",
+        ConfigField::DiscMakemkvconPath => "disc.makemkvcon_path",
+        ConfigField::DiscStagingDirectory => "disc.staging_directory",
+        ConfigField::DaemonAutostart => return None,
+        ConfigField::Preset(tier, metric) => {
+            let tier = match tier {
+                PresetTier::Sd => "sd",
+                PresetTier::Hd => "hd",
+                PresetTier::FullHd => "full_hd",
+                PresetTier::FullHdHdr => "full_hd_hdr",
+                PresetTier::FullHdDv => "full_hd_dv",
+                PresetTier::Uhd => "uhd",
+                PresetTier::UhdHdr => "uhd_hdr",
+                PresetTier::UhdDv => "uhd_dv",
+            };
+            let metric = match metric {
+                PresetMetric::Crf => "crf",
+                PresetMetric::FilmGrain => "film_grain",
+                PresetMetric::NvencCq => "nvenc_cq",
+                PresetMetric::QsvQuality => "qsv_quality",
+                PresetMetric::AmfQuality => "amf_quality",
+            };
+            return Some(format!("presets.{tier}.{metric}"));
+        }
+    };
+    Some(path.to_string())
 }
 
 /// The config rows actually shown for the current config.
@@ -261,12 +492,6 @@ pub fn visible_config_items(config: &AppConfig) -> Vec<&'static ConfigItem> {
                     item.field,
                     ConfigField::VmafThreshold | ConfigField::DeleteSource
                 )
-        })
-        .filter(|item| {
-            matches!(config.encoder, Encoder::SvtAv1) || item.field != ConfigField::SvtPreset
-        })
-        .filter(|item| {
-            matches!(config.encoder, Encoder::Nvenc) || item.field != ConfigField::NvencPreset
         })
         .filter(|item| !config.output.same_directory || item.field != ConfigField::OutputDirectory)
         .filter(|item| {
@@ -315,14 +540,9 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         }
         ConfigField::SvtPreset => config.performance.svt_preset.to_string(),
         ConfigField::NvencPreset => config.performance.nvenc_preset.clone(),
-        ConfigField::RfSd => preset_rf(config.encoder, &config.presets.sd),
-        ConfigField::RfHd => preset_rf(config.encoder, &config.presets.hd),
-        ConfigField::RfFullHd => preset_rf(config.encoder, &config.presets.full_hd),
-        ConfigField::RfFullHdHdr => preset_rf(config.encoder, &config.presets.full_hd_hdr),
-        ConfigField::RfFullHdDv => preset_rf(config.encoder, &config.presets.full_hd_dv),
-        ConfigField::RfUhd => preset_rf(config.encoder, &config.presets.uhd),
-        ConfigField::RfUhdHdr => preset_rf(config.encoder, &config.presets.uhd_hdr),
-        ConfigField::RfUhdDv => preset_rf(config.encoder, &config.presets.uhd_dv),
+        ConfigField::Preset(tier, metric) => {
+            preset_value(preset_for_tier(&config.presets, tier), metric).to_string()
+        }
         ConfigField::OutputSuffix => config.output.suffix.clone(),
         ConfigField::OutputContainer => config.output.container.clone(),
         ConfigField::SameDirectory => bool_display(config.language, config.output.same_directory),
@@ -333,6 +553,9 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
             .map_or_else(|| "—".to_string(), empty_as_dash),
         ConfigField::AudioLanguages => config.tracks.preferred_audio_languages.join(", "),
         ConfigField::SubtitleLanguages => config.tracks.preferred_subtitle_languages.join(", "),
+        ConfigField::SelectAllFallback => {
+            bool_display(config.language, config.tracks.select_all_fallback)
+        }
         ConfigField::AudioDefaultMode => {
             audio_mode_name(config.language, config.audio.default_mode)
         }
@@ -347,6 +570,11 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::DaemonBindAddress => config.daemon.bind_address.clone(),
         ConfigField::DaemonPort => config.daemon.port.to_string(),
         ConfigField::DaemonBrowseRoot => empty_as_dash(&config.daemon.browse_root),
+        ConfigField::DiscMakemkvconPath => config
+            .disc
+            .makemkvcon_path
+            .as_deref()
+            .map_or_else(|| "—".to_string(), empty_as_dash),
         ConfigField::DiscStagingDirectory => config
             .disc
             .staging_directory
@@ -372,12 +600,29 @@ fn empty_as_dash(value: &str) -> String {
     }
 }
 
-fn preset_rf(encoder: Encoder, preset: &EncodingPreset) -> String {
-    match encoder {
-        Encoder::SvtAv1 => preset.crf.to_string(),
-        Encoder::Nvenc => preset.nvenc_cq.to_string(),
-        Encoder::Qsv => preset.qsv_quality.to_string(),
-        Encoder::Amf => preset.amf_quality.to_string(),
+fn preset_for_tier(
+    presets: &crate::config::EncodingPresetsConfig,
+    tier: PresetTier,
+) -> &EncodingPreset {
+    match tier {
+        PresetTier::Sd => &presets.sd,
+        PresetTier::Hd => &presets.hd,
+        PresetTier::FullHd => &presets.full_hd,
+        PresetTier::FullHdHdr => &presets.full_hd_hdr,
+        PresetTier::FullHdDv => &presets.full_hd_dv,
+        PresetTier::Uhd => &presets.uhd,
+        PresetTier::UhdHdr => &presets.uhd_hdr,
+        PresetTier::UhdDv => &presets.uhd_dv,
+    }
+}
+
+fn preset_value(preset: &EncodingPreset, metric: PresetMetric) -> u8 {
+    match metric {
+        PresetMetric::Crf => preset.crf,
+        PresetMetric::FilmGrain => preset.film_grain,
+        PresetMetric::NvencCq => preset.nvenc_cq,
+        PresetMetric::QsvQuality => preset.qsv_quality,
+        PresetMetric::AmfQuality => preset.amf_quality,
     }
 }
 
@@ -525,7 +770,7 @@ fn build_config_items(
             let is_text = item.kind == ConfigItemKind::Text;
 
             let prefix = if is_selected { "> " } else { "  " };
-            let label = format!("{}{}: ", prefix, t(config.language, item.label));
+            let label = format!("{}{}: ", prefix, config_item_label(config.language, item));
             let hint = if is_text && is_selected && !editing {
                 t(config.language, Msg::EnterToEdit)
             } else {
@@ -574,6 +819,23 @@ fn build_config_items(
             ListItem::new(lines)
         })
         .collect()
+}
+
+fn config_item_label(lang: crate::i18n::Language, item: &ConfigItem) -> String {
+    let tier = t(lang, item.label);
+    match item.field {
+        ConfigField::Preset(_, metric) => {
+            let metric = match metric {
+                PresetMetric::Crf => "CRF",
+                PresetMetric::FilmGrain => t(lang, Msg::CfgFilmGrain),
+                PresetMetric::NvencCq => "NVENC CQ",
+                PresetMetric::QsvQuality => "QSV Quality",
+                PresetMetric::AmfQuality => "AMF Quality",
+            };
+            format!("{tier} · {metric}")
+        }
+        _ => tier.to_string(),
+    }
 }
 
 fn edit_display(field: ConfigField, value: &str, cursor: usize, max_width: usize) -> String {
@@ -626,11 +888,12 @@ fn config_group(field: ConfigField) -> Option<Msg> {
         ConfigField::Language => Some(Msg::WebGroupGeneral),
         ConfigField::SvtPreset | ConfigField::NvencPreset => Some(Msg::WebGroupPerformance),
         ConfigField::QualityPreset => Some(Msg::WebGroupQuality),
-        ConfigField::RfSd => Some(Msg::WebGroupRateFactors),
+        ConfigField::Preset(PresetTier::Sd, PresetMetric::Crf) => Some(Msg::WebGroupRateFactors),
         ConfigField::OutputSuffix => Some(Msg::WebGroupOutput),
-        ConfigField::AudioLanguages => Some(Msg::WebGroupAudio),
+        ConfigField::AudioLanguages => Some(Msg::CfgGroupTracks),
+        ConfigField::AudioDefaultMode => Some(Msg::WebGroupAudio),
         ConfigField::DaemonEnabled => Some(Msg::WebGroupDaemon),
-        ConfigField::DiscStagingDirectory => Some(Msg::CfgGroupDisc),
+        ConfigField::DiscMakemkvconPath => Some(Msg::CfgGroupDisc),
         _ => None,
     }
 }
@@ -673,8 +936,40 @@ mod tests {
             Some(Msg::WebGroupDaemon)
         );
         assert_eq!(
-            config_group(ConfigField::DiscStagingDirectory),
+            config_group(ConfigField::AudioLanguages),
+            Some(Msg::CfgGroupTracks)
+        );
+        assert_eq!(
+            config_group(ConfigField::AudioDefaultMode),
+            Some(Msg::WebGroupAudio)
+        );
+        assert_eq!(
+            config_group(ConfigField::DiscMakemkvconPath),
             Some(Msg::CfgGroupDisc)
         );
+    }
+
+    #[test]
+    fn configuration_rows_cover_every_serialized_setting() {
+        let mut config = AppConfig {
+            quality_preset: QualityPreset::Custom,
+            ..AppConfig::default()
+        };
+        config.output.same_directory = false;
+
+        let mut actual: Vec<String> = CONFIG_ITEMS
+            .iter()
+            .filter_map(|item| config_field_path(item.field))
+            .collect();
+        actual.sort();
+        actual.dedup();
+
+        let mut expected: Vec<String> = crate::config::settings::SERIALIZED_SETTING_PATHS
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect();
+        expected.sort();
+
+        assert_eq!(actual, expected);
     }
 }

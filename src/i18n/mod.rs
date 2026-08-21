@@ -251,6 +251,7 @@ pub enum Msg {
     UnsavedChanges,
     InvalidAddress,
     InvalidPort,
+    CfgGroupTracks,
     CfgGroupDisc,
     CfgVmafThreshold,
     CfgVmafEnabled,
@@ -270,6 +271,7 @@ pub enum Msg {
     CfgRfUhd,
     CfgRfUhdHdr,
     CfgRfUhdDv,
+    CfgFilmGrain,
     CfgOutputSuffix,
     CfgOutputContainer,
     CfgSameDirectory,
@@ -282,6 +284,7 @@ pub enum Msg {
     CfgDaemonBindAddress,
     CfgDaemonPort,
     CfgDaemonBrowseRoot,
+    CfgMakemkvconPath,
     CfgStagingDirectory,
     CfgDaemonAuthToken,
 
@@ -366,6 +369,7 @@ pub enum Msg {
     WebGroupOutput,
     WebGroupAudio,
     WebGroupDaemon,
+    WebGroupDisc,
     WebGroupRateFactors,
     WebCfgOutputDirectory,
     WebCfgSelectAllFallback,
@@ -374,6 +378,9 @@ pub enum Msg {
     WebCfgAudioModeOpus,
     WebSettingsNote,
     WebDaemonNote,
+    WebLocalOnlyNote,
+    WebRestartRequired,
+    WebTokenHint,
     WebDismissSummary,
     WebDismiss,
     WebScanning,
@@ -1806,12 +1813,18 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Geben Sie einen Port von 1 bis 65535 ein",
             Zh => "请输入 1 到 65535 之间的端口",
         },
+        Msg::CfgGroupTracks | Msg::WebTracksTitle => match lang {
+            En => "Tracks",
+            It => "Tracce",
+            Es => "Pistas",
+            Fr => "Pistes",
+            De => "Spuren",
+            Zh => "轨道",
+        },
         Msg::CfgGroupDisc => match lang {
-            En => "Disc",
-            It => "Disco",
-            Es => "Disco",
+            En | De => "Disc",
+            It | Es => "Disco",
             Fr => "Disque",
-            De => "Disc",
             Zh => "光盘",
         },
         Msg::CfgVmafThreshold => match lang {
@@ -1901,6 +1914,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         Msg::CfgRfUhd => "RF 4K SDR",
         Msg::CfgRfUhdHdr => "RF 4K HDR",
         Msg::CfgRfUhdDv => "RF 4K DV",
+        Msg::CfgFilmGrain => match lang {
+            En => "Film Grain",
+            It => "Grana pellicola",
+            Es => "Grano de película",
+            Fr => "Grain de film",
+            De => "Filmkorn",
+            Zh => "胶片颗粒",
+        },
         Msg::CfgOutputSuffix => match lang {
             En => "Output Suffix",
             It => "Suffisso output",
@@ -2006,6 +2027,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Dossier racine du daemon",
             De => "Daemon-Basisordner",
             Zh => "守护进程浏览根目录",
+        },
+        Msg::CfgMakemkvconPath => match lang {
+            En => "MakeMKV Executable",
+            It => "Eseguibile MakeMKV",
+            Es => "Ejecutable de MakeMKV",
+            Fr => "Exécutable MakeMKV",
+            De => "MakeMKV-Programm",
+            Zh => "MakeMKV 可执行文件",
         },
         Msg::CfgStagingDirectory => match lang {
             En => "Disc Staging Directory",
@@ -2435,14 +2464,6 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "nicht auswählbar",
             Zh => "不可选择",
         },
-        Msg::WebTracksTitle => match lang {
-            En => "Tracks",
-            It => "Tracce",
-            Es => "Pistas",
-            Fr => "Pistes",
-            De => "Spuren",
-            Zh => "轨道",
-        },
         Msg::WebTracksHint => match lang {
             En => "Choose audio and subtitle tracks",
             It => "Scegli le tracce audio e dei sottotitoli",
@@ -2679,6 +2700,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             En | It | Es | Fr | De => "Daemon",
             Zh => "守护进程",
         },
+        Msg::WebGroupDisc => match lang {
+            En => "Disc ripping",
+            It => "Estrazione dischi",
+            Es => "Extracción de discos",
+            Fr => "Extraction de disques",
+            De => "Disc-Rippen",
+            Zh => "光盘翻录",
+        },
         Msg::WebGroupRateFactors => match lang {
             En => "Rate factors",
             It => "Fattori di qualità",
@@ -2747,23 +2776,55 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         },
         Msg::WebDaemonNote => match lang {
             En => {
-                "Bind address, port, browse root and access token are only editable in config.toml or the TUI, and need a restart."
+                "Host access settings can only be changed from a browser running on the daemon host."
             }
             It => {
-                "Indirizzo, porta, cartella radice e token di accesso si modificano solo in config.toml o nella TUI, e richiedono un riavvio."
+                "Le impostazioni di accesso all'host si modificano solo da un browser in esecuzione sull'host del daemon."
             }
             Es => {
-                "La dirección, el puerto, la carpeta raíz y el token de acceso solo se editan en config.toml o en la TUI, y requieren reiniciar."
+                "Los ajustes de acceso al host solo pueden cambiarse desde un navegador ejecutado en el host del daemon."
             }
             Fr => {
-                "L'adresse, le port, le dossier racine et le jeton d'accès ne se modifient que dans config.toml ou la TUI, et exigent un redémarrage."
+                "Les paramètres d'accès à l'hôte ne sont modifiables que depuis un navigateur exécuté sur l'hôte du daemon."
             }
             De => {
-                "Adresse, Port, Stammordner und Zugriffstoken lassen sich nur in config.toml oder der TUI ändern und erfordern einen Neustart."
+                "Host-Zugriffseinstellungen können nur in einem Browser auf dem Daemon-Host geändert werden."
             }
-            Zh => {
-                "绑定地址、端口、浏览根目录和访问令牌仅可在 config.toml 或 TUI 中修改，且需重启。"
+            Zh => "主机访问设置只能从守护进程主机上运行的浏览器更改。",
+        },
+        Msg::WebLocalOnlyNote => match lang {
+            En => "This setting is read-only for remote browsers.",
+            It => "Questa impostazione è di sola lettura per i browser remoti.",
+            Es => "Este ajuste es de solo lectura para navegadores remotos.",
+            Fr => "Ce paramètre est en lecture seule pour les navigateurs distants.",
+            De => "Diese Einstellung ist für entfernte Browser schreibgeschützt.",
+            Zh => "远程浏览器只能读取此设置。",
+        },
+        Msg::WebRestartRequired => match lang {
+            En => "Requires a daemon restart.",
+            It => "Richiede il riavvio del daemon.",
+            Es => "Requiere reiniciar el daemon.",
+            Fr => "Nécessite le redémarrage du daemon.",
+            De => "Erfordert einen Neustart des Daemons.",
+            Zh => "需要重启守护进程。",
+        },
+        Msg::WebTokenHint => match lang {
+            En => {
+                "Leave blank to keep the current token; enter at least 32 characters to replace it."
             }
+            It => {
+                "Lascia vuoto per mantenere il token attuale; inserisci almeno 32 caratteri per sostituirlo."
+            }
+            Es => {
+                "Déjalo vacío para conservar el token actual; introduce al menos 32 caracteres para reemplazarlo."
+            }
+            Fr => {
+                "Laissez vide pour conserver le jeton actuel ; saisissez au moins 32 caractères pour le remplacer."
+            }
+            De => {
+                "Leer lassen, um das aktuelle Token beizubehalten; zum Ersetzen mindestens 32 Zeichen eingeben."
+            }
+            Zh => "留空以保留当前令牌；输入至少 32 个字符可替换令牌。",
         },
         Msg::WebDismissSummary => match lang {
             En => "Dismiss summary",
@@ -2949,8 +3010,16 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("cfg_audio_mode_copy", Msg::WebCfgAudioModeCopy),
     ("cfg_audio_mode_opus", Msg::WebCfgAudioModeOpus),
     ("cfg_delete_source", Msg::CfgDeleteSource),
+    ("cfg_daemon_auth_token", Msg::CfgDaemonAuthToken),
+    ("cfg_daemon_autostart", Msg::CfgDaemonAutostart),
+    ("cfg_daemon_bind_address", Msg::CfgDaemonBindAddress),
+    ("cfg_daemon_browse_root", Msg::CfgDaemonBrowseRoot),
+    ("cfg_daemon_enabled", Msg::CfgDaemonEnabled),
+    ("cfg_daemon_port", Msg::CfgDaemonPort),
     ("cfg_encoder", Msg::EncoderLabel),
+    ("cfg_film_grain", Msg::CfgFilmGrain),
     ("cfg_language", Msg::CfgLanguage),
+    ("cfg_makemkvcon_path", Msg::CfgMakemkvconPath),
     ("cfg_nvenc_preset", Msg::CfgNvencPreset),
     ("cfg_opus_bitrate", Msg::OpusBitratePerChannel),
     ("cfg_output_container", Msg::CfgOutputContainer),
@@ -2960,6 +3029,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("cfg_same_directory", Msg::CfgSameDirectory),
     ("cfg_select_all_fallback", Msg::WebCfgSelectAllFallback),
     ("cfg_skip_already_opus", Msg::SkipAlreadyOpus),
+    ("cfg_staging_directory", Msg::CfgStagingDirectory),
     ("cfg_subtitle_languages", Msg::CfgSubtitleLanguages),
     ("cfg_svt_preset", Msg::CfgSvtPreset),
     ("cfg_vmaf_enabled", Msg::CfgVmafEnabled),
@@ -2973,6 +3043,9 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("col_status", Msg::Status),
     ("current_file", Msg::WebCurrentFile),
     ("daemon_note", Msg::WebDaemonNote),
+    ("local_only_note", Msg::WebLocalOnlyNote),
+    ("restart_required", Msg::WebRestartRequired),
+    ("token_hint", Msg::WebTokenHint),
     ("delete_source_warning", Msg::WebDeleteSourceWarning),
     ("discard_changes", Msg::DiscardConfigTitle),
     ("dismiss", Msg::WebDismiss),
@@ -2986,12 +3059,13 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("eta", Msg::Eta),
     ("group_audio", Msg::WebGroupAudio),
     ("group_daemon", Msg::WebGroupDaemon),
+    ("group_disc", Msg::WebGroupDisc),
     ("group_general", Msg::WebGroupGeneral),
     ("group_output", Msg::WebGroupOutput),
     ("group_performance", Msg::WebGroupPerformance),
     ("group_quality", Msg::WebGroupQuality),
     ("group_rate_factors", Msg::WebGroupRateFactors),
-    ("group_tracks", Msg::SubtitleTracks),
+    ("group_tracks", Msg::CfgGroupTracks),
     ("heading_audio", Msg::AudioTracks),
     ("heading_subtitles", Msg::SubtitleTracks),
     ("hidden_files", Msg::WebHiddenFiles),
@@ -3061,6 +3135,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("confirm_tracks", Msg::WebConfirmTracks),
     ("session_totals", Msg::WebSessionTotals),
     ("apply_remaining_hint", Msg::WebApplyRemainingHint),
+    ("autostart_unsupported", Msg::DaemonServiceUnsupported),
     ("saving", Msg::WebSaving),
     ("browse", Msg::WebBrowse),
     ("loading", Msg::WebLoading),

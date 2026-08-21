@@ -52,7 +52,7 @@ $("toast-close").addEventListener("click", hideToast);
 
 // URL fragments never reach the HTTP server, proxy logs or Referer headers.
 // Storage can be disabled by privacy settings, so it is strictly best-effort.
-const token = (() => {
+let token = (() => {
   const fromUrl = new URLSearchParams(location.hash.slice(1)).get("token");
   if (fromUrl) {
     try { sessionStorage.setItem("av1c_token", fromUrl); } catch { /* memory only */ }
@@ -1424,6 +1424,7 @@ let config = null;
 let savedConfig = null;
 let settingsSaving = false;
 let settingsLoad = null;
+let settingsAccess = null;
 
 const cloneConfig = (value) => JSON.parse(JSON.stringify(value));
 
@@ -1447,8 +1448,6 @@ const LANGS = [["en", "English"], ["it", "Italiano"], ["es", "Español"], ["fr",
 const ENCODERS = [["SvtAv1", "SVT-AV1 (Software)"], ["Nvenc", "NVENC (NVIDIA)"], ["Qsv", "Quick Sync (Intel)"], ["Amf", "AMF (AMD)"]];
 const NVENC_PRESETS = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"].map((p) => [p, p]);
 
-const RF_KEY = { SvtAv1: "crf", Nvenc: "nvenc_cq", Qsv: "qsv_quality", Amf: "amf_quality" };
-
 // Built on each render rather than held in a const: the string map arrives
 // after this file is evaluated, so a const would capture the untranslated text.
 const presets = () => [
@@ -1468,6 +1467,12 @@ const rfTiers = () => [
 // shows comes from the same key map the rest of the UI uses — not a second
 // English list that would have to be translated all over again.
 function settingsFields(cfg) {
+  const local = Boolean(settingsAccess?.local);
+  const localHint = local ? "" : tr("local_only_note");
+  const restartHint = tr("restart_required");
+  const serviceHint = settingsAccess?.autostart_supported
+    ? localHint
+    : tr("autostart_unsupported");
   const fields = [
     { group: tr("group_general") },
     { path: "language", label: tr("cfg_language"), type: "select", options: LANGS },
@@ -1477,20 +1482,28 @@ function settingsFields(cfg) {
     { path: "quality.vmaf_enabled", label: tr("cfg_vmaf_enabled"), type: "checkbox", rebuild: true },
     { path: "quality.vmaf_threshold", label: tr("cfg_vmaf_threshold"), type: "number", min: 0, max: 100, step: 0.1, disabled: !cfg.quality.vmaf_enabled },
     { path: "quality.delete_source_on_success", label: tr("cfg_delete_source"), type: "checkbox", disabled: !cfg.quality.vmaf_enabled, warning: tr("delete_source_warning") },
+    { group: tr("group_performance") },
+    { path: "performance.svt_preset", label: tr("cfg_svt_preset"), type: "number", min: 0, max: 13 },
+    { path: "performance.nvenc_preset", label: tr("cfg_nvenc_preset"), type: "select", options: NVENC_PRESETS },
   ];
-  if (["SvtAv1", "Nvenc"].includes(cfg.encoder)) {
-    fields.push({ group: tr("group_performance") });
-    if (cfg.encoder === "SvtAv1") {
-      fields.push({ path: "performance.svt_preset", label: tr("cfg_svt_preset"), type: "number", min: 0, max: 13 });
-    } else {
-      fields.push({ path: "performance.nvenc_preset", label: tr("cfg_nvenc_preset"), type: "select", options: NVENC_PRESETS });
-    }
-  }
-  if (cfg.quality_preset === "custom") {
-    fields.push({ group: `${tr("group_rate_factors")} (${RF_KEY[cfg.encoder]})` });
-    const maxQuality = cfg.encoder === "SvtAv1" ? 63 : 51;
-    for (const [tier, label] of rfTiers()) {
-      fields.push({ path: `presets.${tier}.${RF_KEY[cfg.encoder]}`, label, type: "number", min: 0, max: maxQuality });
+  fields.push({ group: tr("group_rate_factors") });
+  const presetMetrics = [
+    ["crf", "CRF", 63],
+    ["film_grain", tr("cfg_film_grain"), 50],
+    ["nvenc_cq", "NVENC CQ", 51],
+    ["qsv_quality", "QSV Quality", 51],
+    ["amf_quality", "AMF Quality", 51],
+  ];
+  for (const [tier, tierLabel] of rfTiers()) {
+    for (const [metric, metricLabel, maximum] of presetMetrics) {
+      fields.push({
+        path: `presets.${tier}.${metric}`,
+        label: `${tierLabel} · ${metricLabel}`,
+        type: "number",
+        min: 0,
+        max: maximum,
+        disabled: cfg.quality_preset !== "custom",
+      });
     }
   }
   fields.push(
@@ -1507,13 +1520,27 @@ function settingsFields(cfg) {
     { path: "audio.default_mode", label: tr("cfg_audio_default"), type: "select", options: audioModes() },
     { path: "audio.opus_bitrate_per_channel", label: tr("cfg_opus_bitrate"), type: "number", min: 16, max: 256 },
     { path: "audio.skip_already_opus", label: tr("cfg_skip_already_opus"), type: "checkbox" },
-    // The [daemon] block is deliberately absent: browse_root confines this file
-    // browser and auth_token guards this API, so the server refuses to let a
-    // client widen its own access. Edit those in config.toml or the TUI.
     { group: tr("group_daemon") },
     { note: tr("daemon_note") },
+    { path: "daemon.enabled", label: tr("cfg_daemon_enabled"), type: "checkbox", disabled: !local, hint: [localHint, restartHint].filter(Boolean).join(" ") },
+    { path: "_service.autostart", label: tr("cfg_daemon_autostart"), type: "checkbox", disabled: !local || !settingsAccess?.autostart_supported, immediateService: true, hint: serviceHint },
+    { path: "daemon.bind_address", label: tr("cfg_daemon_bind_address"), type: "text", disabled: !local, required: true, hint: [localHint, restartHint].filter(Boolean).join(" ") },
+    { path: "daemon.port", label: tr("cfg_daemon_port"), type: "number", min: 1, max: 65535, disabled: !local, hint: [localHint, restartHint].filter(Boolean).join(" ") },
+    { path: "daemon.browse_root", label: tr("cfg_daemon_browse_root"), type: "text", disabled: !local, browse: true, hint: localHint },
+    { path: "daemon.auth_token", label: tr("cfg_daemon_auth_token"), type: "password", disabled: !local, minLength: 32, placeholder: settingsAccess?.auth_token_set ? "••••••••" : "", hint: [localHint, tr("token_hint")].filter(Boolean).join(" ") },
+    { group: tr("group_disc") },
+    { path: "disc.makemkvcon_path", label: tr("cfg_makemkvcon_path"), type: "text", nullable: true, disabled: !local, hint: localHint },
+    { path: "disc.staging_directory", label: tr("cfg_staging_directory"), type: "text", nullable: true, disabled: !local, browse: true, hint: localHint },
   );
   return fields;
+}
+
+function verifySettingsCoverage(cfg, paths) {
+  const represented = new Set(
+    settingsFields(cfg).filter((field) => field.path).map((field) => field.path),
+  );
+  const missing = paths.filter((path) => !represented.has(path));
+  if (missing.length) throw new Error(`Settings form is missing: ${missing.join(", ")}`);
 }
 
 const getPath = (obj, path) => path.split(".").reduce((o, k) => (o == null ? o : o[k]), obj);
@@ -1577,10 +1604,12 @@ function buildSettingsForm() {
       input.checked = Boolean(value);
     } else {
       input = document.createElement("input");
-      input.type = field.type === "number" ? "number" : "text";
+      input.type = ["number", "password"].includes(field.type) ? field.type : "text";
       if (field.min != null) input.min = field.min;
       if (field.max != null) input.max = field.max;
       if (field.step != null) input.step = field.step;
+      if (field.minLength != null) input.minLength = field.minLength;
+      if (field.placeholder != null) input.placeholder = field.placeholder;
       input.value = field.type === "list" ? (value || []).join(", ") : value ?? "";
     }
     input.id = inputId;
@@ -1594,7 +1623,7 @@ function buildSettingsForm() {
     });
     input.addEventListener("input", () => { if (touched) updateValidity(); });
 
-    input.addEventListener("change", () => {
+    input.addEventListener("change", async () => {
       if (!input.validity.valid) {
         input.reportValidity();
         return;
@@ -1606,6 +1635,28 @@ function buildSettingsForm() {
       else if (field.nullable && input.value.trim() === "") parsed = null;
       else parsed = input.value;
       setPath(config, field.path, parsed);
+      if (field.immediateService) {
+        input.disabled = true;
+        try {
+          const result = await post("/api/settings/service", { enabled: parsed });
+          setPath(config, field.path, result.enabled);
+          setPath(savedConfig, field.path, result.enabled);
+          config.daemon.enabled = result.daemon_enabled;
+          savedConfig.daemon.enabled = result.daemon_enabled;
+          const daemonEnabled = $("set-daemon-enabled");
+          if (daemonEnabled) daemonEnabled.checked = result.daemon_enabled;
+          input.checked = result.enabled;
+        } catch (error) {
+          const previous = getPath(savedConfig, field.path);
+          setPath(config, field.path, previous);
+          input.checked = previous;
+          toast(error.message, true);
+        } finally {
+          input.disabled = Boolean(field.disabled);
+          updateSettingsActions();
+        }
+        return;
+      }
       if (field.rebuild) buildSettingsForm();
       updateSettingsActions();
     });
@@ -1639,6 +1690,15 @@ function buildSettingsForm() {
       input.setAttribute("aria-describedby", warning.id);
       row.appendChild(warning);
     }
+    if (field.hint) {
+      const hint = document.createElement("div");
+      hint.id = `${inputId}-hint`;
+      hint.className = "field-hint";
+      hint.textContent = field.hint;
+      const describedBy = input.getAttribute("aria-describedby");
+      input.setAttribute("aria-describedby", [describedBy, hint.id].filter(Boolean).join(" "));
+      row.appendChild(hint);
+    }
     group.appendChild(row);
   }
   if (focused) $(focused)?.focus();
@@ -1654,7 +1714,14 @@ function loadSettings() {
 
 async function loadSettingsNow() {
   try {
-    config = await api("/api/settings");
+    const [loadedConfig, access] = await Promise.all([
+      api("/api/settings"),
+      api("/api/settings/access"),
+    ]);
+    config = loadedConfig;
+    settingsAccess = access;
+    config._service = { autostart: access.autostart };
+    verifySettingsCoverage(config, access.setting_paths);
     savedConfig = cloneConfig(config);
     settingsLoaded = true;
     buildSettingsForm();
@@ -1669,10 +1736,19 @@ $("btn-save-settings").addEventListener("click", async () => {
   form.setAttribute("aria-busy", "true");
   updateSettingsActions();
   const languageChanged = savedConfig?.language !== config.language;
+  const replacementToken = config.daemon.auth_token.trim();
+  const serviceState = cloneConfig(config._service);
+  const submittedConfig = cloneConfig(config);
+  delete submittedConfig._service;
   const save = $("btn-save-settings");
   save.textContent = tr("saving");
   try {
-    config = await post("/api/settings", config);
+    config = await post("/api/settings", submittedConfig);
+    config._service = serviceState;
+    if (replacementToken) {
+      token = replacementToken;
+      try { sessionStorage.setItem("av1c_token", token); } catch { /* memory only */ }
+    }
     savedConfig = cloneConfig(config);
     if (languageChanged) {
       try {

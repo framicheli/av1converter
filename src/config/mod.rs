@@ -1,4 +1,5 @@
 pub mod encoder_detect;
+pub mod settings;
 pub mod types;
 
 pub use encoder_detect::Encoder;
@@ -19,9 +20,8 @@ pub struct AppConfig {
     pub language: Language,
     /// Selected encoder
     pub encoder: Encoder,
-    /// Overall quality preset driving the per-tier encoding presets.
-    /// Existing config files (written before this field existed) default to
-    /// `Custom` so their hand-tuned presets stay visible and editable.
+    /// Overall quality preset, default to
+    /// `Custom`.
     #[serde(default = "default_quality_preset")]
     pub quality_preset: QualityPreset,
     /// Quality settings
@@ -235,6 +235,95 @@ impl AppConfig {
             .clamp(AudioConfig::MIN_PER_CHANNEL, AudioConfig::MAX_PER_CHANNEL);
         self.daemon.browse_root = self.daemon.browse_root.trim().to_string();
         self.daemon.auth_token = self.daemon.auth_token.trim().to_string();
+    }
+
+    /// Validate values that settings interfaces accept from users.
+    pub fn validate_settings(&self) -> Result<(), String> {
+        if !self.quality.vmaf_threshold.is_finite()
+            || !(0.0..=100.0).contains(&self.quality.vmaf_threshold)
+        {
+            return Err("VMAF threshold must be between 0 and 100".to_string());
+        }
+        if self.performance.svt_preset > 13 {
+            return Err("SVT preset must be between 0 and 13".to_string());
+        }
+        if !PerformanceConfig::valid_nvenc_preset(&self.performance.nvenc_preset) {
+            return Err("NVENC preset must be between p1 and p7".to_string());
+        }
+        if !(AudioConfig::MIN_PER_CHANNEL..=AudioConfig::MAX_PER_CHANNEL)
+            .contains(&self.audio.opus_bitrate_per_channel)
+        {
+            return Err("Opus bitrate per channel must be between 16 and 256".to_string());
+        }
+        let presets: [&EncodingPreset; 8] = [
+            &self.presets.sd,
+            &self.presets.hd,
+            &self.presets.full_hd,
+            &self.presets.full_hd_hdr,
+            &self.presets.full_hd_dv,
+            &self.presets.uhd,
+            &self.presets.uhd_hdr,
+            &self.presets.uhd_dv,
+        ];
+        if presets.iter().any(|preset| {
+            preset.crf > Encoder::SvtAv1.max_quality()
+                || preset.nvenc_cq > Encoder::Nvenc.max_quality()
+                || preset.qsv_quality > Encoder::Qsv.max_quality()
+                || preset.amf_quality > Encoder::Amf.max_quality()
+                || preset.film_grain > 50
+        }) {
+            return Err("one or more quality or film-grain values are out of range".to_string());
+        }
+        if self.daemon.port == 0 {
+            return Err("daemon port must be between 1 and 65535".to_string());
+        }
+        if self
+            .daemon
+            .bind_address
+            .parse::<std::net::IpAddr>()
+            .is_err()
+        {
+            return Err("daemon bind address must be an IP address".to_string());
+        }
+        Ok(())
+    }
+
+    /// Validate changed host paths and store their resolved forms.
+    pub fn normalize_changed_host_paths(&mut self, previous: &Self) -> Result<(), String> {
+        if self.daemon.browse_root != previous.daemon.browse_root
+            && !self.daemon.browse_root.is_empty()
+        {
+            let root = std::path::Path::new(&self.daemon.browse_root)
+                .canonicalize()
+                .map_err(|_| "daemon browse root must be an existing directory".to_string())?;
+            if !root.is_dir() {
+                return Err("daemon browse root must be an existing directory".to_string());
+            }
+            self.daemon.browse_root = root.to_string_lossy().into_owned();
+        }
+        if self.disc.staging_directory != previous.disc.staging_directory
+            && let Some(directory) = &self.disc.staging_directory
+        {
+            let directory = std::path::Path::new(directory)
+                .canonicalize()
+                .map_err(|_| "disc staging directory must exist".to_string())?;
+            if !directory.is_dir() {
+                return Err("disc staging directory must be a directory".to_string());
+            }
+            self.disc.staging_directory = Some(directory.to_string_lossy().into_owned());
+        }
+        if self.disc.makemkvcon_path != previous.disc.makemkvcon_path
+            && let Some(executable) = &self.disc.makemkvcon_path
+        {
+            let executable = std::path::Path::new(executable)
+                .canonicalize()
+                .map_err(|_| "MakeMKV executable must exist".to_string())?;
+            if !executable.is_file() {
+                return Err("MakeMKV executable must be a file".to_string());
+            }
+            self.disc.makemkvcon_path = Some(executable.to_string_lossy().into_owned());
+        }
+        Ok(())
     }
 
     /// Get the encoding preset for a given resolution tier and HDR type
@@ -498,5 +587,33 @@ mod tests {
         cfg.daemon.bind_address = "::1".to_string();
         assert!(!cfg.daemon.binds_publicly());
         assert_eq!(cfg.daemon.listen_address(), "[::1]:8399");
+    }
+
+    #[test]
+    fn changed_host_paths_must_resolve_to_their_expected_types() {
+        let previous = AppConfig::default();
+        let mut cfg = previous.clone();
+        cfg.daemon.browse_root = std::env::temp_dir().to_string_lossy().into_owned();
+        cfg.disc.staging_directory = Some(std::env::temp_dir().to_string_lossy().into_owned());
+        cfg.normalize_changed_host_paths(&previous).unwrap();
+        assert!(std::path::Path::new(&cfg.daemon.browse_root).is_absolute());
+
+        let mut invalid = previous.clone();
+        invalid.disc.makemkvcon_path = Some("/path/that/does/not/exist".to_string());
+        assert!(invalid.normalize_changed_host_paths(&previous).is_err());
+    }
+
+    #[test]
+    fn unchanged_unavailable_host_paths_do_not_block_other_settings() {
+        let previous = AppConfig {
+            disc: DiscConfig {
+                makemkvcon_path: Some("/temporarily/unavailable/makemkvcon".to_string()),
+                ..DiscConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        let mut cfg = previous.clone();
+        cfg.output.suffix = "_new".to_string();
+        cfg.normalize_changed_host_paths(&previous).unwrap();
     }
 }
