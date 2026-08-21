@@ -41,6 +41,30 @@ pub fn analyze(input_path: &str, cancel: &AtomicBool) -> Result<AnalysisResult, 
     })
 }
 
+/// Duration of the file as it stands on disk, from the container or, when that
+/// carries none, from the video stream. `None` when ffprobe cannot say.
+pub fn probe_duration_secs(path: &str, cancel: &AtomicBool) -> Option<f64> {
+    let args = [
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "format=duration:stream=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        path,
+    ];
+
+    // Either line can be `N/A`; the longest parseable value wins.
+    run_ffprobe(&args, cancel)
+        .ok()?
+        .lines()
+        .filter_map(|line| line.trim().parse::<f64>().ok())
+        .filter(|secs| *secs > 0.0)
+        .max_by(f64::total_cmp)
+}
+
 /// Analyze the primary video stream
 fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMetadata, AppError> {
     let args = [
@@ -48,8 +72,6 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
         "error",
         "-select_streams",
         "v:0",
-        // `stream_side_data_list` must be selected as its own section:
-        // `stream=side_data_list` yields entries with no fields on FFmpeg 7+
         "-show_entries",
         "stream=width,height,pix_fmt,color_primaries,color_transfer,color_space,codec_name,r_frame_rate,avg_frame_rate,bit_rate,duration:stream_side_data_list:format=duration,bit_rate",
         "-of",

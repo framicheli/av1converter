@@ -294,20 +294,30 @@ fn run_encode_loop(
         // Check if FFmpeg finished
         match child.try_wait() {
             Ok(Some(status)) => {
-                if !status.success() {
-                    let stderr = read_file_tail(stderr_path).unwrap_or_default();
-
+                // A zero exit covers encodes FFmpeg ended early after a
+                // tolerated read error.
+                let short = status
+                    .success()
+                    .then(|| {
+                        encoded_seconds(output, progress_file, duration, total_frames, cancel_flag)
+                            .and_then(|encoded| shortfall(duration, encoded))
+                    })
+                    .flatten();
+                if let Some(missing) = short {
                     let _ = std::fs::remove_file(output);
-
-                    let last_lines: Vec<&str> = stderr.lines().rev().take(5).collect();
-                    let mut error_msg = format!("ffmpeg failed ({status})");
-                    if !last_lines.is_empty() {
-                        error_msg.push_str(": ");
-                        error_msg
-                            .push_str(&last_lines.into_iter().rev().collect::<Vec<_>>().join("\n"));
-                    }
-
-                    return EncodeResult::Error(error_msg);
+                    return EncodeResult::Error(with_stderr(
+                        &format!(
+                            "ffmpeg stopped {missing:.0}s short of the source's {duration:.0}s and still reported success"
+                        ),
+                        stderr_path,
+                    ));
+                }
+                if !status.success() {
+                    let _ = std::fs::remove_file(output);
+                    return EncodeResult::Error(with_stderr(
+                        &format!("ffmpeg failed ({status})"),
+                        stderr_path,
+                    ));
                 }
                 return EncodeResult::Success;
             }
@@ -325,6 +335,53 @@ fn run_encode_loop(
             }
         }
     }
+}
+
+/// `message`, followed by the last few lines FFmpeg wrote to stderr.
+fn with_stderr(message: &str, stderr_path: &Path) -> String {
+    let stderr = read_file_tail(stderr_path).unwrap_or_default();
+    let last_lines: Vec<&str> = stderr.lines().rev().take(5).collect();
+    if last_lines.is_empty() {
+        return message.to_string();
+    }
+    format!(
+        "{message}: {}",
+        last_lines.into_iter().rev().collect::<Vec<_>>().join("\n")
+    )
+}
+
+/// Seconds of source the encode covered, read from the finished file, and from
+/// the `-progress` log when ffprobe reports no duration.
+fn encoded_seconds(
+    output: &str,
+    progress_file: &Path,
+    duration: f64,
+    total_frames: f64,
+    cancel: &AtomicBool,
+) -> Option<f64> {
+    if let Some(secs) = crate::analyzer::ffprobe::probe_duration_secs(output, cancel) {
+        return Some(secs);
+    }
+
+    let content = read_file_tail(progress_file)?;
+    match latest_progress_time_secs(&content) {
+        Some(secs) => Some(secs),
+        // Some sources (e.g. Dolby Vision) report out_time=N/A throughout.
+        None if total_frames > 0.0 && duration > 0.0 => {
+            Some(latest_progress_frame(&content)? / total_frames * duration)
+        }
+        None => None,
+    }
+}
+
+/// Seconds of the source missing from a finished encode, beyond the tolerated
+/// drift between a container's stated duration and its streams.
+fn shortfall(duration: f64, encoded: f64) -> Option<f64> {
+    if duration <= 0.0 {
+        return None;
+    }
+    let slack = (duration * 0.02).max(2.0);
+    (duration - encoded > slack).then_some(duration - encoded)
 }
 
 /// Read the last few progress blocks from `-progress` output. `FFmpeg` appends
@@ -401,8 +458,8 @@ fn parse_out_time_secs(line: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_same_file, latest_progress_frame, latest_progress_time_secs, partial_output_path,
-        read_file_tail,
+        encoded_seconds, is_same_file, latest_progress_frame, latest_progress_time_secs,
+        partial_output_path, read_file_tail, shortfall,
     };
     use std::path::Path;
 
@@ -461,6 +518,57 @@ mod tests {
         assert_eq!(tail.len(), 8192);
         assert!(tail.ends_with("the end"));
         let _ = std::fs::remove_file(path);
+    }
+
+    fn progress_file(name: &str, content: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("av1c_test_{name}_{}.txt", std::process::id()));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    /// An encode that stopped minutes into an hour-long source is not a success.
+    #[test]
+    fn a_truncated_encode_is_detected() {
+        assert_eq!(shortfall(3600.0, 240.0), Some(3360.0));
+    }
+
+    /// A complete encode, and one a hair short of the container duration, pass.
+    #[test]
+    fn a_complete_encode_reports_nothing_missing() {
+        assert_eq!(shortfall(3600.0, 3600.0), None);
+        assert_eq!(shortfall(3600.0, 3570.0), None);
+        assert_eq!(shortfall(1.0, 0.958), None);
+    }
+
+    /// An unknown source duration leaves nothing to compare against.
+    #[test]
+    fn an_unknown_duration_skips_the_check() {
+        assert_eq!(shortfall(0.0, 240.0), None);
+    }
+
+    /// With no output to probe, the progress log stands in — via out_time, or
+    /// via the frame count when the source reports out_time=N/A.
+    #[test]
+    fn the_progress_log_stands_in_for_an_unprobeable_output() {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let missing = std::env::temp_dir().join("av1c_test_no_such_output.mkv");
+        let _ = std::fs::remove_file(&missing);
+        let output = missing.to_string_lossy().into_owned();
+
+        let timed = progress_file("timed", "out_time_us=240000000\nprogress=end\n");
+        let framed = progress_file("framed", "frame=1440\nout_time=N/A\nprogress=end\n");
+
+        assert_eq!(
+            encoded_seconds(&output, &timed, 3600.0, 0.0, &cancel),
+            Some(240.0)
+        );
+        assert_eq!(
+            encoded_seconds(&output, &framed, 3600.0, 86_400.0, &cancel),
+            Some(60.0)
+        );
+
+        let _ = std::fs::remove_file(timed);
+        let _ = std::fs::remove_file(framed);
     }
 
     #[test]
