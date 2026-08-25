@@ -972,6 +972,7 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Up | KeyCode::Char('k') => app.queue_move_cursor(false),
         KeyCode::Down | KeyCode::Char('j') => app.queue_move_cursor(true),
+        KeyCode::Char('K') => app.queue_move_selected_up(),
         KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(1),
         KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
         // A title that finished ripping while an encode ran is waiting for its

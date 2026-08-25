@@ -66,6 +66,7 @@ impl Language {
 pub enum Msg {
     // ── Shared help / action words ───────────────────────────────────────────
     Navigate,
+    MoveUp,
     Select,
     Proceed,
     Back,
@@ -413,6 +414,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Naviguer",
             De => "Navigieren",
             Zh => "导航",
+        },
+        Msg::MoveUp => match lang {
+            En => "Move up",
+            It => "Sposta su",
+            Es => "Mover arriba",
+            Fr => "Monter",
+            De => "Nach oben",
+            Zh => "上移",
         },
         Msg::Select => match lang {
             En => "Select",
@@ -3075,6 +3084,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("kind_not_selectable", Msg::WebKindNotSelectable),
     ("kind_symlink", Msg::WebKindSymlink),
     ("kind_video", Msg::WebKindVideoFile),
+    ("move_up", Msg::MoveUp),
     ("no_audio_tracks", Msg::WebNoAudioTracks),
     ("no_subtitle_tracks", Msg::WebNoSubtitleTracks),
     ("nothing_added", Msg::WebNothingAdded),

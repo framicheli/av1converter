@@ -439,6 +439,24 @@ function createRow(job) {
   const size = row.insertCell();
   const saved = row.insertCell();
 
+  const moveUp = document.createElement("button");
+  moveUp.className = "iconbtn";
+  moveUp.textContent = "↑";
+  moveUp.addEventListener("click", async () => {
+    if (moveUp.getAttribute("aria-busy") === "true") return;
+    moveUp.disabled = true;
+    moveUp.setAttribute("aria-busy", "true");
+    try {
+      await post("/api/queue/move_up", { id: job.id });
+      refreshQueue();
+    } catch (e) { toast(e.message, true); }
+    finally {
+      moveUp.removeAttribute("aria-busy");
+      if (moveUp.isConnected) refreshQueue();
+    }
+  });
+  row.insertCell().appendChild(moveUp);
+
   const tracks = document.createElement("button");
   tracks.className = "iconbtn";
   tracks.textContent = tr("tracks_title");
@@ -467,8 +485,11 @@ function createRow(job) {
   });
   row.insertCell().appendChild(remove);
 
-  const entry = { tr: row, name, sub, source, badge, confirm, detail, bar, size, saved, tracks, remove, kind: job.status.kind, tracksEditable: job.tracks_editable };
+  const entry = { tr: row, name, sub, source, badge, confirm, detail, bar, size, saved, moveUp, tracks, remove, kind: job.status.kind, tracksEditable: job.tracks_editable, canMoveUp: job.can_move_up };
   entry.applyDisabled = () => {
+    entry.moveUp.disabled = offline
+      || entry.moveUp.getAttribute("aria-busy") === "true"
+      || !entry.canMoveUp;
     entry.remove.disabled = offline
       || entry.remove.getAttribute("aria-busy") === "true"
       || ["encoding", "verifying", "ripping"].includes(entry.kind);
@@ -523,7 +544,10 @@ function updateRow(row, job) {
 
   row.kind = job.status.kind;
   row.tracksEditable = job.tracks_editable;
+  row.canMoveUp = job.can_move_up;
   row.applyDisabled();
+  row.moveUp.title = tr("move_up");
+  row.moveUp.setAttribute("aria-label", `${tr("move_up")}: ${job.filename}`);
   row.remove.title = tr("remove_from_queue");
   row.remove.setAttribute("aria-label", `${tr("remove_from_queue")}: ${job.filename}`);
   row.tracks.textContent = tr("tracks_title");
@@ -564,13 +588,15 @@ async function refreshQueueNow() {
   updateClearFinished();
 
   const seen = new Set();
-  for (const job of data.jobs) {
+  for (const [position, job] of data.jobs.entries()) {
     seen.add(job.id);
     let row = rows.get(job.id);
     if (!row) {
       row = createRow(job);
       rows.set(job.id, row);
-      tbody.appendChild(row.tr);
+    }
+    if (tbody.children[position] !== row.tr) {
+      tbody.insertBefore(row.tr, tbody.children[position] || null);
     }
     updateRow(row, job);
   }

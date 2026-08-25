@@ -590,7 +590,6 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         );
         worker_jobs.push(WorkerJob {
             index: worker_jobs.len(),
-            control: crate::queue::WorkerJobControl::default(),
             subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
             input: job.path.clone(),
             output,
@@ -603,25 +602,38 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
             remux_only: job.remux_only,
         });
         job_ids.push(id);
+        break;
     }
 
     if worker_jobs.is_empty() {
         return;
     }
-    info!("Starting encode session with {} job(s)", worker_jobs.len());
+    info!("Starting encode session with one job");
 
-    // Totals and start time are per-session, never carried across one, so
-    // progress and ETA measure only the run in flight.
-    state.queue.state.total_jobs_to_encode = worker_jobs.len();
-    state.queue.state.encoding_progress_done = 0;
-    state.queue.state.start_time = Some(Instant::now());
+    let ready = state
+        .queue
+        .state
+        .jobs
+        .iter()
+        .filter(|job| matches!(job.status, JobStatus::Ready))
+        .count();
+    state.queue.state.total_jobs_to_encode = state.queue.state.encoding_progress_done + ready;
+    state
+        .queue
+        .state
+        .start_time
+        .get_or_insert_with(Instant::now);
     state.queue.state.end_time = None;
+    if let Some(job) = job_ids
+        .first()
+        .and_then(|&id| state.queue.job_by_id_mut(id))
+    {
+        job.status = JobStatus::Encoding { progress: 0.0 };
+    }
 
     let cancel_flag = Arc::new(AtomicBool::new(false));
-    let job_controls = worker_jobs.iter().map(|job| job.control.clone()).collect();
     state.session = Some(EncodeSession {
         job_ids,
-        job_controls,
         cancel_flag: cancel_flag.clone(),
     });
     state.encoding_active = true;
@@ -732,8 +744,10 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
     if all_done {
         state.encoding_active = false;
         state.session = None;
-        state.queue.state.end_time = Some(Instant::now());
-        info!("Encode session finished");
+        if state.queue.state.all_completed() {
+            state.queue.state.end_time = Some(Instant::now());
+        }
+        info!("Encode job finished");
     }
 }
 
@@ -753,6 +767,32 @@ fn finish_job(state: &mut DaemonState, id: Option<u64>, status: JobStatus) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_finished_job_leaves_the_run_open_for_the_next_ready_job() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut active = EncodingJob::new(std::path::PathBuf::from("active.mkv"));
+        active.status = JobStatus::Encoding { progress: 50.0 };
+        let active_id = state.queue.push(active);
+        let mut waiting = EncodingJob::new(std::path::PathBuf::from("waiting.mkv"));
+        waiting.status = JobStatus::Ready;
+        state.queue.push(waiting);
+        state.queue.state.total_jobs_to_encode = 2;
+        state.session = Some(EncodeSession {
+            job_ids: vec![active_id],
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        });
+        state.encoding_active = true;
+        let shared = Arc::new(Mutex::new(state));
+
+        apply_worker_message(&shared, WorkerMessage::Done(0));
+
+        let state = lock(&shared);
+        assert!(!state.encoding_active);
+        assert!(state.queue.state.end_time.is_none());
+        assert_eq!(state.queue.state.encoding_progress_done, 1);
+        assert!(matches!(state.queue.state.jobs[1].status, JobStatus::Ready));
+    }
 
     /// An extracted title is repointed at its file and handed to the prober
     /// right away, while the drive carries on with the next one.
@@ -959,7 +999,6 @@ mod tests {
             state.queue.job_by_id_mut(id).unwrap().status = JobStatus::Pending;
             state.session = Some(EncodeSession {
                 job_ids: vec![id],
-                job_controls: vec![crate::queue::WorkerJobControl::default()],
                 cancel_flag: Arc::new(AtomicBool::new(true)),
             });
             state.encoding_active = true;

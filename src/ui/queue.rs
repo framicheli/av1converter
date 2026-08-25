@@ -236,6 +236,10 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
         help_spans.push(Span::styled("Enter", Style::default().fg(Color::Yellow)));
         help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Continue))));
     }
+    if app.queue.can_move_ready_up(app.queue_cursor) {
+        help_spans.push(Span::styled("K", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::MoveUp))));
+    }
     if app.disc_state == DiscState::Cancelling {
         help_spans.push(Span::styled(
             t(lang, Msg::Cancelling),

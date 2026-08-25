@@ -554,6 +554,14 @@ impl App {
         self.detail_scroll = 0;
     }
 
+    pub fn queue_move_selected_up(&mut self) {
+        if let Some(index) = self.queue.move_ready_up(self.queue_cursor) {
+            self.queue_cursor = index;
+            self.queue_list_state.select(Some(index));
+            self.detail_scroll = 0;
+        }
+    }
+
     /// Move the Finish screen results-list cursor up (`forward = false`) or
     /// down (`forward = true`), clamped within the job list bounds.
     pub fn finish_move_cursor(&mut self, forward: bool) {
@@ -1091,9 +1099,12 @@ impl App {
 
     pub fn start_encoding(&mut self) {
         info!("Starting encoding process");
-        self.navigate_to_queue();
+        let follow_active = self.current_screen != Screen::Queue
+            || self.queue_cursor == self.queue.current_job_index;
+        if self.current_screen != Screen::Queue {
+            self.navigate_to_queue();
+        }
         self.encoding_active = true;
-        self.queue.current_job_index = 0;
         self.cancel_flag = Arc::new(AtomicBool::new(false));
 
         let (tx, rx) = mpsc::channel();
@@ -1132,7 +1143,6 @@ impl App {
                 );
                 Some(WorkerJob {
                     index: i,
-                    control: crate::queue::WorkerJobControl::default(),
                     subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
                     input: j.path.clone(),
                     output,
@@ -1143,15 +1153,36 @@ impl App {
                     remux_only: j.remux_only,
                 })
             })
+            .take(1)
             .collect();
 
         info!("Jobs to encode: {}", worker_jobs.len());
 
         self.encoding_session_indices = worker_jobs.iter().map(|job| job.index).collect();
+        if let Some(&index) = self.encoding_session_indices.first() {
+            self.queue.current_job_index = index;
+            if follow_active {
+                self.queue_cursor = index;
+                self.queue_list_state.select(Some(index));
+            }
+        }
 
-        self.queue.start_time = Some(std::time::Instant::now());
-        self.queue.total_jobs_to_encode = worker_jobs.len();
-        self.queue.encoding_progress_done = 0;
+        let ready = self
+            .queue
+            .jobs
+            .iter()
+            .filter(|job| matches!(job.status, JobStatus::Ready))
+            .count();
+        self.queue.total_jobs_to_encode = self.queue.encoding_progress_done + ready;
+        self.queue
+            .start_time
+            .get_or_insert_with(std::time::Instant::now);
+        self.queue.end_time = None;
+        if let Some(&index) = self.encoding_session_indices.first()
+            && let Some(job) = self.queue.jobs.get_mut(index)
+        {
+            job.status = JobStatus::Encoding { progress: 0.0 };
+        }
 
         let cancel_flag = self.cancel_flag.clone();
         let config = self.config.clone();
@@ -1163,6 +1194,24 @@ impl App {
 
     pub fn cancel_encoding(&mut self) {
         self.cancel_flag.store(true, Ordering::Relaxed);
+        let ready = self
+            .queue
+            .jobs
+            .iter()
+            .filter(|job| matches!(job.status, JobStatus::Ready))
+            .count();
+        if self.encoding_active {
+            self.queue.total_jobs_to_encode = self.queue.encoding_progress_done + 1 + ready;
+        }
+        for job in &mut self.queue.jobs {
+            if matches!(job.status, JobStatus::Ready) {
+                job.status = JobStatus::Skipped {
+                    reason: "Cancelled".to_string(),
+                };
+                self.queue.skipped_count += 1;
+                self.queue.encoding_progress_done += 1;
+            }
+        }
         // A queue can hold a rip as well as an encode.
         self.disc_cancel_flag.store(true, Ordering::Relaxed);
     }
@@ -1711,6 +1760,9 @@ impl App {
         if session_finished {
             self.progress_receiver = None;
             self.encoding_session_indices.clear();
+            if self.should_quit {
+                return;
+            }
             if self
                 .queue
                 .jobs
@@ -1809,6 +1861,63 @@ fn dv_mode_index(mode: DvMode) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moving_a_ready_job_up_keeps_the_cursor_on_it() {
+        let mut app = App::new();
+        for name in ["first.mkv", "second.mkv"] {
+            let mut job = EncodingJob::new(PathBuf::from(name));
+            job.status = JobStatus::Ready;
+            app.queue.jobs.push(job);
+        }
+        app.queue_cursor = 1;
+
+        app.queue_move_selected_up();
+
+        assert_eq!(app.queue_cursor, 0);
+        assert_eq!(app.queue.jobs[0].filename(), "second.mkv");
+    }
+
+    #[test]
+    fn cancelling_an_encode_settles_the_remaining_ready_jobs() {
+        let mut app = App::new();
+        let mut active = EncodingJob::new(PathBuf::from("active.mkv"));
+        active.status = JobStatus::Encoding { progress: 10.0 };
+        let mut waiting = EncodingJob::new(PathBuf::from("waiting.mkv"));
+        waiting.status = JobStatus::Ready;
+        app.queue.jobs = vec![active, waiting];
+        app.encoding_active = true;
+
+        app.cancel_encoding();
+
+        assert!(matches!(
+            app.queue.jobs[1].status,
+            JobStatus::Skipped { .. }
+        ));
+        assert_eq!(app.queue.skipped_count, 1);
+    }
+
+    #[test]
+    fn quitting_does_not_start_the_next_ready_job() {
+        let mut app = App::new();
+        let mut active = EncodingJob::new(PathBuf::from("active.mkv"));
+        active.status = JobStatus::Encoding { progress: 10.0 };
+        let mut waiting = EncodingJob::new(PathBuf::from("waiting.mkv"));
+        waiting.status = JobStatus::Ready;
+        app.queue.jobs = vec![active, waiting];
+        app.encoding_session_indices = vec![0];
+        app.encoding_active = true;
+        app.should_quit = true;
+        let (tx, rx) = mpsc::channel();
+        tx.send(WorkerMessage::Cancelled).unwrap();
+        app.progress_receiver = Some(rx);
+
+        app.process_progress_messages();
+
+        assert!(!app.encoding_active);
+        assert!(matches!(app.queue.jobs[1].status, JobStatus::Ready));
+        assert!(app.progress_receiver.is_none());
+    }
 
     #[test]
     fn active_disc_work_blocks_the_finish_screen() {

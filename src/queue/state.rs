@@ -126,6 +126,28 @@ impl QueueState {
         )
     }
 
+    /// Move a ready job up one queue position. Work in every other state stays pinned.
+    pub fn can_move_ready_up(&self, index: usize) -> bool {
+        index > 0
+            && self
+                .jobs
+                .get(index)
+                .is_some_and(|job| matches!(job.status, JobStatus::Ready))
+            && self
+                .jobs
+                .get(index - 1)
+                .is_some_and(|job| matches!(job.status, JobStatus::Ready))
+    }
+
+    pub fn move_ready_up(&mut self, index: usize) -> Option<usize> {
+        let previous = index.checked_sub(1)?;
+        if !self.can_move_ready_up(index) {
+            return None;
+        }
+        self.jobs.swap(index, previous);
+        Some(previous)
+    }
+
     /// Reset the queue for a new session
     pub fn reset(&mut self) {
         self.jobs.clear();
@@ -354,6 +376,21 @@ mod tests {
         job.source_size = Some(source);
         job.output_size = Some(output);
         job
+    }
+
+    #[test]
+    fn only_adjacent_ready_jobs_can_move_up() {
+        let mut state = QueueState::new();
+        let mut first = EncodingJob::new(PathBuf::from("first.mkv"));
+        first.status = JobStatus::Ready;
+        let mut second = EncodingJob::new(PathBuf::from("second.mkv"));
+        second.status = JobStatus::Ready;
+        state.jobs = vec![first, second];
+
+        assert_eq!(state.move_ready_up(1), Some(0));
+        assert_eq!(state.jobs[0].filename(), "second.mkv");
+        state.jobs[0].status = JobStatus::Encoding { progress: 0.0 };
+        assert_eq!(state.move_ready_up(1), None);
     }
 
     /// Progress holds when a finished job leaves the queue.

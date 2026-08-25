@@ -221,6 +221,10 @@ fn handle_request(
             Ok(body) => api::queue_remove(shared, &body),
             Err(resp) => resp,
         },
+        (Method::Post, "/api/queue/move_up") => match read_json_body(&mut request) {
+            Ok(body) => api::queue_move_up(shared, &body),
+            Err(resp) => resp,
+        },
         (Method::Get, "/api/discs") => api::discs_list(shared),
         (Method::Post, "/api/discs/scan") => match read_json_body(&mut request) {
             Ok(body) => api::discs_scan(shared, disc_tx, &body),
