@@ -161,6 +161,7 @@ pub fn queue(shared: &SharedState) -> Value {
                 "output_size": job.output_size,
                 "saved_percent": saved_percent,
                 "source_deleted": job.source_deleted,
+                "tracks_editable": tracks_editable(&state, id),
             })
         })
         .collect();
@@ -651,7 +652,7 @@ impl Drop for RecursiveScanGuard {
     }
 }
 
-/// Remove a job unless it belongs to the running encode session.
+/// Remove a job unless its encode has already started.
 pub fn queue_remove(shared: &SharedState, body: &Value) -> (u16, Value) {
     let Some(id) = body.get("id").and_then(Value::as_u64) else {
         return (400, json!({"error": "missing 'id'"}));
@@ -660,11 +661,15 @@ pub fn queue_remove(shared: &SharedState, body: &Value) -> (u16, Value) {
     if state.queue.job_by_id(id).is_none() {
         return (404, json!({"error": "unknown job id"}));
     }
-    if state.in_active_session(id) {
-        return (
-            409,
-            json!({"error": "job is part of the active encode session"}),
-        );
+    if let Some(session) = state.session.as_ref().filter(|_| state.encoding_active)
+        && let Some(index) = session.job_ids.iter().position(|&job_id| job_id == id)
+        && !state
+            .queue
+            .job_by_id(id)
+            .is_some_and(|job| is_terminal(&job.status))
+        && !session.job_controls[index].skip()
+    {
+        return (409, json!({"error": "job is already encoding"}));
     }
     state.queue.remove(id);
     (200, json!({"ok": true}))
@@ -1212,11 +1217,12 @@ fn status_json(status: &JobStatus) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{RecursiveScanGuard, queue_add, status, within_root};
+    use super::{RecursiveScanGuard, queue_add, queue_remove, status, within_root};
     use crate::config::{AppConfig, DaemonConfig};
-    use crate::daemon::state::{DaemonState, lock};
+    use crate::daemon::state::{DaemonState, EncodeSession, lock};
     use crate::queue::{EncodingJob, JobStatus};
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
 
     /// Ripping, analyzing, verifying and encoding each report as the current job.
@@ -1250,6 +1256,40 @@ mod tests {
         let shared = Arc::new(Mutex::new(state));
 
         assert!(status(&shared)["current"].is_null());
+    }
+
+    #[test]
+    fn a_waiting_session_job_can_be_removed() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut active = EncodingJob::new(PathBuf::from("/tmp/active.mkv"));
+        active.status = JobStatus::Encoding { progress: 10.0 };
+        let active_id = state.queue.push(active);
+        let mut waiting = EncodingJob::new(PathBuf::from("/tmp/waiting.mkv"));
+        waiting.status = JobStatus::Ready;
+        let waiting_id = state.queue.push(waiting);
+        let active_control = crate::queue::WorkerJobControl::default();
+        let waiting_control = crate::queue::WorkerJobControl::default();
+        assert!(active_control.start());
+        state.session = Some(EncodeSession {
+            job_ids: vec![active_id, waiting_id],
+            job_controls: vec![active_control, waiting_control.clone()],
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        });
+        state.encoding_active = true;
+        let shared = Arc::new(Mutex::new(state));
+
+        let (code, body) = queue_remove(&shared, &serde_json::json!({"id": waiting_id}));
+
+        assert_eq!((code, body), (200, serde_json::json!({"ok": true})));
+        assert!(lock(&shared).queue.job_by_id(waiting_id).is_none());
+        assert!(
+            !waiting_control.start(),
+            "removed job must never be encoded"
+        );
+
+        let (code, body) = queue_remove(&shared, &serde_json::json!({"id": active_id}));
+        assert_eq!(code, 409);
+        assert_eq!(body["error"], "job is already encoding");
     }
 
     /// An empty root allows everything; a configured one confines to itself.

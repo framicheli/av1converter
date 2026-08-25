@@ -1132,6 +1132,7 @@ impl App {
                 );
                 Some(WorkerJob {
                     index: i,
+                    control: crate::queue::WorkerJobControl::default(),
                     subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
                     input: j.path.clone(),
                     output,
@@ -1151,13 +1152,6 @@ impl App {
         self.queue.start_time = Some(std::time::Instant::now());
         self.queue.total_jobs_to_encode = worker_jobs.len();
         self.queue.encoding_progress_done = 0;
-
-        // Mark jobs as pending
-        for wj in &worker_jobs {
-            if let Some(j) = self.queue.jobs.get_mut(wj.index) {
-                j.status = JobStatus::Pending;
-            }
-        }
 
         let cancel_flag = self.cancel_flag.clone();
         let config = self.config.clone();

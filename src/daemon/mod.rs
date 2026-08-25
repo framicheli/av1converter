@@ -590,6 +590,7 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         );
         worker_jobs.push(WorkerJob {
             index: worker_jobs.len(),
+            control: crate::queue::WorkerJobControl::default(),
             subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
             input: job.path.clone(),
             output,
@@ -609,12 +610,6 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
     }
     info!("Starting encode session with {} job(s)", worker_jobs.len());
 
-    for &id in &job_ids {
-        if let Some(job) = state.queue.job_by_id_mut(id) {
-            job.status = JobStatus::Pending;
-        }
-    }
-
     // Totals and start time are per-session, never carried across one, so
     // progress and ETA measure only the run in flight.
     state.queue.state.total_jobs_to_encode = worker_jobs.len();
@@ -623,8 +618,10 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
     state.queue.state.end_time = None;
 
     let cancel_flag = Arc::new(AtomicBool::new(false));
+    let job_controls = worker_jobs.iter().map(|job| job.control.clone()).collect();
     state.session = Some(EncodeSession {
         job_ids,
+        job_controls,
         cancel_flag: cancel_flag.clone(),
     });
     state.encoding_active = true;
@@ -962,6 +959,7 @@ mod tests {
             state.queue.job_by_id_mut(id).unwrap().status = JobStatus::Pending;
             state.session = Some(EncodeSession {
                 job_ids: vec![id],
+                job_controls: vec![crate::queue::WorkerJobControl::default()],
                 cancel_flag: Arc::new(AtomicBool::new(true)),
             });
             state.encoding_active = true;

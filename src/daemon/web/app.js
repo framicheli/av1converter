@@ -467,12 +467,12 @@ function createRow(job) {
   });
   row.insertCell().appendChild(remove);
 
-  const entry = { tr: row, name, sub, source, badge, confirm, detail, bar, size, saved, tracks, remove, kind: job.status.kind };
+  const entry = { tr: row, name, sub, source, badge, confirm, detail, bar, size, saved, tracks, remove, kind: job.status.kind, tracksEditable: job.tracks_editable };
   entry.applyDisabled = () => {
     entry.remove.disabled = offline
       || entry.remove.getAttribute("aria-busy") === "true"
       || ["encoding", "verifying", "ripping"].includes(entry.kind);
-    entry.tracks.disabled = offline || !["ready", "awaiting_config"].includes(entry.kind);
+    entry.tracks.disabled = offline || !entry.tracksEditable;
     entry.confirm.disabled = offline;
   };
   return entry;
@@ -522,6 +522,7 @@ function updateRow(row, job) {
   }
 
   row.kind = job.status.kind;
+  row.tracksEditable = job.tracks_editable;
   row.applyDisabled();
   row.remove.title = tr("remove_from_queue");
   row.remove.setAttribute("aria-label", `${tr("remove_from_queue")}: ${job.filename}`);

@@ -8,4 +8,4 @@ pub use job::{
     make_output_paths_unique,
 };
 pub use state::{PersistedQueue, QueueRef, QueueState};
-pub use worker::{WorkerJob, WorkerMessage, run_worker};
+pub use worker::{WorkerJob, WorkerJobControl, WorkerMessage, run_worker};

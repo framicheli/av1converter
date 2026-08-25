@@ -5,9 +5,31 @@ use crate::queue::SourceIdentity;
 use crate::tracks::OutputTracks;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::Sender;
 use tracing::info;
+
+const WAITING: u8 = 0;
+const STARTED: u8 = 1;
+const SKIPPED: u8 = 2;
+
+/// Atomically decides whether the worker starts a queued job or the UI removes it.
+#[derive(Clone, Default)]
+pub struct WorkerJobControl(Arc<AtomicU8>);
+
+impl WorkerJobControl {
+    pub(crate) fn start(&self) -> bool {
+        self.0
+            .compare_exchange(WAITING, STARTED, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    pub(crate) fn skip(&self) -> bool {
+        self.0
+            .compare_exchange(WAITING, SKIPPED, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+}
 
 /// Messages sent from the worker thread to the main thread
 pub enum WorkerMessage {
@@ -39,6 +61,7 @@ pub enum WorkerMessage {
 #[derive(Clone)]
 pub struct WorkerJob {
     pub index: usize,
+    pub control: WorkerJobControl,
     pub input: PathBuf,
     pub output: PathBuf,
     pub source_identity: SourceIdentity,
@@ -63,6 +86,9 @@ pub fn run_worker(
         if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
             let _ = tx.send(WorkerMessage::Cancelled);
             return;
+        }
+        if !job.control.start() {
+            continue;
         }
 
         let _ = tx.send(WorkerMessage::Progress(job.index, 0.0));
@@ -160,5 +186,12 @@ mod tests {
         );
 
         assert!(matches!(rx.recv().unwrap(), WorkerMessage::Finished));
+    }
+
+    #[test]
+    fn a_job_removed_before_the_worker_claims_it_is_skipped() {
+        let control = WorkerJobControl::default();
+        assert!(control.skip());
+        assert!(!control.start());
     }
 }

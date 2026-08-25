@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::disc::{DiscDrive, DiscSource, DiscTitle};
-use crate::queue::{EncodingJob, JobStatus, QueueState};
+use crate::queue::{EncodingJob, JobStatus, QueueState, WorkerJobControl};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -118,6 +118,7 @@ pub fn is_terminal(status: &JobStatus) -> bool {
 /// session's job batch; `job_ids` maps them back to stable queue ids.
 pub struct EncodeSession {
     pub job_ids: Vec<u64>,
+    pub job_controls: Vec<WorkerJobControl>,
     pub cancel_flag: Arc<AtomicBool>,
 }
 
@@ -291,6 +292,7 @@ mod tests {
             .push(EncodingJob::new(PathBuf::from("/tmp/a.mkv")));
         state.session = Some(EncodeSession {
             job_ids: vec![id],
+            job_controls: vec![WorkerJobControl::default()],
             cancel_flag: Arc::new(AtomicBool::new(false)),
         });
         assert!(!state.in_active_session(id)); // not encoding yet
