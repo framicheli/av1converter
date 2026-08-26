@@ -1643,6 +1643,7 @@ impl App {
         self.queue.encoding_progress_done += 1;
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn process_progress_messages(&mut self) {
         let mut worker_gone = false;
         let messages: Vec<WorkerMessage> = if let Some(ref rx) = self.progress_receiver {

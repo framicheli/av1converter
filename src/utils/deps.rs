@@ -44,8 +44,7 @@ fn check_encoder_available(name: &str) -> bool {
     Command::new("ffmpeg")
         .args(["-hide_banner", "-encoders"])
         .output()
-        .ok()
-        .is_some_and(|o| {
+        .is_ok_and(|o| {
             String::from_utf8_lossy(&o.stdout)
                 .lines()
                 // The encoder name is the second column, after the capability
@@ -59,6 +58,5 @@ fn check_vmaf_available() -> bool {
     Command::new("ffmpeg")
         .args(["-filters"])
         .output()
-        .ok()
-        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("libvmaf"))
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("libvmaf"))
 }

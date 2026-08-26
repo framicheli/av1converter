@@ -521,7 +521,8 @@ mod tests {
     }
 
     fn progress_file(name: &str, content: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("av1c_test_{name}_{}.txt", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("av1c_test_{name}_{}.txt", std::process::id()));
         std::fs::write(&path, content).unwrap();
         path
     }
