@@ -157,7 +157,13 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         }
     }
 
-    args.push(params.output.clone());
+    // The output is a positional argument; a leading `-` is spelled `./-` so
+    // FFmpeg does not read it as an option.
+    if params.output.starts_with('-') {
+        args.push(format!("./{}", params.output));
+    } else {
+        args.push(params.output.clone());
+    }
     args
 }
 

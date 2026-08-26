@@ -156,8 +156,9 @@ pub fn queue(shared: &SharedState) -> Value {
                 "path": job.path.to_string_lossy(),
                 "output_path": job.output_path.as_ref().map(|p| p.to_string_lossy()),
                 "status": status_json(&job.status),
-                "resolution": job.resolution_string(),
-                "hdr": job.hdr_string(),
+                // Null until the probe has run; the page shows a placeholder.
+                "resolution": job.metadata.as_ref().map(|_| job.resolution_string()),
+                "hdr": job.metadata.as_ref().map(|_| job.hdr_string()),
                 "remux_only": job.remux_only,
                 "source_size": job.source_size,
                 "output_size": job.output_size,
@@ -568,9 +569,8 @@ pub fn queue_add(
         None
     };
     let path = PathBuf::from(path);
-    if !path.exists() {
-        return (400, json!({"error": "path does not exist"}));
-    }
+    // Confinement answers first; the existence check runs only on paths
+    // already inside the browse root.
     let browse_root = lock(shared).config.daemon.browse_root.clone();
     let Some(path) = confined_path(&path, &browse_root) else {
         return (
@@ -578,6 +578,9 @@ pub fn queue_add(
             json!({"error": "path is outside the configured browse root"}),
         );
     };
+    if !path.exists() {
+        return (400, json!({"error": "path does not exist"}));
+    }
 
     let mut files: Vec<PathBuf> = Vec::new();
     match mode {
@@ -666,6 +669,15 @@ pub fn queue_remove(shared: &SharedState, body: &Value) -> (u16, Value) {
     }
     if state.in_active_session(id) {
         return (409, json!({"error": "job is already encoding"}));
+    }
+    // A `Ripping` job is owned by the disc worker; removing it would leave
+    // the extraction running with no job to land on.
+    if state
+        .queue
+        .job_by_id(id)
+        .is_some_and(|job| matches!(job.status, JobStatus::Ripping { .. }))
+    {
+        return (409, json!({"error": "job is being ripped from the disc"}));
     }
     let was_ready = state
         .queue
@@ -858,13 +870,17 @@ pub fn strings(shared: &SharedState) -> Value {
 /// Every drive `MakeMKV` reports, and the label of whatever is loaded. The ids
 /// in the response are the only ones the other endpoints accept.
 pub fn discs_list(shared: &SharedState) -> (u16, Value) {
-    let (config, busy) = {
-        let state = lock(shared);
-        (state.config.clone(), state.disc.active)
+    // The listing claims the drive the same way a scan or rip does: one
+    // makemkvcon at a time.
+    let config = {
+        let mut state = lock(shared);
+        if state.disc.active {
+            return (409, json!({"error": "a disc operation is already running"}));
+        }
+        state.disc.active = true;
+        state.config.clone()
     };
-    if busy {
-        return (409, json!({"error": "a disc operation is already running"}));
-    }
+    let _claim = DiscClaim(shared.clone());
 
     let bin = match crate::disc::find_makemkvcon(&config) {
         Ok(bin) => bin,
@@ -889,6 +905,15 @@ pub fn discs_list(shared: &SharedState) -> (u16, Value) {
         .collect();
     lock(shared).disc.drives = drives;
     (200, json!({ "drives": payload }))
+}
+
+/// Holds `disc.active` for the duration of a drive listing.
+struct DiscClaim(SharedState);
+
+impl Drop for DiscClaim {
+    fn drop(&mut self) {
+        lock(&self.0).disc.active = false;
+    }
 }
 
 /// Start scanning a drive (`{"drive": N}`) or a disc folder on disk
@@ -1136,16 +1161,28 @@ fn merged_settings(
 /// Replace the configuration: sanitize, persist to config.toml, and swap the
 /// live copy. Changes apply from the next analysis/encode.
 pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) -> (u16, Value) {
-    let mut state = lock(shared);
-    let config = match merged_settings(body, &state.config, local_request) {
+    // Merging, the browse-root check and the config write all touch the
+    // filesystem and run with no lock held, against a snapshot of the live
+    // config and the queued paths.
+    let (live, job_paths) = {
+        let state = lock(shared);
+        let paths: Vec<(PathBuf, Option<PathBuf>, bool)> = state
+            .queue
+            .state
+            .jobs
+            .iter()
+            .map(|job| (job.path.clone(), job.output_path.clone(), job.temporary))
+            .collect();
+        (state.config.clone(), paths)
+    };
+    let config = match merged_settings(body, &live, local_request) {
         Ok(config) => config,
         Err(e) => return (400, json!({"error": e})),
     };
-    if state.config.daemon.browse_root != config.daemon.browse_root
-        && state.queue.state.jobs.iter().any(|job| {
-            (!job.temporary && !within_root(&job.path, &config.daemon.browse_root))
-                || job
-                    .output_path
+    if live.daemon.browse_root != config.daemon.browse_root
+        && job_paths.iter().any(|(path, output, temporary)| {
+            (!temporary && !within_root(path, &config.daemon.browse_root))
+                || output
                     .as_deref()
                     .and_then(Path::parent)
                     .is_some_and(|parent| !within_root(parent, &config.daemon.browse_root))
@@ -1159,6 +1196,7 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
     if let Err(e) = config.save() {
         return (500, json!({"error": format!("failed to save: {e}")}));
     }
+    let mut state = lock(shared);
     let output_changed = state.config.output != config.output;
     let saved = redacted(&config);
     state.config = config;
@@ -1195,21 +1233,30 @@ pub fn settings_service_post(
     let Some(enabled) = body.get("enabled").and_then(Value::as_bool) else {
         return (400, json!({"error": "enabled must be a boolean"}));
     };
+    // The config write runs with no lock held.
     let enabled_config = if enabled {
-        let mut state = lock(shared);
-        if state.config.daemon.enabled {
-            false
-        } else {
-            let mut config = state.config.clone();
-            config.daemon.enabled = true;
-            if let Err(error) = config.save() {
-                return (
-                    500,
-                    json!({"error": format!("failed to enable daemon: {error}")}),
-                );
+        let config = {
+            let state = lock(shared);
+            if state.config.daemon.enabled {
+                None
+            } else {
+                let mut config = state.config.clone();
+                config.daemon.enabled = true;
+                Some(config)
             }
-            state.config = config;
-            true
+        };
+        match config {
+            None => false,
+            Some(config) => {
+                if let Err(error) = config.save() {
+                    return (
+                        500,
+                        json!({"error": format!("failed to enable daemon: {error}")}),
+                    );
+                }
+                lock(shared).config = config;
+                true
+            }
         }
     } else {
         false

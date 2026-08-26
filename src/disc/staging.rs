@@ -18,8 +18,9 @@ const STAGING_PREFIX: &str = "rip-";
 const SPACE_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// How recently a staging directory must have been written to count as an
-/// active rip belonging to another process.
-pub const ACTIVE_RIP_WINDOW: Duration = Duration::from_mins(5);
+/// active rip belonging to another process. Thirty minutes covers makemkvcon's
+/// read-retry loops on a damaged disc, which write nothing while they run.
+pub const ACTIVE_RIP_WINDOW: Duration = Duration::from_mins(30);
 
 /// The staging root: the configured directory, or one under the system temp
 /// directory.
@@ -79,7 +80,14 @@ pub fn rip_to_staging(
         ))
     })?;
 
-    let needed = title.size_bytes.saturating_add(SPACE_HEADROOM_BYTES);
+    // A title whose size did not parse (`size_bytes == 0`) is estimated from
+    // its duration at the top Blu-ray video rate of 40 Mbit/s.
+    let estimated_bytes = if title.size_bytes == 0 {
+        title.duration.as_secs().saturating_mul(5 * 1024 * 1024)
+    } else {
+        title.size_bytes
+    };
+    let needed = estimated_bytes.saturating_add(SPACE_HEADROOM_BYTES);
     if available_bytes(&root).is_some_and(|free| free < needed) {
         return Err(DiscError::InsufficientSpace);
     }
@@ -195,13 +203,19 @@ pub fn sweep_orphans(config: &AppConfig, jobs: &[EncodingJob], min_age: Duration
         if !path.is_dir() || !is_staging_dir(&path) || live.contains(&path) {
             continue;
         }
-        // A directory another process is still ripping into.
-        if last_written(&path).is_some_and(|age| age < min_age) {
-            info!("Leaving active staging directory {}", path.display());
-            continue;
+        // A directory another process is still ripping into. Unreadable
+        // timestamps count as recent and the directory stays.
+        match last_written(&path) {
+            Some(age) if age >= min_age => {
+                info!("Removing orphaned staging directory {}", path.display());
+                discard_dir(&path);
+            }
+            Some(_) => info!("Leaving active staging directory {}", path.display()),
+            None => warn!(
+                "Leaving staging directory {}: its timestamps are unreadable",
+                path.display()
+            ),
         }
-        info!("Removing orphaned staging directory {}", path.display());
-        discard_dir(&path);
     }
 }
 

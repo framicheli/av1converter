@@ -227,9 +227,13 @@ fn run_vmaf_check(
     let output_path = std::path::Path::new(output);
 
     match verifier::calculate_vmaf(input_path, output_path, hdr_type, width, cancel_flag) {
-        // The encode itself finished, so the output stays; only the quality
-        // check was interrupted.
-        Ok(verifier::VmafOutcome::Cancelled) => FullEncodeResult::Cancelled,
+        // The encode itself finished and the output already sits at its final
+        // path; only the quality check was interrupted. Reported as
+        // encoded-but-unverified, the same state a daemon restart during
+        // verification resolves to.
+        Ok(verifier::VmafOutcome::Cancelled) => FullEncodeResult::VmafFailed {
+            message: "Verification was cancelled".to_string(),
+        },
         Ok(verifier::VmafOutcome::Scored(vmaf)) => {
             info!("VMAF score: {:.2} ({})", vmaf.score, vmaf.quality_grade());
 

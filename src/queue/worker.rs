@@ -69,17 +69,22 @@ pub fn run_worker(
         let tx_progress = tx.clone();
         let idx = job.index;
 
-        let input_str = job.input.to_str().unwrap_or("").to_string();
-        let output_str = job.output.to_str().unwrap_or("").to_string();
+        // The pipeline takes `&str` paths; a non-UTF-8 path is reported on the
+        // job rather than silently emptied.
+        let (Some(input_str), Some(output_str)) = (job.input.to_str(), job.output.to_str()) else {
+            let _ = tx.send(WorkerMessage::Error(
+                job.index,
+                format!("File path is not valid UTF-8: {}", job.input.display()),
+            ));
+            continue;
+        };
+        let input_str = input_str.to_string();
+        let output_str = output_str.to_string();
 
         let tx_verifying = tx.clone();
         let verifying_idx = job.index;
 
-        // A panic here must end this job, not the worker. Nothing supervises
-        // this thread: the daemon holds its own copy of the sender, so a dead
-        // worker does not even close the channel — it just goes quiet, leaving
-        // the session permanently unfinished and the daemon unable to ever
-        // start another one. Blame the file being worked on and carry on.
+        // Convert a pipeline panic into a per-job error so the session can finish.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             encoder::run_encoding_pipeline(
                 &input_str,

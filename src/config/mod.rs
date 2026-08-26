@@ -190,6 +190,10 @@ impl AppConfig {
 
     /// Clamp all numeric fields to their valid ranges and repair output naming.
     pub fn sanitize(&mut self) {
+        // `clamp` passes NaN through; a non-finite threshold takes the default.
+        if !self.quality.vmaf_threshold.is_finite() {
+            self.quality.vmaf_threshold = QualityConfig::default().vmaf_threshold;
+        }
         self.quality.vmaf_threshold = self.quality.vmaf_threshold.clamp(0.0, 100.0);
         self.performance.svt_preset = self.performance.svt_preset.min(13);
         if !PerformanceConfig::valid_nvenc_preset(&self.performance.nvenc_preset) {

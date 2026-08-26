@@ -365,9 +365,12 @@ fn create_queue_item(
             translate_reason(lang, reason)
         ))
         .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
+        // Only the first line of a multi-line message; a `ListItem` renders
+        // one row per embedded newline. The detail panel wraps the full text.
         JobStatus::Error { message } => ListItem::new(format!(
-            "{prefix}✗ {name} {}: {message}",
-            t(lang, Msg::Error)
+            "{prefix}✗ {name} {}: {}",
+            t(lang, Msg::Error),
+            message.lines().next().unwrap_or_default()
         ))
         .style(Style::default().fg(Color::Red).add_modifier(bold_mod)),
         JobStatus::QualityWarning { vmaf, threshold } => {

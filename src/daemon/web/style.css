@@ -384,6 +384,8 @@ fieldset.field-group > legend {
   text-align: left;
   color: inherit;
   font: inherit;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 #browser-list button:disabled { color: var(--ink-2); opacity: 1; cursor: default; }
 #browser-list .size { margin-left: auto; font-size: 11px; color: var(--ink-2); }
@@ -482,6 +484,8 @@ fieldset.field-group > legend {
   width: 100%;
   margin: 4px 0;
   text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .disc-error { color: var(--bad); overflow-wrap: anywhere; }
 

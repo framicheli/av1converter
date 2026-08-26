@@ -26,10 +26,32 @@ fn partial_output_path(output: &str, tag: &str) -> String {
     parent.join(name).to_string_lossy().into_owned()
 }
 
+/// Whether a process with this pid currently exists. A pid that does not fit
+/// `pid_t` counts as gone.
+fn pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        if unsafe { libc::kill(pid, 0) } == 0 {
+            return true;
+        }
+        // EPERM answers for a live process owned by someone else; only ESRCH
+        // proves the pid is free.
+        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// Scratch files left next to `output` by an encode that never finished, as
-/// produced by [`partial_output_path`]. The `{pid}_{counter}` tag belongs to a
-/// process that is gone, so the match is by shape: both halves must be digits,
-/// and a file that merely contains `.part.` is not scratch.
+/// produced by [`partial_output_path`]. The match is by shape — both halves of
+/// the `{pid}_{counter}` tag must be digits, and a file that merely contains
+/// `.part.` is not scratch — and the tagged pid must no longer be running.
 pub fn orphaned_partials(output: &Path) -> Vec<PathBuf> {
     let (Some(parent), Some(stem)) = (output.parent(), output.file_stem().and_then(|s| s.to_str()))
     else {
@@ -65,7 +87,8 @@ pub fn orphaned_partials(output: &Path) -> Vec<PathBuf> {
                 if !pid.is_empty()
                     && !uid.is_empty()
                     && pid.bytes().all(|b| b.is_ascii_digit())
-                    && uid.bytes().all(|b| b.is_ascii_digit()))
+                    && uid.bytes().all(|b| b.is_ascii_digit())
+                    && pid.parse::<u32>().is_ok_and(|pid| !pid_alive(pid)))
         })
         .map(|entry| entry.path())
         .collect()
@@ -210,17 +233,34 @@ pub fn encode_video(
     let _ = std::fs::remove_file(&stderr_path);
 
     // The scratch file becomes the output only now, when the encode is known to
-    // have succeeded. Failure and cancellation already removed it.
+    // have succeeded. Failure and cancellation already removed it. `hard_link`
+    // fails with `AlreadyExists` instead of replacing an existing destination;
+    // filesystems without hard links fall back to the checked rename.
     if matches!(result, EncodeResult::Success) {
-        if path_occupied(Path::new(&params.output)) {
-            let _ = std::fs::remove_file(&partial);
-            return EncodeResult::Error(
-                "Output appeared while encoding; refusing to overwrite it".to_string(),
-            );
-        }
-        if let Err(e) = std::fs::rename(&partial, &params.output) {
-            let _ = std::fs::remove_file(&partial);
-            return EncodeResult::Error(format!("Failed to move the encoded file into place: {e}"));
+        match std::fs::hard_link(&partial, &params.output) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&partial);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = std::fs::remove_file(&partial);
+                return EncodeResult::Error(
+                    "Output appeared while encoding; refusing to overwrite it".to_string(),
+                );
+            }
+            Err(_) => {
+                if path_occupied(Path::new(&params.output)) {
+                    let _ = std::fs::remove_file(&partial);
+                    return EncodeResult::Error(
+                        "Output appeared while encoding; refusing to overwrite it".to_string(),
+                    );
+                }
+                if let Err(e) = std::fs::rename(&partial, &params.output) {
+                    let _ = std::fs::remove_file(&partial);
+                    return EncodeResult::Error(format!(
+                        "Failed to move the encoded file into place: {e}"
+                    ));
+                }
+            }
         }
     }
 

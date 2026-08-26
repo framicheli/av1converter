@@ -104,7 +104,15 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         let shutdown = shutdown.clone();
         ctrlc::set_handler(move || {
             if shutdown.swap(true, Ordering::SeqCst) {
-                // Second signal: force exit
+                // Second signal: force exit. When this daemon leads its own
+                // process group (a service, or a foreground shell job), the
+                // group signal reaches any ffmpeg/makemkvcon children.
+                #[cfg(unix)]
+                unsafe {
+                    if libc::getpgrp() == std::process::id().cast_signed() {
+                        libc::kill(0, libc::SIGTERM);
+                    }
+                }
                 std::process::exit(1);
             }
         })
@@ -206,6 +214,12 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         }
     }
 
+    // The server threads finish their in-flight requests before the final
+    // save.
+    for handle in server_handles {
+        let _ = handle.join();
+    }
+
     // Cancellation moves every unfinished job to a terminal state, and is
     // saved so the next launch does not resume them as interrupted work.
     persist_queue(
@@ -214,10 +228,6 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         &mut last_saved,
         &mut last_save_warning,
     );
-
-    for handle in server_handles {
-        let _ = handle.join();
-    }
     // The analyzer owns ffprobe children; closing its input and joining it
     // leaves none behind.
     drop(probe_tx);
@@ -308,6 +318,10 @@ fn apply_disc_event(
         match event {
             DiscEvent::TitlesFound(scan) => {
                 state.disc.disc_type = scan.disc_type;
+                // A scan that settles with zero titles reports as an error.
+                if scan.titles.is_empty() {
+                    state.disc.error = Some(t(lang, Msg::DiscNoTitles).to_string());
+                }
                 state.disc.titles = scan.titles;
                 state.disc.settle();
             }
@@ -438,19 +452,44 @@ fn add_paths(
     let requested = paths.len();
     let mut added = 0;
     let mut to_analyze: Vec<(u64, String)> = Vec::new();
-    {
-        let mut state = lock(shared);
-        state.queue.state.reset_session_if_finished();
-        // Paths already queued and not yet finished are skipped
-        let mut existing: std::collections::HashSet<std::path::PathBuf> = state
+
+    // Canonicalization touches the filesystem and runs with no lock held.
+    // Jobs added by other requests in between are caught by the raw-path
+    // recheck under the lock; two different spellings of one file added
+    // concurrently can both queue.
+    let queued_paths: Vec<std::path::PathBuf> = {
+        let state = lock(shared);
+        state
             .queue
             .jobs_with_ids()
             .filter(|(_, job)| !is_terminal(&job.status))
-            .map(|(_, job)| job.path.canonicalize().unwrap_or_else(|_| job.path.clone()))
-            .collect();
+            .map(|(_, job)| job.path.clone())
+            .collect()
+    };
+    let mut existing: std::collections::HashSet<std::path::PathBuf> = queued_paths
+        .iter()
+        .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+        .collect();
+    let canonical_paths: Vec<(std::path::PathBuf, std::path::PathBuf)> = paths
+        .into_iter()
+        .map(|path| (path.canonicalize().unwrap_or_else(|_| path.clone()), path))
+        .collect();
 
-        for path in paths {
-            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+    {
+        let mut state = lock(shared);
+        state.queue.state.reset_session_if_finished();
+        for (_, job) in state
+            .queue
+            .jobs_with_ids()
+            .filter(|(_, job)| !is_terminal(&job.status))
+        {
+            if !queued_paths.contains(&job.path) {
+                existing.insert(job.path.clone());
+            }
+        }
+
+        // Paths already queued and not yet finished are skipped
+        for (canonical, path) in canonical_paths {
             if !existing.insert(canonical) {
                 continue;
             }
@@ -618,11 +657,16 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         .filter(|job| matches!(job.status, JobStatus::Ready))
         .count();
     state.queue.state.total_jobs_to_encode = state.queue.state.encoding_progress_done + ready;
-    state
-        .queue
-        .state
-        .start_time
-        .get_or_insert_with(Instant::now);
+    // The elapsed clock counts encoding time only; the idle gap since the
+    // last session ended is shifted out of it.
+    let now = Instant::now();
+    match (state.queue.state.start_time, state.queue.state.end_time) {
+        (Some(start), Some(end)) => {
+            state.queue.state.start_time = Some(start + now.duration_since(end));
+        }
+        (None, _) => state.queue.state.start_time = Some(now),
+        (Some(_), None) => {}
+    }
     state.queue.state.end_time = None;
     if let Some(job) = job_ids
         .first()
@@ -744,9 +788,8 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
     if all_done {
         state.encoding_active = false;
         state.session = None;
-        if state.queue.state.all_completed() {
-            state.queue.state.end_time = Some(Instant::now());
-        }
+        // Set on every session end, not only a fully settled queue.
+        state.queue.state.end_time = Some(Instant::now());
         info!("Encode job finished");
     }
 }
@@ -789,7 +832,9 @@ mod tests {
 
         let state = lock(&shared);
         assert!(!state.encoding_active);
-        assert!(state.queue.state.end_time.is_none());
+        // The pause marker is set; the next session start clears it and
+        // subtracts the gap from the elapsed clock.
+        assert!(state.queue.state.end_time.is_some());
         assert_eq!(state.queue.state.encoding_progress_done, 1);
         assert!(matches!(state.queue.state.jobs[1].status, JobStatus::Ready));
     }

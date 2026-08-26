@@ -506,10 +506,15 @@ fn main() -> io::Result<()> {
 
     let _log_guard = utils::init_logging();
 
-    // Restore the terminal even if panic
+    // Restore the terminal on a panic. The hook acts only for the main
+    // thread; worker-thread panics leave the running event loop's terminal
+    // untouched.
+    let main_thread = std::thread::current().id();
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = restore_terminal();
+        if std::thread::current().id() == main_thread {
+            let _ = restore_terminal();
+        }
         original_hook(info);
     }));
 
@@ -764,6 +769,14 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
 /// Drive and title selection. Esc during a scan cancels it and steps back.
 fn handle_disc_key(app: &mut App, key: KeyCode) {
     if app.disc_state == app::DiscState::Cancelling {
+        return;
+    }
+    // While drives are still being discovered the list is empty and only Esc
+    // acts; Enter would otherwise land on the folder row.
+    if app.disc_state == app::DiscState::Discovering {
+        if key == KeyCode::Esc {
+            app.leave_disc_screen();
+        }
         return;
     }
 

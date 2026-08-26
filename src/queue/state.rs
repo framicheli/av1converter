@@ -547,7 +547,8 @@ mod tests {
     fn an_interrupted_encode_is_requeued_and_its_partial_deleted() {
         let dir = scratch("interrupted");
         let output = dir.join("movie_av1.mkv");
-        let partial = dir.join("movie_av1.part.4321_0.mkv");
+        // A pid no live process can hold.
+        let partial = dir.join("movie_av1.part.4294967294_0.mkv");
         let bystander = dir.join("movie_av1.part.mine.mkv");
         std::fs::write(&output, b"a finished file from an earlier run").unwrap();
         std::fs::write(&partial, b"half an encode").unwrap();

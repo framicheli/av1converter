@@ -127,13 +127,18 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
         hdr10_static = probe_frame_hdr10_static(input_path, cancel);
     }
 
-    // Parse frame rate
-    let (frame_rate_num, frame_rate_den) = parse_frame_rate(
-        stream
-            .r_frame_rate
-            .as_deref()
-            .or(stream.avg_frame_rate.as_deref()),
-    );
+    // Parse frame rate. `avg_frame_rate` carries the playback rate;
+    // `r_frame_rate` reports the field rate for interlaced streams and the
+    // timebase ceiling for variable-frame-rate streams, and stands in only
+    // when the average is absent or zero.
+    let (frame_rate_num, frame_rate_den) = [
+        stream.avg_frame_rate.as_deref(),
+        stream.r_frame_rate.as_deref(),
+    ]
+    .into_iter()
+    .map(parse_frame_rate)
+    .find(|&(num, _)| num > 0)
+    .unwrap_or((0, 1));
 
     // Parse duration — prefer format-level, fall back to stream-level
     let stream_duration = stream

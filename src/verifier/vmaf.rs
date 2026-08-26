@@ -135,11 +135,12 @@ pub fn calculate_vmaf(
     // Scale thread count to available cores, capped at 8
     let n_threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
 
-    // VMAF filter with quick settings (subsample=10 for speed)
+    // VMAF filter with quick settings (subsample=10 for speed). libvmaf takes
+    // the distorted stream as its first input and the reference as its second.
     let filter = format!(
         "[0:v]format=yuv420p10le,setpts=PTS-STARTPTS[ref];\
          [1:v]format=yuv420p10le,setpts=PTS-STARTPTS[dist];\
-         [ref][dist]libvmaf=log_path={}:log_fmt=json:n_threads={}:n_subsample=10{}",
+         [dist][ref]libvmaf=log_path={}:log_fmt=json:n_threads={}:n_subsample=10{}",
         escape_filter_value(&json_output.to_string_lossy()),
         n_threads,
         model_suffix

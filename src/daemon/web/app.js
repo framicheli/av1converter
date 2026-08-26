@@ -388,6 +388,19 @@ const BADGE_KEY = {
   skipped: "badge_skipped", error: "badge_error",
 };
 
+// Reasons arrive as fixed English strings; the known ones translate, anything
+// else shows as sent.
+const REASON_KEY = {
+  "Cancelled": "reason_cancelled",
+  "interrupted by a daemon restart": "reason_restart_interrupted",
+  "Verification was cancelled": "reason_verification_cancelled",
+};
+
+function trReason(reason) {
+  const key = REASON_KEY[reason];
+  return key ? tr(key, reason) : reason;
+}
+
 function badgeText(st) {
   switch (st.kind) {
     case "encoding": return `${tr("status_encoding")} ${st.progress.toFixed(1)}%`;
@@ -395,7 +408,7 @@ function badgeText(st) {
     case "done_vmaf": return `${tr("badge_done")} · VMAF ${st.vmaf.toFixed(1)}`;
     case "done_vmaf_failed": return `${tr("badge_done")} · ${tr("badge_vmaf_failed")}`;
     case "quality_warning": return `${tr("badge_low_vmaf")} ${st.vmaf.toFixed(1)}`;
-    case "skipped": return `${tr("badge_skipped")} · ${st.reason}`;
+    case "skipped": return `${tr("badge_skipped")} · ${trReason(st.reason)}`;
     default: return tr(BADGE_KEY[st.kind] ?? "", st.kind);
   }
 }
@@ -448,11 +461,10 @@ function createRow(job) {
     moveUp.setAttribute("aria-busy", "true");
     try {
       await post("/api/queue/move_up", { id: job.id });
-      refreshQueue();
     } catch (e) { toast(e.message, true); }
     finally {
       moveUp.removeAttribute("aria-busy");
-      if (moveUp.isConnected) refreshQueue();
+      forceRefreshQueue();
     }
   });
   row.insertCell().appendChild(moveUp);
@@ -476,11 +488,10 @@ function createRow(job) {
     remove.setAttribute("aria-busy", "true");
     try {
       await post("/api/queue/remove", { id: job.id });
-      refreshQueue();
     } catch (e) { toast(e.message, true); }
     finally {
       remove.removeAttribute("aria-busy");
-      if (remove.isConnected) refreshQueue();
+      forceRefreshQueue();
     }
   });
   row.insertCell().appendChild(remove);
@@ -505,7 +516,8 @@ function updateRow(row, job) {
     job.remux_only ? tr("tag_remux") : "",
     job.source_deleted ? tr("tag_source_deleted") : "",
   ].filter(Boolean).join(" · ");
-  row.source.textContent = `${job.resolution} ${job.hdr}`;
+  // Resolution and HDR are null until the probe has run.
+  row.source.textContent = [job.resolution, job.hdr].filter(Boolean).join(" ") || "—";
 
   row.badge.className = `badge ${BADGE_CLASS[job.status.kind] || ""}`;
   row.badge.textContent = badgeText(job.status);
@@ -515,7 +527,7 @@ function updateRow(row, job) {
   row.confirm.textContent = tr("confirm_tracks");
   row.confirm.setAttribute("aria-label", `${tr("confirm_tracks")}: ${job.filename}`);
   const detail = job.status.kind === "error" ? job.status.message
-    : job.status.kind === "done_vmaf_failed" ? job.status.reason
+    : job.status.kind === "done_vmaf_failed" ? trReason(job.status.reason)
     : "";
   row.detail.textContent = detail;
   row.detail.classList.toggle("hidden", !detail);
@@ -571,6 +583,13 @@ function refreshQueue() {
   if (queueRefresh) return queueRefresh;
   queueRefresh = refreshQueueNow().finally(() => { queueRefresh = null; });
   return queueRefresh;
+}
+
+// A fetch that started before a mutation committed carries the old order;
+// this waits it out and fetches again.
+function forceRefreshQueue() {
+  const pending = queueRefresh ?? Promise.resolve();
+  return pending.then(() => refreshQueue());
 }
 
 async function refreshQueueNow() {

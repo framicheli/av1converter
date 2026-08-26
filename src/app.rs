@@ -487,6 +487,7 @@ impl App {
 
     pub fn navigate_to_queue(&mut self) {
         self.queue_cursor = 0;
+        self.detail_scroll = 0;
         self.current_screen = Screen::Queue;
     }
 
@@ -508,6 +509,7 @@ impl App {
             }
         }
         self.finish_cursor = 0;
+        self.detail_scroll = 0;
         self.current_screen = Screen::Finish;
     }
 
@@ -949,12 +951,16 @@ impl App {
             .jobs
             .iter()
             .position(|j| matches!(j.status, JobStatus::AwaitingConfig));
-        self.queue.config_job_index = next_to_configure.unwrap_or(0);
+        // A Track Config screen already open keeps its job, its cursors and
+        // any open DV dialog; later probe rounds leave it alone.
+        if self.current_screen != Screen::TrackConfig {
+            self.queue.config_job_index = next_to_configure.unwrap_or(0);
+        }
 
         if next_to_configure.is_some() {
             // An encode already running keeps the screen; the job waits on the
             // queue for the user to open it.
-            if !self.encoding_active {
+            if !self.encoding_active && self.current_screen != Screen::TrackConfig {
                 self.navigate_to_track_config();
             }
         } else if !self.encoding_active && self.disc_receiver.is_none() {
@@ -1174,9 +1180,16 @@ impl App {
             .filter(|job| matches!(job.status, JobStatus::Ready))
             .count();
         self.queue.total_jobs_to_encode = self.queue.encoding_progress_done + ready;
-        self.queue
-            .start_time
-            .get_or_insert_with(std::time::Instant::now);
+        // The elapsed clock counts encoding time only; the idle gap since the
+        // last session ended is shifted out of it.
+        let now = std::time::Instant::now();
+        match (self.queue.start_time, self.queue.end_time) {
+            (Some(start), Some(end)) => {
+                self.queue.start_time = Some(start + now.duration_since(end));
+            }
+            (None, _) => self.queue.start_time = Some(now),
+            (Some(_), None) => {}
+        }
         self.queue.end_time = None;
         if let Some(&index) = self.encoding_session_indices.first()
             && let Some(job) = self.queue.jobs.get_mut(index)
@@ -1495,11 +1508,16 @@ impl App {
                 DiscEvent::Ripping { index, progress } => {
                     if let Some(job) = self.queue.jobs.get_mut(index) {
                         job.status = JobStatus::Ripping { progress };
-                        if self.queue_cursor == self.queue.current_job_index {
-                            self.queue_cursor = index;
-                            self.queue_list_state.select(Some(index));
+                        // A concurrent encode owns `current_job_index` and the
+                        // cursor-follow; the rip row only claims them when no
+                        // encode is running.
+                        if !self.encoding_active {
+                            if self.queue_cursor == self.queue.current_job_index {
+                                self.queue_cursor = index;
+                                self.queue_list_state.select(Some(index));
+                            }
+                            self.queue.current_job_index = index;
                         }
-                        self.queue.current_job_index = index;
                     }
                 }
                 // Probing starts now, while the drive moves on to the next
@@ -1535,7 +1553,15 @@ impl App {
                 let message =
                     crate::disc::DiscError::Failed("the run stopped unexpectedly".to_string())
                         .message(lang);
-                self.fail_disc_run(0, &message);
+                // The failure lands on the title that was being extracted:
+                // the first job still in `Ripping`.
+                let failed = self
+                    .queue
+                    .jobs
+                    .iter()
+                    .position(|job| matches!(job.status, JobStatus::Ripping { .. }))
+                    .unwrap_or(0);
+                self.fail_disc_run(failed, &message);
             }
         }
     }
@@ -1758,6 +1784,9 @@ impl App {
         if session_finished {
             self.progress_receiver = None;
             self.encoding_session_indices.clear();
+            // Set on every session end; the next session start subtracts the
+            // idle gap from the elapsed clock.
+            self.queue.end_time = Some(std::time::Instant::now());
             if self.should_quit {
                 return;
             }
