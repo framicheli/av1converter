@@ -2,7 +2,7 @@ use super::common::{get_vmaf_color, translate_reason};
 use crate::app::{App, DiscState};
 use crate::i18n::{Language, Msg, t};
 use crate::queue::JobStatus;
-use crate::utils::format_duration;
+use crate::utils::{format_duration, format_file_size};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -206,6 +206,20 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 JobStatus::Error { message } => message.clone(),
                 // Handled by the gauge branches above; unreachable here.
                 JobStatus::Encoding { .. } | JobStatus::Ripping { .. } => String::new(),
+            };
+            let status_text = if matches!(
+                job.status,
+                JobStatus::Done | JobStatus::DoneWithVmaf { .. } | JobStatus::DoneVmafFailed { .. }
+            ) && let Some((saved, percent)) = job.size_reduction()
+                && percent >= 0.0
+            {
+                format!(
+                    "{status_text} — {}: {} ({percent:.1}%)",
+                    t(lang, Msg::ReductionLabel),
+                    format_file_size(saved)
+                )
+            } else {
+                status_text
             };
             let status = Paragraph::new(status_text)
                 .alignment(Alignment::Center)

@@ -1630,6 +1630,19 @@ impl App {
     }
 
     #[allow(clippy::too_many_lines)]
+    /// Mark a session job as successfully finished and record the output size.
+    fn finish_job(&mut self, idx: usize, status: JobStatus) {
+        let Some(job) = self.queue.jobs.get_mut(idx) else {
+            return;
+        };
+        job.status = status;
+        if let Some(ref output_path) = job.output_path {
+            job.output_size = std::fs::metadata(output_path).ok().map(|m| m.len());
+        }
+        self.queue.converted_count += 1;
+        self.queue.encoding_progress_done += 1;
+    }
+
     pub fn process_progress_messages(&mut self) {
         let mut worker_gone = false;
         let messages: Vec<WorkerMessage> = if let Some(ref rx) = self.progress_receiver {
@@ -1666,18 +1679,10 @@ impl App {
                     }
                 }
                 WorkerMessage::Done(idx) => {
-                    if let Some(job) = self.queue.jobs.get_mut(idx) {
-                        job.status = JobStatus::Done;
-                        self.queue.converted_count += 1;
-                        self.queue.encoding_progress_done += 1;
-                    }
+                    self.finish_job(idx, JobStatus::Done);
                 }
                 WorkerMessage::DoneWithVmaf(idx, score) => {
-                    if let Some(job) = self.queue.jobs.get_mut(idx) {
-                        job.status = JobStatus::DoneWithVmaf { score };
-                        self.queue.converted_count += 1;
-                        self.queue.encoding_progress_done += 1;
-                    }
+                    self.finish_job(idx, JobStatus::DoneWithVmaf { score });
                 }
                 WorkerMessage::Error(idx, msg) => {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
@@ -1687,11 +1692,7 @@ impl App {
                     }
                 }
                 WorkerMessage::QualityWarning(idx, vmaf, threshold) => {
-                    if let Some(job) = self.queue.jobs.get_mut(idx) {
-                        job.status = JobStatus::QualityWarning { vmaf, threshold };
-                        self.queue.converted_count += 1;
-                        self.queue.encoding_progress_done += 1;
-                    }
+                    self.finish_job(idx, JobStatus::QualityWarning { vmaf, threshold });
                 }
                 WorkerMessage::Verifying(idx) => {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
@@ -1699,11 +1700,7 @@ impl App {
                     }
                 }
                 WorkerMessage::DoneVmafFailed(idx, reason) => {
-                    if let Some(job) = self.queue.jobs.get_mut(idx) {
-                        job.status = JobStatus::DoneVmafFailed { reason };
-                        self.queue.converted_count += 1;
-                        self.queue.encoding_progress_done += 1;
-                    }
+                    self.finish_job(idx, JobStatus::DoneVmafFailed { reason });
                 }
                 WorkerMessage::SourceDeleted(idx) => {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
@@ -1876,6 +1873,26 @@ mod tests {
 
         assert_eq!(app.queue_cursor, 0);
         assert_eq!(app.queue.jobs[0].filename(), "second.mkv");
+    }
+
+    #[test]
+    fn a_finished_job_records_its_output_size_immediately() {
+        let dir = std::env::temp_dir().join("av1c-finish-size-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("out.mkv");
+        std::fs::write(&output, b"12345").unwrap();
+
+        let mut app = App::new();
+        let mut job = EncodingJob::new(PathBuf::from("source.mkv"));
+        job.status = JobStatus::Encoding { progress: 99.0 };
+        job.output_path = Some(output);
+        app.queue.jobs.push(job);
+
+        app.finish_job(0, JobStatus::DoneWithVmaf { score: 95.0 });
+
+        assert_eq!(app.queue.jobs[0].output_size, Some(5));
+        assert_eq!(app.queue.converted_count, 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
