@@ -123,6 +123,7 @@ pub enum EncodeResult {
 }
 
 /// Encode a video file using `FFmpeg`
+#[allow(clippy::too_many_lines)]
 pub fn encode_video(
     params: &EncodingParams,
     progress_callback: Option<ProgressCallback>,
@@ -200,12 +201,13 @@ pub fn encode_video(
     };
 
     // Start FFmpeg
-    let mut child = match Command::new("ffmpeg")
+    let mut ffmpeg = Command::new("ffmpeg");
+    ffmpeg
         .args(&args)
         .stdout(Stdio::null())
-        .stderr(Stdio::from(stderr_file))
-        .spawn()
-    {
+        .stderr(Stdio::from(stderr_file));
+    crate::utils::child::configure(&mut ffmpeg);
+    let mut child = match ffmpeg.spawn() {
         Ok(c) => c,
         Err(e) => {
             let _ = std::fs::remove_file(&progress_file);
@@ -214,6 +216,7 @@ pub fn encode_video(
             return EncodeResult::Error(format!("Failed to start ffmpeg: {e}"));
         }
     };
+    let _child = crate::utils::child::ChildGuard::register(child.id());
 
     // Run encoding loop
     let result = run_encode_loop(

@@ -22,6 +22,19 @@
 
 - Cancelling a `makemkvcon` run could block until its child processes exited; the output reader is no longer waited on after a cancellation.
 - A job's analysis result no longer overwrites a status the job had already reached, so a file that failed keeps the reason it failed.
+- The web UI's Cancel button now stops an in-progress disc rip, not only an encode. `+ Disc` is disabled while a rip is running.
+- Daemon shutdown now kills leftover ffmpeg/ffprobe/makemkvcon children after the grace period and waits for the encode and rip worker threads to finish.
+- A TUI disc rip appends to the queue instead of wiping it, and rip events follow those jobs rather than raw queue positions.
+- Turning off Run at Startup from the TUI uninstalls the login unit without stopping a daemon that is already running, matching the web UI.
+- Drive listings can be cancelled; `disc.active` is the shared flag those listings set, so the dashboard can stop them.
+- Late MakeMKV progress for a title that has already extracted no longer resets that job to ripping.
+- A successful queue save keeps the previous `queue.json` as `queue.json.bak`; a corrupt file reloads from that backup.
+- Disc identity is drive id, drive name, disc label, and title id plus title name, so a same-label swap is caught before extraction.
+- Web status pill prefers verifying over encoding; the track modal no longer opens over unsaved Settings; cancelled jobs appear in the batch summary; cancel uses an in-page confirm; a skipped poll tick is retried.
+- The TUI home title and the disc Discovering screen follow the selected language. `--start` mints an auth token only after taking the PID lock.
+- After a forced shutdown, leftover encode/rip messages are applied before `queue.json` is written, so a killed encode is not restarted as Ready. HTTP mutations are refused once shutdown starts, and in-flight requests finish before worker handles are taken.
+- Cancel encoding no longer silently cancels a concurrent disc rip. The web disc browser can pick an ISO. Analysis can be cancelled from the dashboard. Removing or clearing a ripped job deletes its staging file.
+- Recursive folder add respects shutdown. Unix child kill covers the process group. TUI quit uses the same grace-then-kill path. Finish lists VMAF-check failures, Esc returns to the queue, and Enter confirms before clearing.
 
 ### Known limitations
 

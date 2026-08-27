@@ -127,7 +127,15 @@ pub fn render_disc_titles(f: &mut Frame, app: &mut App) {
                 chunks[1],
             );
         }
-        DiscState::Discovering => {}
+        DiscState::Discovering => {
+            f.render_widget(
+                Paragraph::new(t(lang, Msg::DiscDiscovering))
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(Color::Yellow))
+                    .block(bordered()),
+                chunks[1],
+            );
+        }
         DiscState::Cancelling => {
             f.render_widget(
                 Paragraph::new(t(lang, Msg::Cancelling))

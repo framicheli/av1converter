@@ -213,17 +213,24 @@ function updateModalActions() {
 }
 
 let pollInFlight = false;
+let pollSkipped = false;
+let lastWork = { encoding: false, ripping: false, analyzing: false };
+
 async function poll() {
-  if (pollInFlight) return;
+  if (pollInFlight) {
+    pollSkipped = true;
+    return;
+  }
   pollInFlight = true;
   try {
     const s = await api("/api/status");
     setOffline(false);
 
     const pill = $("status-pill");
-    const ripping = s.current?.status.kind === "ripping";
-    const statusKey = ripping ? "status_ripping"
-      : s.encoding_active ? "status_encoding"
+    const kind = s.current?.status.kind;
+    const statusKey = kind === "ripping" ? "status_ripping"
+      : kind === "verifying" ? "verifying_vmaf"
+      : kind === "encoding" || s.encoding_active ? "status_encoding"
       : s.counts.analyzing > 0 ? "badge_analyzing"
       // AwaitingConfig requires track confirmation before queue processing continues.
       : s.counts.awaiting_config > 0 ? "confirm_tracks"
@@ -256,10 +263,13 @@ async function poll() {
     setText($("overall-pct"), `${s.overall_progress.toFixed(1)}%`);
     setText($("eta"), s.eta_secs != null ? `${tr("eta")} ${fmtDuration(s.eta_secs)}` : "");
 
-    setText($("stat-total"), String(s.counts.total));
+    setText($("stat-total"), String(s.counts.active));
     setText($("stat-saved"), s.total_space_saved.human);
 
-    $("btn-cancel").disabled = !s.encoding_active;
+    lastWork.encoding = Boolean(s.encoding_active);
+    lastWork.ripping = Boolean(s.disc?.active);
+    lastWork.analyzing = s.counts.analyzing > 0;
+    updateWorkButtons();
 
     updateSummary(s);
     onDiscStatus(s.disc);
@@ -277,7 +287,27 @@ async function poll() {
     setOffline(true);
   } finally {
     pollInFlight = false;
+    if (pollSkipped) {
+      pollSkipped = false;
+      poll();
+    }
   }
+}
+
+function updateWorkButtons() {
+  const ripping = lastWork.ripping;
+  const encoding = lastWork.encoding;
+  const analyzing = lastWork.analyzing;
+  $("btn-cancel").disabled = offline || (!encoding && !ripping && !analyzing);
+  setText(
+    $("btn-cancel"),
+    encoding ? tr("cancel_encoding")
+      : ripping ? tr("cancel_disc")
+      : analyzing ? tr("cancel_analysis")
+      : tr("cancel_encoding"),
+  );
+  $("btn-add-disc").disabled = offline || ripping;
+  $("btn-add-disc").title = ripping ? tr("status_ripping") : "";
 }
 
 // ── Batch summary ───────────────────────────────────────────────────
@@ -304,7 +334,7 @@ function updateSummary(s) {
   // A batch that started is a batch whose result has not been seen yet.
   if (s.counts.active > 0) summaryDismissed = false;
 
-  const finished = s.counts.active === 0 && converted + skipped + errors > 0;
+  const finished = s.counts.active === 0 && converted + skipped + errors + cancelled > 0;
   if (wasActive && finished) sawCompletion = true;
 
   const summary = $("summary");
@@ -314,6 +344,7 @@ function updateSummary(s) {
   if (show) {
     $("summary-converted").textContent = converted;
     $("summary-skipped").textContent = skipped;
+    $("summary-cancelled").textContent = cancelled;
     $("summary-errors").textContent = errors;
     // The server's own string, so this reads identically to the tile above it.
     $("summary-saved").textContent = s.total_space_saved.human;
@@ -327,6 +358,7 @@ function updateSummary(s) {
     summary.classList.toggle("has-skips", errors === 0 && skipped > 0);
     $("summary-errors-group").classList.toggle("bad", errors > 0);
     $("summary-skipped-group").classList.toggle("warn", skipped > 0);
+    $("summary-cancelled-group").classList.toggle("hidden", cancelled === 0);
   }
 
   // Announced only on the observed encoding → idle transition, so reloading
@@ -340,7 +372,9 @@ function updateSummary(s) {
     toast(
       `${tr(headline)} ${tr("session_totals")} — ` +
       `${tr("summary_converted")}: ${converted}, ` +
-      `${tr("badge_skipped")}: ${skipped}, ${tr("summary_errors")}: ${errors}`,
+      `${tr("badge_skipped")}: ${skipped}` +
+      (cancelled > 0 ? `, ${tr("summary_cancelled")}: ${cancelled}` : "") +
+      `, ${tr("summary_errors")}: ${errors}`,
       errors > 0,
     );
   }
@@ -537,7 +571,13 @@ function updateRow(row, job) {
   // A rip fills the same bar as an encode: same shape of work, same row.
   const live = ["encoding", "ripping"].includes(job.status.kind);
   row.bar.classList.toggle("hidden", !live);
-  if (live) row.bar.value = job.status.progress;
+  if (live) {
+    row.bar.value = job.status.progress;
+    row.bar.setAttribute(
+      "aria-label",
+      job.status.kind === "ripping" ? tr("status_ripping") : tr("status_encoding"),
+    );
+  }
 
   row.size.textContent = job.output_size != null
     ? `${fmtBytes(job.source_size)} → ${fmtBytes(job.output_size)}`
@@ -630,16 +670,49 @@ async function refreshQueueNow() {
   const next = !data.jobs.some((job) => job.status.kind === "analyzing")
     && data.jobs.find((job) =>
       job.status.kind === "awaiting_config" && !promptedTrackJobs.has(job.id));
-  if (next && !openingTracks && !document.querySelector("dialog[open]")) {
+  const settingsOpen = activeTab === "settings" && settingsDirty();
+  if (next && !openingTracks && !settingsOpen && !document.querySelector("dialog[open]")) {
     promptedTrackJobs.add(next.id);
     if (!await openTracks(next.id)) promptedTrackJobs.delete(next.id);
   }
 }
 
+function askConfirm(message) {
+  return new Promise((resolve) => {
+    $("confirm-body").textContent = message;
+    const modal = $("confirm-modal");
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      $("confirm-yes").onclick = null;
+      $("confirm-no").onclick = null;
+      modal.onclose = null;
+      if (modal.open) modal.close();
+      resolve(ok);
+    };
+    $("confirm-yes").onclick = () => finish(true);
+    $("confirm-no").onclick = () => finish(false);
+    modal.onclose = () => finish(false);
+    modal.showModal();
+  });
+}
+
 $("btn-cancel").addEventListener("click", async () => {
-  if (!confirm(tr("cancel_encoding_prompt"))) return;
-  try { await post("/api/queue/cancel"); toast(tr("cancelling")); }
-  catch (e) { toast(e.message, true); }
+  const ripping = lastWork.ripping;
+  const encoding = lastWork.encoding;
+  const analyzing = lastWork.analyzing;
+  if (!encoding && !ripping && !analyzing) return;
+  const prompt = encoding ? tr("cancel_encoding_prompt")
+    : ripping ? tr("cancel_disc_prompt")
+    : tr("cancel_analysis_prompt");
+  if (!await askConfirm(prompt)) return;
+  try {
+    if (encoding) await post("/api/queue/cancel");
+    else if (ripping) await post("/api/discs/cancel");
+    else await post("/api/queue/cancel_analysis");
+    toast(tr("cancelling"));
+  } catch (e) { toast(e.message, true); }
 });
 
 $("btn-clear").addEventListener("click", async () => {
@@ -665,11 +738,31 @@ $("btn-clear").addEventListener("click", async () => {
 // The modal keeps an editable copy of one job's track selection.
 let trackEditor = null;
 
-$("tracks-close").addEventListener("click", closeTracks);
-$("tracks-back").addEventListener("click", closeTracks);
+$("tracks-close").addEventListener("click", () => closeTracks());
+$("tracks-back").addEventListener("click", () => closeTracks());
 $("tracks-modal").addEventListener("close", () => { trackEditor = null; });
+$("tracks-modal").addEventListener("cancel", (event) => {
+  if (!tracksDirty()) return;
+  event.preventDefault();
+  closeTracks();
+});
 
-function closeTracks() {
+function tracksDirty() {
+  if (!trackEditor?.editable || !trackEditor.snapshot) return false;
+  return tracksSnapshot(trackEditor) !== trackEditor.snapshot;
+}
+
+function tracksSnapshot(editor) {
+  return JSON.stringify({
+    audio: editor.audio.map((t) => ({ index: t.index, mode: t.mode })),
+    subtitles: editor.subtitles.map((t) => ({ index: t.index, selected: t.selected })),
+    remuxOnly: editor.remuxOnly,
+    dvMode: editor.dvMode,
+  });
+}
+
+async function closeTracks() {
+  if (tracksDirty() && !await askConfirm(tr("abandon_tracks_prompt"))) return;
   $("tracks-modal").close();
 }
 
@@ -690,6 +783,7 @@ async function openTracks(id) {
       dv: data.dv,
       dvMode: data.dv ? data.dv.mode : null,
     };
+    editor.snapshot = tracksSnapshot(editor);
     $("tracks-filename").textContent = ` — ${data.filename}`;
     $("tracks-save").disabled = offline || !data.editable;
     $("tracks-save").removeAttribute("aria-busy");
@@ -983,7 +1077,7 @@ $("browser").addEventListener("close", () => {
 });
 
 for (const dialog of document.querySelectorAll("dialog")) {
-  if (dialog.id === "tracks-modal") continue;
+  if (dialog.id === "tracks-modal" || dialog.id === "confirm-modal") continue;
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) dialog.close();
   });
@@ -1088,6 +1182,11 @@ async function loadDir(path, takeFocus = false) {
       : ["·", tr("kind_file")];
     if (f.is_video && browser.mode === "file") {
       addEntry(mark, f.name, kind, () => addToQueue(filePath, "file"), fmtBytes(f.size));
+    } else if (f.is_iso && browser.mode === "disc") {
+      addEntry(">", f.name, tr("kind_disc_image"), () => {
+        $("browser").close();
+        scanDiscFolder(filePath);
+      }, fmtBytes(f.size));
     } else {
       addEntry(mark, f.name, `${kind}, ${tr("kind_not_selectable")}`, null, fmtBytes(f.size));
     }
@@ -1173,14 +1272,26 @@ let discBrowsing = false;
 
 $("btn-add-disc").addEventListener("click", openDisc);
 $("disc-close").addEventListener("click", () => $("disc-modal").close());
+$("disc-back").addEventListener("click", () => {
+  if (!disc || discState.active) return;
+  if (disc.scanPending || discState.scanning) post("/api/discs/cancel").catch(() => {});
+  disc.drive = null;
+  disc.folder = null;
+  disc.selected.clear();
+  disc.error = null;
+  disc.loading = false;
+  disc.scanPending = false;
+  discShapeRendered = null;
+  renderDisc();
+});
 // Esc closes without going through the button, so the state is dropped on the
 // close event: the one place every path passes through. A scan still running
 // is called off, since it holds the drive.
 $("disc-modal").addEventListener("close", () => {
   if (discBrowsing) return;
-  // A rip closes this dialog on its way to the queue, where it is cancelled
-  // like any other job; only an abandoned scan is called off here.
-  if (disc && !disc.ripping && (disc.scanPending || discState.scanning)) {
+  // A rip closes this dialog on its way to the queue, where Cancel stops it.
+  // An abandoned scan or a still-running drive listing is called off here.
+  if (disc && !disc.ripping && (disc.scanPending || disc.loading || discState.scanning)) {
     post("/api/discs/cancel").catch(() => {});
   }
   disc = null;
@@ -1189,6 +1300,10 @@ $("disc-modal").addEventListener("close", () => {
 
 async function openDisc() {
   if ($("disc-modal").open) return;
+  if (discState.active) {
+    toast(tr("status_ripping"), true);
+    return;
+  }
   const session = disc = {
     drives: [], drive: null, folder: null, selected: new Set(),
     error: null, loading: true, scanPending: false,
@@ -1328,8 +1443,11 @@ function updateDiscFooter() {
   const listed = Boolean(disc) && !disc.loading && !discState.scanning
     && discState.titles.length > 0;
   $("disc-note").textContent = listed ? `${disc.selected.size} ${tr("selected")}` : "";
-  $("disc-rip").disabled = offline || !listed || disc.selected.size === 0 || discState.active;
+  $("disc-rip").disabled = offline || !listed || disc.selected.size === 0
+    || discState.active || ripInFlight;
   $("disc-folder").disabled = offline || (Boolean(disc) && (discState.active || disc.loading));
+  const sourced = Boolean(disc) && (disc.drive != null || disc.folder != null);
+  $("disc-back").hidden = !sourced || discState.active;
 }
 
 function renderDiscBody() {
@@ -1438,10 +1556,13 @@ function discNote(text, bad = false) {
   return note;
 }
 
+let ripInFlight = false;
+
 $("disc-rip").addEventListener("click", async () => {
-  if (!disc || disc.selected.size === 0) return;
+  if (!disc || disc.selected.size === 0 || ripInFlight) return;
   const session = disc;
   const button = $("disc-rip");
+  ripInFlight = true;
   button.disabled = true;
   try {
     await post("/api/discs/rip", {
@@ -1456,6 +1577,8 @@ $("disc-rip").addEventListener("click", async () => {
   } catch (e) {
     toast(e.message, true);
     if (disc === session) updateDiscFooter();
+  } finally {
+    ripInFlight = false;
   }
 });
 

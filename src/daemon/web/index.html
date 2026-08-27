@@ -81,6 +81,10 @@
         <span class="summary-label" data-i18n="badge_skipped">Skipped</span>
         <span id="summary-skipped" class="summary-value">0</span>
       </span>
+      <span id="summary-cancelled-group" class="summary-figure hidden">
+        <span class="summary-label" data-i18n="summary_cancelled">Cancelled</span>
+        <span id="summary-cancelled" class="summary-value">0</span>
+      </span>
       <span id="summary-errors-group" class="summary-figure">
         <span class="summary-label" data-i18n="summary_errors">Errors</span>
         <span id="summary-errors" class="summary-value">0</span>
@@ -171,8 +175,22 @@
   <div class="modal-foot">
     <span id="disc-note" class="muted"></span>
     <span class="spacer"></span>
+    <button id="disc-back" data-i18n="back" hidden>Back</button>
     <button id="disc-folder" data-i18n="disc_open_folder">Open a folder…</button>
     <button id="disc-rip" class="primary" data-i18n="disc_rip" disabled>Rip</button>
+  </div>
+</dialog>
+
+<!-- ── Confirm stop ────────────────────────────────────────────── -->
+<dialog id="confirm-modal" aria-labelledby="confirm-title">
+  <div class="modal-head">
+    <h2 id="confirm-title" data-i18n="confirm">Confirm</h2>
+  </div>
+  <p id="confirm-body" class="modal-body"></p>
+  <div class="modal-foot">
+    <span class="spacer"></span>
+    <button id="confirm-no" data-i18n="cancel">Cancel</button>
+    <button id="confirm-yes" class="danger" data-i18n="confirm">Confirm</button>
   </div>
 </dialog>
 

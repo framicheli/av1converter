@@ -101,6 +101,11 @@ impl JobStatus {
                 | Self::QualityWarning { .. }
         )
     }
+
+    /// A probe result only belongs to a job still waiting for one.
+    pub fn awaits_analysis(&self) -> bool {
+        matches!(self, Self::Analyzing | Self::Pending)
+    }
 }
 
 /// An encoding job in the queue
@@ -260,6 +265,7 @@ impl EncodingJob {
 /// Recursively collect video files under `dir`. Symlinks are followed, and
 /// directories and files are tracked by resolved path: link cycles terminate
 /// and a file reachable by two routes is listed once.
+#[cfg(test)]
 pub fn collect_video_files(dir: &Path, paths: &mut Vec<PathBuf>) {
     collect_video_files_impl(dir, paths, None, None);
 }
@@ -273,11 +279,16 @@ pub fn collect_video_files_cancellable_result(
 }
 
 /// Recursively collect video files without following links outside `root`.
-pub fn collect_video_files_within(dir: &Path, root: &Path, paths: &mut Vec<PathBuf>) {
+pub fn collect_video_files_within(
+    dir: &Path,
+    root: &Path,
+    paths: &mut Vec<PathBuf>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) {
     let Ok(root) = root.canonicalize() else {
         return;
     };
-    collect_video_files_impl(dir, paths, Some(&root), None);
+    collect_video_files_impl(dir, paths, Some(&root), cancel);
 }
 
 fn collect_video_files_impl(
@@ -605,7 +616,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
 
         let mut found = Vec::new();
-        collect_video_files_within(&root, &root, &mut found);
+        collect_video_files_within(&root, &root, &mut found, None);
         assert_eq!(found, vec![root.join("inside.mkv").canonicalize().unwrap()]);
 
         let _ = std::fs::remove_dir_all(base);

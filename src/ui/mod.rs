@@ -22,21 +22,33 @@ pub use queue::render_queue;
 pub use track_config::render_track_config;
 
 pub fn terminal_too_small(screen: crate::app::Screen, area: ratatui::layout::Rect) -> bool {
-    let (width, height) = match screen {
+    let (width, height) = min_size(screen);
+    area.width < width || area.height < height
+}
+
+fn min_size(screen: crate::app::Screen) -> (u16, u16) {
+    match screen {
         crate::app::Screen::Home => (50, 18),
         crate::app::Screen::TrackConfig | crate::app::Screen::Configuration => (80, 24),
         crate::app::Screen::Finish => (70, 24),
         _ => (60, 21),
-    };
-    area.width < width || area.height < height
+    }
 }
 
-pub fn render_too_small(f: &mut ratatui::Frame, lang: crate::i18n::Language) {
+pub fn render_too_small(
+    f: &mut ratatui::Frame,
+    lang: crate::i18n::Language,
+    screen: crate::app::Screen,
+) {
     use ratatui::layout::Alignment;
     use ratatui::style::{Color, Style};
     use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-    let message = Paragraph::new(crate::i18n::t(lang, crate::i18n::Msg::TerminalTooSmall))
+    let (w, h) = min_size(screen);
+    let message = crate::i18n::t(lang, crate::i18n::Msg::TerminalTooSmall)
+        .replace("{w}", &w.to_string())
+        .replace("{h}", &h.to_string());
+    let message = Paragraph::new(message)
         .alignment(Alignment::Center)
         .style(Style::default().fg(Color::Yellow))
         .wrap(Wrap { trim: true })

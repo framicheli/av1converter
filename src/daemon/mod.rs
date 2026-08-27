@@ -15,7 +15,7 @@ use crate::queue::{
 use crate::utils::DependencyStatus;
 use state::{DaemonState, EncodeSession, SharedState, is_terminal, lock};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -73,13 +73,19 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     // does not get to decide how many ffprobe children run at once. A panic is
     // caught, blamed on the file that caused it, and the next one picked up.
     let shutdown = Arc::new(AtomicBool::new(false));
+    lock(&shared).shutting_down = shutdown.clone();
     let analysis_handle = {
         let analysis_tx = analysis_tx.clone();
         let shutdown = shutdown.clone();
+        let shared = shared.clone();
         thread::spawn(move || {
             for (id, path) in probe_rx {
+                if shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+                let cancel = lock(&shared).analysis_cancel.clone();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    analyzer::analyze(&path, &shutdown)
+                    analyzer::analyze(&path, &cancel)
                 }))
                 .unwrap_or_else(|_| {
                     Err(AppError::Analysis(format!("Analysis panicked on {path}")))
@@ -170,6 +176,15 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         );
     }
 
+    // HTTP stops accepting once `shutdown` is set. Join it before taking
+    // worker handles so an in-flight rip is stored (and then cancelled)
+    // rather than spawned after take().
+    for handle in server_handles {
+        let _ = handle.join();
+    }
+
+    lock(&shared).analysis_cancel.store(true, Ordering::Relaxed);
+
     // Graceful shutdown: cancel any running encode and wait for the worker
     // to kill ffmpeg and acknowledge.
     let cancelling = {
@@ -214,11 +229,21 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         }
     }
 
-    // The server threads finish their in-flight requests before the final
-    // save.
-    for handle in server_handles {
+    if lock(&shared).encoding_active || lock(&shared).disc.active {
+        warn!("shutdown grace elapsed; killing leftover child processes");
+        crate::utils::child::kill_all();
+    }
+    let (encode_worker, disc_worker) = {
+        let mut state = lock(&shared);
+        (state.encode_worker.take(), state.disc_worker.take())
+    };
+    if let Some(handle) = encode_worker {
         let _ = handle.join();
     }
+    if let Some(handle) = disc_worker {
+        let _ = handle.join();
+    }
+    drain_shutdown_channels(&shared, &worker_rx, &disc_rx, &probe_tx);
 
     // Cancellation moves every unfinished job to a terminal state, and is
     // saved so the next launch does not resume them as interrupted work.
@@ -233,6 +258,28 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     drop(probe_tx);
     let _ = analysis_handle.join();
     Ok(())
+}
+
+/// Apply leftover worker/disc messages after join, then skip anything still
+/// in flight so the saved queue does not come back as Ready/Encoding.
+fn drain_shutdown_channels(
+    shared: &SharedState,
+    worker_rx: &Receiver<WorkerMessage>,
+    disc_rx: &Receiver<crate::disc::worker::DiscEvent>,
+    probe_tx: &Sender<(u64, String)>,
+) {
+    while let Ok(msg) = worker_rx.try_recv() {
+        apply_worker_message(shared, msg);
+    }
+    while let Ok(event) = disc_rx.try_recv() {
+        apply_disc_event(shared, probe_tx, event);
+    }
+    if lock(shared).encoding_active {
+        apply_worker_message(shared, WorkerMessage::Cancelled);
+    }
+    if lock(shared).disc.active {
+        apply_disc_event(shared, probe_tx, crate::disc::worker::DiscEvent::Cancelled);
+    }
 }
 
 /// Build the starting state from the queue this daemon last wrote. Returns the
@@ -328,6 +375,7 @@ fn apply_disc_event(
             DiscEvent::Ripping { index, progress } => {
                 if let Some(id) = state.disc.job_ids.get(index).copied()
                     && let Some(job) = state.queue.job_by_id_mut(id)
+                    && matches!(job.status, JobStatus::Ripping { .. })
                 {
                     job.status = JobStatus::Ripping { progress };
                 }
@@ -335,6 +383,7 @@ fn apply_disc_event(
             DiscEvent::TitleReady { index, path } => {
                 if let Some(id) = state.disc.job_ids.get(index).copied()
                     && let Some(job) = state.queue.job_by_id_mut(id)
+                    && matches!(job.status, JobStatus::Ripping { .. })
                 {
                     job.source_size = std::fs::metadata(&path).ok().map(|m| m.len());
                     job.path = path;
@@ -477,6 +526,7 @@ fn add_paths(
 
     {
         let mut state = lock(shared);
+        state.analysis_cancel = Arc::new(AtomicBool::new(false));
         state.queue.state.reset_session_if_finished();
         for (_, job) in state
             .queue
@@ -557,6 +607,9 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
     let Some(job) = state.queue.job_by_id_mut(id) else {
         return;
     };
+    if !job.status.awaits_analysis() {
+        return;
+    }
 
     match result {
         Ok(analysis) => {
@@ -578,6 +631,12 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
             job.status = JobStatus::AwaitingConfig;
             info!("Analyzed {}", job.path.display());
             make_output_paths_unique(&mut state.queue.state.jobs);
+        }
+        Err(e) if e.to_string().contains("Cancelled") => {
+            job.status = JobStatus::Skipped {
+                reason: "Cancelled".to_string(),
+            };
+            state.queue.state.skipped_count += 1;
         }
         Err(e) => {
             job.status = JobStatus::Error {
@@ -684,7 +743,7 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
 
     let config = state.config.clone();
     let tx = worker_tx.clone();
-    thread::spawn(move || {
+    state.encode_worker = Some(thread::spawn(move || {
         // `run_worker` catches a panic per job; this covers one outside any
         // job. The channel cannot report it — this daemon holds its own sender
         // alive, so a dead worker stops talking without ever disconnecting.
@@ -696,7 +755,7 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
             warn!("Encode worker panicked; ending the session");
             let _ = tx.send(WorkerMessage::Cancelled);
         }
-    });
+    }));
 }
 
 /// Apply one worker message: mirrors the TUI's `process_progress_messages`,
@@ -892,6 +951,21 @@ mod tests {
             lock(&shared).queue.job_by_id(ids[0]).unwrap().status,
             JobStatus::Analyzing
         ));
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::Ripping {
+                index: 0,
+                progress: 99.0,
+            },
+        );
+        assert!(
+            matches!(
+                lock(&shared).queue.job_by_id(ids[0]).unwrap().status,
+                JobStatus::Analyzing
+            ),
+            "late rip progress must not overwrite a title that already extracted"
+        );
         // The run is not over: the second title is still to come.
         assert!(lock(&shared).disc.active);
 
@@ -1060,5 +1134,56 @@ mod tests {
             JobStatus::Skipped { .. }
         ));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_late_analysis_error_does_not_overwrite_a_failed_job() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("gone.mkv"));
+            job.status = JobStatus::Error {
+                message: "probe failed".to_string(),
+            };
+            state.queue.push(job)
+        };
+        apply_analysis_result(&shared, id, Err(AppError::Analysis("late".to_string())));
+        let state = lock(&shared);
+        assert!(matches!(
+            &state.queue.job_by_id(id).unwrap().status,
+            JobStatus::Error { message } if message == "probe failed"
+        ));
+        assert_eq!(state.queue.state.error_count, 0);
+    }
+
+    #[test]
+    fn draining_shutdown_skips_a_job_still_marked_encoding() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("movie.mkv"));
+            job.status = JobStatus::Encoding { progress: 40.0 };
+            let id = state.queue.push(job);
+            state.session = Some(EncodeSession {
+                job_ids: vec![id],
+                cancel_flag: Arc::new(AtomicBool::new(true)),
+            });
+            state.encoding_active = true;
+            id
+        };
+        let (worker_tx, worker_rx) = mpsc::channel();
+        drop(worker_tx);
+        let (disc_tx, disc_rx) = mpsc::channel();
+        drop(disc_tx);
+        let (probe_tx, _probe_rx) = mpsc::channel();
+
+        drain_shutdown_channels(&shared, &worker_rx, &disc_rx, &probe_tx);
+
+        let state = lock(&shared);
+        assert!(matches!(
+            &state.queue.job_by_id(id).unwrap().status,
+            JobStatus::Skipped { reason } if reason == "Cancelled"
+        ));
+        assert!(!state.encoding_active);
     }
 }

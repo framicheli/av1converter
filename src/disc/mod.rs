@@ -431,20 +431,23 @@ fn run_robot(
         return Err(DiscError::Cancelled);
     }
 
-    let mut child = Command::new(bin)
+    let mut command = Command::new(bin);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         // Robot output all goes to stdout.
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                DiscError::NotInstalled
-            } else {
-                DiscError::Failed(format!("could not run {}: {e}", bin.display()))
-            }
-        })?;
+        .stderr(Stdio::null());
+    crate::utils::child::configure(&mut command);
+    let mut child = command.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            DiscError::NotInstalled
+        } else {
+            DiscError::Failed(format!("could not run {}: {e}", bin.display()))
+        }
+    })?;
+
+    let _child = crate::utils::child::ChildGuard::register(child.id());
 
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::channel();

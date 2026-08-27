@@ -3,7 +3,7 @@ pub mod state;
 pub mod worker;
 
 pub use job::{
-    EncodingJob, JobStatus, SourceIdentity, auto_select_tracks, collect_video_files,
+    EncodingJob, JobStatus, SourceIdentity, auto_select_tracks,
     collect_video_files_cancellable_result, collect_video_files_within, is_video_file,
     make_output_paths_unique,
 };

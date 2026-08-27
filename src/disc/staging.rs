@@ -96,10 +96,11 @@ pub fn rip_to_staging(
     // the disc physically in the drive. A folder on disk cannot be swapped.
     if let DiscSource::Drive(drive) = source {
         let present = super::list_drives(bin, cancel)?;
-        if !present
-            .iter()
-            .any(|current| current.id == drive.id && current.disc_label == drive.disc_label)
-        {
+        if !present.iter().any(|current| {
+            current.id == drive.id
+                && current.name == drive.name
+                && current.disc_label == drive.disc_label
+        }) {
             return Err(DiscError::DiscChanged);
         }
     }
@@ -124,6 +125,30 @@ pub fn rip_to_staging(
         return Ok(ripped);
     }
     Ok(named)
+}
+
+/// Re-scan a drive before the first title is extracted. Title ids are only
+/// meaningful for the disc that was scanned; a same-label swap is caught when
+/// an expected id or name is missing.
+pub fn confirm_titles(
+    bin: &Path,
+    source: &DiscSource,
+    titles: &[DiscTitle],
+    cancel: &AtomicBool,
+) -> Result<(), DiscError> {
+    if !matches!(source, DiscSource::Drive(_)) {
+        return Ok(());
+    }
+    let scan = super::scan_titles(bin, source, cancel)?;
+    if titles.iter().any(|want| {
+        !scan
+            .titles
+            .iter()
+            .any(|have| have.id == want.id && have.name == want.name)
+    }) {
+        return Err(DiscError::DiscChanged);
+    }
+    Ok(())
 }
 
 /// `<disc label>_t<NN>.mkv`, in place of `MakeMKV`'s `title_t00.mkv`.
@@ -320,7 +345,7 @@ mod tests {
             }),
             DiscTitle {
                 id: 0,
-                name: "Feature".to_string(),
+                name: "Blade Runner, The \"Final\" Cut".to_string(),
                 duration: Duration::from_mins(1),
                 size_bytes: 1024,
                 chapters: 4,
@@ -614,6 +639,21 @@ mod tests {
         assert_eq!(result, Err(DiscError::DiscChanged));
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Same drive and title id, different name: a reprint with the same label.
+    #[cfg(unix)]
+    #[test]
+    fn confirm_titles_rejects_a_name_that_is_not_on_the_disc() {
+        let base = scratch("confirm");
+        let bin = fake_makemkvcon(&base, &Fake::Rip);
+        let (source, mut title) = disc("THE_DISC");
+        title.name = "Not On The Disc".to_string();
+        assert_eq!(
+            confirm_titles(&bin, &source, &[title], &AtomicBool::new(false)),
+            Err(DiscError::DiscChanged)
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

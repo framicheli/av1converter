@@ -267,6 +267,8 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Status))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::NewConversion))),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
         Span::styled("q", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
     ]);
@@ -425,6 +427,8 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Status))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::NewConversion))),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
         Span::styled("q", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
     ]);
@@ -450,6 +454,7 @@ fn result_detail(job: &crate::queue::EncodingJob, lang: Language) -> String {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn create_result_item(
     job: &crate::queue::EncodingJob,
     is_cursor: bool,
@@ -526,6 +531,11 @@ fn create_result_item(
             }
             ListItem::new(Line::from(spans)).style(Style::default().add_modifier(bold_mod))
         }
+        JobStatus::DoneVmafFailed { reason } => ListItem::new(format!(
+            "{prefix}⚠ {name} ({})",
+            super::common::translate_reason(lang, reason)
+        ))
+        .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
         JobStatus::Skipped { reason } => ListItem::new(format!(
             "{prefix}⊘ {name} ({})",
             super::common::translate_reason(lang, reason)

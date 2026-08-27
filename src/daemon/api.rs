@@ -3,13 +3,14 @@ use crate::analyzer::{DvMode, HdrType};
 use crate::config::{AppConfig, Encoder};
 use crate::disc::worker::DiscEvent;
 use crate::queue::{
-    EncodingJob, JobStatus, collect_video_files, collect_video_files_within, is_video_file,
-    make_output_paths_unique,
+    EncodingJob, JobStatus, collect_video_files_cancellable_result, collect_video_files_within,
+    is_video_file, make_output_paths_unique,
 };
 use crate::tracks::TrackSelection;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 
 /// Dashboard poll: overall daemon and encode-session status.
@@ -68,8 +69,9 @@ pub fn status(shared: &SharedState) -> Value {
         .iter()
         .filter(|j| !is_terminal(&j.status))
         .count();
-    // Cancelling marks the session's unfinished jobs Skipped with this reason.
-    // `skipped_count` counts them alongside files skipped for being AV1.
+    // Cancelling marks unfinished jobs Skipped with this reason.
+    // `skipped_count` includes those rows; `cancelled` is reported separately
+    // so the summary does not count them twice.
     let cancelled = queue
         .jobs
         .iter()
@@ -93,7 +95,7 @@ pub fn status(shared: &SharedState) -> Value {
             "awaiting_config": awaiting_config,
             "ready": ready,
             "converted": queue.converted_count,
-            "skipped": queue.skipped_count,
+            "skipped": queue.skipped_count.saturating_sub(cancelled),
             "cancelled": cancelled,
             "errors": queue.error_count,
         },
@@ -550,6 +552,7 @@ pub fn queue_add(
     shared: &SharedState,
     probe_tx: &Sender<(u64, String)>,
     body: &Value,
+    shutdown: &AtomicBool,
 ) -> (u16, Value) {
     let Some(path) = body.get("path").and_then(Value::as_str) else {
         return (400, json!({"error": "missing 'path'"}));
@@ -610,9 +613,17 @@ pub fn queue_add(
                 return (400, json!({"error": "not a directory"}));
             }
             if browse_root.is_empty() {
-                collect_video_files(&path, &mut files);
+                let _ = collect_video_files_cancellable_result(&path, &mut files, shutdown);
             } else {
-                collect_video_files_within(&path, Path::new(&browse_root), &mut files);
+                collect_video_files_within(
+                    &path,
+                    Path::new(&browse_root),
+                    &mut files,
+                    Some(shutdown),
+                );
+            }
+            if shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                return (503, json!({"error": "daemon is shutting down"}));
             }
         }
         other => return (400, json!({"error": format!("unknown mode '{other}'")})),
@@ -683,7 +694,15 @@ pub fn queue_remove(shared: &SharedState, body: &Value) -> (u16, Value) {
         .queue
         .job_by_id(id)
         .is_some_and(|job| matches!(job.status, JobStatus::Ready));
+    let staged = state
+        .queue
+        .job_by_id(id)
+        .filter(|job| job.temporary)
+        .map(|job| job.path.clone());
     state.queue.remove(id);
+    if let Some(path) = staged {
+        crate::disc::staging::discard_staged(&path);
+    }
     if was_ready {
         let remaining_ready = state
             .queue
@@ -747,18 +766,40 @@ pub fn queue_cancel(shared: &SharedState) -> (u16, Value) {
     (200, json!({"ok": true}))
 }
 
+/// Stop in-flight probes. Jobs already configured or encoding are left alone.
+pub fn queue_cancel_analysis(shared: &SharedState) -> (u16, Value) {
+    let mut state = lock(shared);
+    state
+        .analysis_cancel
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut skipped = 0;
+    for job in &mut state.queue.state.jobs {
+        if matches!(job.status, JobStatus::Analyzing | JobStatus::Pending) {
+            job.status = JobStatus::Skipped {
+                reason: "Cancelled".to_string(),
+            };
+            skipped += 1;
+        }
+    }
+    state.queue.state.skipped_count += skipped;
+    (200, json!({"ok": true, "skipped": skipped}))
+}
+
 /// Drop all jobs in terminal states.
 pub fn queue_clear_finished(shared: &SharedState) -> (u16, Value) {
     let mut state = lock(shared);
-    let finished: Vec<u64> = state
+    let finished: Vec<(u64, Option<PathBuf>)> = state
         .queue
         .jobs_with_ids()
         .filter(|(_, job)| is_terminal(&job.status))
-        .map(|(id, _)| id)
+        .map(|(id, job)| (id, job.temporary.then(|| job.path.clone())))
         .collect();
     let removed = finished.len();
-    for id in finished {
+    for (id, staged) in finished {
         state.queue.remove(id);
+        if let Some(path) = staged {
+            crate::disc::staging::discard_staged(&path);
+        }
     }
     (200, json!({"removed": removed}))
 }
@@ -808,6 +849,7 @@ pub fn fs_browse(shared: &SharedState, path: &str, show_hidden: bool) -> (u16, V
                 "name": name,
                 "size": size,
                 "is_video": is_video_file(&entry_path),
+                "is_iso": crate::disc::is_iso(&entry_path),
             }));
         }
     }
@@ -878,8 +920,11 @@ pub fn discs_list(shared: &SharedState) -> (u16, Value) {
             return (409, json!({"error": "a disc operation is already running"}));
         }
         state.disc.active = true;
-        state.config.clone()
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        state.disc.cancel_flag = Some(cancel.clone());
+        (state.config.clone(), cancel)
     };
+    let (config, cancel) = config;
     let _claim = DiscClaim(shared.clone());
 
     let bin = match crate::disc::find_makemkvcon(&config) {
@@ -887,7 +932,6 @@ pub fn discs_list(shared: &SharedState) -> (u16, Value) {
         Err(e) => return disc_failure(&e, config.language),
     };
     // Listing takes a second or two and holds no lock.
-    let cancel = std::sync::atomic::AtomicBool::new(false);
     let drives = match crate::disc::list_drives(&bin, &cancel) {
         Ok(drives) => drives,
         Err(e) => return disc_failure(&e, config.language),
@@ -912,7 +956,9 @@ struct DiscClaim(SharedState);
 
 impl Drop for DiscClaim {
     fn drop(&mut self) {
-        lock(&self.0).disc.active = false;
+        let mut state = lock(&self.0);
+        state.disc.active = false;
+        state.disc.cancel_flag = None;
     }
 }
 
@@ -968,7 +1014,12 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
     state.disc.scanned_source = Some(source.clone());
     drop(state);
 
-    crate::disc::worker::spawn_scan(bin, source, &cancel, disc_tx.clone());
+    lock(shared).disc_worker = Some(crate::disc::worker::spawn_scan(
+        bin,
+        source,
+        &cancel,
+        disc_tx.clone(),
+    ));
     (200, json!({"ok": true}))
 }
 
@@ -1059,7 +1110,14 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
     state.disc.job_ids.clone_from(&job_ids);
     drop(state);
 
-    crate::disc::worker::spawn_rips(bin, config, source, titles, &cancel, disc_tx.clone());
+    lock(shared).disc_worker = Some(crate::disc::worker::spawn_rips(
+        bin,
+        config,
+        source,
+        titles,
+        &cancel,
+        disc_tx.clone(),
+    ));
     (200, json!({"ok": true, "jobs": job_ids}))
 }
 
@@ -1358,6 +1416,27 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_jobs_are_not_counted_again_as_skipped() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut cancelled = EncodingJob::new(PathBuf::from("/tmp/a.mkv"));
+        cancelled.status = JobStatus::Skipped {
+            reason: "Cancelled".to_string(),
+        };
+        let mut av1 = EncodingJob::new(PathBuf::from("/tmp/b.mkv"));
+        av1.status = JobStatus::Skipped {
+            reason: "Already AV1".to_string(),
+        };
+        state.queue.push(cancelled);
+        state.queue.push(av1);
+        state.queue.state.skipped_count = 2;
+        let shared = Arc::new(Mutex::new(state));
+
+        let counts = &status(&shared)["counts"];
+        assert_eq!(counts["cancelled"], 1);
+        assert_eq!(counts["skipped"], 1);
+    }
+
+    #[test]
     fn a_waiting_session_job_can_be_removed() {
         let mut state = DaemonState::new(AppConfig::default());
         let mut active = EncodingJob::new(PathBuf::from("/tmp/active.mkv"));
@@ -1499,6 +1578,7 @@ mod tests {
             &shared,
             &tx,
             &serde_json::json!({"path": link, "mode": "file"}),
+            &std::sync::atomic::AtomicBool::new(false),
         );
 
         assert_eq!(status, 200);

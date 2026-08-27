@@ -23,8 +23,10 @@ pub fn render_home(f: &mut Frame, app: &App) {
         .margin(2)
         .split(f.area());
 
+    let lang = app.config.language;
+
     // Title
-    let title = Paragraph::new("AV1 Video Converter")
+    let title = Paragraph::new(t(lang, Msg::AppTitle))
         .style(
             Style::default()
                 .fg(Color::Cyan)
@@ -33,8 +35,6 @@ pub fn render_home(f: &mut Frame, app: &App) {
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE));
     f.render_widget(title, chunks[0]);
-
-    let lang = app.config.language;
 
     // Notice area, shown only while a message is set
     if let Some(ref msg) = app.message {

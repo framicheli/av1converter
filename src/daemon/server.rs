@@ -39,7 +39,7 @@ pub fn serve(
             // a dropped connection rather than a hung one.
             Ok(Some(request)) => {
                 if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    handle_request(request, shared, probe_tx, disc_tx);
+                    handle_request(request, shared, probe_tx, disc_tx, shutdown);
                 }))
                 .is_err()
                 {
@@ -148,11 +148,23 @@ fn has_json_content_type(headers: &[Header]) -> bool {
         .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
 }
 
+/// Cancel endpoints still run so an in-flight encode/rip can be told to stop.
+fn blocks_on_shutdown(method: &Method, path: &str) -> bool {
+    if matches!(
+        path,
+        "/api/queue/cancel" | "/api/discs/cancel" | "/api/queue/cancel_analysis"
+    ) {
+        return false;
+    }
+    method == &Method::Post || path == "/api/discs"
+}
+
 fn handle_request(
     mut request: Request,
     shared: &SharedState,
     probe_tx: &Sender<(u64, String)>,
     disc_tx: &Sender<DiscEvent>,
+    shutdown: &AtomicBool,
 ) {
     let url = request.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
@@ -179,6 +191,13 @@ fn handle_request(
                 request,
                 415,
                 &serde_json::json!({"error": "Content-Type must be application/json"}),
+            );
+        }
+        if shutdown.load(Ordering::SeqCst) && blocks_on_shutdown(request.method(), path) {
+            return respond_json(
+                request,
+                503,
+                &serde_json::json!({"error": "daemon is shutting down"}),
             );
         }
     }
@@ -214,7 +233,7 @@ fn handle_request(
             Err(resp) => resp,
         },
         (Method::Post, "/api/queue/add") => match read_json_body(&mut request) {
-            Ok(body) => api::queue_add(shared, probe_tx, &body),
+            Ok(body) => api::queue_add(shared, probe_tx, &body, shutdown),
             Err(resp) => resp,
         },
         (Method::Post, "/api/queue/remove") => match read_json_body(&mut request) {
@@ -236,6 +255,7 @@ fn handle_request(
         },
         (Method::Post, "/api/discs/cancel") => api::discs_cancel(shared),
         (Method::Post, "/api/queue/cancel") => api::queue_cancel(shared),
+        (Method::Post, "/api/queue/cancel_analysis") => api::queue_cancel_analysis(shared),
         (Method::Post, "/api/queue/clear_finished") => api::queue_clear_finished(shared),
         (Method::Post, "/api/settings") => match read_json_body(&mut request) {
             Ok(body) => api::settings_post(shared, &body, local_request),

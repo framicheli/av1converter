@@ -21,7 +21,7 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend, widgets::Clear};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::app::HOME_MENU;
 use crate::i18n::{Msg, t};
@@ -164,18 +164,6 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
         std::process::exit(1);
     }
 
-    // The API can browse the filesystem, queue encodes and rewrite the
-    // configuration, so a token is minted on first start. The printed URL
-    // carries it, so one click authorises the browser.
-    if config.daemon.auth_token.len() < 32 {
-        config.daemon.auth_token =
-            config::DaemonConfig::generate_token().map_err(io::Error::other)?;
-        if let Err(e) = config.save() {
-            eprintln!("{} ({e})", t(lang, Msg::SaveFailed));
-            std::process::exit(1);
-        }
-        println!("{}", t(lang, Msg::DaemonTokenGenerated));
-    }
     if config.daemon.binds_publicly() {
         eprintln!("{}", t(lang, Msg::DaemonPublicHttp));
     }
@@ -183,6 +171,8 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
     if !foreground {
         match daemon::lifecycle::spawn_background() {
             Ok(pid) => {
+                // The child mints a token under the PID lock; pick it up for the URL.
+                let config = config::AppConfig::load();
                 println!("{} (PID {pid})", t(lang, Msg::DaemonStarted));
                 println!("{} {}", t(lang, Msg::DaemonListening), config.daemon.url());
                 println!("{}", t(lang, Msg::DaemonStopHint));
@@ -201,6 +191,26 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
 
     utils::init_daemon_logging();
     let _pid_guard = daemon::lifecycle::write_pid_file()?;
+    // The API can browse the filesystem, queue encodes and rewrite the
+    // configuration, so a token is minted on first start. The printed URL
+    // carries it, so one click authorises the browser. Done after the PID
+    // lock so two concurrent --start processes cannot each mint a token.
+    if config.daemon.auth_token.len() < 32 {
+        let mut fresh = config::AppConfig::load();
+        if fresh.daemon.auth_token.len() < 32 {
+            fresh.daemon.auth_token =
+                config::DaemonConfig::generate_token().map_err(io::Error::other)?;
+            if let Err(e) = fresh.save() {
+                eprintln!("{} ({e})", t(lang, Msg::SaveFailed));
+                std::process::exit(1);
+            }
+            println!("{}", t(lang, Msg::DaemonTokenGenerated));
+        }
+        config
+            .daemon
+            .auth_token
+            .clone_from(&fresh.daemon.auth_token);
+    }
     daemon::run_daemon(config).map_err(io::Error::other)
 }
 
@@ -555,6 +565,7 @@ fn restore_terminal() -> io::Result<()> {
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
+    let mut quit_deadline: Option<Instant> = None;
     loop {
         app.process_progress_messages();
         app.process_analysis_messages();
@@ -568,7 +579,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             if app.should_quit {
                 ui::render_shutting_down(f, app.config.language);
             } else if ui::terminal_too_small(app.current_screen, f.area()) {
-                ui::render_too_small(f, app.config.language);
+                ui::render_too_small(f, app.config.language, app.current_screen);
             } else {
                 match app.current_screen {
                     Screen::Home => ui::render_home(f, app),
@@ -610,16 +621,20 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
         }
 
-        // The rip is waited out too: quitting while makemkvcon still runs
-        // would leave the child behind.
-        if app.should_quit
-            && !app.encoding_active
-            && app.analysis_receiver.is_none()
-            && app.folder_scan_receiver.is_none()
-            && app.disc_drive_receiver.is_none()
-            && app.disc_receiver.is_none()
-        {
-            return Ok(());
+        // Match the daemon: wait for children, then kill leftover ffmpeg/makemkvcon.
+        if app.should_quit {
+            let idle = !app.encoding_active
+                && app.analysis_receiver.is_none()
+                && app.folder_scan_receiver.is_none()
+                && app.disc_drive_receiver.is_none()
+                && app.disc_receiver.is_none();
+            let deadline = *quit_deadline.get_or_insert(Instant::now() + Duration::from_secs(10));
+            if idle || Instant::now() >= deadline {
+                if !idle {
+                    crate::utils::child::kill_all();
+                }
+                return Ok(());
+            }
         }
     }
 }
@@ -742,6 +757,7 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
         ConfirmAction::CancelAnalysis => {
             app.cancel_analysis();
         }
+        ConfirmAction::NewConversion => app.reset(),
     }
 }
 
@@ -805,7 +821,13 @@ fn handle_explorer_key(app: &mut App, key: KeyCode) {
     app.clear_message();
 
     match key {
-        KeyCode::Esc => app.navigate_to_home(),
+        KeyCode::Esc => {
+            if app.selection_mode == app::SelectionMode::DiscFolder {
+                app.current_screen = Screen::DiscDrives;
+            } else {
+                app.navigate_to_home();
+            }
+        }
         KeyCode::Up | KeyCode::Char('k') => app.explorer_move_up(),
         KeyCode::Down | KeyCode::Char('j') => app.explorer_move_down(),
         KeyCode::Enter => match app.selection_mode {
@@ -1000,11 +1022,14 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
 
 fn handle_finish_key(app: &mut App, key: KeyCode) {
     match key {
+        KeyCode::Esc => app.navigate_to_queue(),
         KeyCode::Up | KeyCode::Char('k') => app.finish_move_cursor(false),
         KeyCode::Down | KeyCode::Char('j') => app.finish_move_cursor(true),
         KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(1),
         KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
-        KeyCode::Enter => app.reset(),
+        KeyCode::Enter => {
+            app.confirm_dialog = Some((ConfirmAction::NewConversion, false));
+        }
         _ => {}
     }
 }
@@ -1296,7 +1321,7 @@ fn apply_autostart(app: &mut App, enable: bool) {
             }
         }
     } else {
-        match daemon::service::uninstall() {
+        match daemon::service::uninstall_keep_running() {
             Ok(()) => app.set_timed_success(t(lang, Msg::DaemonServiceUninstalled), 3),
             Err(e) => {
                 app.set_timed_error(&format!("{} {e}", t(lang, Msg::DaemonServiceFailed)), 5);

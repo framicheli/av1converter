@@ -99,6 +99,7 @@ pub enum Msg {
 
     // ── Home ─────────────────────────────────────────────────────────────────
     MenuTitle,
+    AppTitle,
     HomeOpenFile,
     HomeOpenFolder,
     HomeOpenFolderRecursive,
@@ -241,6 +242,7 @@ pub enum Msg {
     DiscardConfigPrompt,
     CancelAnalysisTitle,
     CancelAnalysisPrompt,
+    FinishResetPrompt,
     Yes,
     No,
 
@@ -340,6 +342,7 @@ pub enum Msg {
     WebKindFile,
     WebKindSymlink,
     WebKindNotSelectable,
+    WebKindDiscImage,
     WebTracksTitle,
     WebTracksHint,
     WebCloseTracks,
@@ -664,6 +667,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Es => "Menú",
             De => "Menü",
             Zh => "菜单",
+        },
+        Msg::AppTitle => match lang {
+            En => "AV1 Video Converter",
+            It => "Convertitore video AV1",
+            Es => "Conversor de video AV1",
+            Fr => "Convertisseur vidéo AV1",
+            De => "AV1-Videokonverter",
+            Zh => "AV1 视频转换器",
         },
         Msg::HomeOpenFile => match lang {
             En => "Open video file",
@@ -1752,6 +1763,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Die Analyse der übrigen Dateien abbrechen?",
             Zh => "取消其余文件的分析吗？",
         },
+        Msg::FinishResetPrompt => match lang {
+            En => "Clear the queue and return to the home screen?",
+            It => "Svuotare la coda e tornare alla schermata iniziale?",
+            Es => "¿Vaciar la cola y volver a la pantalla de inicio?",
+            Fr => "Vider la file et revenir à l’écran d’accueil ?",
+            De => "Warteschlange leeren und zum Startbildschirm zurückkehren?",
+            Zh => "清空队列并返回主屏幕？",
+        },
         Msg::Yes => match lang {
             En => "Yes",
             It => "Sì",
@@ -2491,6 +2510,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "nicht auswählbar",
             Zh => "不可选择",
         },
+        Msg::WebKindDiscImage => match lang {
+            En => "disc image",
+            It => "immagine disco",
+            Es => "imagen de disco",
+            Fr => "image disque",
+            De => "Disc-Image",
+            Zh => "光盘映像",
+        },
         Msg::WebTracksHint => match lang {
             En => "Choose audio and subtitle tracks",
             It => "Scegli le tracce audio e dei sottotitoli",
@@ -2978,14 +3005,16 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Zh => "永久操作：视频质量检查通过后将删除源文件。音频、字幕和元数据不会进行质量检查。",
         },
         Msg::TerminalTooSmall => match lang {
-            En => "Terminal too small. Resize to at least 60 × 21. Press q to quit.",
-            It => "Terminale troppo piccolo. Ridimensionalo ad almeno 60 × 21. Premi q per uscire.",
-            Es => "Terminal demasiado pequeño. Ajústalo al menos a 60 × 21. Pulsa q para salir.",
-            Fr => {
-                "Terminal trop petit. Redimensionnez-le à au moins 60 × 21. Appuyez sur q pour quitter."
+            En => "Terminal too small. Resize to at least {w} × {h}. Press q to quit.",
+            It => {
+                "Terminale troppo piccolo. Ridimensionalo ad almeno {w} × {h}. Premi q per uscire."
             }
-            De => "Terminal zu klein. Auf mindestens 60 × 21 vergrößern. q zum Beenden drücken.",
-            Zh => "终端太小。请调整到至少 60 × 21。按 q 退出。",
+            Es => "Terminal demasiado pequeño. Ajústalo al menos a {w} × {h}. Pulsa q para salir.",
+            Fr => {
+                "Terminal trop petit. Redimensionnez-le à au moins {w} × {h}. Appuyez sur q pour quitter."
+            }
+            De => "Terminal zu klein. Auf mindestens {w} × {h} vergrößern. q zum Beenden drücken.",
+            Zh => "终端太小。请调整到至少 {w} × {h}。按 q 退出。",
         },
     }
 }
@@ -3015,6 +3044,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("badge_verifying", Msg::StatusVerifying),
     ("badge_vmaf_failed", Msg::WebVmafFailed),
     ("cancel", Msg::Cancel),
+    ("confirm", Msg::Confirm),
     ("disc_chapters", Msg::DiscChapters),
     ("disc_drive_empty", Msg::DiscDriveEmpty),
     ("disc_no_drive", Msg::DiscNoDrive),
@@ -3031,6 +3061,12 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("status_ripping", Msg::StatusRipping),
     ("cancel_encoding", Msg::CancelEncodingTitle),
     ("cancel_encoding_prompt", Msg::CancelEncodingPrompt),
+    ("cancel_disc", Msg::CancelDiscTitle),
+    ("cancel_disc_prompt", Msg::CancelDiscPrompt),
+    ("cancel_analysis", Msg::CancelAnalysisTitle),
+    ("cancel_analysis_prompt", Msg::CancelAnalysisPrompt),
+    ("abandon_tracks_prompt", Msg::AbandonTrackConfigPrompt),
+    ("back", Msg::Back),
     ("cancelling", Msg::WebCancelling),
     ("cfg_audio_default", Msg::WebCfgAudioDefault),
     ("cfg_audio_languages", Msg::CfgAudioLanguages),
@@ -3099,6 +3135,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("idle_nothing", Msg::WebIdleNothing),
     ("kind_file", Msg::WebKindFile),
     ("kind_folder", Msg::WebKindFolder),
+    ("kind_disc_image", Msg::WebKindDiscImage),
     ("kind_not_selectable", Msg::WebKindNotSelectable),
     ("kind_symlink", Msg::WebKindSymlink),
     ("kind_video", Msg::WebKindVideoFile),
@@ -3116,8 +3153,14 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("qp_medium", Msg::QpMedium),
     ("queue_empty", Msg::WebQueueEmpty),
     ("reason_cancelled", Msg::Cancelled),
-    ("reason_restart_interrupted", Msg::WebReasonRestartInterrupted),
-    ("reason_verification_cancelled", Msg::WebReasonVerificationCancelled),
+    (
+        "reason_restart_interrupted",
+        Msg::WebReasonRestartInterrupted,
+    ),
+    (
+        "reason_verification_cancelled",
+        Msg::WebReasonVerificationCancelled,
+    ),
     ("remove_from_queue", Msg::WebRemoveFromQueue),
     ("removed_finished", Msg::WebRemovedFinished),
     ("remux_hint", Msg::WebRemuxHint),
@@ -3144,6 +3187,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("status_idle", Msg::WebIdle),
     ("summary_complete", Msg::ConversionComplete),
     ("summary_converted", Msg::Converted),
+    ("summary_cancelled", Msg::Cancelled),
     ("summary_dismiss", Msg::WebDismissSummary),
     ("summary_errors", Msg::Errors),
     ("summary_time", Msg::TotalTime),

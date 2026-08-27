@@ -242,38 +242,52 @@ pub(crate) fn save_serialized(path: &Path, json: &[u8]) -> std::io::Result<()> {
         // The rename can otherwise land before the contents.
         file.sync_all()?;
     }
+    let bak = path.with_extension("json.bak");
+    if path.exists() {
+        std::fs::copy(path, &bak)?;
+    }
     std::fs::rename(&tmp, path)
 }
 
-/// Read the persisted queue. Any failure — absent, unreadable, corrupt, or a
-/// shape that no longer parses — yields an empty queue.
-pub fn load(path: &Path) -> PersistedQueue {
+fn read_queue(path: &Path) -> Option<PersistedQueue> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return PersistedQueue::default(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
             warn!("Could not read the saved queue at {}: {e}", path.display());
-            return PersistedQueue::default();
+            return None;
         }
     };
-
     match serde_json::from_slice::<PersistedQueue>(&bytes) {
-        Ok(queue) if queue.is_consistent() => queue,
+        Ok(queue) if queue.is_consistent() => Some(queue),
         Ok(_) => {
             warn!(
-                "Saved queue at {} is internally inconsistent; starting empty",
+                "Saved queue at {} is internally inconsistent",
                 path.display()
             );
-            PersistedQueue::default()
+            None
         }
         Err(e) => {
-            warn!(
-                "Could not parse the saved queue at {}: {e}; starting empty",
-                path.display()
-            );
-            PersistedQueue::default()
+            warn!("Could not parse the saved queue at {}: {e}", path.display());
+            None
         }
     }
+}
+
+/// Read the persisted queue. A corrupt or inconsistent file falls back to
+/// `queue.json.bak` from the last successful save, then to empty.
+pub fn load(path: &Path) -> PersistedQueue {
+    if let Some(queue) = read_queue(path) {
+        return queue;
+    }
+    let bak = path.with_extension("json.bak");
+    if bak != *path
+        && let Some(queue) = read_queue(&bak)
+    {
+        warn!("Recovered the queue from {}", bak.display());
+        return queue;
+    }
+    PersistedQueue::default()
 }
 
 /// Reconcile a queue reloaded from disk with a process that has just started.
@@ -780,6 +794,41 @@ mod tests {
             .filter(|name| std::path::Path::new(name).extension() == Some("tmp".as_ref()))
             .collect();
         assert!(leftovers.is_empty(), "left temporary files: {leftovers:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_corrupt_queue_reloads_from_the_backup() {
+        let dir = scratch("bak");
+        let path = dir.join("queue.json");
+        let mut state = QueueState::new();
+        state
+            .jobs
+            .push(EncodingJob::new(PathBuf::from("/tmp/keep.mkv")));
+        save(
+            &path,
+            &QueueRef {
+                state: &state,
+                ids: &[1],
+                next_id: 2,
+            },
+        )
+        .unwrap();
+        save(
+            &path,
+            &QueueRef {
+                state: &state,
+                ids: &[1],
+                next_id: 2,
+            },
+        )
+        .unwrap();
+        std::fs::write(&path, b"{not json").unwrap();
+
+        let back = load(&path);
+        assert_eq!(back.ids, vec![1]);
+        assert_eq!(back.state.jobs[0].path, PathBuf::from("/tmp/keep.mkv"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

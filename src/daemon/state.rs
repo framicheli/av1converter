@@ -3,6 +3,7 @@ use crate::disc::{DiscDrive, DiscSource, DiscTitle};
 use crate::queue::{EncodingJob, JobStatus, QueueState};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Instant;
 
 /// Queue wrapper that gives every job a stable id, so HTTP clients can
@@ -182,6 +183,12 @@ pub struct DaemonState {
     pub session: Option<EncodeSession>,
     pub disc: DiscSession,
     pub started_at: Instant,
+    pub encode_worker: Option<JoinHandle<()>>,
+    pub disc_worker: Option<JoinHandle<()>>,
+    /// Same flag the HTTP accept loop watches; mutations refuse once set.
+    pub shutting_down: Arc<AtomicBool>,
+    /// Replaced when new files are queued so a cancelled probe keeps dying.
+    pub analysis_cancel: Arc<AtomicBool>,
 }
 
 impl DaemonState {
@@ -194,6 +201,10 @@ impl DaemonState {
             session: None,
             disc: DiscSession::default(),
             started_at: Instant::now(),
+            encode_worker: None,
+            disc_worker: None,
+            shutting_down: Arc::new(AtomicBool::new(false)),
+            analysis_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 

@@ -409,7 +409,7 @@ fieldset.field-group > legend {
 }
 
 /* ── Track selection and disc dialogs ───────────────────────────── */
-#tracks-modal, #disc-modal {
+#tracks-modal, #disc-modal, #confirm-modal {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -418,11 +418,11 @@ fieldset.field-group > legend {
   width: min(720px, calc(100% - 40px));
   max-height: 85dvh;
 }
-#tracks-modal[open], #disc-modal[open] {
+#tracks-modal[open], #disc-modal[open], #confirm-modal[open] {
   display: flex;
   flex-direction: column;
 }
-#tracks-modal::backdrop, #disc-modal::backdrop { background: rgba(0, 0, 0, 0.6); }
+#tracks-modal::backdrop, #disc-modal::backdrop, #confirm-modal::backdrop { background: rgba(0, 0, 0, 0.6); }
 
 .modal-head, .modal-foot {
   display: flex;

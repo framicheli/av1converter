@@ -100,6 +100,7 @@ pub enum ConfirmAction {
     AbandonTrackConfig,
     DiscardConfigChanges,
     CancelAnalysis,
+    NewConversion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +166,8 @@ pub struct App {
     pub disc_drive_receiver: Option<Receiver<Result<Vec<DiscDrive>, DiscError>>>,
     pub disc_receiver: Option<Receiver<DiscEvent>>,
     pub disc_cancel_flag: Arc<AtomicBool>,
+    /// Queue indices of titles in the current rip, in request order.
+    disc_job_indices: Vec<usize>,
     /// What the current scan or rip is reading from.
     pub disc_source: Option<DiscSource>,
 
@@ -295,6 +298,7 @@ impl App {
             disc_drive_receiver: None,
             disc_receiver: None,
             disc_cancel_flag: Arc::new(AtomicBool::new(false)),
+            disc_job_indices: Vec::new(),
             disc_source: None,
             encoding_active: false,
             progress_receiver: None,
@@ -909,6 +913,9 @@ impl App {
         let Some(job) = self.queue.jobs.get_mut(index) else {
             return;
         };
+        if !job.status.awaits_analysis() {
+            return;
+        }
 
         match result {
             Ok(analysis) => {
@@ -924,12 +931,10 @@ impl App {
                 job.status = JobStatus::AwaitingConfig;
             }
             Err(ref e) if e.to_string().contains("Cancelled") => {
-                if matches!(job.status, JobStatus::Analyzing) {
-                    job.status = JobStatus::Skipped {
-                        reason: "Cancelled".to_string(),
-                    };
-                    self.queue.skipped_count += 1;
-                }
+                job.status = JobStatus::Skipped {
+                    reason: "Cancelled".to_string(),
+                };
+                self.queue.skipped_count += 1;
             }
             Err(e) => {
                 job.status = JobStatus::Error {
@@ -1353,7 +1358,7 @@ impl App {
 
         let (tx, rx) = mpsc::channel();
         self.disc_receiver = Some(rx);
-        crate::disc::worker::spawn_scan(bin, source, &self.disc_cancel_flag, tx);
+        let _scan = crate::disc::worker::spawn_scan(bin, source, &self.disc_cancel_flag, tx);
         self.current_screen = Screen::DiscTitles;
     }
 
@@ -1435,19 +1440,20 @@ impl App {
         // Each title is a queue job from the start, so the rip renders in the
         // queue screen and shares its cancellation. The path is the title's
         // name until the file it extracts to is known.
-        self.queue.reset();
+        self.queue.reset_session_if_finished();
+        self.disc_job_indices.clear();
         for title in &titles {
             let mut job = EncodingJob::new(PathBuf::from(title.name.clone()));
             job.status = JobStatus::Ripping { progress: 0.0 };
             job.temporary = true;
+            self.disc_job_indices.push(self.queue.jobs.len());
             self.queue.jobs.push(job);
         }
 
-        self.analysis_cancel_flag = Arc::new(AtomicBool::new(false));
         self.disc_cancel_flag = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         self.disc_receiver = Some(rx);
-        crate::disc::worker::spawn_rips(
+        let _rip = crate::disc::worker::spawn_rips(
             bin,
             self.config.clone(),
             source,
@@ -1506,17 +1512,21 @@ impl App {
                     self.disc_receiver = None;
                 }
                 DiscEvent::Ripping { index, progress } => {
-                    if let Some(job) = self.queue.jobs.get_mut(index) {
-                        job.status = JobStatus::Ripping { progress };
+                    if let Some(&job_index) = self.disc_job_indices.get(index) {
+                        if let Some(job) = self.queue.jobs.get_mut(job_index)
+                            && matches!(job.status, JobStatus::Ripping { .. })
+                        {
+                            job.status = JobStatus::Ripping { progress };
+                        }
                         // A concurrent encode owns `current_job_index` and the
                         // cursor-follow; the rip row only claims them when no
                         // encode is running.
                         if !self.encoding_active {
                             if self.queue_cursor == self.queue.current_job_index {
-                                self.queue_cursor = index;
-                                self.queue_list_state.select(Some(index));
+                                self.queue_cursor = job_index;
+                                self.queue_list_state.select(Some(job_index));
                             }
-                            self.queue.current_job_index = index;
+                            self.queue.current_job_index = job_index;
                         }
                     }
                 }
@@ -1524,12 +1534,15 @@ impl App {
                 // title: that is what keeps peak disk at one rip plus one
                 // encode input.
                 DiscEvent::TitleReady { index, path } => {
-                    if let Some(job) = self.queue.jobs.get_mut(index) {
+                    if let Some(&job_index) = self.disc_job_indices.get(index)
+                        && let Some(job) = self.queue.jobs.get_mut(job_index)
+                        && matches!(job.status, JobStatus::Ripping { .. })
+                    {
                         job.source_size = std::fs::metadata(&path).ok().map(|m| m.len());
                         job.path = path;
                         job.status = JobStatus::Pending;
+                        self.analyze_indices(&[job_index]);
                     }
-                    self.analyze_indices(&[index]);
                 }
                 DiscEvent::Error { index, error } => {
                     self.disc_receiver = None;
@@ -1556,10 +1569,14 @@ impl App {
                 // The failure lands on the title that was being extracted:
                 // the first job still in `Ripping`.
                 let failed = self
-                    .queue
-                    .jobs
+                    .disc_job_indices
                     .iter()
-                    .position(|job| matches!(job.status, JobStatus::Ripping { .. }))
+                    .position(|&job_index| {
+                        self.queue
+                            .jobs
+                            .get(job_index)
+                            .is_some_and(|job| matches!(job.status, JobStatus::Ripping { .. }))
+                    })
                     .unwrap_or(0);
                 self.fail_disc_run(failed, &message);
             }
@@ -1595,11 +1612,15 @@ impl App {
     /// Record the failure on the title that hit it, and close out the ones
     /// behind it: the worker stops at the first failure.
     fn fail_remaining_rips(&mut self, index: usize, message: &str) {
-        for (position, job) in self.queue.jobs.iter_mut().enumerate() {
+        let failed = self.disc_job_indices.get(index).copied();
+        for &job_index in &self.disc_job_indices {
+            let Some(job) = self.queue.jobs.get_mut(job_index) else {
+                continue;
+            };
             if !matches!(job.status, JobStatus::Ripping { .. }) {
                 continue;
             }
-            if position == index {
+            if Some(job_index) == failed {
                 job.status = JobStatus::Error {
                     message: message.to_string(),
                 };
@@ -1621,14 +1642,22 @@ impl App {
             .any(|job| matches!(job.status, JobStatus::AwaitingConfig))
     }
 
-    /// Open track configuration for the first job that still needs it.
+    /// Open track configuration for the highlighted job, or the first that still needs it.
     pub fn configure_next_job(&mut self) {
-        let Some(index) = self
+        let cursor = self.queue_cursor;
+        let index = self
             .queue
             .jobs
-            .iter()
-            .position(|job| matches!(job.status, JobStatus::AwaitingConfig))
-        else {
+            .get(cursor)
+            .is_some_and(|job| matches!(job.status, JobStatus::AwaitingConfig))
+            .then_some(cursor)
+            .or_else(|| {
+                self.queue
+                    .jobs
+                    .iter()
+                    .position(|job| matches!(job.status, JobStatus::AwaitingConfig))
+            });
+        let Some(index) = index else {
             return;
         };
         self.queue.config_job_index = index;
@@ -2137,5 +2166,40 @@ mod tests {
         app.queue.config_job_index = 1;
         app.confirm_track_config();
         assert!(matches!(app.queue.jobs[1].status, JobStatus::Ready));
+    }
+
+    #[test]
+    fn queue_enter_opens_the_highlighted_awaiting_job() {
+        let mut app = App::new();
+        let mut first = EncodingJob::new(PathBuf::from("first.mkv"));
+        first.status = JobStatus::AwaitingConfig;
+        let mut second = EncodingJob::new(PathBuf::from("second.mkv"));
+        second.status = JobStatus::AwaitingConfig;
+        app.queue.jobs = vec![first, second];
+        app.queue_cursor = 1;
+
+        app.configure_next_job();
+
+        assert_eq!(app.queue.config_job_index, 1);
+        assert_eq!(app.current_screen, Screen::TrackConfig);
+    }
+
+    #[test]
+    fn a_late_analysis_error_does_not_overwrite_a_failed_job() {
+        let mut app = App::new();
+        let mut job = EncodingJob::new(PathBuf::from("gone.mkv"));
+        job.status = JobStatus::Error {
+            message: "probe failed".to_string(),
+        };
+        app.queue.jobs.push(job);
+        app.queue.error_count = 1;
+
+        app.apply_analysis_result(0, Err(AppError::Analysis("late".to_string())));
+
+        assert!(matches!(
+            &app.queue.jobs[0].status,
+            JobStatus::Error { message } if message == "probe failed"
+        ));
+        assert_eq!(app.queue.error_count, 1);
     }
 }

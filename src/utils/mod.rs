@@ -1,3 +1,4 @@
+pub mod child;
 pub mod deps;
 pub mod humanize;
 pub mod logger;

@@ -165,7 +165,8 @@ pub fn calculate_vmaf(
     let stderr_file = std::fs::File::create(&stderr_path)
         .map_err(|e| AppError::Vmaf(format!("Failed to create VMAF log file: {e}")))?;
 
-    let mut child = Command::new("ffmpeg")
+    let mut ffmpeg = Command::new("ffmpeg");
+    ffmpeg
         .args([
             "-nostdin",
             "-nostats",
@@ -180,12 +181,13 @@ pub fn calculate_vmaf(
             "-",
         ])
         .stdout(Stdio::null())
-        .stderr(Stdio::from(stderr_file))
-        .spawn()
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&stderr_path);
-            AppError::CommandExecution(format!("Failed to run ffmpeg for VMAF: {e}"))
-        })?;
+        .stderr(Stdio::from(stderr_file));
+    crate::utils::child::configure(&mut ffmpeg);
+    let mut child = ffmpeg.spawn().map_err(|e| {
+        let _ = std::fs::remove_file(&stderr_path);
+        AppError::CommandExecution(format!("Failed to run ffmpeg for VMAF: {e}"))
+    })?;
+    let _child = crate::utils::child::ChildGuard::register(child.id());
 
     let waited = wait_or_cancel(&mut child, cancel_flag);
     let status = match waited {

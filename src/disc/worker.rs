@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 use std::thread;
+use std::thread::JoinHandle;
 
 /// What a scan or a rip run reports back. `index` is the position in the
 /// requested list, which is what the caller's queue is keyed on.
@@ -38,7 +39,7 @@ pub fn spawn_scan(
     source: DiscSource,
     cancel: &Arc<AtomicBool>,
     tx: Sender<DiscEvent>,
-) {
+) -> JoinHandle<()> {
     let cancel = cancel.clone();
     thread::spawn(move || {
         let scanned = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -53,7 +54,7 @@ pub fn spawn_scan(
                 error: DiscError::Failed("the disc scan panicked".to_string()),
             },
         });
-    });
+    })
 }
 
 /// Extract `titles` one after another, reporting each file as it lands.
@@ -68,9 +69,16 @@ pub fn spawn_rips(
     titles: Vec<DiscTitle>,
     cancel: &Arc<AtomicBool>,
     tx: Sender<DiscEvent>,
-) {
+) -> JoinHandle<()> {
     let cancel = cancel.clone();
     thread::spawn(move || {
+        if let Err(error) = staging::confirm_titles(&bin, &source, &titles, &cancel) {
+            let _ = tx.send(match error {
+                DiscError::Cancelled => DiscEvent::Cancelled,
+                error => DiscEvent::Error { index: 0, error },
+            });
+            return;
+        }
         for (index, title) in titles.iter().enumerate() {
             let progress_tx = tx.clone();
             // A panic here ends the run with an error rather than leaving the
@@ -113,7 +121,7 @@ pub fn spawn_rips(
             }
         }
         let _ = tx.send(DiscEvent::Finished);
-    });
+    })
 }
 
 #[cfg(all(test, unix))]
@@ -130,16 +138,24 @@ mod tests {
     const TIMEOUT: Duration = Duration::from_secs(30);
 
     fn two_titles() -> Vec<DiscTitle> {
-        (0..2)
-            .map(|id| DiscTitle {
-                id,
-                name: format!("Title {id}"),
+        vec![
+            DiscTitle {
+                id: 0,
+                name: "Blade Runner, The \"Final\" Cut".to_string(),
                 duration: Duration::from_mins(1),
                 size_bytes: 1024,
                 chapters: 1,
                 tracks: Vec::new(),
-            })
-            .collect()
+            },
+            DiscTitle {
+                id: 1,
+                name: "Commentary".to_string(),
+                duration: Duration::from_mins(1),
+                size_bytes: 1024,
+                chapters: 1,
+                tracks: Vec::new(),
+            },
+        ]
     }
 
     /// A consumer that sits on the first finished title — an encode that has
@@ -171,7 +187,7 @@ mod tests {
 
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        spawn_rips(bin, config, source, two_titles(), &cancel, tx);
+        let _rip = spawn_rips(bin, config, source, two_titles(), &cancel, tx);
 
         // Hold the first finished title, as a slow encode would.
         let mut ready = Vec::new();
@@ -243,7 +259,7 @@ mod tests {
 
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        spawn_rips(bin, config, source, two_titles(), &cancel, tx);
+        let _rip = spawn_rips(bin, config, source, two_titles(), &cancel, tx);
 
         let mut cancelled = false;
         while !cancelled {

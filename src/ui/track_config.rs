@@ -332,6 +332,8 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         confirm_style,
     ));
     help_spans.push(Span::styled("]  ", Style::default().fg(Color::DarkGray)));
+    help_spans.push(Span::styled("Esc", Style::default().fg(Color::Yellow)));
+    help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))));
     help_spans.push(Span::styled("q", Style::default().fg(Color::Yellow)));
     help_spans.push(Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))));
 

@@ -48,6 +48,10 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
             format!(" {} ", t(lang, Msg::CancelAnalysisTitle)),
             t(lang, Msg::CancelAnalysisPrompt),
         ),
+        ConfirmAction::NewConversion => (
+            format!(" {} ", t(lang, Msg::NewConversion)),
+            t(lang, Msg::FinishResetPrompt),
+        ),
     };
 
     // Calculate dialog area (wide/tall enough for longer, wrapped prompts)
