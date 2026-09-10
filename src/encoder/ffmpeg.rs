@@ -218,18 +218,26 @@ pub fn encode_video(
     };
     let _child = crate::utils::child::ChildGuard::register(child.id());
 
-    // Run encoding loop
-    let result = run_encode_loop(
-        &mut child,
-        &progress_file,
-        duration,
-        total_frames,
-        progress_callback,
-        cancel_flag,
-        &partial,
-        &stderr_path,
-        params.remux_only.then(|| params.input.clone()).as_ref(),
-    );
+    // A panic in the loop still kills ffmpeg and removes the scratch file.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_encode_loop(
+            &mut child,
+            &progress_file,
+            duration,
+            total_frames,
+            progress_callback,
+            cancel_flag,
+            &partial,
+            &stderr_path,
+            params.remux_only.then(|| params.input.clone()).as_ref(),
+        )
+    }))
+    .unwrap_or_else(|_| {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&partial);
+        EncodeResult::Error("encode panicked".to_string())
+    });
 
     // Cleanup
     let _ = std::fs::remove_file(&progress_file);
