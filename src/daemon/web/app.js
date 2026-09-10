@@ -1035,6 +1035,7 @@ $("tracks-save").addEventListener("click", async () => {
       apply_to_remaining: $("tracks-apply-remaining").checked,
       ...(dv ? { dv_mode: dvMode } : {}),
     });
+    editor.snapshot = tracksSnapshot(editor);
     if (trackEditor === editor) closeTracks();
     toast(r.applied > 1
       ? trf("tracks_applied", { n: r.applied })
