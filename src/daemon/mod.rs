@@ -389,6 +389,7 @@ fn apply_disc_event(
                     job.path = path;
                     job.status = JobStatus::Analyzing;
                     ready = job.path.to_str().map(|path| (id, path.to_string()));
+                    state.analysis_cancel = Arc::new(AtomicBool::new(false));
                 }
             }
             DiscEvent::Error { index, error } => {
@@ -896,6 +897,36 @@ mod tests {
         assert!(state.queue.state.end_time.is_some());
         assert_eq!(state.queue.state.encoding_progress_done, 1);
         assert!(matches!(state.queue.state.jobs[1].status, JobStatus::Ready));
+    }
+
+    #[test]
+    fn a_ripped_title_starts_with_a_fresh_analysis_token() {
+        use crate::disc::worker::DiscEvent;
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (probe_tx, probe_rx) = mpsc::channel();
+        {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("Title 0"));
+            job.status = JobStatus::Ripping { progress: 0.0 };
+            job.temporary = true;
+            let id = state.queue.push(job);
+            state.disc.job_ids = vec![id];
+            state.disc.active = true;
+            state.analysis_cancel.store(true, Ordering::Relaxed);
+        }
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::TitleReady {
+                index: 0,
+                path: std::path::PathBuf::from("/staging/rip-a/DISC_t00.mkv"),
+            },
+        );
+
+        assert!(probe_rx.try_recv().is_ok());
+        assert!(!lock(&shared).analysis_cancel.load(Ordering::Relaxed));
     }
 
     /// An extracted title is repointed at its file and handed to the prober

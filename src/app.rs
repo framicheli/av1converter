@@ -841,7 +841,6 @@ impl App {
     }
 
     fn analyze_jobs(&mut self) {
-        self.analysis_cancel_flag = Arc::new(AtomicBool::new(false));
         let indices: Vec<usize> = (0..self.queue.jobs.len()).collect();
         self.analyze_indices(&indices);
         self.navigate_to_queue();
@@ -883,6 +882,7 @@ impl App {
         let Some(tx) = self.analysis_sender.clone() else {
             return;
         };
+        self.analysis_cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_flag = self.analysis_cancel_flag.clone();
         self.analysis_outstanding += work.len();
 
@@ -2070,6 +2070,22 @@ mod tests {
             JobStatus::Skipped { .. }
         ));
         assert_eq!(app.current_screen, Screen::Queue);
+    }
+
+    #[test]
+    fn analyzing_a_ripped_title_starts_with_a_fresh_analysis_token() {
+        let mut app = App::new();
+        let mut job = EncodingJob::new(std::path::PathBuf::from("/staging/rip-a/DISC_t00.mkv"));
+        job.status = JobStatus::Ripping { progress: 0.0 };
+        job.temporary = true;
+        app.queue.jobs.push(job);
+        app.analysis_cancel_flag.store(true, Ordering::Relaxed);
+
+        app.analyze_indices(&[0]);
+
+        assert!(matches!(app.queue.jobs[0].status, JobStatus::Analyzing));
+        assert_eq!(app.analysis_outstanding, 1);
+        assert!(!app.analysis_cancel_flag.load(Ordering::Relaxed));
     }
 
     #[test]
