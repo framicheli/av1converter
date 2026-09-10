@@ -1231,6 +1231,8 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
             .state
             .jobs
             .iter()
+            // Finished jobs may have had their source deleted.
+            .filter(|job| !is_terminal(&job.status))
             .map(|job| (job.path.clone(), job.output_path.clone(), job.temporary))
             .collect();
         (state.config.clone(), paths)
@@ -1907,6 +1909,46 @@ mod tests {
                         .into_owned()
                 )
             );
+            let _ = std::fs::remove_dir_all(base);
+        }
+
+        /// A finished job whose source is gone does not block a browse-root change.
+        #[test]
+        fn finished_jobs_do_not_block_a_browse_root_change() {
+            use crate::daemon::state::DaemonState;
+            use std::sync::{Arc, Mutex};
+
+            let base =
+                std::env::temp_dir().join(format!("av1c_settings_done_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            let old_root = base.join("old");
+            let new_root = base.join("new");
+            let output_dir = new_root.join("out");
+            std::fs::create_dir_all(&old_root).unwrap();
+            std::fs::create_dir_all(&output_dir).unwrap();
+            // The config write lands in the temp directory, not the user's own.
+            unsafe { std::env::set_var("XDG_CONFIG_HOME", base.join("config")) };
+
+            let live = AppConfig {
+                daemon: DaemonConfig {
+                    browse_root: old_root.to_string_lossy().into_owned(),
+                    ..DaemonConfig::default()
+                },
+                ..AppConfig::default()
+            };
+            let shared = Arc::new(Mutex::new(DaemonState::new(live.clone())));
+            let mut job = EncodingJob::new(old_root.join("gone.mkv"));
+            job.output_path = Some(old_root.join("gone.av1.mkv"));
+            job.status = JobStatus::Done;
+            lock(&shared).queue.push(job);
+
+            let mut body = serde_json::to_value(&live).unwrap();
+            body["daemon"]["browse_root"] = json!(new_root);
+            body["output"]["same_directory"] = json!(false);
+            body["output"]["output_directory"] = json!(output_dir);
+
+            let (code, response) = settings_post(&shared, &body, true);
+            assert_eq!(code, 200, "{response}");
             let _ = std::fs::remove_dir_all(base);
         }
 
