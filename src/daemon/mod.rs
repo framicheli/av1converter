@@ -120,6 +120,12 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     }
 
     let server = Arc::new(server::bind(&listen)?);
+    // `--status` reads the bound address back from the PID file.
+    if let Some(bound) = server.server_addr().to_ip()
+        && let Err(e) = lifecycle::record_listen(&bound.to_string())
+    {
+        warn!("Could not record the listen address in the PID file: {e}");
+    }
     // The bare address, not `url()`: stdout is the daemon log file in
     // background mode, and the token stays out of it. The tokenised URL is
     // printed to the terminal by whoever started us.

@@ -258,10 +258,16 @@ fn restart_daemon_entry() -> io::Result<()> {
 
 /// `--status`: report whether the background daemon is running.
 fn daemon_status_entry() {
-    let config = config::AppConfig::load();
+    let mut config = config::AppConfig::load();
     let lang = config.language;
     match daemon::lifecycle::running_pid() {
         Some(pid) => {
+            // The URL names the address the daemon bound, not the one the
+            // config file holds now.
+            if let Some(bound) = daemon::lifecycle::running_listen() {
+                config.daemon.bind_address = bound.ip().to_string();
+                config.daemon.port = bound.port();
+            }
             println!("{} (PID {pid})", t(lang, Msg::DaemonRunning));
             println!("{} {}", t(lang, Msg::DaemonListening), config.daemon.url());
         }

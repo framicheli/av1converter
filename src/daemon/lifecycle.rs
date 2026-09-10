@@ -64,12 +64,46 @@ fn locked_pid(path: &std::path::Path) -> Option<u32> {
     }
     let mut contents = String::new();
     file.read_to_string(&mut contents).ok()?;
-    contents.trim().parse().ok()
+    contents.lines().next()?.trim().parse().ok()
 }
 
 #[cfg(not(unix))]
 fn locked_pid(path: &std::path::Path) -> Option<u32> {
-    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+    std::fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Append the bound socket address as the second line of the PID file.
+pub fn record_listen(listen: &str) -> io::Result<()> {
+    append_listen(&pid_file(), listen)
+}
+
+fn append_listen(path: &std::path::Path, listen: &str) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    writeln!(file)?;
+    file.write_all(listen.as_bytes())?;
+    file.sync_all()
+}
+
+/// The socket address the running daemon bound, from the PID file.
+pub fn running_listen() -> Option<std::net::SocketAddr> {
+    running_pid()?;
+    listen_in(&pid_file())
+}
+
+fn listen_in(path: &std::path::Path) -> Option<std::net::SocketAddr> {
+    std::fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .nth(1)?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// PID recorded in the locked PID file, if that process is still alive.
@@ -270,6 +304,18 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(locked_pid(&path), None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn the_listen_address_rides_on_the_second_line() {
+        let path = std::env::temp_dir().join(format!("av1c_pid_listen_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let _guard = lock_pid_file(&path, std::process::id()).unwrap();
+        assert_eq!(listen_in(&path), None);
+        append_listen(&path, "127.0.0.1:9123").unwrap();
+        assert_eq!(locked_pid(&path), Some(std::process::id()));
+        assert_eq!(listen_in(&path), Some("127.0.0.1:9123".parse().unwrap()));
         let _ = std::fs::remove_file(path);
     }
 
