@@ -127,11 +127,7 @@ pub fn run_encoding_pipeline(
                 .delete_source_on_success
                 .then(|| SourceIdentity::from_path(output).ok())
                 .flatten();
-            // DV profile 5 → HDR10 is a tone-mapping pass: output pixels are
-            // intentionally different from the source, so VMAF is meaningless.
-            let tone_mapped = metadata.hdr_type == HdrType::DolbyVision
-                && metadata.dv_profile == Some(5)
-                && dv_mode == DvMode::ToHdr10;
+            let tone_mapped = skips_vmaf(&params);
             if tone_mapped && config.quality.vmaf_enabled {
                 info!("Skipping VMAF: DV profile 5 tone-mapped output is not comparable");
             }
@@ -259,9 +255,50 @@ fn run_vmaf_check(
     }
 }
 
+/// DV profile 5 → HDR10 is a tone-mapping pass: output pixels differ from
+/// the source by design and VMAF is not comparable.
+fn skips_vmaf(params: &EncodingParams) -> bool {
+    params.hdr_type == HdrType::DolbyVision
+        && params.dv_profile == Some(5)
+        && params.dv_mode == DvMode::ToHdr10
+}
+
 #[cfg(test)]
 mod tests {
-    use super::SourceIdentity;
+    use super::{DvMode, EncodingParams, HdrType, SourceIdentity, VideoMetadata, skips_vmaf};
+    use crate::config::{AppConfig, Encoder};
+    use crate::tracks::OutputTracks;
+
+    #[test]
+    fn hardware_encoder_skips_vmaf_for_a_keep_dv_profile5_job() {
+        let metadata = VideoMetadata {
+            width: 3840,
+            height: 2160,
+            hdr_type: HdrType::DolbyVision,
+            dv_profile: Some(5),
+            hdr10_static: None,
+            codec_name: "hevc".to_string(),
+            frame_rate_num: 24000,
+            frame_rate_den: 1001,
+            duration_secs: 60.0,
+        };
+        let config = AppConfig {
+            encoder: Encoder::Nvenc,
+            ..AppConfig::default()
+        };
+        let params = EncodingParams::from_metadata(
+            "in.mkv",
+            "out.mkv",
+            &metadata,
+            &config,
+            OutputTracks::default(),
+            DvMode::KeepDolbyVision,
+            false,
+            Vec::new(),
+        );
+        assert_eq!(params.dv_mode, DvMode::ToHdr10);
+        assert!(skips_vmaf(&params));
+    }
 
     #[test]
     fn source_identity_rejects_a_replacement_file() {
