@@ -736,11 +736,13 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         (Some(_), None) => {}
     }
     state.queue.state.end_time = None;
-    if let Some(job) = job_ids
-        .first()
-        .and_then(|&id| state.queue.job_by_id_mut(id))
-    {
-        job.status = JobStatus::Encoding { progress: 0.0 };
+    if let Some(&id) = job_ids.first() {
+        if let Some(index) = state.queue.index_of(id) {
+            state.queue.state.current_job_index = index;
+        }
+        if let Some(job) = state.queue.job_by_id_mut(id) {
+            job.status = JobStatus::Encoding { progress: 0.0 };
+        }
     }
 
     let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -905,6 +907,57 @@ mod tests {
         assert!(state.queue.state.end_time.is_some());
         assert_eq!(state.queue.state.encoding_progress_done, 1);
         assert!(matches!(state.queue.state.jobs[1].status, JobStatus::Ready));
+    }
+
+    /// The dashboard reads `current_job_index` from the moment a session
+    /// starts, before the first progress line arrives.
+    #[test]
+    fn a_started_session_points_current_job_at_the_encoding_job() {
+        let dir = std::env::temp_dir().join(format!("av1c_session_start_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("ready.mkv");
+        std::fs::write(&source, b"source").unwrap();
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (worker_tx, _worker_rx) = mpsc::channel();
+        {
+            let mut state = lock(&shared);
+            let mut done = EncodingJob::new(std::path::PathBuf::from("done.mkv"));
+            done.status = JobStatus::Done;
+            state.queue.push(done);
+            let mut ready = EncodingJob::new(source.clone());
+            ready.status = JobStatus::Ready;
+            ready.metadata = Some(crate::analyzer::VideoMetadata {
+                width: 1920,
+                height: 1080,
+                hdr_type: crate::analyzer::HdrType::Sdr,
+                dv_profile: None,
+                dv_bl_compat: None,
+                hdr10_static: None,
+                codec_name: "hevc".to_string(),
+                frame_rate_num: 24,
+                frame_rate_den: 1,
+                duration_secs: 1.0,
+            });
+            // An identity taken from the directory does not match the file, so
+            // the worker thread reports an error at once instead of encoding.
+            ready.source_identity = Some(crate::queue::SourceIdentity::from_metadata(
+                &std::fs::metadata(&dir).unwrap(),
+            ));
+            state.queue.push(ready);
+        }
+
+        maybe_start_session(&shared, &worker_tx);
+
+        let state = lock(&shared);
+        assert!(state.encoding_active);
+        assert_eq!(state.queue.state.current_job_index, 1);
+        assert!(matches!(
+            state.queue.state.jobs[1].status,
+            JobStatus::Encoding { .. }
+        ));
+        drop(state);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
