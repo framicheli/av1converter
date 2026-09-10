@@ -131,8 +131,9 @@ fn disc_status(disc: &super::state::DiscSession) -> Value {
         None => (Value::Null, Value::Null),
     };
 
+    // A drive listing holds the drive but is not a run the client can act on.
     json!({
-        "active": disc.active,
+        "active": disc.active && !disc.listing,
         "scanning": disc.scanning,
         "drive": drive,
         "folder": folder,
@@ -922,6 +923,8 @@ pub fn discs_list(shared: &SharedState) -> (u16, Value) {
             return (409, json!({"error": "a disc operation is already running"}));
         }
         state.disc.active = true;
+        state.disc.listing = true;
+        state.disc.error = None;
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         state.disc.cancel_flag = Some(cancel.clone());
         (state.config.clone(), cancel)
@@ -960,6 +963,7 @@ impl Drop for DiscClaim {
     fn drop(&mut self) {
         let mut state = lock(&self.0);
         state.disc.active = false;
+        state.disc.listing = false;
         state.disc.cancel_flag = None;
     }
 }
@@ -1799,6 +1803,34 @@ mod tests {
             assert_eq!(value["disc"]["titles"][0]["id"], json!(3));
             assert_eq!(value["disc"]["titles"][0]["chapters"], json!(12));
             assert_eq!(value["disc"]["error"], Value::Null);
+        }
+
+        /// A drive listing is not reported as a running rip.
+        #[test]
+        fn a_drive_listing_is_not_reported_as_active() {
+            let shared = scanned(Some("/tmp".to_string()));
+            {
+                let mut state = lock(&shared);
+                state.disc.active = true;
+                state.disc.listing = true;
+            }
+            assert_eq!(status(&shared)["disc"]["active"], json!(false));
+        }
+
+        /// The error from the last run is dropped when a new dialog lists the
+        /// drives.
+        #[test]
+        fn a_drive_listing_clears_the_last_error() {
+            let shared = scanned(Some("/tmp".to_string()));
+            {
+                let mut state = lock(&shared);
+                state.disc.error = Some("old failure".to_string());
+                state.config.disc.makemkvcon_path = Some("/nonexistent/makemkvcon".to_string());
+            }
+            discs_list(&shared);
+            let state = lock(&shared);
+            assert_eq!(state.disc.error, None);
+            assert!(!state.disc.active);
         }
 
         /// Cancelling raises the flag the run is watching.

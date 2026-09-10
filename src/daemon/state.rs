@@ -151,7 +151,10 @@ pub struct DiscSession {
     pub cancel_flag: Option<Arc<AtomicBool>>,
     pub active: bool,
     pub scanning: bool,
-    /// Why the last run stopped, in the user's language.
+    /// `active` is held by a drive listing, not by a scan or rip.
+    pub listing: bool,
+    /// Why the last run stopped, in the user's language. Cleared by the next
+    /// drive listing.
     pub error: Option<String>,
 }
 
