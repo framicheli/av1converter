@@ -349,16 +349,28 @@ fn collect_video_files_inner(
 }
 
 /// Make every generated output distinct from every queued source and output.
+/// Terminal, encoding, and verifying jobs keep their output path.
 pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
     let mut used: HashSet<PathBuf> = jobs.iter().map(|job| job.path.clone()).collect();
     used.extend(
         jobs.iter()
-            .filter(|job| job.status.is_terminal())
+            .filter(|job| {
+                job.status.is_terminal()
+                    || matches!(
+                        job.status,
+                        JobStatus::Encoding { .. } | JobStatus::Verifying
+                    )
+            })
             .filter_map(|job| job.output_path.clone()),
     );
 
     for job in jobs {
-        if job.status.is_terminal() {
+        if job.status.is_terminal()
+            || matches!(
+                job.status,
+                JobStatus::Encoding { .. } | JobStatus::Verifying
+            )
+        {
             continue;
         }
         let Some(output) = job.output_path.clone() else {
@@ -575,6 +587,29 @@ mod tests {
             jobs[1].output_path,
             Some(PathBuf::from("/out/movie_av1_2.mkv"))
         );
+    }
+
+    #[test]
+    fn verifying_output_paths_never_move_when_the_queue_changes() {
+        let dir = std::env::temp_dir().join(format!("av1c_verify_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("movie_av1.mkv");
+        std::fs::write(&output, b"encoded").unwrap();
+
+        let mut verifying = EncodingJob::new(PathBuf::from("/a/movie.mkv"));
+        verifying.status = JobStatus::Verifying;
+        verifying.output_path = Some(output.clone());
+        let mut pending = EncodingJob::new(PathBuf::from("/b/movie.mkv"));
+        pending.status = JobStatus::AwaitingConfig;
+        pending.output_path = Some(output.clone());
+        let mut jobs = vec![verifying, pending];
+
+        make_output_paths_unique(&mut jobs);
+
+        assert_eq!(jobs[0].output_path, Some(output));
+        assert_eq!(jobs[1].output_path, Some(dir.join("movie_av1_2.mkv")));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A symlink loop terminates, and a file reachable by two routes is
