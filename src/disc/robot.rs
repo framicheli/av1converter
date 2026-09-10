@@ -1,8 +1,10 @@
 //! Parsing of `makemkvcon -r` (robot mode) output.
 //!
-//! Every record is one line: a prefix, a colon, then quoted-CSV fields that
-//! carry commas and quotes of their own — `DRV:0,2,999,12,"BD-RE","Movie,
-//! The","/dev/sr0"`. Everything here parses through [`split_fields`].
+//! Every record is one line: a prefix, a colon, then quoted fields that carry
+//! commas of their own — `DRV:0,2,999,12,"BD-RE","Movie, The","/dev/sr0"`.
+//! Quotes and control characters inside a string are backslash-escaped, as
+//! documented in `makemkvcon`'s usage text. Everything here parses through
+//! [`split_fields`].
 
 use super::{DiscDrive, DiscTitle};
 use std::collections::BTreeMap;
@@ -34,11 +36,11 @@ pub fn split_fields(line: &str) -> Option<(&str, Vec<String>)> {
     let mut chars = rest.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
-            // A doubled quote inside a quoted field is a literal quote.
-            // Backslashes stay literal: MakeMKV does not escape them.
-            '"' if quoted && chars.peek() == Some(&'"') => {
-                chars.next();
-                field.push('"');
+            // A backslash inside a quoted field escapes the next character.
+            '\\' if quoted => {
+                if let Some(escaped) = chars.next() {
+                    field.push(escaped);
+                }
             }
             '"' => quoted = !quoted,
             ',' if !quoted => fields.push(std::mem::take(&mut field)),
@@ -233,10 +235,13 @@ mod tests {
     }
 
     #[test]
-    fn doubled_quotes_are_one_literal_quote() {
-        let f = fields(r#"TINFO:0,2,0,"The ""Director's Cut""",tail"#);
+    fn backslash_escaped_quotes_are_literal_quotes() {
+        let f = fields(r#"TINFO:0,2,0,"The \"Director's Cut\"",tail"#);
         assert_eq!(f[3], r#"The "Director's Cut""#);
         assert_eq!(f[4], "tail");
+        let f = fields(r#"MSG:3006,0,0,"Error \"Permission denied\" opening C:\\x","x""#);
+        assert_eq!(f[3], r#"Error "Permission denied" opening C:\x"#);
+        assert_eq!(f[4], "x");
     }
 
     #[test]

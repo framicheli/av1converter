@@ -164,7 +164,7 @@ pub const BLURAY_SCAN: &str = r#"  echo 'MSG:3007,0,0,"Using direct disc access 
   echo 'CINFO:1,6209,"Blu-ray disc"'
   echo 'CINFO:2,0,"THE_DISC"'
   echo 'TCOUNT:2'
-  echo 'TINFO:0,2,0,"Blade Runner, The ""Final"" Cut"'
+  echo 'TINFO:0,2,0,"Blade Runner, The \"Final\" Cut"'
   echo 'TINFO:0,8,0,"32"'
   echo 'TINFO:0,9,0,"1:57:31"'
   echo 'TINFO:0,10,0,"27.6 GB"'
