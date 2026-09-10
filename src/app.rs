@@ -1019,6 +1019,7 @@ impl App {
             }
             self.navigate_to_queue();
         } else {
+            self.discard_staged_jobs();
             self.queue.reset();
             self.navigate_to_home();
         }
@@ -1075,6 +1076,7 @@ impl App {
             return;
         }
         self.drop_analysis_round();
+        self.discard_staged_jobs();
         self.queue.reset();
         self.navigate_to_home();
     }
@@ -1234,6 +1236,10 @@ impl App {
                 };
                 self.queue.skipped_count += 1;
                 self.queue.encoding_progress_done += 1;
+                if job.temporary {
+                    crate::disc::staging::discard_staged(&job.path);
+                    job.temporary = false;
+                }
             }
         }
         // A queue can hold a rip as well as an encode.
@@ -1846,7 +1852,15 @@ impl App {
         }
     }
 
+    /// Delete the staging directory of every ripped title in the queue.
+    fn discard_staged_jobs(&self) {
+        for job in self.queue.jobs.iter().filter(|job| job.temporary) {
+            crate::disc::staging::discard_staged(&job.path);
+        }
+    }
+
     pub fn reset(&mut self) {
+        self.discard_staged_jobs();
         self.queue.reset();
         self.encoding_active = false;
         self.selected_files.clear();
@@ -2131,6 +2145,26 @@ mod tests {
         assert!(app.analysis_receiver.is_none());
         assert!(app.analysis_sender.is_none());
         assert_eq!(app.analysis_outstanding, 0);
+    }
+
+    #[test]
+    fn reset_discards_staged_rips() {
+        let root = std::env::temp_dir().join(format!("av1c-reset-staging-{}", std::process::id()));
+        let dir = root.join("rip-abc");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("DISC_t00.mkv");
+        std::fs::write(&file, b"rip").unwrap();
+
+        let mut app = App::new();
+        let mut job = EncodingJob::new(file);
+        job.status = JobStatus::Ready;
+        job.temporary = true;
+        app.queue.jobs.push(job);
+
+        app.reset();
+
+        assert!(!dir.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
