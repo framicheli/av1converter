@@ -15,7 +15,10 @@ pub struct EncodingParams {
     pub dv_profile: Option<u8>,
     pub hdr10_static: Option<Hdr10StaticMetadata>,
     pub tracks: OutputTracks,
+    /// Source frame rate. Not passed to ffmpeg: timestamps pass through.
+    #[allow(dead_code)]
     pub frame_rate_num: u32,
+    #[allow(dead_code)]
     pub frame_rate_den: u32,
     pub svt_preset: u8,
     pub nvenc_preset: String,
@@ -132,13 +135,8 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         let vf = build_video_filter(params);
         args.extend(["-vf".to_string(), vf]);
 
-        // Explicit frame rate preservation
-        if params.frame_rate_num > 0 && params.frame_rate_den > 0 {
-            args.extend([
-                "-r".to_string(),
-                format!("{}/{}", params.frame_rate_num, params.frame_rate_den),
-            ]);
-        }
+        // Source timestamps pass through unchanged, variable frame rate included.
+        args.extend(["-fps_mode".to_string(), "passthrough".to_string()]);
 
         // Audio follows the per-track choice; subtitles only when the
         // container can hold them
@@ -461,6 +459,16 @@ mod tests {
         assert_eq!(arg_after(&args, "-dolbyvision"), Some("1".to_string()));
         assert!(!args.contains(&"-color_trc".to_string()));
         assert!(!arg_after(&args, "-vf").unwrap().contains("setparams"));
+    }
+
+    #[test]
+    fn frame_timestamps_pass_through_unchanged() {
+        let args = build_ffmpeg_args(&dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8)));
+        assert_eq!(
+            arg_after(&args, "-fps_mode"),
+            Some("passthrough".to_string())
+        );
+        assert!(!args.contains(&"-r".to_string()));
     }
 
     #[test]
