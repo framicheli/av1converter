@@ -282,18 +282,23 @@ fn daemon_status_entry() {
     }
 }
 
-/// Mint a token if needed, set `daemon.enabled`, and save. Shared by
-/// `--install-service` and the Settings row so the unit does not start into
-/// the disabled-gate.
-fn enable_daemon_config(config: &mut config::AppConfig) -> io::Result<bool> {
+/// Mint a token if needed, set `daemon.enabled`, validate, and save. Shared by
+/// `--install-service` and the Settings row. `config` is left untouched when
+/// validation or the save fails.
+fn enable_daemon_config(
+    config: &mut config::AppConfig,
+    previous: &config::AppConfig,
+) -> Result<bool, String> {
+    let mut candidate = config.clone();
     let mut generated = false;
-    config.daemon.enabled = true;
-    if config.daemon.auth_token.len() < 32 {
-        config.daemon.auth_token =
-            config::DaemonConfig::generate_token().map_err(io::Error::other)?;
+    candidate.daemon.enabled = true;
+    if candidate.daemon.auth_token.len() < 32 {
+        candidate.daemon.auth_token =
+            config::DaemonConfig::generate_token().map_err(|e| e.to_string())?;
         generated = true;
     }
-    config.save().map_err(io::Error::other)?;
+    validate_and_save_config(&mut candidate, previous)?;
+    *config = candidate;
     Ok(generated)
 }
 
@@ -305,7 +310,8 @@ fn install_service_entry() -> io::Result<()> {
         eprintln!("{}", t(lang, Msg::DaemonServiceUnsupported));
         std::process::exit(1);
     }
-    let generated = enable_daemon_config(&mut config)?;
+    let previous = config.clone();
+    let generated = enable_daemon_config(&mut config, &previous).map_err(io::Error::other)?;
     if generated {
         println!("{}", t(lang, Msg::DaemonTokenGenerated));
     }
@@ -1101,6 +1107,31 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
     }
 }
 
+/// Normalize, validate, sanitize, and persist `config`. `previous` is the
+/// last saved state, used to detect changed host paths.
+fn validate_and_save_config(
+    config: &mut config::AppConfig,
+    previous: &config::AppConfig,
+) -> Result<(), String> {
+    let lang = config.language;
+    config.normalize_changed_host_paths(previous)?;
+    config.validate_settings()?;
+    config.sanitize();
+    if !config.output.same_directory
+        && !config
+            .output
+            .output_directory
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path).is_dir())
+    {
+        return Err(t(lang, Msg::WebCfgOutputDirectory).to_string());
+    }
+    config.save().map_err(|error| {
+        tracing::warn!("Failed to save config: {error:?}");
+        error.to_string()
+    })
+}
+
 /// Validate and persist the configuration screen values.
 fn save_config(app: &mut App) {
     let lang = app.config.language;
@@ -1108,39 +1139,14 @@ fn save_config(app: &mut App) {
         .config_snapshot
         .clone()
         .unwrap_or_else(|| app.config.clone());
-    if let Err(error) = app.config.normalize_changed_host_paths(&previous) {
-        app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
-        return;
-    }
-    if let Err(error) = app.config.validate_settings() {
-        app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
-        return;
-    }
-    app.config.sanitize();
-    if !app.config.output.same_directory
-        && !app
-            .config
-            .output
-            .output_directory
-            .as_deref()
-            .is_some_and(|path| std::path::Path::new(path).is_dir())
-    {
-        app.set_timed_error(
-            &format!(
-                "{}: {}",
-                t(lang, Msg::SaveFailed),
-                t(lang, Msg::WebCfgOutputDirectory)
-            ),
-            3,
-        );
-        return;
-    }
-    if let Err(error) = app.config.save() {
-        tracing::warn!("Failed to save config: {error:?}");
-        app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
-    } else {
-        app.config_snapshot = Some(app.config.clone());
-        app.set_timed_success(t(lang, Msg::SavedExclaim), 3);
+    match validate_and_save_config(&mut app.config, &previous) {
+        Err(error) => {
+            app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
+        }
+        Ok(()) => {
+            app.config_snapshot = Some(app.config.clone());
+            app.set_timed_success(t(lang, Msg::SavedExclaim), 3);
+        }
     }
 }
 
@@ -1301,8 +1307,11 @@ fn apply_autostart(app: &mut App, enable: bool) {
         return;
     }
     if enable {
-        app.config.sanitize();
-        if let Err(e) = enable_daemon_config(&mut app.config) {
+        let previous = app
+            .config_snapshot
+            .clone()
+            .unwrap_or_else(|| app.config.clone());
+        if let Err(e) = enable_daemon_config(&mut app.config, &previous) {
             app.set_timed_error(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 5);
             return;
         }
@@ -1582,6 +1591,28 @@ mod tests {
         let err = parse_cli(["--foo"]).unwrap_err();
         assert!(err.contains("Unknown argument: --foo"), "{err}");
         assert!(!err.contains("Did you mean"), "{err}");
+    }
+
+    #[test]
+    fn enabling_autostart_with_an_invalid_browse_root_saves_nothing() {
+        if !daemon::service::supported() {
+            return;
+        }
+        let on_disk = || std::fs::read(config::AppConfig::config_path()).ok();
+        let before = on_disk();
+        let mut app = App::new();
+        app.navigate_to_configuration();
+        app.config.daemon.browse_root = std::env::temp_dir()
+            .join(format!("av1c_no_such_root_{}", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
+        assert!(app.config_is_dirty());
+
+        apply_autostart(&mut app, true);
+
+        assert_eq!(on_disk(), before);
+        assert!(app.config_is_dirty());
+        assert!(!app.config.daemon.enabled);
     }
 
     #[test]
