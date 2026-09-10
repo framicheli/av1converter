@@ -513,10 +513,12 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
                 .is_some_and(|meta| meta.hdr_type == HdrType::DolbyVision)
                 .then(|| dv_mode.or(job.dv_mode))
                 .flatten();
+            // Remux is decided per file at analysis time from its own codec.
+            let target_remux = job.remux_only;
             apply_track_config(
                 job,
                 selection,
-                remux_only,
+                target_remux,
                 target_dv,
                 &output_config,
                 encoder,
@@ -2104,8 +2106,32 @@ mod tests {
             let remaining = state.queue.job_by_id(remaining_id).unwrap();
             assert_eq!(remaining.track_selection.audio_indices, vec![1, 3]);
             assert_eq!(remaining.track_selection.audio_to_opus, vec![1, 3]);
-            assert!(remaining.remux_only);
+            assert!(!remaining.remux_only);
             assert!(matches!(remaining.status, JobStatus::Ready));
+        }
+
+        /// Each remaining job keeps the remux decision made for its own codec.
+        #[test]
+        fn apply_to_remaining_keeps_each_jobs_own_remux_flag() {
+            let (shared, id) = shared_with_job();
+            let av1_id = {
+                let mut state = lock(&shared);
+                state.queue.job_by_id_mut(id).unwrap().status = JobStatus::AwaitingConfig;
+                let mut job = EncodingJob::new(PathBuf::from("/tmp/already-av1.mkv"));
+                job.remux_only = true;
+                job.status = JobStatus::AwaitingConfig;
+                state.queue.push(job)
+            };
+
+            let (code, body) =
+                job_tracks_set(&shared, &json!({"id": id, "apply_to_remaining": true}));
+
+            assert_eq!(code, 200);
+            assert_eq!(body["remux_only"], json!(false));
+            let state = lock(&shared);
+            let av1 = state.queue.job_by_id(av1_id).unwrap();
+            assert!(av1.remux_only);
+            assert!(matches!(av1.status, JobStatus::Ready));
         }
 
         /// A job that is already encoding refuses track edits.
