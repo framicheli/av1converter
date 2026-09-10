@@ -110,15 +110,9 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         let shutdown = shutdown.clone();
         ctrlc::set_handler(move || {
             if shutdown.swap(true, Ordering::SeqCst) {
-                // Second signal: force exit. When this daemon leads its own
-                // process group (a service, or a foreground shell job), the
-                // group signal reaches any ffmpeg/makemkvcon children.
-                #[cfg(unix)]
-                unsafe {
-                    if libc::getpgrp() == std::process::id().cast_signed() {
-                        libc::kill(0, libc::SIGTERM);
-                    }
-                }
+                // Second signal: kill every tracked ffmpeg/makemkvcon child
+                // and exit.
+                crate::utils::child::kill_all();
                 std::process::exit(1);
             }
         })
