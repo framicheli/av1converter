@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 /// How long the parent waits for the detached child before declaring startup
 /// failed (it exits immediately on e.g. a port already in use).
 const SPAWN_GRACE: Duration = Duration::from_millis(600);
-/// How long `stop` waits for the daemon to exit. Must exceed the daemon's
-/// own `SHUTDOWN_GRACE` so a running encode can be cancelled cleanly.
-const STOP_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long `stop` waits for the daemon to exit. Covers the daemon's
+/// `SHUTDOWN_GRACE` for a rip followed by the same grace for an encode.
+const STOP_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Data directory for the PID file, queue and background log
 /// (same location the debug logger uses).
