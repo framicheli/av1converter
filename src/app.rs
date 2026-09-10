@@ -997,12 +997,17 @@ impl App {
         }
     }
 
-    /// Cancel every outstanding probe without disturbing concurrent work.
-    pub fn cancel_analysis(&mut self) {
+    /// Detach the current analysis round: late probe results are dropped.
+    fn drop_analysis_round(&mut self) {
         self.analysis_cancel_flag.store(true, Ordering::Relaxed);
         self.analysis_receiver = None;
         self.analysis_sender = None;
         self.analysis_outstanding = 0;
+    }
+
+    /// Cancel every outstanding probe without disturbing concurrent work.
+    pub fn cancel_analysis(&mut self) {
+        self.drop_analysis_round();
         if self.encoding_active || self.disc_operation_active() {
             for job in &mut self.queue.jobs {
                 if matches!(job.status, JobStatus::Analyzing) {
@@ -1069,6 +1074,7 @@ impl App {
             self.navigate_to_queue();
             return;
         }
+        self.drop_analysis_round();
         self.queue.reset();
         self.navigate_to_home();
     }
@@ -2110,6 +2116,21 @@ mod tests {
 
         assert!(app.queue.jobs[0].status.is_terminal());
         assert!(app.queue.all_completed());
+    }
+
+    #[test]
+    fn cancelling_track_config_drops_the_analysis_round() {
+        let mut app = App::new();
+        let (tx, rx) = mpsc::channel();
+        app.analysis_receiver = Some(rx);
+        app.analysis_sender = Some(tx);
+        app.analysis_outstanding = 2;
+
+        app.cancel_track_config();
+
+        assert!(app.analysis_receiver.is_none());
+        assert!(app.analysis_sender.is_none());
+        assert_eq!(app.analysis_outstanding, 0);
     }
 
     #[test]
