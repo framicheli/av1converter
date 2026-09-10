@@ -1049,14 +1049,11 @@ impl App {
         }
         self.queue.jobs[self.queue.config_job_index].status = JobStatus::Ready;
 
-        // Find next job awaiting config
-        let next_index = self
-            .queue
-            .jobs
-            .iter()
-            .skip(self.queue.config_job_index + 1)
-            .position(|j| matches!(j.status, JobStatus::AwaitingConfig))
-            .map(|i| i + self.queue.config_job_index + 1);
+        // Find the next job awaiting config, wrapping around to earlier jobs
+        let len = self.queue.jobs.len();
+        let next_index = (1..=len)
+            .map(|k| (self.queue.config_job_index + k) % len)
+            .find(|&i| matches!(self.queue.jobs[i].status, JobStatus::AwaitingConfig));
 
         if let Some(idx) = next_index {
             self.queue.config_job_index = idx;
@@ -2261,6 +2258,25 @@ mod tests {
         app.queue.config_job_index = 1;
         app.confirm_track_config();
         assert!(matches!(app.queue.jobs[1].status, JobStatus::Ready));
+    }
+
+    #[test]
+    fn track_confirmation_wraps_around_to_earlier_unconfigured_jobs() {
+        let mut app = App::new();
+        app.queue.jobs = ["a.mkv", "b.mkv", "c.mkv"]
+            .iter()
+            .map(|name| {
+                let mut job = EncodingJob::new(PathBuf::from(name));
+                job.status = JobStatus::AwaitingConfig;
+                job
+            })
+            .collect();
+        app.queue.config_job_index = 2;
+
+        app.confirm_track_config();
+
+        assert_eq!(app.queue.config_job_index, 0);
+        assert!(!app.encoding_active);
     }
 
     #[test]
