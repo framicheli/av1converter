@@ -303,14 +303,18 @@ fn get_qsv_params(params: &EncodingParams) -> Vec<String> {
     ]
 }
 
+/// Constant-QP rate control. `-quality` on `av1_amf` selects a speed preset
+/// and never sets the quantizer.
 fn get_amf_params(params: &EncodingParams) -> Vec<String> {
     vec![
-        "-quality".to_string(),
+        "-rc".to_string(),
+        "cqp".to_string(),
+        "-qp_i".to_string(),
+        params.crf.to_string(),
+        "-qp_p".to_string(),
         params.crf.to_string(),
         "-usage".to_string(),
         "transcoding".to_string(),
-        "-rc".to_string(),
-        "cqp".to_string(),
     ]
 }
 
@@ -457,6 +461,15 @@ mod tests {
         assert_eq!(arg_after(&args, "-dolbyvision"), Some("1".to_string()));
         assert!(!args.contains(&"-color_trc".to_string()));
         assert!(!arg_after(&args, "-vf").unwrap().contains("setparams"));
+    }
+
+    #[test]
+    fn amf_quality_sets_the_constant_qp() {
+        let args = build_ffmpeg_args(&dv_params(Encoder::Amf, DvMode::ToHdr10, None));
+        assert_eq!(arg_after(&args, "-rc"), Some("cqp".to_string()));
+        assert_eq!(arg_after(&args, "-qp_i"), Some("27".to_string()));
+        assert_eq!(arg_after(&args, "-qp_p"), Some("27".to_string()));
+        assert!(!args.contains(&"-quality".to_string()));
     }
 
     #[test]
