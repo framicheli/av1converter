@@ -105,6 +105,9 @@ pub struct VideoMetadata {
     pub hdr_type: HdrType,
     /// Dolby Vision profile (5, 7, 8, ...) when the source carries DV
     pub dv_profile: Option<u8>,
+    /// Dolby Vision base-layer compatibility id: 1 = HDR10, 2 = SDR, 4 = HLG
+    #[serde(default)]
+    pub dv_bl_compat: Option<u8>,
     /// HDR10 static metadata, when present in the source
     pub hdr10_static: Option<Hdr10StaticMetadata>,
     pub codec_name: String,

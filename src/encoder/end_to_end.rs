@@ -79,6 +79,7 @@ fn metadata_for(path: &Path) -> VideoMetadata {
         height: 240,
         hdr_type: HdrType::Sdr,
         dv_profile: None,
+        dv_bl_compat: None,
         hdr10_static: None,
         codec_name: "h264".to_string(),
         frame_rate_num: 24,

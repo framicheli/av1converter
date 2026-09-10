@@ -13,6 +13,7 @@ pub struct EncodingParams {
     pub hdr_type: HdrType,
     pub dv_mode: DvMode,
     pub dv_profile: Option<u8>,
+    pub dv_bl_compat: Option<u8>,
     pub hdr10_static: Option<Hdr10StaticMetadata>,
     pub tracks: OutputTracks,
     /// Source frame rate. Not passed to ffmpeg: timestamps pass through.
@@ -66,6 +67,7 @@ impl EncodingParams {
             hdr_type: metadata.hdr_type,
             dv_mode,
             dv_profile: metadata.dv_profile,
+            dv_bl_compat: metadata.dv_bl_compat,
             hdr10_static: metadata.hdr10_static,
             tracks,
             frame_rate_num: metadata.frame_rate_num,
@@ -75,6 +77,11 @@ impl EncodingParams {
             remux_only,
             subtitle_codecs,
         }
+    }
+
+    /// Dolby Vision source with an HLG base layer (profile 8.4)
+    fn dv_base_is_hlg(&self) -> bool {
+        self.hdr_type == HdrType::DolbyVision && self.dv_bl_compat == Some(4)
     }
 
     /// Dolby Vision source that keeps its RPU in the AV1 output (profile 10)
@@ -355,14 +362,18 @@ fn build_video_filter(params: &EncodingParams) -> String {
     let mut filters = vec!["format=yuv420p10le".to_string()];
 
     if params.hdr_type == HdrType::DolbyVision {
-        // Cross-compatible profiles (7/8) have a PQ/BT.2020 base layer, often
-        // left untagged in the source. Keep-DV profile 5 stays in Dolby's own
-        // space and is left alone.
+        // Cross-compatible profiles (7/8) have a BT.2020 base layer, PQ or
+        // HLG (8.4), often left untagged in the source. Keep-DV profile 5
+        // stays in Dolby's own space and is left alone.
         if params.dv_profile != Some(5) {
-            filters.push(
-                "setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084"
-                    .to_string(),
-            );
+            let trc = if params.dv_base_is_hlg() {
+                "arib-std-b67"
+            } else {
+                "smpte2084"
+            };
+            filters.push(format!(
+                "setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc={trc}"
+            ));
         }
     }
 
@@ -376,11 +387,16 @@ fn get_dolby_vision_color_params(params: &EncodingParams) -> Vec<String> {
         return Vec::new();
     }
 
+    let trc = if params.dv_base_is_hlg() {
+        "arib-std-b67"
+    } else {
+        "smpte2084"
+    };
     vec![
         "-color_primaries".to_string(),
         "bt2020".to_string(),
         "-color_trc".to_string(),
-        "smpte2084".to_string(),
+        trc.to_string(),
         "-colorspace".to_string(),
         "bt2020nc".to_string(),
     ]
@@ -401,6 +417,7 @@ mod tests {
             hdr_type: HdrType::DolbyVision,
             dv_mode,
             dv_profile,
+            dv_bl_compat: None,
             hdr10_static: None,
             tracks: OutputTracks::default(),
             frame_rate_num: 24000,
@@ -431,6 +448,44 @@ mod tests {
             arg_after(&args, "-color_trc"),
             Some("smpte2084".to_string())
         );
+    }
+
+    #[test]
+    fn hlg_base_layer_keeps_hlg_tags() {
+        let metadata = VideoMetadata {
+            width: 3840,
+            height: 2160,
+            hdr_type: HdrType::DolbyVision,
+            dv_profile: Some(8),
+            dv_bl_compat: Some(4),
+            hdr10_static: None,
+            codec_name: "hevc".to_string(),
+            frame_rate_num: 30,
+            frame_rate_den: 1,
+            duration_secs: 60.0,
+        };
+        let params = EncodingParams::from_metadata(
+            "in.mkv",
+            "out.mkv",
+            &metadata,
+            &AppConfig::default(),
+            OutputTracks::default(),
+            DvMode::KeepDolbyVision,
+            false,
+            Vec::new(),
+        );
+        assert_eq!(params.encoder, Encoder::SvtAv1);
+        let args = build_ffmpeg_args(&params);
+        assert!(
+            arg_after(&args, "-vf")
+                .unwrap()
+                .contains("color_trc=arib-std-b67")
+        );
+        assert_eq!(
+            arg_after(&args, "-color_trc"),
+            Some("arib-std-b67".to_string())
+        );
+        assert!(!args.iter().any(|arg| arg.contains("smpte2084")));
     }
 
     #[test]
@@ -487,6 +542,7 @@ mod tests {
             height: 2160,
             hdr_type: HdrType::DolbyVision,
             dv_profile: Some(8),
+            dv_bl_compat: None,
             hdr10_static: None,
             codec_name: "hevc".to_string(),
             frame_rate_num: 24000,

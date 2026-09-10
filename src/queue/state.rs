@@ -461,6 +461,7 @@ mod tests {
             height: 1080,
             hdr_type: crate::analyzer::HdrType::Sdr,
             dv_profile: None,
+            dv_bl_compat: None,
             hdr10_static: None,
             codec_name: "hevc".to_string(),
             frame_rate_num: 24,

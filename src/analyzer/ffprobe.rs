@@ -100,11 +100,8 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
                 })
         })
     });
-    let dv_profile = dovi_entry.and_then(|v| {
-        v.get("dv_profile")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|p| u8::try_from(p).ok())
-    });
+    let dv_profile = dovi_entry.and_then(|v| dovi_u8(v, "dv_profile"));
+    let dv_bl_compat = dovi_entry.and_then(|v| dovi_u8(v, "dv_bl_signal_compatibility_id"));
 
     // Determine HDR type
     let hdr_type = if dovi_entry.is_some() {
@@ -160,12 +157,21 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
         height: stream.height,
         hdr_type,
         dv_profile,
+        dv_bl_compat,
         hdr10_static,
         codec_name: stream.codec_name.unwrap_or_else(|| "unknown".to_string()),
         frame_rate_num,
         frame_rate_den,
         duration_secs,
     })
+}
+
+/// Read a small integer field from a DOVI configuration record.
+fn dovi_u8(entry: &Value, key: &str) -> Option<u8> {
+    entry
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|n| u8::try_from(n).ok())
 }
 
 /// Parse an ffprobe rational like `"35400/50000"` (or a plain number) to f64.
@@ -529,6 +535,16 @@ mod tests {
             "G(0.17000,0.79700)B(0.13100,0.04600)R(0.70800,0.29200)\
              WP(0.31270,0.32900)L(1000.0000,0.0050)"
         );
+    }
+
+    #[test]
+    fn dovi_record_carries_the_base_layer_compatibility_id() {
+        let entry: Value = serde_json::from_str(
+            r#"{"side_data_type": "DOVI configuration record", "dv_profile": 8, "dv_bl_signal_compatibility_id": 4}"#,
+        )
+        .unwrap();
+        assert_eq!(dovi_u8(&entry, "dv_profile"), Some(8));
+        assert_eq!(dovi_u8(&entry, "dv_bl_signal_compatibility_id"), Some(4));
     }
 
     #[test]

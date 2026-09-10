@@ -128,6 +128,7 @@ mod tests {
             height: 2160,
             hdr_type: HdrType::DolbyVision,
             dv_profile: Some(5),
+            dv_bl_compat: None,
             hdr10_static: None,
             codec_name: "hevc".to_string(),
             frame_rate_num: 24,
