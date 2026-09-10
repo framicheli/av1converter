@@ -1053,9 +1053,13 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
             crate::disc::DiscSource::Drive(drive) => {
                 body.get("drive").and_then(Value::as_u64).and_then(as_id) == Some(drive.id)
             }
-            crate::disc::DiscSource::Folder(path) => {
-                body.get("folder").and_then(Value::as_str) == path.to_str()
-            }
+            crate::disc::DiscSource::Folder(path) => body
+                .get("folder")
+                .and_then(Value::as_str)
+                .and_then(|folder| {
+                    confined_path(Path::new(folder), &state.config.daemon.browse_root)
+                })
+                .is_some_and(|folder| folder == *path),
         })
     else {
         return (
@@ -1746,6 +1750,35 @@ mod tests {
             for dir in [&root, &outside] {
                 let _ = std::fs::remove_dir_all(dir);
             }
+        }
+
+        /// The scan stores the canonical folder path; a rip request may spell
+        /// the same folder through a symlink.
+        #[cfg(unix)]
+        #[test]
+        fn a_symlinked_folder_rips_after_its_scan() {
+            let root =
+                std::env::temp_dir().join(format!("av1c_api_disc_link_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("THE_DISC/BDMV")).unwrap();
+            std::os::unix::fs::symlink(root.join("THE_DISC"), root.join("LINK")).unwrap();
+
+            let shared = scanned(Some("/tmp".to_string()));
+            {
+                let mut state = lock(&shared);
+                state.config.daemon.browse_root = root.to_string_lossy().into_owned();
+                state.disc.scanned_source = Some(
+                    crate::disc::DiscSource::folder(root.join("THE_DISC").canonicalize().unwrap())
+                        .unwrap(),
+                );
+            }
+
+            let (_, body) = rip(
+                &shared,
+                &json!({"folder": root.join("LINK").to_string_lossy(), "titles": [3]}),
+            );
+            assert_ne!(body["error"], json!("scan the disc before ripping from it"));
+            let _ = std::fs::remove_dir_all(&root);
         }
 
         /// A rip must be preceded by a scan of that same drive.
