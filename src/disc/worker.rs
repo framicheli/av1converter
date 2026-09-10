@@ -72,12 +72,26 @@ pub fn spawn_rips(
 ) -> JoinHandle<()> {
     let cancel = cancel.clone();
     thread::spawn(move || {
-        if let Err(error) = staging::confirm_titles(&bin, &source, &titles, &cancel) {
-            let _ = tx.send(match error {
-                DiscError::Cancelled => DiscEvent::Cancelled,
-                error => DiscEvent::Error { index: 0, error },
-            });
-            return;
+        let confirmed = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            staging::confirm_titles(&bin, &source, &titles, &cancel)
+        }));
+        match confirmed {
+            Ok(Ok(())) => {}
+            Ok(Err(DiscError::Cancelled)) => {
+                let _ = tx.send(DiscEvent::Cancelled);
+                return;
+            }
+            Ok(Err(error)) => {
+                let _ = tx.send(DiscEvent::Error { index: 0, error });
+                return;
+            }
+            Err(_) => {
+                let _ = tx.send(DiscEvent::Error {
+                    index: 0,
+                    error: DiscError::Failed("the title check panicked".to_string()),
+                });
+                return;
+            }
         }
         for (index, title) in titles.iter().enumerate() {
             let progress_tx = tx.clone();
