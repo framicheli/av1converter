@@ -292,7 +292,12 @@ fn restore_state(
     let mut restored = crate::queue::state::load(queue_file);
     let browse_root = config.daemon.browse_root.clone();
     for job in &mut restored.state.jobs {
-        let source = api::confined_path(&job.path, &browse_root);
+        // Staged rips live in the staging directory, outside any browse root.
+        let source = if job.temporary {
+            Some(job.path.clone())
+        } else {
+            api::confined_path(&job.path, &browse_root)
+        };
         let output = job.output_path.as_ref().and_then(|output| {
             let parent = api::confined_path(output.parent()?, &browse_root)?;
             Some(parent.join(output.file_name()?))
@@ -306,7 +311,6 @@ fn restore_state(
                 job.status = JobStatus::Error {
                     message: "Saved job is outside the configured browse root".to_string(),
                 };
-                restored.state.error_count += 1;
             }
         } else if let Some(source) = source
             && !browse_root.is_empty()
@@ -1096,18 +1100,39 @@ mod tests {
         std::fs::write(&source, b"source").unwrap();
         std::fs::write(&partial, b"partial").unwrap();
 
+        let staged = outside.join("DISC_t00.mkv");
+        std::fs::write(&staged, b"staged").unwrap();
+
         let mut queue = crate::queue::QueueState::new();
         let mut job = EncodingJob::new(source);
         job.output_path = Some(output);
         job.status = JobStatus::Encoding { progress: 50.0 };
         queue.jobs.push(job);
+        let mut rip = EncodingJob::new(staged.clone());
+        rip.status = JobStatus::Ready;
+        rip.temporary = true;
+        rip.metadata = Some(crate::analyzer::VideoMetadata {
+            width: 1920,
+            height: 1080,
+            hdr_type: crate::analyzer::HdrType::Sdr,
+            dv_profile: None,
+            hdr10_static: None,
+            codec_name: "hevc".to_string(),
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            duration_secs: 1.0,
+        });
+        rip.source_identity = Some(crate::queue::SourceIdentity::from_metadata(
+            &std::fs::metadata(&staged).unwrap(),
+        ));
+        queue.jobs.push(rip);
         let queue_file = base.join("queue.json");
         crate::queue::state::save(
             &queue_file,
             &crate::queue::QueueRef {
                 state: &queue,
-                ids: &[1],
-                next_id: 2,
+                ids: &[1, 2],
+                next_id: 3,
             },
         )
         .unwrap();
@@ -1129,6 +1154,9 @@ mod tests {
             partial.exists(),
             "resume must not delete files outside browse_root"
         );
+        assert!(matches!(state.queue.state.jobs[1].status, JobStatus::Ready));
+        assert_eq!(state.queue.state.jobs[1].path, staged);
+        assert!(staged.exists());
         let _ = std::fs::remove_dir_all(base);
     }
 
