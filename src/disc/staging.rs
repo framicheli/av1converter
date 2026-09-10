@@ -185,6 +185,16 @@ fn sanitize_label(label: Option<&str>) -> String {
 /// | `Done`, `DoneWithVmaf`, `DoneVmafFailed` | deleted with its directory |
 /// | `QualityWarning`, `Error`, `Skipped` | kept, its path still on the job |
 pub fn cleanup_finished(jobs: &mut [EncodingJob]) {
+    for path in release_finished(jobs) {
+        discard_staged(&path);
+    }
+}
+
+/// Mark the staging file of every finished temporary job as released and
+/// return those files. The caller deletes them with [`discard_staged`], which
+/// can run outside any lock the jobs live under.
+pub fn release_finished(jobs: &mut [EncodingJob]) -> Vec<PathBuf> {
+    let mut released = Vec::new();
     for job in jobs.iter_mut().filter(|job| job.temporary) {
         if !matches!(
             job.status,
@@ -192,10 +202,11 @@ pub fn cleanup_finished(jobs: &mut [EncodingJob]) {
         ) {
             continue;
         }
-        discard_staged(&job.path);
+        released.push(job.path.clone());
         job.temporary = false;
         job.source_deleted = true;
     }
+    released
 }
 
 /// Delete the staging directory holding `file`.

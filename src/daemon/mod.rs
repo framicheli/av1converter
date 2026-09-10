@@ -157,9 +157,10 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
             apply_disc_event(&shared, &probe_tx, event);
         }
 
-        {
-            let mut state = lock(&shared);
-            crate::disc::staging::cleanup_finished(&mut state.queue.state.jobs);
+        // Deletion runs with the lock released.
+        let released = crate::disc::staging::release_finished(&mut lock(&shared).queue.state.jobs);
+        for path in released {
+            crate::disc::staging::discard_staged(&path);
         }
         maybe_start_session(&shared, &worker_tx);
         persist_queue(

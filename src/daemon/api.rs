@@ -703,9 +703,6 @@ pub fn queue_remove(shared: &SharedState, body: &Value) -> (u16, Value) {
         .filter(|job| job.temporary)
         .map(|job| job.path.clone());
     state.queue.remove(id);
-    if let Some(path) = staged {
-        crate::disc::staging::discard_staged(&path);
-    }
     if was_ready {
         let remaining_ready = state
             .queue
@@ -717,6 +714,11 @@ pub fn queue_remove(shared: &SharedState, body: &Value) -> (u16, Value) {
         state.queue.state.total_jobs_to_encode = state.queue.state.encoding_progress_done
             + usize::from(state.encoding_active)
             + remaining_ready;
+    }
+    drop(state);
+    // Deletion runs with the lock released.
+    if let Some(path) = staged {
+        crate::disc::staging::discard_staged(&path);
     }
     (200, json!({"ok": true}))
 }
@@ -798,11 +800,15 @@ pub fn queue_clear_finished(shared: &SharedState) -> (u16, Value) {
         .map(|(id, job)| (id, job.temporary.then(|| job.path.clone())))
         .collect();
     let removed = finished.len();
-    for (id, staged) in finished {
+    let mut staged = Vec::new();
+    for (id, path) in finished {
         state.queue.remove(id);
-        if let Some(path) = staged {
-            crate::disc::staging::discard_staged(&path);
-        }
+        staged.extend(path);
+    }
+    drop(state);
+    // Deletion runs with the lock released.
+    for path in staged {
+        crate::disc::staging::discard_staged(&path);
     }
     (200, json!({"removed": removed}))
 }
