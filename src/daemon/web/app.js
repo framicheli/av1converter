@@ -298,14 +298,16 @@ function updateWorkButtons() {
   const ripping = lastWork.ripping;
   const encoding = lastWork.encoding;
   const analyzing = lastWork.analyzing;
-  $("btn-cancel").disabled = offline || (!encoding && !ripping && !analyzing);
+  $("btn-cancel").disabled = offline || (!encoding && !analyzing);
   setText(
     $("btn-cancel"),
     encoding ? tr("cancel_encoding")
-      : ripping ? tr("cancel_disc")
       : analyzing ? tr("cancel_analysis")
       : tr("cancel_encoding"),
   );
+  // A rip runs alongside an encode and is cancelled on its own.
+  $("btn-cancel-disc").hidden = !ripping;
+  $("btn-cancel-disc").disabled = offline;
   $("btn-add-disc").disabled = offline || ripping;
   $("btn-add-disc").title = ripping ? tr("status_ripping") : "";
 }
@@ -699,18 +701,23 @@ function askConfirm(message) {
 }
 
 $("btn-cancel").addEventListener("click", async () => {
-  const ripping = lastWork.ripping;
   const encoding = lastWork.encoding;
   const analyzing = lastWork.analyzing;
-  if (!encoding && !ripping && !analyzing) return;
-  const prompt = encoding ? tr("cancel_encoding_prompt")
-    : ripping ? tr("cancel_disc_prompt")
-    : tr("cancel_analysis_prompt");
+  if (!encoding && !analyzing) return;
+  const prompt = encoding ? tr("cancel_encoding_prompt") : tr("cancel_analysis_prompt");
   if (!await askConfirm(prompt)) return;
   try {
     if (encoding) await post("/api/queue/cancel");
-    else if (ripping) await post("/api/discs/cancel");
     else await post("/api/queue/cancel_analysis");
+    toast(tr("cancelling"));
+  } catch (e) { toast(e.message, true); }
+});
+
+$("btn-cancel-disc").addEventListener("click", async () => {
+  if (!lastWork.ripping) return;
+  if (!await askConfirm(tr("cancel_disc_prompt"))) return;
+  try {
+    await post("/api/discs/cancel");
     toast(tr("cancelling"));
   } catch (e) { toast(e.message, true); }
 });
