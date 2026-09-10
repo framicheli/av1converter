@@ -1599,7 +1599,7 @@ impl App {
     /// Report a failure where the user is looking: on the title screen while
     /// scanning, on the queue once titles are being extracted.
     fn fail_disc_run(&mut self, index: usize, message: &str) {
-        if matches!(self.disc_state, DiscState::Scanning | DiscState::Cancelling)
+        if matches!(self.disc_state, DiscState::Scanning)
             || self.current_screen == Screen::DiscTitles
         {
             self.disc_state = DiscState::Failed(message.to_string());
@@ -2086,6 +2086,30 @@ mod tests {
         assert!(matches!(app.queue.jobs[0].status, JobStatus::Analyzing));
         assert_eq!(app.analysis_outstanding, 1);
         assert!(!app.analysis_cancel_flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_disc_error_while_cancelling_settles_the_ripping_jobs() {
+        let mut app = App::new();
+        let mut job = EncodingJob::new(PathBuf::from("/staging/rip-a/DISC_t00.mkv"));
+        job.status = JobStatus::Ripping { progress: 10.0 };
+        job.temporary = true;
+        app.queue.jobs.push(job);
+        app.disc_job_indices = vec![0];
+        app.disc_state = DiscState::Cancelling;
+        app.current_screen = Screen::Queue;
+        let (tx, rx) = mpsc::channel();
+        tx.send(DiscEvent::Error {
+            index: 0,
+            error: crate::disc::DiscError::Failed("drive gone".to_string()),
+        })
+        .unwrap();
+        app.disc_receiver = Some(rx);
+
+        app.process_disc_events();
+
+        assert!(app.queue.jobs[0].status.is_terminal());
+        assert!(app.queue.all_completed());
     }
 
     #[test]
