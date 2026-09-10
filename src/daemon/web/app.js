@@ -577,7 +577,7 @@ function updateRow(row, job) {
     row.bar.value = job.status.progress;
     row.bar.setAttribute(
       "aria-label",
-      job.status.kind === "ripping" ? tr("status_ripping") : tr("status_encoding"),
+      `${job.status.kind === "ripping" ? tr("status_ripping") : tr("status_encoding")}: ${job.filename}`,
     );
   }
 
@@ -607,7 +607,6 @@ function updateRow(row, job) {
   row.tracks.textContent = tr("tracks_title");
   row.tracks.title = tr("tracks_hint");
   row.tracks.setAttribute("aria-label", `${tr("tracks_hint")}: ${job.filename}`);
-  row.bar.setAttribute("aria-label", `${tr("status_encoding")}: ${job.filename}`);
   // The Tracks button is the accented action on a row that awaits config.
   row.tracks.classList.toggle("primary", job.status.kind === "awaiting_config");
 }
