@@ -385,9 +385,19 @@ fn apply_disc_event(
                 {
                     job.source_size = std::fs::metadata(&path).ok().map(|m| m.len());
                     job.path = path;
-                    job.status = JobStatus::Analyzing;
-                    ready = job.path.to_str().map(|path| (id, path.to_string()));
-                    state.analysis_cancel = Arc::new(AtomicBool::new(false));
+                    match job.path.to_str() {
+                        Some(path) => {
+                            job.status = JobStatus::Analyzing;
+                            ready = Some((id, path.to_string()));
+                            state.analysis_cancel = Arc::new(AtomicBool::new(false));
+                        }
+                        None => {
+                            job.status = JobStatus::Error {
+                                message: "File path contains non-UTF-8 characters".to_string(),
+                            };
+                            state.queue.state.error_count += 1;
+                        }
+                    }
                 }
             }
             DiscEvent::Error { index, error } => {
@@ -925,6 +935,43 @@ mod tests {
 
         assert!(probe_rx.try_recv().is_ok());
         assert!(!lock(&shared).analysis_cancel.load(Ordering::Relaxed));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_ripped_title_with_a_non_utf8_path_is_marked_error() {
+        use crate::disc::worker::DiscEvent;
+        use std::os::unix::ffi::OsStringExt;
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (probe_tx, probe_rx) = mpsc::channel();
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("Title 0"));
+            job.status = JobStatus::Ripping { progress: 0.0 };
+            job.temporary = true;
+            let id = state.queue.push(job);
+            state.disc.job_ids = vec![id];
+            state.disc.active = true;
+            id
+        };
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::TitleReady {
+                index: 0,
+                path: std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![0xff])),
+            },
+        );
+
+        let state = lock(&shared);
+        assert!(matches!(
+            state.queue.job_by_id(id).unwrap().status,
+            JobStatus::Error { .. }
+        ));
+        assert_eq!(state.queue.state.error_count, 1);
+        assert!(probe_rx.try_recv().is_err());
     }
 
     /// An extracted title is repointed at its file and handed to the prober
