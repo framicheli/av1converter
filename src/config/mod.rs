@@ -50,6 +50,21 @@ fn default_quality_preset() -> QualityPreset {
     QualityPreset::Custom
 }
 
+/// Replace a leading `~` or `~/` with the home directory.
+fn expand_home(path: &mut String) {
+    let rest = match path.as_str() {
+        "~" => "",
+        p if p.starts_with("~/") => &p[1..],
+        _ => return,
+    };
+    if let Some(home) = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|home| !home.is_empty())
+    {
+        *path = format!("{}{rest}", home.to_string_lossy());
+    }
+}
+
 /// Trim a filename fragment down to characters that are safe inside one path
 /// component (no separators, no control characters).
 fn strip_path_separators(value: &mut String) {
@@ -239,6 +254,9 @@ impl AppConfig {
             .clamp(AudioConfig::MIN_PER_CHANNEL, AudioConfig::MAX_PER_CHANNEL);
         self.daemon.browse_root = self.daemon.browse_root.trim().to_string();
         self.daemon.auth_token = self.daemon.auth_token.trim().to_string();
+        if let Some(directory) = self.output.output_directory.as_mut() {
+            expand_home(directory);
+        }
     }
 
     /// Validate values that settings interfaces accept from users.
@@ -357,6 +375,29 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tilde_output_directory_expands_to_the_home_directory() {
+        let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) else {
+            return;
+        };
+        let home = home.to_string_lossy().into_owned();
+        let mut cfg = AppConfig::default();
+        cfg.output.output_directory = Some("~/Videos".to_string());
+        cfg.sanitize();
+        assert_eq!(
+            cfg.output.output_directory.as_deref(),
+            Some(format!("{home}/Videos").as_str())
+        );
+
+        cfg.output.output_directory = Some("~".to_string());
+        cfg.sanitize();
+        assert_eq!(cfg.output.output_directory.as_deref(), Some(home.as_str()));
+
+        cfg.output.output_directory = Some("/data/~tilde".to_string());
+        cfg.sanitize();
+        assert_eq!(cfg.output.output_directory.as_deref(), Some("/data/~tilde"));
+    }
 
     /// A config file written before the `language` field existed must still load,
     /// defaulting to English, and the language must round-trip as a string key.
