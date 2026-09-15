@@ -499,14 +499,15 @@ function createRow(job) {
   moveUp.className = "iconbtn";
   moveUp.textContent = "↑";
   moveUp.addEventListener("click", async () => {
-    if (moveUp.getAttribute("aria-busy") === "true") return;
-    moveUp.disabled = true;
+    if (moveUp.getAttribute("aria-disabled") === "true") return;
     moveUp.setAttribute("aria-busy", "true");
+    entry.applyDisabled();
     try {
       await post("/api/queue/move_up", { id: job.id });
     } catch (e) { toast(e.message, true); }
     finally {
       moveUp.removeAttribute("aria-busy");
+      entry.applyDisabled();
       forceRefreshQueue();
     }
   });
@@ -542,9 +543,10 @@ function createRow(job) {
 
   const entry = { tr: row, name, sub, source, badge, confirm, detail, bar, size, saved, moveUp, tracks, remove, kind: job.status.kind, tracksEditable: job.tracks_editable, canMoveUp: job.can_move_up };
   entry.applyDisabled = () => {
-    entry.moveUp.disabled = offline
+    // aria-disabled keeps the button focusable while its row is reordered.
+    entry.moveUp.setAttribute("aria-disabled", String(offline
       || entry.moveUp.getAttribute("aria-busy") === "true"
-      || !entry.canMoveUp;
+      || !entry.canMoveUp));
     entry.remove.disabled = offline
       || entry.remove.getAttribute("aria-busy") === "true"
       || ["encoding", "verifying", "ripping"].includes(entry.kind);
@@ -660,6 +662,8 @@ async function refreshQueueNow() {
   hasTemporaryFinished = finished.some((job) => job.temporary);
   updateClearFinished();
 
+  // Moving a row with insertBefore drops focus from the control inside it.
+  const focused = tbody.contains(document.activeElement) ? document.activeElement : null;
   const seen = new Set();
   for (const [position, job] of data.jobs.entries()) {
     seen.add(job.id);
@@ -681,6 +685,7 @@ async function refreshQueueNow() {
       promptedTrackJobs.delete(id);
     }
   }
+  if (focused?.isConnected && document.activeElement !== focused) focused.focus();
 
   const next = !data.jobs.some((job) => job.status.kind === "analyzing")
     && data.jobs.find((job) =>

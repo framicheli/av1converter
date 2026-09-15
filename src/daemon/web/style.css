@@ -192,7 +192,7 @@ button.danger:not(:disabled) { border-color: var(--bad); color: var(--bad); }
   #browser-list button:hover:not(:disabled) { background: var(--track); }
 }
 button:active:not(:disabled) { transform: translateY(1px); }
-button:disabled { opacity: 0.4; cursor: default; border-color: var(--border); }
+button:disabled, button[aria-disabled="true"] { opacity: 0.4; cursor: default; border-color: var(--border); }
 
 /* ── Batch summary ──────────────────────────────────────────────── */
 .summary {
