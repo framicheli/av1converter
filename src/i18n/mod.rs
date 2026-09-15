@@ -261,6 +261,7 @@ pub enum Msg {
     UnsavedChanges,
     InvalidAddress,
     InvalidPort,
+    InvalidContainer,
     CfgGroupTracks,
     CfgGroupDisc,
     CfgVmafThreshold,
@@ -1912,6 +1913,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Saisissez un port compris entre 1 et 65535",
             De => "Geben Sie einen Port von 1 bis 65535 ein",
             Zh => "请输入 1 到 65535 之间的端口",
+        },
+        Msg::InvalidContainer => match lang {
+            En => "Container must be mkv, mp4 or webm",
+            It => "Il contenitore deve essere mkv, mp4 o webm",
+            Es => "El contenedor debe ser mkv, mp4 o webm",
+            Fr => "Le conteneur doit être mkv, mp4 ou webm",
+            De => "Der Container muss mkv, mp4 oder webm sein",
+            Zh => "容器必须是 mkv、mp4 或 webm",
         },
         Msg::CfgGroupTracks | Msg::WebTracksTitle => match lang {
             En => "Tracks",

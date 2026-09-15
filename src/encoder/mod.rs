@@ -48,7 +48,7 @@ pub fn run_encoding_pipeline(
     tracks: OutputTracks,
     dv_mode: DvMode,
     remux_only: bool,
-    subtitle_codecs: Vec<&'static str>,
+    subtitle_codecs: Vec<Option<&'static str>>,
     config: &AppConfig,
     progress_callback: Option<ProgressCallback>,
     cancel_flag: &AtomicBool,

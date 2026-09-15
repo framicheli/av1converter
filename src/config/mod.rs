@@ -251,14 +251,11 @@ impl AppConfig {
             preset.amf_quality = preset.amf_quality.min(hw_max);
             preset.film_grain = preset.film_grain.min(50);
         }
-        // The suffix and container become part of the output filename, so path
-        // separators are stripped out of both.
+        // Path separators are stripped from the suffix, which becomes part of
+        // the output filename. An unsupported container falls back to Matroska.
         strip_path_separators(&mut self.output.suffix);
-        strip_path_separators(&mut self.output.container);
-        self.output.container = self.output.container.trim_matches('.').to_string();
-        if self.output.container.is_empty() {
-            self.output.container = OutputConfig::default().container;
-        }
+        self.output.container = OutputConfig::supported_container(&self.output.container)
+            .map_or_else(|| OutputConfig::default().container, str::to_string);
         // Next to the source, an empty suffix collides with the input.
         if self.output.same_directory && self.output.suffix.is_empty() {
             self.output.suffix = OutputConfig::default().suffix;
@@ -300,6 +297,11 @@ impl AppConfig {
         }
         if !PerformanceConfig::valid_nvenc_preset(&self.performance.nvenc_preset) {
             return Err("NVENC preset must be between p1 and p7".to_string());
+        }
+        if OutputConfig::supported_container(&self.output.container).is_none() {
+            return Err(
+                crate::i18n::t(self.language, crate::i18n::Msg::InvalidContainer).to_string(),
+            );
         }
         if !(AudioConfig::MIN_PER_CHANNEL..=AudioConfig::MAX_PER_CHANNEL)
             .contains(&self.audio.opus_bitrate_per_channel)
@@ -620,6 +622,22 @@ mod tests {
 
         let mut cfg = AppConfig::default();
         cfg.output.container = "///".to_string();
+        cfg.sanitize();
+        assert_eq!(cfg.output.container, "mkv");
+    }
+
+    /// Only containers the encoder supports are accepted; `sanitize` spells a
+    /// supported one canonically and replaces anything else with Matroska.
+    #[test]
+    fn output_container_is_limited_to_supported_formats() {
+        let mut cfg = AppConfig::default();
+        cfg.output.container = " .WebM".to_string();
+        assert!(cfg.validate_settings().is_ok());
+        cfg.sanitize();
+        assert_eq!(cfg.output.container, "webm");
+
+        cfg.output.container = "avi".to_string();
+        assert!(cfg.validate_settings().is_err());
         cfg.sanitize();
         assert_eq!(cfg.output.container, "mkv");
     }

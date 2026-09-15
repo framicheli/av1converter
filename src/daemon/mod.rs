@@ -810,13 +810,13 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         worker_jobs.push(WorkerJob {
             index: worker_jobs.len(),
             subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
+            tracks: job
+                .track_selection
+                .resolve_for(&job.audio_tracks, &audio_config, &output),
             input: job.path.clone(),
             output,
             source_identity,
             metadata,
-            tracks: job
-                .track_selection
-                .resolve(&job.audio_tracks, &audio_config),
             dv_mode: job.dv_mode.unwrap_or_default(),
             remux_only: job.remux_only,
         });

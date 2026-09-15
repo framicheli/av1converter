@@ -265,12 +265,26 @@ impl Default for EncodingPresetsConfig {
 pub struct OutputConfig {
     /// Output file suffix
     pub suffix: String,
-    /// Output container format
+    /// Output container format, one of [`OutputConfig::CONTAINERS`]
     pub container: String,
     /// Whether to place output in same directory as source
     pub same_directory: bool,
     /// Custom output directory (if `same_directory` is false)
     pub output_directory: Option<String>,
+}
+
+impl OutputConfig {
+    /// Containers the encoder writes: Matroska, MP4 and `WebM`.
+    pub const CONTAINERS: [&'static str; 3] = ["mkv", "mp4", "webm"];
+
+    /// The supported container `name` spells, ignoring case, surrounding
+    /// spaces and dots.
+    pub fn supported_container(name: &str) -> Option<&'static str> {
+        let name = name.trim().trim_matches('.');
+        Self::CONTAINERS
+            .into_iter()
+            .find(|container| container.eq_ignore_ascii_case(name))
+    }
 }
 
 impl Default for OutputConfig {

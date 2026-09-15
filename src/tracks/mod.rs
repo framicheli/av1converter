@@ -13,15 +13,16 @@ pub fn selected_subtitles(tracks: &[SubtitleTrack], indices: &[usize]) -> Vec<Su
     selected
 }
 
-/// The subtitle codec to write for a given output container.
+/// The subtitle codec to write for each selected track in a given output
+/// container, or `None` for a track the container cannot hold.
 ///
-/// Text subtitle formats differ between Matroska, `WebM`, and MP4. Only text
-/// tracks the target container cannot hold are converted; bitmap subtitles are
-/// always copied.
+/// Matroska holds every format; `mov_text` is converted to SRT there. `WebM`
+/// holds only `WebVTT`, and MP4 only `mov_text` and DVD bitmaps: other text
+/// tracks are converted, other bitmap tracks are left out.
 pub fn subtitle_codecs_for(
     output: &std::path::Path,
     selected: &[SubtitleTrack],
-) -> Vec<&'static str> {
+) -> Vec<Option<&'static str>> {
     let extension = output
         .extension()
         .and_then(|e| e.to_str())
@@ -29,17 +30,18 @@ pub fn subtitle_codecs_for(
     selected
         .iter()
         .map(|track| {
-            let codec = track.codec.as_str();
+            let is = |name: &str| track.codec.eq_ignore_ascii_case(name);
             let text = ["ass", "mov_text", "ssa", "srt", "subrip", "text", "webvtt"]
-                .iter()
-                .any(|candidate| codec.eq_ignore_ascii_case(candidate));
+                .into_iter()
+                .any(is);
             match extension.to_ascii_lowercase().as_str() {
-                "mkv" if codec.eq_ignore_ascii_case("mov_text") => "srt",
-                "webm" if text && !codec.eq_ignore_ascii_case("webvtt") => "webvtt",
-                "mp4" | "m4v" | "mov" if text && !codec.eq_ignore_ascii_case("mov_text") => {
-                    "mov_text"
-                }
-                _ => "copy",
+                "mkv" if is("mov_text") => Some("srt"),
+                "webm" if is("webvtt") => Some("copy"),
+                "webm" if text => Some("webvtt"),
+                "mp4" | "m4v" | "mov" if is("mov_text") || is("dvd_subtitle") => Some("copy"),
+                "mp4" | "m4v" | "mov" if text => Some("mov_text"),
+                "webm" | "mp4" | "m4v" | "mov" => None,
+                _ => Some("copy"),
             }
         })
         .collect()
@@ -80,10 +82,10 @@ mod tests {
             selected.iter().map(|t| t.index).collect::<Vec<_>>(),
             vec![0, 2]
         );
-        // ...which is what puts `copy` on stream 0 and `mov_text` on stream 1.
+        // ...which is what leaves out stream 0 and puts `mov_text` on stream 1.
         assert_eq!(
             subtitle_codecs_for(Path::new("out.mp4"), &selected),
-            ["copy", "mov_text"]
+            [None, Some("mov_text")]
         );
         assert!(selected_subtitles(&tracks, &[]).is_empty());
     }
@@ -95,35 +97,56 @@ mod tests {
 
         assert_eq!(
             subtitle_codecs_for(Path::new("out.mkv"), &mov_text),
-            ["srt"]
+            [Some("srt")]
         );
         assert_eq!(
             subtitle_codecs_for(Path::new("out.MKV"), &mov_text),
-            ["srt"]
+            [Some("srt")]
         );
         assert_eq!(
             subtitle_codecs_for(Path::new("out.mp4"), &mov_text),
-            ["copy"]
+            [Some("copy")]
         );
         assert_eq!(
             subtitle_codecs_for(Path::new("out.mp4"), &subrip),
-            ["mov_text"]
+            [Some("mov_text")]
         );
         assert_eq!(
             subtitle_codecs_for(Path::new("out.webm"), &subrip),
-            ["webvtt"]
+            [Some("webvtt")]
         );
         assert_eq!(
             subtitle_codecs_for(Path::new("out.webm"), &[sub("webvtt")]),
-            ["copy"]
+            [Some("copy")]
         );
-        assert_eq!(subtitle_codecs_for(Path::new("out.mkv"), &subrip), ["copy"]);
+        assert_eq!(
+            subtitle_codecs_for(Path::new("out.mkv"), &subrip),
+            [Some("copy")]
+        );
         assert!(subtitle_codecs_for(Path::new("out.mkv"), &[]).is_empty());
 
         let mixed = [sub("mov_text"), sub("hdmv_pgs_subtitle")];
         assert_eq!(
             subtitle_codecs_for(Path::new("out.mkv"), &mixed),
-            ["srt", "copy"]
+            [Some("srt"), Some("copy")]
+        );
+    }
+
+    /// Bitmap subtitles are left out of a container that cannot hold them.
+    #[test]
+    fn unsupported_bitmap_subtitles_are_left_out() {
+        let bitmaps = [sub("hdmv_pgs_subtitle"), sub("dvd_subtitle")];
+        assert_eq!(
+            subtitle_codecs_for(Path::new("out.webm"), &bitmaps),
+            [None, None]
+        );
+        assert_eq!(
+            subtitle_codecs_for(Path::new("out.mp4"), &bitmaps),
+            [None, Some("copy")]
+        );
+        assert_eq!(
+            subtitle_codecs_for(Path::new("out.mkv"), &bitmaps),
+            [Some("copy"), Some("copy")]
         );
     }
 }

@@ -1173,11 +1173,13 @@ impl App {
                 Some(WorkerJob {
                     index: i,
                     subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
+                    tracks: j
+                        .track_selection
+                        .resolve_for(&j.audio_tracks, &audio_config, &output),
                     input: j.path.clone(),
                     output,
                     source_identity,
                     metadata,
-                    tracks: j.track_selection.resolve(&j.audio_tracks, &audio_config),
                     dv_mode: j.dv_mode.unwrap_or_default(),
                     remux_only: j.remux_only,
                 })

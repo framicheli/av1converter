@@ -24,8 +24,9 @@ pub struct EncodingParams {
     pub svt_preset: u8,
     pub nvenc_preset: String,
     pub remux_only: bool,
-    /// Subtitle codecs in output stream order.
-    pub subtitle_codecs: Vec<&'static str>,
+    /// Subtitle codec per selected track, in index order; `None` leaves the
+    /// track out of the output.
+    pub subtitle_codecs: Vec<Option<&'static str>>,
 }
 
 impl EncodingParams {
@@ -39,7 +40,7 @@ impl EncodingParams {
         tracks: OutputTracks,
         dv_mode: DvMode,
         remux_only: bool,
-        subtitle_codecs: Vec<&'static str>,
+        subtitle_codecs: Vec<Option<&'static str>>,
     ) -> Self {
         let tier = ResolutionTier::from_dimensions(metadata.width, metadata.height);
         let preset = config.preset_for(tier, metadata.hdr_type);
@@ -129,15 +130,24 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     for plan in &params.tracks.audio {
         args.extend(["-map".to_string(), format!("0:a:{}", plan.source_index)]);
     }
-    for idx in &params.tracks.subtitle_indices {
-        args.extend(["-map".to_string(), format!("0:s:{idx}")]);
+    // A track the container cannot hold is left unmapped.
+    for (n, idx) in params.tracks.subtitle_indices.iter().enumerate() {
+        if !matches!(params.subtitle_codecs.get(n), Some(None)) {
+            args.extend(["-map".to_string(), format!("0:s:{idx}")]);
+        }
     }
-    // Matroska output keeps the source's attachments, such as fonts and cover art.
-    if std::path::Path::new(&params.output)
+    let extension = std::path::Path::new(&params.output)
         .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"))
-    {
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    // Matroska output keeps the source's attachments, such as fonts and cover art.
+    if extension == "mkv" {
         args.extend(["-map".to_string(), "0:t?".to_string()]);
+    }
+    // The MP4 muxer refuses copied TrueHD and Vorbis audio without `-strict -2`.
+    if matches!(extension.as_str(), "mp4" | "m4v" | "mov") {
+        args.extend(["-strict".to_string(), "-2".to_string()]);
     }
 
     if params.remux_only {
@@ -218,9 +228,11 @@ fn build_audio_args(plan: &[AudioStreamPlan]) -> Vec<String> {
     args
 }
 
-fn build_subtitle_args(codecs: &[&str]) -> Vec<String> {
+/// Per-stream subtitle codec options for the mapped tracks, in output order.
+fn build_subtitle_args(codecs: &[Option<&str>]) -> Vec<String> {
     codecs
         .iter()
+        .flatten()
         .enumerate()
         .flat_map(|(n, codec)| [format!("-c:s:{n}"), (*codec).to_string()])
         .collect()
@@ -780,9 +792,34 @@ mod tests {
     #[test]
     fn mixed_subtitles_keep_per_stream_codecs() {
         assert_eq!(
-            build_subtitle_args(&["srt", "copy"]),
+            build_subtitle_args(&[Some("srt"), None, Some("copy")]),
             ["-c:s:0", "srt", "-c:s:1", "copy"]
         );
+    }
+
+    /// A subtitle the container cannot hold is neither mapped nor given a
+    /// codec, and MP4 output allows the muxer's experimental audio codecs.
+    #[test]
+    fn unsupported_subtitles_are_left_out_of_mp4() {
+        let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
+        params.output = "out.mp4".to_string();
+        params.tracks.subtitle_indices = vec![0, 1];
+        params.subtitle_codecs = vec![None, Some("mov_text")];
+        let args = build_ffmpeg_args(&params);
+
+        let maps: Vec<&String> = args
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i > &0 && args[i - 1] == "-map")
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(maps, vec!["0:v:0", "0:s:1"]);
+        assert_eq!(arg_after(&args, "-c:s:0").as_deref(), Some("mov_text"));
+        assert!(!args.contains(&"-c:s:1".to_string()));
+        assert_eq!(arg_after(&args, "-strict").as_deref(), Some("-2"));
+
+        params.output = "out.mkv".to_string();
+        assert!(!build_ffmpeg_args(&params).contains(&"-strict".to_string()));
     }
 
     #[test]

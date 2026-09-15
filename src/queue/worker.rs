@@ -48,8 +48,9 @@ pub struct WorkerJob {
     pub tracks: OutputTracks,
     pub dv_mode: DvMode,
     pub remux_only: bool,
-    /// Per-output-stream subtitle codecs (`copy`, or a compatible conversion).
-    pub subtitle_codecs: Vec<&'static str>,
+    /// Per-selected-track subtitle codecs (`copy`, a compatible conversion, or
+    /// `None` for a track the container cannot hold).
+    pub subtitle_codecs: Vec<Option<&'static str>>,
 }
 
 /// Run the encoding worker in a separate thread

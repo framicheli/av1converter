@@ -108,6 +108,33 @@ impl TrackSelection {
         }
     }
 
+    /// [`resolve`](Self::resolve) for a given output file. For a `WebM` output,
+    /// which holds only Opus and Vorbis audio, every other selected track is
+    /// re-encoded to Opus.
+    pub fn resolve_for(
+        &self,
+        audio_tracks: &[AudioTrack],
+        config: &AudioConfig,
+        output: &std::path::Path,
+    ) -> OutputTracks {
+        if !output
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("webm"))
+        {
+            return self.resolve(audio_tracks, config);
+        }
+        let mut selection = self.clone();
+        for track in audio_tracks {
+            let webm_codec = ["opus", "vorbis"]
+                .into_iter()
+                .any(|codec| track.codec.eq_ignore_ascii_case(codec));
+            if self.audio_indices.contains(&track.index) && !webm_codec {
+                selection.set_audio_opus(track.index, true);
+            }
+        }
+        selection.resolve(audio_tracks, config)
+    }
+
     /// Apply the configured default to every selected audio track. Used when a
     /// job is auto-configured, where nobody picks tracks by hand.
     pub fn apply_audio_default(&mut self, config: &AudioConfig) {
@@ -281,6 +308,30 @@ mod tests {
         assert_eq!(plan.audio[2].opus_kbps, Some(512));
         // Unknown channel count falls back to stereo rather than guessing high.
         assert_eq!(plan.audio[3].opus_kbps, Some(128));
+    }
+
+    /// A `WebM` output re-encodes anything but Opus and Vorbis; other
+    /// containers keep the copy.
+    #[test]
+    fn webm_output_reencodes_other_audio_to_opus() {
+        let tracks = [
+            track(0, "ac3", Some(6)),
+            track(1, "opus", Some(2)),
+            track(2, "vorbis", Some(2)),
+        ];
+        let mut sel = TrackSelection::default();
+        for i in 0..3 {
+            sel.toggle_audio(i);
+        }
+        let config = AudioConfig::default();
+
+        let webm = sel.resolve_for(&tracks, &config, std::path::Path::new("out.WebM"));
+        assert_eq!(
+            webm.audio.iter().map(|a| a.opus_kbps).collect::<Vec<_>>(),
+            vec![Some(384), None, None]
+        );
+        let mkv = sel.resolve_for(&tracks, &config, std::path::Path::new("out.mkv"));
+        assert!(mkv.audio.iter().all(|a| a.opus_kbps.is_none()));
     }
 
     /// Re-encoding Opus to Opus is pure generation loss, so it is skipped.
