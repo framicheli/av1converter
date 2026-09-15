@@ -201,6 +201,7 @@ fn dv_mode_name(mode: DvMode) -> &'static str {
 }
 
 /// One job's audio and subtitle tracks, with the current per-track choices.
+#[allow(clippy::too_many_lines)]
 pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
     let Ok(id) = id_param.parse::<u64>() else {
         return (400, json!({"error": "missing or invalid 'id'"}));
@@ -219,15 +220,36 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
         })
         .count();
 
+    // The output path with remux off and on: a remux keeps the source container.
+    let outputs = [false, true].map(|remux_only| {
+        let mut probe = job.clone();
+        probe.remux_only = remux_only;
+        probe.generate_output_path(&state.config.output);
+        probe.output_path.unwrap_or_default()
+    });
+    let output = &outputs[usize::from(job.remux_only)];
+
     // Resolved so the row shows the bitrate the encoder is actually asked for,
     // including already-Opus tracks, which are left alone.
     let plan = job
         .track_selection
-        .resolve(&job.audio_tracks, &audio_config);
+        .resolve_for(&job.audio_tracks, &audio_config, output);
     let audio: Vec<Value> = job
         .audio_tracks
         .iter()
         .map(|track| {
+            // The Opus bitrate the container forces on this track when copied.
+            let copied = TrackSelection {
+                audio_indices: vec![track.index],
+                ..TrackSelection::default()
+            };
+            let forced_kbps = |output: &Path| {
+                copied
+                    .resolve_for(&job.audio_tracks, &audio_config, output)
+                    .audio
+                    .first()
+                    .and_then(|p| p.opus_kbps)
+            };
             json!({
                 "index": track.index,
                 "name": track.display_name(),
@@ -242,6 +264,10 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
                     .iter()
                     .find(|p| p.source_index == track.index)
                     .and_then(|p| p.opus_kbps),
+                "container_opus_kbps": {
+                    "encode": forced_kbps(&outputs[0]),
+                    "remux": forced_kbps(&outputs[1]),
+                },
             })
         })
         .collect();
@@ -250,10 +276,19 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
         .subtitle_tracks
         .iter()
         .map(|track| {
+            let dropped = |output: &Path| {
+                crate::tracks::subtitle_codecs_for(output, std::slice::from_ref(track))
+                    .first()
+                    .is_some_and(Option::is_none)
+            };
             json!({
                 "index": track.index,
                 "name": track.display_name(),
                 "selected": job.track_selection.subtitle_indices.contains(&track.index),
+                "container_drops": {
+                    "encode": dropped(&outputs[0]),
+                    "remux": dropped(&outputs[1]),
+                },
             })
         })
         .collect();
@@ -2423,6 +2458,42 @@ mod tests {
                     sample_rate: None,
                 })
                 .collect()
+        }
+
+        /// The track view reports what a `WebM` output forces: Opus for other
+        /// audio codecs and no bitmap subtitles, while a remux keeps the source
+        /// container.
+        #[test]
+        fn track_view_shows_what_the_container_forces() {
+            let mut config = AppConfig::default();
+            config.output.container = "webm".to_string();
+            let mut state = DaemonState::new(config);
+            let mut job = EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
+            job.audio_tracks = audio_tracks(1);
+            job.subtitle_tracks = vec![crate::tracks::SubtitleTrack {
+                index: 0,
+                language: None,
+                codec: "hdmv_pgs_subtitle".to_string(),
+                title: None,
+                forced: false,
+            }];
+            job.track_selection.audio_indices = vec![0];
+            job.track_selection.subtitle_indices = vec![0];
+            job.generate_output_path(&state.config.output);
+            let id = state.queue.push(job);
+            let shared = Arc::new(Mutex::new(state));
+
+            let (code, body) = job_tracks(&shared, &id.to_string());
+            assert_eq!(code, 200);
+            assert_eq!(body["audio"][0]["opus_kbps"], json!(384));
+            assert_eq!(
+                body["audio"][0]["container_opus_kbps"],
+                json!({"encode": 384, "remux": null})
+            );
+            assert_eq!(
+                body["subtitles"][0]["container_drops"],
+                json!({"encode": true, "remux": false})
+            );
         }
 
         /// Opus indices are kept a subset of the selected tracks.

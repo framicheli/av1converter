@@ -30,9 +30,10 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
 
         // Resolved so the row shows the bitrate the encoder is actually asked
         // for, including already-Opus tracks, which are left alone.
+        let output = job.output_path.clone().unwrap_or_default();
         let plan = job
             .track_selection
-            .resolve(&job.audio_tracks, &audio_config);
+            .resolve_for(&job.audio_tracks, &audio_config, &output);
 
         let audio_data: Vec<AudioRow> = job
             .audio_tracks
@@ -51,15 +52,16 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             })
             .collect();
 
-        let subtitle_data: Vec<(String, bool, bool)> = job
+        let subtitle_data: Vec<SubtitleRow> = job
             .subtitle_tracks
             .iter()
-            .map(|track| {
-                (
-                    track.display_name(),
-                    track.forced,
-                    job.track_selection.subtitle_indices.contains(&track.index),
-                )
+            .map(|track| SubtitleRow {
+                name: track.display_name(),
+                forced: track.forced,
+                selected: job.track_selection.subtitle_indices.contains(&track.index),
+                dropped: crate::tracks::subtitle_codecs_for(&output, std::slice::from_ref(track))
+                    .first()
+                    .is_some_and(Option::is_none),
             })
             .collect();
 
@@ -270,9 +272,9 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
     let subtitle_items: Vec<ListItem> = subtitle_data
         .iter()
         .enumerate()
-        .map(|(i, (name, forced, selected))| {
+        .map(|(i, row)| {
             let is_cursor = app.track_focus == TrackFocus::Subtitle && i == app.subtitle_cursor;
-            create_subtitle_track_item(name, *forced, *selected, is_cursor, lang)
+            create_subtitle_track_item(row, is_cursor, lang)
         })
         .collect();
 
@@ -397,28 +399,46 @@ fn create_audio_track_item(
     ListItem::new(format!("{prefix}{checkbox} {}{extra}{target}", row.name)).style(style)
 }
 
-fn create_subtitle_track_item(
-    name: &str,
+/// One row of the subtitle panel, already resolved against the output container.
+struct SubtitleRow {
+    name: String,
     forced: bool,
     selected: bool,
+    /// The output container cannot hold this track.
+    dropped: bool,
+}
+
+fn create_subtitle_track_item(
+    row: &SubtitleRow,
     is_cursor: bool,
     lang: crate::i18n::Language,
 ) -> ListItem<'static> {
-    let checkbox = if selected { "[x]" } else { "[ ]" };
+    let checkbox = if row.selected { "[x]" } else { "[ ]" };
     let prefix = if is_cursor { "> " } else { "  " };
-    let forced_str = if forced {
+    let forced_str = if row.forced {
         format!(" [{}]", t(lang, Msg::ForcedTag))
+    } else {
+        String::new()
+    };
+    let dropped_str = if row.selected && row.dropped {
+        format!(" ({})", t(lang, Msg::SubtitleNotIncluded))
     } else {
         String::new()
     };
 
     let style = if is_cursor {
         Style::default().add_modifier(Modifier::BOLD)
-    } else if selected {
+    } else if row.selected && row.dropped {
+        Style::default().fg(Color::Yellow)
+    } else if row.selected {
         Style::default().fg(Color::Green)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    ListItem::new(format!("{prefix}{checkbox} {name}{forced_str}")).style(style)
+    ListItem::new(format!(
+        "{prefix}{checkbox} {}{forced_str}{dropped_str}",
+        row.name
+    ))
+    .style(style)
 }

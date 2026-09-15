@@ -964,15 +964,32 @@ function renderTracks() {
     box.setAttribute("aria-label", track.name);
     box.checked = track.selected;
     box.disabled = !editable;
-    box.addEventListener("change", () => { track.selected = box.checked; });
+    const target = document.createElement("span");
+    target.className = "track-target";
+    const setDropped = () => {
+      target.textContent = track.selected && track.container_drops?.[outputMode()]
+        ? tr("subtitle_not_included")
+        : "";
+    };
+    box.addEventListener("change", () => {
+      track.selected = box.checked;
+      setDropped();
+    });
+    setDropped();
 
-    row.append(info, box);
+    row.append(info, target, box);
     body.appendChild(row);
   }
 }
 
+// Selects the per-mode container projections the server sends for each track.
+const outputMode = () => (trackEditor.remuxOnly ? "remux" : "encode");
+
 function setTarget(node, track) {
-  if (track.mode !== "opus") {
+  const forcedKbps = track.container_opus_kbps?.[outputMode()];
+  if (track.mode !== "off" && forcedKbps != null) {
+    node.textContent = `→ Opus ${forcedKbps}k`;
+  } else if (track.mode !== "opus") {
     node.textContent = "";
   } else if (isAlreadyOpus(track)) {
     node.textContent = tr("already_opus_copied");
