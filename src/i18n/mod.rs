@@ -244,6 +244,7 @@ pub enum Msg {
     ExitAppPrompt,
     ExitAppActivePrompt,
     ExitAppUnsavedPrompt,
+    ExitAppRipsPrompt,
     AbandonTrackConfigTitle,
     AbandonTrackConfigPrompt,
     DiscardConfigTitle,
@@ -1793,6 +1794,16 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Les réglages non enregistrés seront perdus. Quitter quand même ?",
             De => "Ungespeicherte Einstellungen gehen verloren. Trotzdem beenden?",
             Zh => "未保存的设置将丢失。仍要退出吗？",
+        },
+        Msg::ExitAppRipsPrompt => match lang {
+            En => "Ripped titles still in the queue will be deleted. Exit anyway?",
+            It => "I titoli estratti ancora in coda verranno eliminati. Uscire comunque?",
+            Es => {
+                "Los títulos extraídos que siguen en la cola se eliminarán. ¿Salir de todos modos?"
+            }
+            Fr => "Les titres extraits encore dans la file seront supprimés. Quitter quand même ?",
+            De => "Gerippte Titel in der Warteschlange werden gelöscht. Trotzdem beenden?",
+            Zh => "队列中的已翻录标题将被删除。仍要退出吗？",
         },
         Msg::AbandonTrackConfigTitle => match lang {
             En => "Discard Batch",

@@ -31,6 +31,8 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
                 lang,
                 if app.work_active() {
                     Msg::ExitAppActivePrompt
+                } else if app.queue.jobs.iter().any(|job| job.temporary) {
+                    Msg::ExitAppRipsPrompt
                 } else if app.current_screen == Screen::Configuration && app.config_is_dirty() {
                     Msg::ExitAppUnsavedPrompt
                 } else {
