@@ -644,6 +644,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 if !idle {
                     crate::utils::child::kill_all();
                 }
+                app.discard_staged_jobs();
                 return Ok(());
             }
         }

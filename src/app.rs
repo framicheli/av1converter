@@ -1850,7 +1850,7 @@ impl App {
     }
 
     /// Delete the staging directory of every ripped title in the queue.
-    fn discard_staged_jobs(&self) {
+    pub fn discard_staged_jobs(&self) {
         for job in self.queue.jobs.iter().filter(|job| job.temporary) {
             crate::disc::staging::discard_staged(&job.path);
         }
