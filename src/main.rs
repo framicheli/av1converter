@@ -1602,8 +1602,9 @@ mod tests {
             return;
         }
         let on_disk = || std::fs::read(config::AppConfig::config_path()).ok();
-        let before = on_disk();
         let mut app = App::new();
+        app.config.daemon.enabled = false;
+        let before = on_disk();
         app.navigate_to_configuration();
         app.config.daemon.browse_root = std::env::temp_dir()
             .join(format!("av1c_no_such_root_{}", std::process::id()))
