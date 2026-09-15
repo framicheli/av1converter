@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [3.0.0]
+
+Initial public release: interactive TUI for batch-converting video to AV1 with FFmpeg — hardware encoder auto-detection (NVENC/QSV/AMF), Dolby Vision passthrough and profile 5 tone-mapping, VMAF quality verification, per-track audio/subtitle selection with Opus transcoding, daemon mode with a web UI, and a six-language interface.
 
 ### Added
 
@@ -35,12 +37,28 @@
 - After a forced shutdown, leftover encode/rip messages are applied before `queue.json` is written, so a killed encode is not restarted as Ready. HTTP mutations are refused once shutdown starts, and in-flight requests finish before worker handles are taken.
 - Cancel encoding no longer silently cancels a concurrent disc rip. The web disc browser can pick an ISO. Analysis can be cancelled from the dashboard. Removing or clearing a ripped job deletes its staging file.
 - Recursive folder add respects shutdown. Unix child kill covers the process group. TUI quit uses the same grace-then-kill path. Finish lists VMAF-check failures, Esc returns to the queue, and Enter confirms before clearing.
+- AMF encodes no longer come out near-lossless: the 0–51 quality value is scaled onto AMF's 0–255 quantizer.
+- The output container is limited to `mkv`, `mp4` and `webm`. Streams a container cannot hold are left out or converted instead of failing the encode: bitmap subtitles are dropped from WebM (and from MP4, except DVD subtitles), WebM audio that is not Opus or Vorbis becomes Opus, and TrueHD copies into MP4 work.
+- MKV output keeps attachments such as embedded fonts and cover art.
+- VMAF verification works when the temporary path contains `:`, as every Windows path does.
+- Dolby Vision profile 8.2 sources (SDR base layer) are tagged BT.709 instead of PQ/BT.2020.
+- QSV no longer passes the `-look_ahead` option, which `av1_qsv` does not have.
+- A deselected audio track that runs past the video no longer makes a finished encode count as stopped short.
+- An analysis failure on a path containing "Cancelled" is reported as an error, not a cancellation.
+- Empty or relative `XDG_*`, `HOME`, `APPDATA` and `LOCALAPPDATA` values are ignored instead of placing configuration in the working directory. A non-UTF-8 command-line argument prints usage instead of panicking.
+- The private temporary directory is recreated when the system cleans it up under a long-running daemon.
+- The launchd agent receives `PATH`, so an FFmpeg installed through Homebrew is found at login. Turning autostart off also disables the launchd job.
+- The systemd unit stops with `KillMode=mixed` and a stop timeout that covers the daemon's own grace, so a stop cancels the running job cleanly; `%` and `$` in the binary path are escaped.
+- `--start` reports success only once the daemon is listening, and a failed bind as a failure. Shutdown cancels disc and analysis work before waiting for HTTP requests and no longer waits indefinitely for a stalled client. A running probe is reached by cancellation. A PID lock can no longer be taken on an already-deleted PID file.
+- Starting the daemon no longer deletes staged rips that a running TUI is waiting to encode, quitting the TUI removes its staged rips, leftover staging directories are also swept when a disc run ends, and cancelling a rip kills makemkvcon's whole process group.
+- A ripped title with no output directory is reported as an error instead of waiting in Ready forever.
+- `--purge` removes the login service only after the confirmation.
+- Web API: the output directory is confined to `browse_root` even when outputs go next to their sources; a saved directory that has since disappeared no longer blocks saving other settings and is reported as a warning. Disc scans and rips no longer hold the daemon's state lock during filesystem checks, and are refused once shutdown starts. Saving tracks for a Dolby Vision job after switching to a hardware encoder works. Concurrent settings, autostart and queue-add requests no longer overwrite each other or bypass the browse root. The cancelled count survives clearing finished jobs. Folder mode skips directories named like videos, omitted track lists keep their values, requests through a reverse proxy with forwarding headers are treated as remote, and a padded browse root is trimmed. Old disc titles are cleared when drives are listed.
+- Web UI: removing a ripped job, or clearing finished jobs that include one, asks first. Settings are re-read when the tab opens. Closing a tracks dialog stops further automatic prompts until new files arrive. The disc dialog no longer flashes "No drive found" or old titles. Keyboard focus survives Move up and disc dialog redraws. The file browser cannot select a folder it did not load. Adding `#token=` to an open page logs in. Interface strings are fetched again after a failed load, durations are translated, "Queue is empty" waits for the queue to load, refreshes after actions show the new state, and cancel re-checks what is running after the confirmation. The breadcrumb and track rows fit phone widths.
+- TUI: a rip that fails while being cancelled no longer leaves the queue stuck on "Cancelling". A finished job no longer throws you out of track configuration. Cancelling analysis keeps already analysed jobs and does nothing once analysis has finished, and it reaches every analysis batch. Ctrl and Alt shortcuts no longer type letters into text fields, and `Shift+Tab` moves focus backwards. Long notices and the configuration footer wrap instead of being cut off, text uses the terminal's default colour, `Space` selects the open folder in folder mode, quitting with unsaved settings says so, a scan finishing during a cancel returns to the drive list, and the remaining English status messages are translated.
+- Tests use a private configuration path per test thread instead of the user's configuration or a process-wide environment variable.
 
 ### Known limitations
 
 - Dolby Vision profile 7 UHD discs are extracted by MakeMKV with the enhancement layer as a separate MKV track, which FFmpeg will not recombine. Those discs encode from the HDR10 base layer and the EL/RPU track shows up as a stray stream.
 - The disc test suite runs against a fake `makemkvcon`; ripping has not been checked against real hardware.
-
-## [3.0.0]
-
-Initial public release: interactive TUI for batch-converting video to AV1 with FFmpeg — hardware encoder auto-detection (NVENC/QSV/AMF), Dolby Vision passthrough and profile 5 tone-mapping, VMAF quality verification, per-track audio/subtitle selection with Opus transcoding, daemon mode with a web UI, and a six-language interface.
