@@ -139,7 +139,7 @@ for (const button of document.querySelectorAll(".tab")) {
       $(`tab-${name}`).classList.toggle("hidden", name !== activeTab);
     }
     if (activeTab === "queue") refreshQueue();
-    if (activeTab === "settings" && !settingsLoaded) loadSettings();
+    if (activeTab === "settings" && !settingsDirty()) loadSettings();
   });
   button.addEventListener("keydown", (event) => {
     const tabs = [...document.querySelectorAll(".tab")];
@@ -778,10 +778,10 @@ async function closeTracks() {
 async function openTracks(id) {
   if (openingTracks || $("tracks-modal").open) return false;
   openingTracks = true;
-  // The projected Opus bitrate comes from the audio settings, which are only
-  // fetched when the settings tab is opened.
+  // The projected Opus bitrate comes from the audio settings, which are
+  // reloaded here unless the settings tab holds unsaved edits.
   try {
-    if (!settingsLoaded) await loadSettings();
+    if (!settingsDirty()) await loadSettings();
     const data = await api(`/api/job/tracks?id=${id}`);
     const editor = trackEditor = {
       id,
@@ -1595,7 +1595,6 @@ $("disc-rip").addEventListener("click", async () => {
 
 // ── Settings ────────────────────────────────────────────────────────
 
-let settingsLoaded = false;
 let config = null;
 let savedConfig = null;
 let settingsSaving = false;
@@ -1894,12 +1893,13 @@ async function loadSettingsNow() {
       api("/api/settings"),
       api("/api/settings/access"),
     ]);
+    // Edits made while the request was out are kept.
+    if (settingsDirty()) return;
     config = loadedConfig;
     settingsAccess = access;
     config._service = { autostart: access.autostart };
     verifySettingsCoverage(config, access.setting_paths);
     savedConfig = cloneConfig(config);
-    settingsLoaded = true;
     buildSettingsForm();
   } catch (e) { toast(e.message, true); }
 }
