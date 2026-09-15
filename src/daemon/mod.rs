@@ -156,6 +156,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     // Main orchestrator loop: owns analysis and worker result application.
     let mut last_saved = Vec::new();
     let mut last_save_warning = None;
+    let mut disc_was_active = false;
     while !shutdown.load(Ordering::SeqCst) {
         match analysis_rx.recv_timeout(TICK) {
             Ok((id, result)) => apply_analysis_result(&shared, id, result),
@@ -179,6 +180,11 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         for path in released {
             crate::disc::staging::discard_staged(&path);
         }
+        sweep_after_disc_run(
+            &shared,
+            &mut disc_was_active,
+            crate::disc::staging::ACTIVE_RIP_WINDOW,
+        );
         maybe_start_session(&shared, &worker_tx);
         persist_queue(
             &shared,
@@ -299,6 +305,30 @@ fn join_within(handles: Vec<thread::JoinHandle<()>>, grace: Duration) -> bool {
         }
     }
     joined
+}
+
+/// Sweep orphaned staging directories once `disc.active` has gone false since
+/// the last call. The sweep runs with the lock released.
+fn sweep_after_disc_run(shared: &SharedState, was_active: &mut bool, min_age: Duration) {
+    let snapshot = {
+        let state = lock(shared);
+        let settled = *was_active && !state.disc.active;
+        *was_active = state.disc.active;
+        settled.then(|| {
+            let staged: Vec<EncodingJob> = state
+                .queue
+                .state
+                .jobs
+                .iter()
+                .filter(|job| job.temporary)
+                .cloned()
+                .collect();
+            (state.config.clone(), staged)
+        })
+    };
+    if let Some((config, staged)) = snapshot {
+        crate::disc::staging::sweep_orphans(&config, &staged, min_age);
+    }
 }
 
 /// Apply leftover worker/disc messages after join, then skip anything still
@@ -1421,6 +1451,32 @@ mod tests {
             JobStatus::Error { message } if message == "probe failed"
         ));
         assert_eq!(state.queue.state.error_count, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_settled_disc_run_sweeps_orphaned_staging_directories() {
+        let root = std::env::temp_dir().join(format!("av1c_settle_sweep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let orphan = root.join("rip-4294967295-a");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join("title_t00.mkv"), b"partial").unwrap();
+
+        let mut config = AppConfig::default();
+        config.disc.staging_directory = Some(root.to_string_lossy().into_owned());
+        let shared = Arc::new(Mutex::new(DaemonState::new(config)));
+        let mut was_active = false;
+
+        sweep_after_disc_run(&shared, &mut was_active, Duration::ZERO);
+        assert!(orphan.exists(), "no run has settled yet");
+        lock(&shared).disc.active = true;
+        sweep_after_disc_run(&shared, &mut was_active, Duration::ZERO);
+        assert!(orphan.exists(), "the run is still going");
+        lock(&shared).disc.settle();
+        sweep_after_disc_run(&shared, &mut was_active, Duration::ZERO);
+        assert!(!orphan.exists());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

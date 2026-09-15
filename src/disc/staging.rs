@@ -219,9 +219,9 @@ pub fn discard_staged(file: &Path) {
 /// Delete staging directories that no job points into and that nothing has
 /// written to for `min_age`.
 ///
-/// Runs at daemon startup, where a rip cut short by a kill has nothing left
-/// tracking its file. Only subdirectories of the staging root are ever removed,
-/// never the root itself.
+/// Runs at daemon startup and whenever a disc run settles, where a rip cut
+/// short by a kill has nothing left tracking its file. Only subdirectories of
+/// the staging root are ever removed, never the root itself.
 pub fn sweep_orphans(config: &AppConfig, jobs: &[EncodingJob], min_age: Duration) {
     let root = staging_root(config);
     let Ok(entries) = std::fs::read_dir(&root) else {
