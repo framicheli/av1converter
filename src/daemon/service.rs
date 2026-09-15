@@ -5,7 +5,9 @@
 //! Nothing is stored in `config.toml`; [`installed`] is the OS state.
 
 use std::io;
-use std::path::{Path, PathBuf};
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+use std::path::Path;
+use std::path::PathBuf;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io::Write;
@@ -67,6 +69,10 @@ pub fn install() -> io::Result<InstallOutcome> {
 }
 
 /// Disable and stop the service, then remove its unit/plist.
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(clippy::unnecessary_wraps)
+)]
 pub fn uninstall() -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -83,6 +89,10 @@ pub fn uninstall() -> io::Result<()> {
 }
 
 /// Remove autostart without stopping the daemon serving the current session.
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(clippy::unnecessary_wraps)
+)]
 pub fn uninstall_keep_running() -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {

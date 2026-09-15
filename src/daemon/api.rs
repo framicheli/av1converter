@@ -1495,11 +1495,14 @@ fn status_json(status: &JobStatus) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::queue_add;
     use super::{
-        RecursiveScanGuard, queue, queue_add, queue_cancel, queue_move_up, queue_remove, status,
-        within_root,
+        RecursiveScanGuard, queue, queue_cancel, queue_move_up, queue_remove, status, within_root,
     };
-    use crate::config::{AppConfig, DaemonConfig};
+    use crate::config::AppConfig;
+    #[cfg(unix)]
+    use crate::config::DaemonConfig;
     use crate::daemon::state::{DaemonState, EncodeSession, lock};
     use crate::queue::{EncodingJob, JobStatus};
     use std::path::{Path, PathBuf};

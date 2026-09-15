@@ -94,6 +94,7 @@ pub fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
 /// Create `path` as a fresh directory only this user can enter. Fails if the
 /// name already exists in any form.
 pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {

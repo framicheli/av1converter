@@ -24,6 +24,8 @@ pub fn configure(command: &mut Command) {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
+    #[cfg(not(unix))]
+    let _ = command;
 }
 
 /// Unregisters `pid` when dropped, including on panic after spawn.

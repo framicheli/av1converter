@@ -5,8 +5,11 @@
 //! running in the foreground.
 
 use std::fs::File;
-use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::io::Read;
+use std::io::{self, Write};
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 /// How long the parent waits for the detached child to bind its listener
@@ -16,6 +19,7 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long `stop` waits for the daemon to exit. Covers the daemon's
 /// `HTTP_JOIN_GRACE`, then its `SHUTDOWN_GRACE` for a rip followed by the same
 /// grace for an encode.
+#[cfg(unix)]
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Data directory for the PID file, queue and background log
