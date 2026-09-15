@@ -1,37 +1,69 @@
 //! A private directory for this process's temporary files.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use tracing::warn;
 
 /// Private directory for progress files, ffmpeg stderr and VMAF logs, created
-/// on first use and reused for the life of the process.
+/// on first use and reused while it is still this user's private directory.
 ///
 /// Created with `mkdir` under a random name in the system temp directory:
 /// `mkdir` will not follow a final symlink and fails if the name is taken, so a
 /// directory created this way is owned by nobody else, and the random name
-/// cannot be occupied in advance. `None` means none could be created; callers
+/// cannot be occupied in advance. A directory that has been removed (macOS
+/// clears old `$TMPDIR` entries) or replaced is never reused; a new one is
+/// created under a fresh name. `None` means none could be created; callers
 /// fail rather than fall back to the shared temp directory.
-pub fn scratch_dir() -> Option<&'static Path> {
-    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    DIR.get_or_init(|| {
-        let base = std::env::temp_dir();
-        for _ in 0..8 {
-            let Ok(random) = super::random_hex(8) else {
-                break;
-            };
-            let candidate = base.join(format!("av1converter-{random}"));
-            if create_private_dir(&candidate).is_ok() {
-                return Some(candidate);
-            }
-        }
+pub fn scratch_dir() -> Option<PathBuf> {
+    static DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+    let mut dir = DIR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let base = std::env::temp_dir();
+    *dir = reuse_or_create(dir.take(), &base);
+    if dir.is_none() {
         warn!(
             "Could not create a private scratch directory in {}",
             base.display()
         );
-        None
-    })
-    .as_deref()
+    }
+    dir.clone()
+}
+
+/// `current` while it is still a private directory, else a new one in `base`.
+fn reuse_or_create(current: Option<PathBuf>, base: &Path) -> Option<PathBuf> {
+    if let Some(dir) = current.filter(|dir| is_private_dir(dir)) {
+        return Some(dir);
+    }
+    for _ in 0..8 {
+        let Ok(random) = super::random_hex(8) else {
+            break;
+        };
+        let candidate = base.join(format!("av1converter-{random}"));
+        if create_private_dir(&candidate).is_ok() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// A directory itself (not a symlink to one), owned by this user and closed to
+/// group and others.
+fn is_private_dir(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // SAFETY: geteuid is always safe.
+        if metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o077 != 0
+        {
+            return false;
+        }
+    }
+    metadata.is_dir()
 }
 
 /// [`scratch_dir`] or a ready-made message explaining what went wrong.
@@ -77,13 +109,13 @@ pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_private_dir, scratch_dir};
+    use super::{create_private_dir, reuse_or_create, scratch_dir};
 
     /// Stable across calls, and actually a directory we can write into.
     #[test]
     fn scratch_dir_is_a_usable_private_directory() {
         let dir = scratch_dir().expect("a private scratch directory");
-        assert_eq!(Some(dir), scratch_dir());
+        assert_eq!(scratch_dir().as_ref(), Some(&dir));
         assert!(dir.is_dir());
         // Random, not derived from the PID: an attacker cannot occupy the name
         // in advance to force the "no private directory" path.
@@ -101,6 +133,39 @@ mod tests {
             let mode = std::fs::metadata(dir).unwrap().permissions().mode();
             assert_eq!(mode & 0o077, 0, "no access for group or others");
         }
+    }
+
+    /// A scratch directory that was removed, or swapped for a symlink, is
+    /// replaced by a new private one instead of being reused.
+    #[test]
+    fn a_missing_or_replaced_scratch_dir_is_recreated() {
+        let base = std::env::temp_dir().join(format!("av1c_scratch_reuse_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        let first = reuse_or_create(None, &base).unwrap();
+        assert_eq!(
+            reuse_or_create(Some(first.clone()), &base).as_ref(),
+            Some(&first)
+        );
+
+        std::fs::remove_dir(&first).unwrap();
+        let second = reuse_or_create(Some(first.clone()), &base).unwrap();
+        assert_ne!(second, first);
+        assert!(second.is_dir());
+
+        #[cfg(unix)]
+        {
+            std::fs::remove_dir(&second).unwrap();
+            let elsewhere = base.join("elsewhere");
+            create_private_dir(&elsewhere).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, &second).unwrap();
+            let third = reuse_or_create(Some(second.clone()), &base).unwrap();
+            assert_ne!(third, second);
+            assert!(!std::fs::symlink_metadata(&third).unwrap().is_symlink());
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// A name already taken is refused, including when taken by a symlink.
