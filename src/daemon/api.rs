@@ -996,7 +996,7 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
         // disc from outside the browse root.
         let Some(path) = confined_path(Path::new(folder), &config.daemon.browse_root) else {
             return (
-                400,
+                403,
                 json!({"error": "path is outside the configured browse root"}),
             );
         };
@@ -1165,6 +1165,7 @@ fn disc_failure(error: &crate::disc::DiscError, lang: crate::i18n::Language) -> 
         | crate::disc::DiscError::NoDestination
         | crate::disc::DiscError::NotADiscFolder => 400,
         crate::disc::DiscError::PermissionDenied => 403,
+        crate::disc::DiscError::Cancelled => 409,
         _ => 500,
     };
     (status, json!({"error": error.message(lang)}))
@@ -1744,7 +1745,7 @@ mod tests {
                 &tx,
                 &json!({"folder": outside.join("THE_DISC").to_string_lossy()}),
             );
-            assert_eq!(status, 400);
+            assert_eq!(status, 403);
             assert!(
                 body["error"].as_str().unwrap().contains("browse root"),
                 "{body}"
