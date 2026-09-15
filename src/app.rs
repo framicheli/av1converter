@@ -1525,6 +1525,9 @@ impl App {
 
         for event in events {
             match event {
+                DiscEvent::TitlesFound(_) if self.disc_state == DiscState::Cancelling => {
+                    self.finish_disc_cancellation();
+                }
                 DiscEvent::TitlesFound(scan) => {
                     self.disc_titles = scan.titles;
                     self.disc_state = DiscState::Ready;
@@ -2187,6 +2190,26 @@ mod tests {
         app.analyze_indices(&[0]);
 
         assert!(Arc::ptr_eq(&running, &app.analysis_cancel_flag));
+    }
+
+    #[test]
+    fn a_scan_finishing_during_cancellation_returns_to_the_drives() {
+        let mut app = App::new();
+        app.current_screen = Screen::DiscTitles;
+        app.disc_state = DiscState::Cancelling;
+        let (tx, rx) = mpsc::channel();
+        tx.send(DiscEvent::TitlesFound(crate::disc::DiscScan {
+            disc_type: None,
+            titles: Vec::new(),
+        }))
+        .unwrap();
+        app.disc_receiver = Some(rx);
+
+        app.process_disc_events();
+
+        assert_eq!(app.current_screen, Screen::DiscDrives);
+        assert_eq!(app.disc_state, DiscState::Ready);
+        assert!(app.disc_receiver.is_none());
     }
 
     #[test]
