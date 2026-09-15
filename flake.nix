@@ -23,6 +23,12 @@
 
           cargoLock.lockFile = ./Cargo.lock;
 
+          # Source paths under the per-build directory are written into the
+          # binary as /build.
+          preBuild = ''
+            export RUSTFLAGS="''${RUSTFLAGS:-} --remap-path-prefix=$NIX_BUILD_TOP=/build"
+          '';
+
           # ffmpeg and ffprobe are run from PATH at runtime and are not added to
           # the package. The Dolby Vision and VMAF features the tool uses depend
           # on how that ffmpeg was built (see README prerequisites).
