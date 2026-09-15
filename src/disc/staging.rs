@@ -239,6 +239,13 @@ pub fn sweep_orphans(config: &AppConfig, jobs: &[EncodingJob], min_age: Duration
         if !path.is_dir() || !is_staging_dir(&path) || live.contains(&path) {
             continue;
         }
+        if owner_pid(&path).is_some_and(crate::encoder::ffmpeg::pid_alive) {
+            info!(
+                "Leaving staging directory {} of a running process",
+                path.display()
+            );
+            continue;
+        }
         // A directory another process is still ripping into. Unreadable
         // timestamps count as recent and the directory stays.
         match last_written(&path) {
@@ -261,6 +268,17 @@ fn is_staging_dir(dir: &Path) -> bool {
         .is_some_and(|name| name.starts_with(STAGING_PREFIX))
 }
 
+/// The process id in a `rip-<pid>-<random>` directory name.
+fn owner_pid(dir: &Path) -> Option<u32> {
+    dir.file_name()?
+        .to_str()?
+        .strip_prefix(STAGING_PREFIX)?
+        .split_once('-')?
+        .0
+        .parse()
+        .ok()
+}
+
 fn discard_dir(dir: &Path) {
     if let Err(e) = std::fs::remove_dir_all(dir) {
         warn!("Could not remove {}: {e}", dir.display());
@@ -278,11 +296,12 @@ fn last_written(dir: &Path) -> Option<Duration> {
     newest.elapsed().ok()
 }
 
-/// A directory under `root` that no other process can already hold.
+/// A directory under `root` that no other process can already hold, named
+/// `rip-<pid>-<random>` after the process that owns it.
 fn create_staging_dir(root: &Path) -> Result<PathBuf, DiscError> {
     for _ in 0..8 {
         let random = crate::utils::random_hex(8).map_err(DiscError::Failed)?;
-        let candidate = root.join(format!("{STAGING_PREFIX}{random}"));
+        let candidate = root.join(format!("{STAGING_PREFIX}{}-{random}", std::process::id()));
         if crate::utils::create_private_dir(&candidate).is_ok() {
             return Ok(candidate);
         }
@@ -533,6 +552,20 @@ mod tests {
         let active = staged_rip(&root, "active");
         sweep_orphans(&config_with_root(&root), &[], ACTIVE_RIP_WINDOW);
         assert!(active.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A directory named after a running process is left alone; one named after
+    /// a process that is gone is swept.
+    #[cfg(unix)]
+    #[test]
+    fn the_sweep_leaves_a_running_owners_rip_alone() {
+        let root = scratch("owner");
+        let running = staged_rip(&root, &format!("{}-a", std::process::id()));
+        let gone = staged_rip(&root, "4294967295-b");
+        sweep_orphans(&config_with_root(&root), &[], Duration::ZERO);
+        assert!(running.exists());
+        assert!(!gone.exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -28,7 +28,7 @@ fn partial_output_path(output: &str, tag: &str) -> String {
 
 /// Whether a process with this pid currently exists. A pid that does not fit
 /// `pid_t` counts as gone.
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
         let Ok(pid) = libc::pid_t::try_from(pid) else {
