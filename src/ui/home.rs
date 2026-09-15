@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 pub fn render_home(f: &mut Frame, app: &App) {
@@ -14,15 +14,22 @@ pub fn render_home(f: &mut Frame, app: &App) {
     let notice_rows = app.message.as_deref().map_or(0, |msg| {
         wrapped_rows(msg, f.area().width.saturating_sub(6)).min(4) + 2
     });
+    // Title, status, VMAF and help rows are three tall when the menu still
+    // fits below the notice, one tall otherwise.
+    let line_rows = if f.area().height.saturating_sub(4) >= notice_rows + MENU_ROWS + 12 {
+        3
+    } else {
+        1
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(line_rows),
             Constraint::Length(notice_rows),
             Constraint::Min(5),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(line_rows),
+            Constraint::Length(line_rows),
+            Constraint::Length(line_rows),
         ])
         .margin(2)
         .split(f.area());
@@ -56,15 +63,26 @@ pub fn render_home(f: &mut Frame, app: &App) {
     }
 
     // Menu
-    let menu_area = centered_menu_area(chunks[2]);
-    let menu_items: Vec<ListItem> = vec![
-        create_menu_item(t(lang, Msg::HomeOpenFile), 0, app.home_index),
-        create_menu_item(t(lang, Msg::HomeOpenFolder), 1, app.home_index),
-        create_menu_item(t(lang, Msg::HomeOpenFolderRecursive), 2, app.home_index),
-        create_menu_item(t(lang, Msg::HomeRipDisc), 3, app.home_index),
-        create_menu_item(t(lang, Msg::Configuration), 4, app.home_index),
-        create_menu_item(t(lang, Msg::Quit), 5, app.home_index),
+    let labels = [
+        t(lang, Msg::HomeOpenFile),
+        t(lang, Msg::HomeOpenFolder),
+        t(lang, Msg::HomeOpenFolderRecursive),
+        t(lang, Msg::HomeRipDisc),
+        t(lang, Msg::Configuration),
+        t(lang, Msg::Quit),
     ];
+    // Widest label plus the "> " prefix and both borders.
+    let menu_width = labels
+        .iter()
+        .map(|label| Line::raw(*label).width() + 4)
+        .max()
+        .map_or(0, |width| u16::try_from(width).unwrap_or(u16::MAX));
+    let menu_area = centered_menu_area(chunks[2], menu_width);
+    let menu_items: Vec<ListItem> = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| create_menu_item(label, index, app.home_index))
+        .collect();
 
     let menu = List::new(menu_items)
         .block(
@@ -75,7 +93,8 @@ pub fn render_home(f: &mut Frame, app: &App) {
         )
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
-    f.render_widget(menu, menu_area);
+    let mut menu_state = ListState::default().with_selected(Some(app.home_index));
+    f.render_stateful_widget(menu, menu_area, &mut menu_state);
 
     // Encoder & dependency status
     let status_info = render_status_info(app);
@@ -154,22 +173,27 @@ fn render_vmaf_info(app: &App) -> Line<'static> {
     }
 }
 
-fn centered_menu_area(area: Rect) -> Rect {
+/// Rows of the menu box: six entries and the borders.
+const MENU_ROWS: u16 = 8;
+
+/// Half the width of `area`, widened to `min_width` where it fits.
+fn centered_menu_area(area: Rect, min_width: u16) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Percentage(20),
-            Constraint::Length(9),
+            Constraint::Length(MENU_ROWS + 1),
             Constraint::Percentage(20),
         ])
         .split(area);
 
+    let width = (area.width / 2).max(min_width).min(area.width);
     Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(50),
-            Constraint::Percentage(25),
+            Constraint::Fill(1),
+            Constraint::Length(width),
+            Constraint::Fill(1),
         ])
         .split(vertical[1])[1]
 }
@@ -221,5 +245,44 @@ mod tests {
             .collect();
 
         assert!(screen.contains("LASTWORD"));
+    }
+
+    fn rendered_at(app: &App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render_home(f, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn a_small_terminal_shows_every_menu_entry() {
+        let app = App::new();
+        let screen = rendered_at(&app, 50, 20);
+        for label in [
+            "Open video file",
+            "Open folder (recursive)",
+            "Rip DVD / Blu-ray",
+            "Configuration",
+            "Quit",
+        ] {
+            assert!(screen.contains(label), "{label} missing");
+        }
+    }
+
+    #[test]
+    fn a_small_terminal_shows_the_whole_notice_and_the_selected_entry() {
+        let mut app = App::new();
+        app.home_index = 3;
+        app.set_message(
+            "MakeMKV was not found. Install it from makemkv.com, or set makemkvcon_path under [disc] in config.toml.",
+        );
+        let screen = rendered_at(&app, 50, 20);
+        assert!(screen.contains("config.toml."));
+        assert!(screen.contains("> Rip DVD / Blu-ray"));
     }
 }
