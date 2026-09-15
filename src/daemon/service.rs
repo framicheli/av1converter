@@ -245,6 +245,8 @@ pub(crate) fn systemd_unit(exe: &Path, path: &str) -> String {
          [Service]\n\
          ExecStart={exe} --start-foreground\n\
          Restart=on-abnormal\n\
+         KillMode=mixed\n\
+         TimeoutStopSec=35\n\
          Nice=10\n"
     );
     if !path.is_empty() {
@@ -428,6 +430,8 @@ mod tests {
         let unit = systemd_unit(Path::new("/usr/bin/av1converter"), "/usr/bin");
         assert!(unit.contains("ExecStart=/usr/bin/av1converter --start-foreground"));
         assert!(unit.contains("Restart=on-abnormal"));
+        assert!(unit.contains("KillMode=mixed"));
+        assert!(unit.contains("TimeoutStopSec=35"));
         assert!(unit.contains("Nice=10"));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(unit.contains("Environment=\"PATH=/usr/bin\""));
