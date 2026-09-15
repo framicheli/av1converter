@@ -803,9 +803,7 @@ impl App {
                 .and_then(|receiver| match receiver.try_recv() {
                     Ok(result) => Some(result),
                     Err(mpsc::TryRecvError::Empty) => None,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        Some(Err("folder scan stopped unexpectedly".to_string()))
-                    }
+                    Err(mpsc::TryRecvError::Disconnected) => Some(Err(String::new())),
                 });
         let Some(result) = result else {
             return;
@@ -833,13 +831,12 @@ impl App {
             }
             return;
         };
-        self.set_timed_error(
-            &format!(
-                "{}: {error}",
-                crate::i18n::t(self.config.language, crate::i18n::Msg::FolderScanFailed)
-            ),
-            8,
-        );
+        let failed = crate::i18n::t(self.config.language, crate::i18n::Msg::FolderScanFailed);
+        if error.is_empty() {
+            self.set_timed_error(failed, 8);
+        } else {
+            self.set_timed_error(&format!("{failed}: {error}"), 8);
+        }
     }
 
     fn analyze_jobs(&mut self) {
