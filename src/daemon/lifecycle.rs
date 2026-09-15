@@ -9,9 +9,10 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// How long the parent waits for the detached child before declaring startup
-/// failed (it exits immediately on e.g. a port already in use).
-const SPAWN_GRACE: Duration = Duration::from_millis(600);
+/// How long the parent waits for the detached child to bind its listener
+/// before declaring startup failed.
+#[cfg(unix)]
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long `stop` waits for the daemon to exit. Covers the daemon's
 /// `SHUTDOWN_GRACE` for a rip followed by the same grace for an encode.
 const STOP_TIMEOUT: Duration = Duration::from_secs(25);
@@ -267,13 +268,33 @@ pub fn spawn_background() -> io::Result<u32> {
     }
     let mut child = cmd.spawn()?;
 
-    // An immediate exit means startup failed (disabled in config, port in
-    // use, …); the reason is in the log file.
-    std::thread::sleep(SPAWN_GRACE);
-    if child.try_wait()?.is_some() {
-        return Err(io::Error::other("daemon exited during startup"));
-    }
+    // An exit before the listen address is recorded means startup failed
+    // (disabled in config, port in use, …); the reason is in the log file.
+    wait_for_listen(&mut child, &pid_file(), STARTUP_TIMEOUT)?;
     Ok(child.id())
+}
+
+/// Wait until `child` holds the PID lock at `path` and has recorded its bound
+/// address there, failing if it exits first or `timeout` passes.
+#[cfg(unix)]
+fn wait_for_listen(
+    child: &mut std::process::Child,
+    path: &std::path::Path,
+    timeout: Duration,
+) -> io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child.try_wait()?.is_some() {
+            return Err(io::Error::other("daemon exited during startup"));
+        }
+        if locked_pid(path) == Some(child.id()) && listen_in(path).is_some() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::other("daemon did not start listening in time"));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[cfg(not(unix))]
@@ -338,6 +359,32 @@ mod tests {
         assert!(!is_linked_at(&stale, &path).unwrap());
         drop(lock_pid_file(&path, std::process::id()).unwrap());
         assert!(!is_linked_at(&stale, &path).unwrap());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_waits_for_the_recorded_listen_address() {
+        let path = std::env::temp_dir().join(format!("av1c_pid_startup_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let mut exited = std::process::Command::new("sh")
+            .args(["-c", "exit 1"])
+            .spawn()
+            .unwrap();
+        assert!(wait_for_listen(&mut exited, &path, Duration::from_secs(5)).is_err());
+
+        let mut running = std::process::Command::new("sleep")
+            .arg("10")
+            .spawn()
+            .unwrap();
+        let _guard = lock_pid_file(&path, running.id()).unwrap();
+        assert!(wait_for_listen(&mut running, &path, Duration::from_millis(300)).is_err());
+        append_listen(&path, "127.0.0.1:9124").unwrap();
+        assert!(wait_for_listen(&mut running, &path, Duration::from_secs(5)).is_ok());
+
+        let _ = running.kill();
+        let _ = running.wait();
         let _ = std::fs::remove_file(path);
     }
 
