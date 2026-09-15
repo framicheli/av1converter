@@ -494,7 +494,11 @@ fn uninstall_service_or_exit() {
 }
 
 fn main() -> io::Result<()> {
-    match parse_cli(std::env::args().skip(1)) {
+    match parse_cli(
+        std::env::args_os()
+            .skip(1)
+            .map(|arg| arg.to_string_lossy().into_owned()),
+    ) {
         Ok(Cli::Tui) => {}
         Ok(Cli::Start) => return run_daemon_entry(false),
         Ok(Cli::StartForeground) => return run_daemon_entry(true),
