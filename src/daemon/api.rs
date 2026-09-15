@@ -939,6 +939,9 @@ pub fn discs_list(shared: &SharedState) -> (u16, Value) {
         state.disc.active = true;
         state.disc.listing = true;
         state.disc.error = None;
+        state.disc.titles.clear();
+        state.disc.disc_type = None;
+        state.disc.scanned_source = None;
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         state.disc.cancel_flag = Some(cancel.clone());
         (state.config.clone(), cancel)
@@ -1031,6 +1034,7 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
     state.disc.scanning = true;
     state.disc.error = None;
     state.disc.titles.clear();
+    state.disc.disc_type = None;
     state.disc.scanned_source = Some(source.clone());
     drop(state);
 
@@ -1834,19 +1838,23 @@ mod tests {
             assert_eq!(status(&shared)["disc"]["active"], json!(false));
         }
 
-        /// The error from the last run is dropped when a new dialog lists the
-        /// drives.
+        /// The error and titles from the last run are dropped when a new
+        /// dialog lists the drives.
         #[test]
         fn a_drive_listing_clears_the_last_error() {
             let shared = scanned(Some("/tmp".to_string()));
             {
                 let mut state = lock(&shared);
                 state.disc.error = Some("old failure".to_string());
+                state.disc.disc_type = Some("Blu-ray disc".to_string());
                 state.config.disc.makemkvcon_path = Some("/nonexistent/makemkvcon".to_string());
             }
             discs_list(&shared);
             let state = lock(&shared);
             assert_eq!(state.disc.error, None);
+            assert!(state.disc.titles.is_empty());
+            assert_eq!(state.disc.disc_type, None);
+            assert_eq!(state.disc.scanned_source, None);
             assert!(!state.disc.active);
         }
 
