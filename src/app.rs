@@ -933,7 +933,7 @@ impl App {
                 job.generate_output_path(&output_config);
                 job.status = JobStatus::AwaitingConfig;
             }
-            Err(ref e) if e.to_string().contains("Cancelled") => {
+            Err(AppError::Cancelled) => {
                 job.status = JobStatus::Skipped {
                     reason: "Cancelled".to_string(),
                 };
@@ -1916,9 +1916,7 @@ fn analyze_batch(
                         break;
                     };
                     let result = match path {
-                        _ if cancel_flag.load(Ordering::Relaxed) => {
-                            Err(AppError::Analysis("Cancelled".to_string()))
-                        }
+                        _ if cancel_flag.load(Ordering::Relaxed) => Err(AppError::Cancelled),
                         Ok(path) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             analyzer::analyze(path, cancel_flag)
                         }))

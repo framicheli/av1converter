@@ -392,7 +392,7 @@ fn run_command(
     timeout: Duration,
 ) -> Result<std::process::Output, AppError> {
     if cancel.load(Ordering::Relaxed) {
-        return Err(AppError::Analysis("Cancelled".to_string()));
+        return Err(AppError::Cancelled);
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     crate::utils::child::configure(command);
@@ -412,11 +412,11 @@ fn run_command(
             let _ = child.wait();
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
-            return Err(AppError::Analysis(if cancelled {
-                "Cancelled".to_string()
+            return Err(if cancelled {
+                AppError::Cancelled
             } else {
-                "ffprobe timed out".to_string()
-            }));
+                AppError::Analysis("ffprobe timed out".to_string())
+            });
         }
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -617,6 +617,19 @@ mod tests {
         let (bytes, exceeded) = read_capped(&mut input, 4).unwrap();
         assert_eq!(bytes, b"1234");
         assert!(exceeded);
+    }
+
+    /// Cancellation is its own error, never a message to match on: ffprobe's
+    /// stderr can quote a path such as `/media/Cancelled Shows/ep1.mkv`.
+    #[test]
+    fn a_cancelled_probe_reports_cancellation_exactly() {
+        let cancel = AtomicBool::new(true);
+        let error =
+            run_command(&mut Command::new("ffprobe"), &cancel, FFPROBE_TIMEOUT).unwrap_err();
+        assert!(matches!(error, AppError::Cancelled));
+
+        let failure = AppError::Analysis("ffprobe failed: /media/Cancelled Shows/ep1.mkv".into());
+        assert!(!matches!(failure, AppError::Cancelled));
     }
 
     #[cfg(unix)]

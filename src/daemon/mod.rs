@@ -748,7 +748,7 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
             info!("Analyzed {}", job.path.display());
             make_output_paths_unique(&mut state.queue.state.jobs);
         }
-        Err(e) if e.to_string().contains("Cancelled") => {
+        Err(AppError::Cancelled) => {
             job.status = JobStatus::Skipped {
                 reason: "Cancelled".to_string(),
             };
