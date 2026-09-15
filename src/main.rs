@@ -299,8 +299,7 @@ fn enable_daemon_config(
     let mut generated = false;
     candidate.daemon.enabled = true;
     if candidate.daemon.auth_token.len() < 32 {
-        candidate.daemon.auth_token =
-            config::DaemonConfig::generate_token().map_err(|e| e.to_string())?;
+        candidate.daemon.auth_token = config::DaemonConfig::generate_token()?;
         generated = true;
     }
     validate_and_save_config(&mut candidate, previous)?;
@@ -1145,14 +1144,11 @@ fn save_config(app: &mut App) {
         .config_snapshot
         .clone()
         .unwrap_or_else(|| app.config.clone());
-    match validate_and_save_config(&mut app.config, &previous) {
-        Err(error) => {
-            app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
-        }
-        Ok(()) => {
-            app.config_snapshot = Some(app.config.clone());
-            app.set_timed_success(t(lang, Msg::SavedExclaim), 3);
-        }
+    if let Err(error) = validate_and_save_config(&mut app.config, &previous) {
+        app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
+    } else {
+        app.config_snapshot = Some(app.config.clone());
+        app.set_timed_success(t(lang, Msg::SavedExclaim), 3);
     }
 }
 

@@ -392,18 +392,15 @@ fn apply_disc_event(
                 {
                     job.source_size = std::fs::metadata(&path).ok().map(|m| m.len());
                     job.path = path;
-                    match job.path.to_str() {
-                        Some(path) => {
-                            job.status = JobStatus::Analyzing;
-                            ready = Some((id, path.to_string()));
-                            state.analysis_cancel = Arc::new(AtomicBool::new(false));
-                        }
-                        None => {
-                            job.status = JobStatus::Error {
-                                message: "File path contains non-UTF-8 characters".to_string(),
-                            };
-                            state.queue.state.error_count += 1;
-                        }
+                    if let Some(path) = job.path.to_str() {
+                        job.status = JobStatus::Analyzing;
+                        ready = Some((id, path.to_string()));
+                        state.analysis_cancel = Arc::new(AtomicBool::new(false));
+                    } else {
+                        job.status = JobStatus::Error {
+                            message: "File path contains non-UTF-8 characters".to_string(),
+                        };
+                        state.queue.state.error_count += 1;
                     }
                 }
             }
