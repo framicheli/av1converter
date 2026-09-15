@@ -878,11 +878,11 @@ impl App {
             let (tx, rx) = mpsc::channel();
             self.analysis_receiver = Some(rx);
             self.analysis_sender = Some(tx);
+            self.analysis_cancel_flag = Arc::new(AtomicBool::new(false));
         }
         let Some(tx) = self.analysis_sender.clone() else {
             return;
         };
-        self.analysis_cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_flag = self.analysis_cancel_flag.clone();
         self.analysis_outstanding += work.len();
 
@@ -2126,6 +2126,23 @@ mod tests {
         assert!(matches!(app.queue.jobs[0].status, JobStatus::Analyzing));
         assert_eq!(app.analysis_outstanding, 1);
         assert!(!app.analysis_cancel_flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_batch_joining_a_running_round_shares_its_cancel_flag() {
+        let mut app = App::new();
+        let mut job = EncodingJob::new(PathBuf::from("/staging/rip-b/DISC_t01.mkv"));
+        job.status = JobStatus::Pending;
+        app.queue.jobs.push(job);
+        let (tx, rx) = mpsc::channel();
+        app.analysis_receiver = Some(rx);
+        app.analysis_sender = Some(tx);
+        app.analysis_outstanding = 1;
+        let running = app.analysis_cancel_flag.clone();
+
+        app.analyze_indices(&[0]);
+
+        assert!(Arc::ptr_eq(&running, &app.analysis_cancel_flag));
     }
 
     #[test]
