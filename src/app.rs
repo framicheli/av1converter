@@ -1063,6 +1063,8 @@ impl App {
             self.navigate_to_queue();
         } else {
             self.start_encoding();
+            self.detail_scroll = 0;
+            self.current_screen = Screen::Queue;
         }
     }
 
@@ -1117,9 +1119,6 @@ impl App {
         info!("Starting encoding process");
         let follow_active = self.current_screen != Screen::Queue
             || self.queue_cursor == self.queue.current_job_index;
-        if self.current_screen != Screen::Queue {
-            self.navigate_to_queue();
-        }
         self.encoding_active = true;
         self.cancel_flag = Arc::new(AtomicBool::new(false));
 
@@ -1836,16 +1835,16 @@ impl App {
                 .any(|job| matches!(job.status, JobStatus::Ready))
             {
                 self.start_encoding();
-            } else if self.has_jobs_awaiting_config() {
-                self.navigate_to_queue();
             } else if self.disc_receiver.is_none()
                 && self.analysis_receiver.is_none()
                 && self.queue.all_completed()
             {
                 self.queue.end_time = Some(std::time::Instant::now());
                 self.navigate_to_finish();
-            } else {
-                self.navigate_to_queue();
+            }
+            // An open Track Config screen keeps its edit; the queue keeps its cursor.
+            if self.current_screen != Screen::TrackConfig && self.current_screen != Screen::Finish {
+                self.current_screen = Screen::Queue;
             }
         }
     }
@@ -2062,6 +2061,29 @@ mod tests {
             app.queue.jobs[1].status,
             JobStatus::AwaitingConfig
         ));
+    }
+
+    #[test]
+    fn a_finished_encode_session_leaves_track_config_open() {
+        let mut app = App::new();
+        let mut done = EncodingJob::new(PathBuf::from("done.mkv"));
+        done.status = JobStatus::Done;
+        let mut waiting = EncodingJob::new(PathBuf::from("late-title.mkv"));
+        waiting.status = JobStatus::AwaitingConfig;
+        app.queue.jobs = vec![done, waiting];
+        app.encoding_active = true;
+        app.encoding_session_indices = vec![0];
+        app.queue.config_job_index = 1;
+        app.queue_cursor = 1;
+        app.current_screen = Screen::TrackConfig;
+        let (tx, rx) = mpsc::channel();
+        tx.send(WorkerMessage::Finished).unwrap();
+        app.progress_receiver = Some(rx);
+
+        app.process_progress_messages();
+
+        assert_eq!(app.current_screen, Screen::TrackConfig);
+        assert_eq!(app.queue_cursor, 1);
     }
 
     #[test]
