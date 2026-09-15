@@ -1740,12 +1740,18 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Zh => "取消编码",
         },
         Msg::CancelEncodingPrompt => match lang {
-            En => "Are you sure you want to cancel the current encoding?",
-            It => "Vuoi davvero annullare la codifica in corso?",
-            Es => "¿Seguro que quieres cancelar la codificación actual?",
-            Fr => "Voulez-vous vraiment annuler l'encodage en cours ?",
-            De => "Möchten Sie die laufende Kodierung wirklich abbrechen?",
-            Zh => "确定要取消当前编码吗？",
+            En => "Cancel the current encoding? Jobs waiting to encode are cancelled too.",
+            It => {
+                "Annullare la codifica in corso? Anche i file in attesa di codifica verranno annullati."
+            }
+            Es => {
+                "¿Cancelar la codificación actual? Los trabajos en espera de codificación también se cancelan."
+            }
+            Fr => {
+                "Annuler l'encodage en cours ? Les tâches en attente d'encodage sont aussi annulées."
+            }
+            De => "Laufende Kodierung abbrechen? Wartende Aufträge werden ebenfalls abgebrochen.",
+            Zh => "取消当前编码？等待编码的任务也会被取消。",
         },
         Msg::CancelDiscTitle => match lang {
             En => "Cancel Disc Operation",
