@@ -635,7 +635,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             {
                 if control_c {
                     app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
-                } else {
+                } else if !(app.config_edit_buffer.is_some() && is_shortcut_char(key)) {
                     handle_key(app, key.code);
                 }
             }
@@ -658,6 +658,14 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
         }
     }
+}
+
+/// A character typed with either Control or Alt held. `AltGr`, which some
+/// terminals report as Control+Alt, still counts as a plain character.
+fn is_shortcut_char(key: event::KeyEvent) -> bool {
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    matches!(key.code, KeyCode::Char(_)) && control != alt
 }
 
 fn handle_key(app: &mut App, key: KeyCode) {
@@ -916,6 +924,15 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 TrackFocus::Audio | TrackFocus::Confirm if subtitle_count > 0 => {
                     TrackFocus::Subtitle
                 }
+                TrackFocus::Audio | TrackFocus::Subtitle | TrackFocus::Confirm => {
+                    TrackFocus::Confirm
+                }
+            };
+        }
+        KeyCode::BackTab => {
+            app.track_focus = match app.track_focus {
+                TrackFocus::Confirm if subtitle_count > 0 => TrackFocus::Subtitle,
+                TrackFocus::Subtitle | TrackFocus::Confirm if audio_count > 0 => TrackFocus::Audio,
                 TrackFocus::Audio | TrackFocus::Subtitle | TrackFocus::Confirm => {
                     TrackFocus::Confirm
                 }
@@ -1660,6 +1677,26 @@ mod tests {
         assert_eq!(app.config.daemon.port, original);
         assert_eq!(app.config_edit_buffer.as_deref(), Some("0"));
         assert_eq!(app.message_kind, app::MessageKind::Error);
+    }
+
+    #[test]
+    fn only_control_or_alt_characters_are_shortcuts() {
+        let key = |code, modifiers| event::KeyEvent::new(code, modifiers);
+
+        assert!(is_shortcut_char(key(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(is_shortcut_char(key(KeyCode::Char('b'), KeyModifiers::ALT)));
+        assert!(!is_shortcut_char(key(
+            KeyCode::Char('@'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT
+        )));
+        assert!(!is_shortcut_char(key(
+            KeyCode::Char('U'),
+            KeyModifiers::SHIFT
+        )));
+        assert!(!is_shortcut_char(key(KeyCode::Left, KeyModifiers::CONTROL)));
     }
 
     #[test]
