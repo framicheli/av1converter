@@ -188,7 +188,7 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
 }
 
 /// Fit a path to terminal-cell width, preserving its trailing component.
-fn truncate_path_start(path: &str, max_width: usize) -> String {
+pub(crate) fn truncate_path_start(path: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
     }

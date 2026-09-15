@@ -793,11 +793,13 @@ fn build_config_items(
                 ""
             };
 
+            let value_width = row_width
+                .saturating_sub(Line::raw(&label).width())
+                .saturating_sub(Line::raw(hint).width());
             let display_value = if is_selected && editing && is_text {
-                let value_width = row_width
-                    .saturating_sub(Line::raw(&label).width())
-                    .saturating_sub(Line::raw(hint).width());
                 edit_display(item.field, input_buffer, input_cursor, value_width)
+            } else if is_text {
+                super::explorer::truncate_path_start(&get_config_value(config, i), value_width)
             } else {
                 get_config_value(config, i)
             };
