@@ -132,7 +132,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
                 format!("{}: ", t(lang, Msg::ResolutionLabel)),
                 Style::default().fg(Color::DarkGray),
             ),
-            Span::styled(resolution_string, Style::default().fg(Color::White)),
+            Span::styled(resolution_string, Style::default()),
             Span::raw("  "),
             Span::styled(
                 format!("{}: ", t(lang, Msg::TypeLabel)),
@@ -144,7 +144,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
                     "HDR10" => Color::Yellow,
                     "HLG" => Color::Green,
                     "Dolby Vision" => Color::Magenta,
-                    _ => Color::White,
+                    _ => Color::Reset,
                 }),
             ),
         ]),

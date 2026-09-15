@@ -106,7 +106,6 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
 
     // Message
     let msg = Paragraph::new(message)
-        .style(Style::default().fg(Color::White))
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true });
     f.render_widget(msg, chunks[1]);

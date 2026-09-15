@@ -64,10 +64,7 @@ pub fn render_dv_dialog(f: &mut Frame, app: &App) {
             Span::styled(profile_str, Style::default().fg(Color::Magenta)),
         ]),
         Line::raw(""),
-        Line::from(Span::styled(
-            t(lang, Msg::DvDialogPrompt),
-            Style::default().fg(Color::White),
-        )),
+        Line::from(Span::styled(t(lang, Msg::DvDialogPrompt), Style::default())),
     ])
     .wrap(Wrap { trim: true });
     f.render_widget(header, chunks[0]);
@@ -92,7 +89,7 @@ pub fn render_dv_dialog(f: &mut Frame, app: &App) {
                 .bg(Color::Magenta)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default()
         };
 
         let option = Paragraph::new(vec![

@@ -238,7 +238,7 @@ fn create_entry_item(
     } else if is_disc_image {
         ("◉ ", Color::Magenta)
     } else {
-        ("  ", Color::White)
+        ("  ", Color::Reset)
     };
 
     let style = if is_selected {

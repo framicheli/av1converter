@@ -72,7 +72,7 @@ pub fn create_menu_item(text: &str, index: usize, selected: usize) -> ListItem<'
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
+        Style::default()
     };
 
     let prefix = if index == selected { "> " } else { "  " };

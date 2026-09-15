@@ -791,7 +791,7 @@ fn build_config_items(
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default()
             };
             let value_style = if is_selected {
                 Style::default()
