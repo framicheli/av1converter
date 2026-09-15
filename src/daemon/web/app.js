@@ -52,15 +52,26 @@ $("toast-close").addEventListener("click", hideToast);
 
 // URL fragments never reach the HTTP server, proxy logs or Referer headers.
 // Storage can be disabled by privacy settings, so it is strictly best-effort.
-let token = (() => {
+// Reads #token=… from the URL, stores it and strips it from the address bar.
+function tokenFromHash() {
   const fromUrl = new URLSearchParams(location.hash.slice(1)).get("token");
-  if (fromUrl) {
-    try { sessionStorage.setItem("av1c_token", fromUrl); } catch { /* memory only */ }
-    history.replaceState(null, "", location.pathname + location.search);
-    return fromUrl;
-  }
+  if (!fromUrl) return null;
+  try { sessionStorage.setItem("av1c_token", fromUrl); } catch { /* memory only */ }
+  history.replaceState(null, "", location.pathname + location.search);
+  return fromUrl;
+}
+
+let token = tokenFromHash() ?? (() => {
   try { return sessionStorage.getItem("av1c_token") || ""; } catch { return ""; }
 })();
+
+// A token added to the URL of an open page replaces the current one.
+addEventListener("hashchange", () => {
+  const next = tokenFromHash();
+  if (!next) return;
+  token = next;
+  poll();
+});
 
 // ── Strings ─────────────────────────────────────────────────────────
 //
