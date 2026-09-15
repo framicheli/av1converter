@@ -1005,23 +1005,34 @@ impl App {
         self.analysis_outstanding = 0;
     }
 
-    /// Cancel every outstanding probe without disturbing concurrent work.
+    /// Cancel every outstanding probe, keeping analysed jobs and concurrent
+    /// work. No-op once the analysis round has ended.
     pub fn cancel_analysis(&mut self) {
+        if self.analysis_receiver.is_none() {
+            return;
+        }
         self.drop_analysis_round();
-        if self.encoding_active || self.disc_operation_active() {
-            for job in &mut self.queue.jobs {
-                if matches!(job.status, JobStatus::Analyzing) {
-                    job.status = JobStatus::Skipped {
-                        reason: "Cancelled".to_string(),
-                    };
-                    self.queue.skipped_count += 1;
-                }
+        for job in &mut self.queue.jobs {
+            if matches!(job.status, JobStatus::Analyzing) {
+                job.status = JobStatus::Skipped {
+                    reason: "Cancelled".to_string(),
+                };
+                self.queue.skipped_count += 1;
             }
-            self.navigate_to_queue();
-        } else {
+        }
+        // A batch left with nothing to configure, encode or show goes home.
+        let nothing_left = self.queue.jobs.iter().all(|job| {
+            matches!(
+                job.status,
+                JobStatus::Skipped { .. } | JobStatus::Error { .. }
+            )
+        });
+        if nothing_left && !self.work_active() {
             self.discard_staged_jobs();
             self.queue.reset();
             self.navigate_to_home();
+        } else {
+            self.finish_analysis_round();
         }
     }
 
@@ -2095,6 +2106,7 @@ mod tests {
         analyzing.status = JobStatus::Analyzing;
         app.queue.jobs = vec![encoding, analyzing];
         app.encoding_active = true;
+        app.current_screen = Screen::Queue;
         let (_tx, rx) = mpsc::channel();
         app.analysis_receiver = Some(rx);
 
@@ -2110,6 +2122,38 @@ mod tests {
             JobStatus::Skipped { .. }
         ));
         assert_eq!(app.current_screen, Screen::Queue);
+    }
+
+    #[test]
+    fn cancelling_analysis_keeps_analysed_jobs() {
+        let mut app = App::new();
+        let mut analysed = EncodingJob::new(PathBuf::from("/staging/rip-a/DISC_t00.mkv"));
+        analysed.status = JobStatus::AwaitingConfig;
+        analysed.temporary = true;
+        let mut analyzing = EncodingJob::new(PathBuf::from("analyzing.mkv"));
+        analyzing.status = JobStatus::Analyzing;
+        app.queue.jobs = vec![analysed, analyzing];
+        app.current_screen = Screen::Queue;
+        let (_tx, rx) = mpsc::channel();
+        app.analysis_receiver = Some(rx);
+
+        app.cancel_analysis();
+
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert!(matches!(
+            app.queue.jobs[0].status,
+            JobStatus::AwaitingConfig
+        ));
+        assert!(matches!(
+            app.queue.jobs[1].status,
+            JobStatus::Skipped { .. }
+        ));
+        assert_eq!(app.current_screen, Screen::TrackConfig);
+
+        // A second confirmation after the round ended changes nothing.
+        app.cancel_analysis();
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert_eq!(app.current_screen, Screen::TrackConfig);
     }
 
     #[test]
