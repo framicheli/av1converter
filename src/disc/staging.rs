@@ -204,7 +204,6 @@ pub fn release_finished(jobs: &mut [EncodingJob]) -> Vec<PathBuf> {
         }
         released.push(job.path.clone());
         job.temporary = false;
-        job.source_deleted = true;
     }
     released
 }
@@ -496,7 +495,10 @@ mod tests {
                 if *kept { "keep" } else { "delete" }
             );
             assert_eq!(job.temporary, *kept);
-            assert_eq!(job.source_deleted, !*kept);
+            assert!(
+                !job.source_deleted,
+                "a staging copy is not the user's source"
+            );
             // A kept file is only useful if its directory is still there.
             assert_eq!(job.path.parent().unwrap().is_dir(), *kept);
         }
