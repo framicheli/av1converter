@@ -132,6 +132,13 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     for idx in &params.tracks.subtitle_indices {
         args.extend(["-map".to_string(), format!("0:s:{idx}")]);
     }
+    // Matroska output keeps the source's attachments, such as fonts and cover art.
+    if std::path::Path::new(&params.output)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"))
+    {
+        args.extend(["-map".to_string(), "0:t?".to_string()]);
+    }
 
     if params.remux_only {
         // Remux mode: the video is already AV1 and is copied as-is. Audio
@@ -641,7 +648,10 @@ mod tests {
             .filter(|(i, _)| i > &0 && args[i - 1] == "-map")
             .map(|(_, a)| a)
             .collect();
-        assert_eq!(maps, vec!["0:v:0", "0:a:1", "0:a:3", "0:a:4", "0:s:0"]);
+        assert_eq!(
+            maps,
+            vec!["0:v:0", "0:a:1", "0:a:3", "0:a:4", "0:s:0", "0:t?"]
+        );
 
         // ...while the codec options are indexed by output position.
         assert_eq!(arg_after(&args, "-c:a:0"), Some("copy".to_string()));
@@ -743,6 +753,28 @@ mod tests {
         assert!(!args.iter().any(|arg| arg.starts_with("0:s")));
         assert!(!args.contains(&"-c:a".to_string()));
         assert!(!args.contains(&"-c:a:0".to_string()));
+    }
+
+    /// Attachments are mapped into Matroska only; `?` tolerates a source with none.
+    #[test]
+    fn attachments_are_kept_in_matroska_output() {
+        let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
+        params.tracks.subtitle_indices = vec![0];
+        let args = build_ffmpeg_args(&params);
+        let maps: Vec<&String> = args
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i > &0 && args[i - 1] == "-map")
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(maps, vec!["0:v:0", "0:s:0", "0:t?"]);
+
+        params.output = "out.MKV".to_string();
+        assert!(build_ffmpeg_args(&params).contains(&"0:t?".to_string()));
+        for output in ["out.mp4", "out.webm"] {
+            params.output = output.to_string();
+            assert!(!build_ffmpeg_args(&params).contains(&"0:t?".to_string()));
+        }
     }
 
     #[test]
