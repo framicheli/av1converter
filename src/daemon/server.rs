@@ -94,15 +94,28 @@ fn host_is_pinned(host: &str) -> bool {
 
 /// Whether the connection and requested origin both identify this host.
 fn request_is_local(request: &Request) -> bool {
-    let peer_is_loopback = request
-        .remote_addr()
-        .is_some_and(|address| address.ip().is_loopback());
-    let host_is_loopback = request
-        .headers()
+    is_local(request.remote_addr(), request.headers())
+}
+
+/// A loopback peer with a loopback `Host` and no reverse-proxy forwarding
+/// header.
+fn is_local(peer: Option<&std::net::SocketAddr>, headers: &[Header]) -> bool {
+    let peer_is_loopback = peer.is_some_and(|address| address.ip().is_loopback());
+    let host_is_loopback = headers
         .iter()
         .find(|header| header.field.equiv("Host"))
         .is_some_and(|header| host_is_loopback(header.value.as_str()));
-    peer_is_loopback && host_is_loopback
+    let forwarded = headers.iter().any(|header| {
+        [
+            "X-Forwarded-For",
+            "X-Forwarded-Host",
+            "X-Real-IP",
+            "Forwarded",
+        ]
+        .iter()
+        .any(|name| header.field.equiv(name))
+    });
+    peer_is_loopback && host_is_loopback && !forwarded
 }
 
 /// Whether a `Host` header names a loopback origin.
@@ -421,6 +434,27 @@ mod tests {
         assert!(host_is_loopback("localhost:8399"));
         assert!(!host_is_loopback("192.168.1.10:8399"));
         assert!(!host_is_loopback("media.example.com"));
+    }
+
+    #[test]
+    fn a_proxied_loopback_request_is_not_local() {
+        let loopback: std::net::SocketAddr = "127.0.0.1:50000".parse().unwrap();
+        let host = Header::from_bytes("Host", "127.0.0.1:8399").unwrap();
+        assert!(is_local(Some(&loopback), std::slice::from_ref(&host)));
+        for name in [
+            "X-Forwarded-For",
+            "x-forwarded-host",
+            "X-Real-IP",
+            "Forwarded",
+        ] {
+            let forwarded = Header::from_bytes(name, "203.0.113.7").unwrap();
+            assert!(
+                !is_local(Some(&loopback), &[host.clone(), forwarded]),
+                "{name} still counted as local"
+            );
+        }
+        let remote: std::net::SocketAddr = "192.168.1.5:50000".parse().unwrap();
+        assert!(!is_local(Some(&remote), &[host]));
     }
 
     #[test]
