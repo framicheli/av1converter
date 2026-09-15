@@ -1130,13 +1130,18 @@ function setBrowserMode(mode, onPick) {
 
 function openBrowser(mode, onPick, startPath = browser.path) {
   browser.session += 1;
+  browser.loaded = false;
+  $("browser-list").textContent = "";
+  $("browser-path").textContent = "";
   setBrowserMode(mode, onPick);
   $("browser").showModal();
   loadDir(startPath || browser.path, true);
 }
 
 function updateBrowserChoose() {
+  // browser.loaded: a listing for browser.path arrived in this session.
   $("browser-choose").disabled = offline
+    || !browser.loaded
     || Boolean(addToQueue.running)
     || Boolean(scanDiscFolder.running);
 }
@@ -1150,7 +1155,11 @@ async function loadDir(path, takeFocus = false) {
   try {
     data = await api(`/api/fs?path=${encodeURIComponent(path)}${$("browser-hidden").checked ? "&hidden=1" : ""}`);
   } catch (e) {
-    if (request === loadDir.request && session === browser.session) toast(e.message, true);
+    if (request === loadDir.request && session === browser.session) {
+      toast(e.message, true);
+      // A start path that fails to load falls back to the default directory.
+      if (!browser.loaded && path) loadDir("", takeFocus);
+    }
     return;
   } finally {
     if (request === loadDir.request && session === browser.session) {
@@ -1161,6 +1170,8 @@ async function loadDir(path, takeFocus = false) {
   if (request !== loadDir.request || session !== browser.session) return;
 
   browser.path = data.path;
+  browser.loaded = true;
+  updateBrowserChoose();
   renderCrumbs(data.path);
   // Focus target for a directory with no selectable entries.
   $("browser-title").tabIndex = -1;
