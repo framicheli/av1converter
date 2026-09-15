@@ -1499,12 +1499,21 @@ function discShape() {
 let discShapeRendered = null;
 
 function renderDisc() {
+  const modal = $("disc-modal");
+  const hadFocus = modal.contains(document.activeElement);
   const shape = discShape();
   if (shape !== discShapeRendered) {
     discShapeRendered = shape;
     renderDiscBody();
   }
   updateDiscFooter();
+  // Focus lost from the dialog by the redraw moves to the first enabled control
+  // in the body, or to the heading when there is none.
+  if (hadFocus && modal.open && !modal.contains(document.activeElement)) {
+    $("disc-title").tabIndex = -1;
+    ($("disc-body").querySelector("button:not(:disabled), input:not(:disabled)")
+      ?? $("disc-title")).focus();
+  }
 }
 
 // Repaints the selected count and the Rip button. Leaves the title list.
