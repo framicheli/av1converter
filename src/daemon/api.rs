@@ -272,8 +272,10 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
         .as_ref()
         .filter(|meta| meta.hdr_type == HdrType::DolbyVision)
         .map(|meta| {
+            // A stored mode applies only on SVT-AV1; other encoders write HDR10.
             let effective = job
                 .dv_mode
+                .filter(|_| encoder == Encoder::SvtAv1)
                 .unwrap_or_else(|| resolved_dv_mode(encoder, meta.dv_profile));
             json!({
                 "profile": meta.dv_profile,
@@ -457,6 +459,10 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
                     Some(DV_HDR10) => Some(DvMode::ToHdr10),
                     // Only SVT-AV1 can write the RPU.
                     Some(DV_KEEP) if encoder == Encoder::SvtAv1 => Some(DvMode::KeepDolbyVision),
+                    // A keep mode stored under SVT-AV1, sent back unchanged.
+                    Some(DV_KEEP) if job.dv_mode == Some(DvMode::KeepDolbyVision) => {
+                        Some(DvMode::ToHdr10)
+                    }
                     Some(DV_KEEP) => {
                         return (
                             400,
@@ -2416,6 +2422,21 @@ mod tests {
             // Converting to HDR10 is still allowed on that encoder.
             let (code, body) = job_tracks_set(&shared, &json!({"id": id, "dv_mode": "hdr10"}));
             assert_eq!(code, 200);
+            assert_eq!(body["dv_mode"], json!("hdr10"));
+        }
+
+        /// A keep mode chosen under SVT-AV1 reads and saves as HDR10 after a
+        /// switch to a hardware encoder.
+        #[test]
+        fn a_stored_keep_mode_saves_as_hdr10_on_a_hardware_encoder() {
+            let (shared, id) = shared_with_dv_job(Encoder::Nvenc, Some(8));
+            lock(&shared).queue.job_by_id_mut(id).unwrap().dv_mode = Some(DvMode::KeepDolbyVision);
+
+            let offered = job_tracks(&shared, &id.to_string()).1;
+            assert_eq!(offered["dv"]["mode"], json!("hdr10"));
+
+            let (code, body) = job_tracks_set(&shared, &json!({"id": id, "dv_mode": "keep"}));
+            assert_eq!(code, 200, "{body}");
             assert_eq!(body["dv_mode"], json!("hdr10"));
         }
 
