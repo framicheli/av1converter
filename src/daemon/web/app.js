@@ -751,7 +751,7 @@ $("btn-clear").addEventListener("click", async () => {
   try {
     const r = await post("/api/queue/clear_finished");
     toast(trf("removed_finished", { n: r.removed }));
-    refreshQueue();
+    forceRefreshQueue();
   } catch (e) { toast(e.message, true); }
   finally {
     clearingFinished = false;
@@ -1071,7 +1071,7 @@ $("tracks-save").addEventListener("click", async () => {
     toast(r.applied > 1
       ? trf("tracks_applied", { n: r.applied })
       : tr("tracks_updated"));
-    refreshQueue();
+    forceRefreshQueue();
   } catch (e) { toast(e.message, true); }
   finally {
     editor.saving = false;
@@ -1290,7 +1290,7 @@ async function addToQueue(path, mode) {
     toast(r.added > 0
       ? `${trf("added_files", { n: r.added })}${skipped}`
       : trf("nothing_added", { n: r.already_queued }));
-    refreshQueue();
+    forceRefreshQueue();
   } catch (e) { toast(e.message, true); }
   finally {
     addToQueue.running = false;
@@ -1617,7 +1617,7 @@ $("disc-rip").addEventListener("click", async () => {
       session.ripping = true;
       $("disc-modal").close();
     }
-    refreshQueue();
+    forceRefreshQueue();
   } catch (e) {
     toast(e.message, true);
     if (disc === session) updateDiscFooter();
