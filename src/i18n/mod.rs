@@ -262,6 +262,7 @@ pub enum Msg {
     InvalidAddress,
     InvalidPort,
     InvalidContainer,
+    OutputDirectoryMissing,
     CfgGroupTracks,
     CfgGroupDisc,
     CfgVmafThreshold,
@@ -1921,6 +1922,26 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Le conteneur doit être mkv, mp4 ou webm",
             De => "Der Container muss mkv, mp4 oder webm sein",
             Zh => "容器必须是 mkv、mp4 或 webm",
+        },
+        Msg::OutputDirectoryMissing => match lang {
+            En => {
+                "Saved, but the output directory does not exist: encodes and disc rips that write there will fail until it is created or changed"
+            }
+            It => {
+                "Salvato, ma la cartella di output non esiste: le codifiche e i rip dei dischi che scrivono lì falliranno finché non viene creata o cambiata"
+            }
+            Es => {
+                "Guardado, pero la carpeta de salida no existe: las codificaciones y los ripeos de discos que escriben allí fallarán hasta que se cree o se cambie"
+            }
+            Fr => {
+                "Enregistré, mais le dossier de sortie n'existe pas : les encodages et les extractions de disques qui y écrivent échoueront tant qu'il n'est pas créé ou modifié"
+            }
+            De => {
+                "Gespeichert, aber das Ausgabeverzeichnis existiert nicht: Kodierungen und Disc-Rips, die dorthin schreiben, schlagen fehl, bis es angelegt oder geändert wird"
+            }
+            Zh => {
+                "已保存，但输出目录不存在：在创建或更改该目录之前，写入该目录的编码和光盘翻录将会失败"
+            }
         },
         Msg::CfgGroupTracks | Msg::WebTracksTitle => match lang {
             En => "Tracks",

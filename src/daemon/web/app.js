@@ -1989,6 +1989,8 @@ $("btn-save-settings").addEventListener("click", async () => {
   save.textContent = tr("saving");
   try {
     config = await post("/api/settings", submittedConfig);
+    const saveWarning = config._warning;
+    delete config._warning;
     config._service = serviceState;
     if (replacementToken) {
       token = replacementToken;
@@ -2006,6 +2008,7 @@ $("btn-save-settings").addEventListener("click", async () => {
     }
     buildSettingsForm();
     updateSettingsActions();
+    if (saveWarning) toast(saveWarning, true);
     // Save and Discard disabling is the on-screen confirmation; the announcement
     // carries it to a screen reader.
     announce(tr("saved_exclaim"));

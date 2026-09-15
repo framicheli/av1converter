@@ -1274,7 +1274,12 @@ fn merged_settings(
         return Err("output directory is required".to_string());
     }
     // Ripped files encode into the output directory whatever `same_directory` says.
-    if let Some(directory) = directory {
+    // A directory unchanged from the live config, under the same browse root, is
+    // kept as is; `settings_post` warns when it no longer exists.
+    if let Some(directory) = directory
+        && (live.output.output_directory.as_deref() != Some(directory)
+            || live.daemon.browse_root != config.daemon.browse_root)
+    {
         let path = Path::new(directory);
         if !path.is_dir() {
             return Err("output directory does not exist".to_string());
@@ -1357,6 +1362,11 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
     if let Err(e) = config.save() {
         return (500, json!({"error": format!("failed to save: {e}")}));
     }
+    let output_directory_missing = config
+        .output
+        .output_directory
+        .as_deref()
+        .is_some_and(|dir| !dir.is_empty() && !Path::new(dir).is_dir());
     let mut state = lock(shared);
     // Jobs queued since the snapshot are compared by path prefix, without
     // touching the filesystem.
@@ -1378,7 +1388,13 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
         return (409, json!({"error": error}));
     }
     let output_changed = state.config.output != config.output;
-    let saved = redacted(&config);
+    let mut saved = redacted(&config);
+    if output_directory_missing {
+        saved["_warning"] = json!(crate::i18n::t(
+            config.language,
+            crate::i18n::Msg::OutputDirectoryMissing
+        ));
+    }
     state.config = config;
     if output_changed {
         let output = state.config.output.clone();
@@ -2178,6 +2194,35 @@ mod tests {
             body["output"]["same_directory"] = json!(false);
             body["output"]["output_directory"] = Value::Null;
             assert!(merged_settings(&body, &AppConfig::default(), false).is_err());
+        }
+
+        /// A saved output directory that no longer exists does not block other
+        /// changes and is reported back as a warning; a new directory must exist.
+        #[test]
+        fn an_unchanged_missing_output_directory_is_kept_with_a_warning() {
+            use crate::daemon::state::DaemonState;
+            use std::sync::{Arc, Mutex};
+
+            let gone =
+                std::env::temp_dir().join(format!("av1c_gone_output_{}", std::process::id()));
+            let mut current = AppConfig::default();
+            current.output.output_directory = Some(gone.to_string_lossy().into_owned());
+            let mut body = serde_json::to_value(&current).unwrap();
+            body["quality"]["vmaf_threshold"] = json!(91.0);
+
+            let merged = merged_settings(&body, &current, false).unwrap();
+            assert_eq!(
+                merged.output.output_directory,
+                current.output.output_directory
+            );
+
+            let shared = Arc::new(Mutex::new(DaemonState::new(current.clone())));
+            let (code, response) = settings_post(&shared, &body, false);
+            assert_eq!(code, 200, "{response}");
+            assert!(response["_warning"].is_string(), "{response}");
+
+            body["output"]["output_directory"] = json!(gone.join("other"));
+            assert!(merged_settings(&body, &current, false).is_err());
         }
 
         #[test]

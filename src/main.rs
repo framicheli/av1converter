@@ -1153,7 +1153,12 @@ fn validate_and_save_config(
     config.normalize_changed_host_paths(previous)?;
     config.validate_settings()?;
     config.sanitize();
+    // An output directory unchanged since the screen opened does not block the
+    // save; `save_config` warns when it no longer exists.
+    let output_changed = config.output.same_directory != previous.output.same_directory
+        || config.output.output_directory != previous.output.output_directory;
     if !config.output.same_directory
+        && output_changed
         && !config
             .output
             .output_directory
@@ -1179,7 +1184,17 @@ fn save_config(app: &mut App) {
         app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
     } else {
         app.config_snapshot = Some(app.config.clone());
-        app.set_timed_success(t(lang, Msg::SavedExclaim), 3);
+        let output_directory_missing = app
+            .config
+            .output
+            .output_directory
+            .as_deref()
+            .is_some_and(|dir| !dir.is_empty() && !std::path::Path::new(dir).is_dir());
+        if output_directory_missing {
+            app.set_timed_error(t(lang, Msg::OutputDirectoryMissing), 6);
+        } else {
+            app.set_timed_success(t(lang, Msg::SavedExclaim), 3);
+        }
     }
 }
 
@@ -1624,6 +1639,22 @@ mod tests {
         let err = parse_cli(["--foo"]).unwrap_err();
         assert!(err.contains("Unknown argument: --foo"), "{err}");
         assert!(!err.contains("Did you mean"), "{err}");
+    }
+
+    /// A missing output directory blocks a save only when the save changes it.
+    #[test]
+    fn an_unchanged_missing_output_directory_does_not_block_saving() {
+        let mut config = config::AppConfig::default();
+        config.output.same_directory = false;
+        config.output.output_directory = Some(
+            std::env::temp_dir()
+                .join(format!("av1c_missing_output_{}", std::process::id()))
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let previous = config.clone();
+        assert!(validate_and_save_config(&mut config.clone(), &previous).is_ok());
+        assert!(validate_and_save_config(&mut config, &config::AppConfig::default()).is_err());
     }
 
     #[test]
