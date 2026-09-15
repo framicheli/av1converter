@@ -186,11 +186,11 @@ Legacy aliases: --daemon is --start; --daemon-foreground is --start-foreground
 ### Workflow
 
 1. **Home menu** — Open a single file, a folder, or a folder recursively; rip a DVD or Blu-ray; or go to Configuration
-2. **Selection** — Navigate with arrow keys. For a file, `Enter` picks it; for a folder, `Enter` opens it and `Space` selects it. For a disc, pick the drive (skipped when there is only one), or open a disc folder or `.iso` image, then toggle titles with `Space`; extraction feeds the same steps below
+2. **Selection** — Navigate with arrow keys. For a file, `Enter` picks it; for a folder, `Enter` opens it and `Space` selects the highlighted subfolder, or the open folder when the cursor is on `..` or a file. For a disc, pick the drive (skipped when there is only one), or open a disc folder or `.iso` image, then toggle titles with `Space`; extraction feeds the same steps below
 3. **File review** — Confirm the list of files found (multiple files or a folder only; a single file skips this step)
 4. **Analysis** — Each file is probed for its streams, resolution and HDR format
 5. **Track configuration** — Select audio and subtitle tracks to include, and switch the per-file mode (encode or demux/remux) with `r`
-6. **Encoding and VMAF verification** — Monitor per-file and overall progress; `Esc` asks before cancelling. A quality score is computed after each file; the source is deleted only if `delete_source_on_success` is on and the score meets the threshold (encode mode only, never when audio was transcoded or the job was cancelled)
+6. **Encoding and VMAF verification** — Monitor per-file and overall progress; `Esc` asks before cancelling. Cancelling during analysis stops only the analysis; files already analysed stay queued. A quality score is computed after each file; the source is deleted only if `delete_source_on_success` is on and the score meets the threshold (encode mode only, never when audio was transcoded or the job was cancelled)
 7. **Finish** — View a summary of conversions, skipped files, and space saved; `Enter` starts a new conversion after a confirmation, `Esc` returns to the queue
 
 ## Modes
@@ -246,11 +246,11 @@ Two things worth knowing:
 |-----|-------|--------|
 | `↑` / `k`, `↓` / `j` | Everywhere | Navigate |
 | `Enter` | Everywhere | Select / Confirm; on the queue, configure the next job waiting for tracks |
-| `Space` | Selection, disc titles, track config | Select a folder, toggle a disc title, toggle the highlighted track |
+| `Space` | Selection, disc titles, track config | Select the highlighted or open folder, toggle a disc title, toggle the highlighted track |
 | `Esc` | Everywhere | Go back; on the queue, cancel the disc rip, analysis or encode (asks first) |
 | `PgUp` / `PgDn` | Queue, finish, disc titles | Scroll the detail pane |
 | `K` | Queue | Move the highlighted waiting job up |
-| `Tab` | Track config | Cycle focus: audio → subtitles → Continue |
+| `Tab` / `Shift+Tab` | Track config | Cycle focus forward / backward: audio → subtitles → Continue |
 | `←` / `h`, `→` / `l` | Track config | Previous / next file |
 | `r` | Track config | Switch mode: encode ↔ demux/remux |
 | `d` | Track config | Change Dolby Vision handling (DV sources) |
@@ -262,7 +262,7 @@ Two things worth knowing:
 | `s` | Configuration | Save configuration |
 | `1` / `2` | Dolby Vision dialog | Pick an option (`Esc` applies the recommended one) |
 | `y` / `n` | Confirmation dialogs | Answer yes / no |
-| `q`, `Ctrl+C` | Everywhere | Quit (with confirmation; `q` is ignored while editing a text field) |
+| `q`, `Ctrl+C` | Everywhere | Quit (with confirmation, which mentions unsaved configuration changes; `q` is ignored while editing a text field) |
 
 ## Disc Ripping
 
@@ -276,7 +276,7 @@ Ripping needs **MakeMKV**, which is not bundled:
 | Linux | `makemkv-oss` + `makemkv-bin` from source, or a distro package (AUR `makemkv`, the Ubuntu PPA) | On `PATH`. The GUI is optional: `./configure --disable-gui` skips Qt entirely. Your user must be in the `cdrom` group. |
 | Windows | The installer from makemkv.com | `C:\Program Files (x86)\MakeMKV\` |
 
-Set `makemkvcon_path` under `[disc]` if it lives somewhere else — a Flatpak install, for instance, needs a small wrapper script since it is run through `flatpak run`. Set `staging_directory` to a scratch drive: a Blu-ray title needs 100 GB or more, and the staging file is deleted once its encode succeeds. An existing output directory must be configured before a rip can start (a disc job cannot write next to its source, which is the staging directory); disc jobs write there even when `same_directory` is on. In the TUI the field appears once `same_directory` is switched off.
+Set `makemkvcon_path` under `[disc]` if it lives somewhere else — a Flatpak install, for instance, needs a small wrapper script since it is run through `flatpak run`. Set `staging_directory` to a scratch drive: a Blu-ray title needs 100 GB or more, and the staging file is deleted once its encode succeeds. Staging directories left behind by an interrupted rip are removed when the daemon starts and whenever a disc run ends. An existing output directory must be configured before a rip can start (a disc job cannot write next to its source, which is the staging directory); disc jobs write there even when `same_directory` is on. In the TUI the field appears once `same_directory` is switched off.
 
 Besides a physical drive, a disc folder (`VIDEO_TS` / `BDMV`) or an `.iso` image can be opened. Titles shorter than 60 seconds are hidden, and output is named `<disc label>_t<NN>` plus the configured suffix.
 
@@ -286,7 +286,7 @@ DVD decryption is free permanently. Blu-ray needs a purchased MakeMKV licence or
 
 ## Daemon Mode and Web UI
 
-The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, import titles from a disc in the machine's own drive, cancel, remove, clear finished jobs), and a settings page. The queue is persisted, so jobs still waiting when the daemon stops are restored on the next start. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder. After analysis finishes, a centered dialog opens for the per-file choices; **Apply to remaining files** copies them to the other waiting jobs by track order, while extra tracks keep their automatic defaults.
+The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, import titles from a disc in the machine's own drive, cancel, remove, clear finished jobs), and a settings page. The queue is persisted, so jobs still waiting when the daemon stops are restored on the next start. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder. After analysis finishes, a centered dialog opens for the per-file choices; **Apply to remaining files** copies them to the other waiting jobs by track order, while extra tracks keep their automatic defaults. Closing the dialog without saving stops the automatic prompts until new files are added. Removing a ripped job, or clearing finished jobs that include one, asks first, because its rip file is deleted.
 
 Enable it in Settings (or set `enabled = true` under `[daemon]`), then:
 
@@ -304,13 +304,13 @@ av1converter --install-service    # systemd user unit (Linux) or launchd agent (
 av1converter --uninstall-service  # remove it
 ```
 
-`--install-service` also sets `enabled = true`, generates a token if needed, and starts the daemon right away when it is not already running.
+`--install-service` also sets `enabled = true`, generates a token if needed, and starts the daemon right away when it is not already running. The systemd unit and the launchd agent record your `PATH` at install time, so an FFmpeg installed through Homebrew or another package manager is found; re-run `--install-service` (or turn Run at Startup off and on) after upgrading from an older version or moving FFmpeg.
 
 `--stop` lasts until the next login; uninstall is what prevents it coming back. On a headless Linux machine the user unit dies at logout unless lingering is enabled (`loginctl enable-linger $USER`). Re-run `--install-service` after moving the binary so `ExecStart` stays correct.
 
-Turning **Run at Startup** off from the web settings page leaves the current daemon session running and prevents it from starting at the next login.
+Turning **Run at Startup** off from the web settings page leaves the current daemon session running and prevents it from starting at the next login. On macOS the launchd job is also disabled, so a crash does not relaunch it.
 
-Both `--stop` and `--restart` cancel an active encode cleanly. `--start`, `--stop` and `--restart` are Unix-only; on Windows run `--start-foreground` and stop it with `Ctrl+C`. The old `--daemon` and `--daemon-foreground` spellings remain available as compatibility aliases. `--start` logs to `$XDG_DATA_HOME/av1converter/daemon.log` (default `~/.local/share/av1converter/daemon.log`); `--start-foreground` and the systemd unit log to stdout (the journal).
+Both `--stop` and `--restart` cancel an active encode cleanly; `--stop` waits up to 30 seconds. `--start` returns once the daemon is listening, and reports a failure (a port already in use, for example) instead of claiming success. `--start`, `--stop` and `--restart` are Unix-only; on Windows run `--start-foreground` and stop it with `Ctrl+C`. The old `--daemon` and `--daemon-foreground` spellings remain available as compatibility aliases. `--start` logs to `$XDG_DATA_HOME/av1converter/daemon.log` (default `~/.local/share/av1converter/daemon.log`); `--start-foreground` and the systemd unit log to stdout (the journal).
 
 The queue is saved to `queue.json` in the same directory, with the previous save kept as `queue.json.bak`. The TUI does not persist its queue.
 
@@ -324,7 +324,7 @@ The web UI can browse the filesystem, start encodes and rewrite the configuratio
 Web UI listening on http://127.0.0.1:8399/#token=aa2006351b5214a820e3fdc64da870af
 ```
 
-Open that link once and the browser keeps the token for the tab's session; `av1converter --status` prints it again whenever you need it (use it after `--start-foreground`, which prints the URL without the token). The fragment after `#` is not sent to the HTTP server or included in HTTP logs. Clearing or weakening `auth_token` does not disable authentication — a strong token is generated on the next start.
+Open that link once and the browser keeps the token for the tab's session; `av1converter --status` prints it again whenever you need it (use it after `--start-foreground`, which prints the URL without the token). Adding `#token=…` to the address of a page that is already open works too. The fragment after `#` is not sent to the HTTP server or included in HTTP logs. Clearing or weakening `auth_token` does not disable authentication — a strong token is generated on the next start.
 
 Two things are worth knowing before exposing the daemon to a network:
 
@@ -333,7 +333,7 @@ Two things are worth knowing before exposing the daemon to a network:
 
 The daemon serves plain HTTP. If it must be reachable beyond the local machine, put it behind an HTTPS reverse proxy with connection/request timeouts and rate limiting, and keep the direct daemon port firewalled from untrusted networks. The embedded server is intended for trusted local or LAN use, not direct internet exposure.
 
-Every configuration field exists in both the TUI and web settings pages; the TUI hides rows that do not apply (per-tier values outside `custom`, VMAF options while VMAF is off, `output_directory` while `same_directory` is on) and the web page greys them out. Settings that can widen host access or select an executable — the `[daemon]` and `[disc]` blocks — are writable in the web UI only when it is opened through a loopback origin such as `http://127.0.0.1:8399/` or `http://localhost:8399/`. They remain visible but read-only to LAN and reverse-proxy clients. Bind-address and port changes take effect after a daemon restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
+Every configuration field exists in both the TUI and web settings pages; the TUI hides rows that do not apply (per-tier values outside `custom`, VMAF options while VMAF is off, `output_directory` while `same_directory` is on) and the web page greys them out. Settings that can widen host access or select an executable — the `[daemon]` and `[disc]` blocks — are writable in the web UI only when it is opened through a loopback origin such as `http://127.0.0.1:8399/` or `http://localhost:8399/`. They remain visible but read-only to LAN and reverse-proxy clients; a request carrying `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP` or `Forwarded` counts as remote. The web Settings tab re-reads the configuration each time it opens, unless it has unsaved edits. Bind-address and port changes take effect after a daemon restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
 
 The current access token is never returned to a browser. A local web session can leave the token field blank to keep it or enter a replacement containing at least 32 characters. The accepted replacement becomes the browser session token immediately.
 
