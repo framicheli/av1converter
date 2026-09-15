@@ -517,6 +517,7 @@ function createRow(job) {
   statusCell.append(badge, confirm, bar, detail);
 
   const size = row.insertCell();
+  size.className = "size-cell";
   const saved = row.insertCell();
 
   const moveUp = document.createElement("button");
@@ -1636,7 +1637,7 @@ function renderDiscBody() {
     meta.textContent = [
       title.duration,
       title.size,
-      `${title.chapters} ${tr("disc_chapters")}`,
+      title.chapters ? `${title.chapters} ${tr("disc_chapters")}` : "",
       ...title.tracks,
     ].filter(Boolean).join(" · ");
     info.append(name, meta);
