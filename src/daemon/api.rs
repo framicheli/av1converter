@@ -607,7 +607,7 @@ pub fn queue_add(
                     entries
                         .filter_map(Result::ok)
                         .map(|e| e.path())
-                        .filter(|p| is_video_file(p)),
+                        .filter(|p| p.is_file() && is_video_file(p)),
                 );
             }
         }
