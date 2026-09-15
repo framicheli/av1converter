@@ -668,6 +668,7 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
     let track_config = state.config.tracks.clone();
     let audio_config = state.config.audio.clone();
     let encoder = state.config.encoder;
+    let lang = state.config.language;
 
     // The job may have been removed while analysis was running
     let Some(job) = state.queue.job_by_id_mut(id) else {
@@ -690,6 +691,13 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
             job.remux_only = is_av1;
             auto_select_tracks(job, &track_config, &audio_config);
             job.generate_output_path(&output_config);
+            if job.temporary && job.output_path.is_none() {
+                job.status = JobStatus::Error {
+                    message: crate::disc::DiscError::NoDestination.message(lang),
+                };
+                state.queue.state.error_count += 1;
+                return;
+            }
             // Mirrors `App::maybe_open_dv_dialog`, shared with the web API.
             if !is_av1 && hdr_type == HdrType::DolbyVision {
                 job.dv_mode = Some(api::resolved_dv_mode(encoder, dv_profile));
@@ -714,6 +722,7 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
 }
 
 /// Start a new encode session if idle and jobs are ready.
+#[allow(clippy::too_many_lines)]
 fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) {
     let mut state = lock(shared);
     if state.encoding_active {
@@ -724,6 +733,7 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
     let audio_config = state.config.audio.clone();
     let mut job_ids: Vec<u64> = Vec::new();
     let mut worker_jobs: Vec<WorkerJob> = Vec::new();
+    let mut without_destination: Vec<u64> = Vec::new();
     for (id, job) in state.queue.jobs_with_ids() {
         if !matches!(job.status, JobStatus::Ready) {
             continue;
@@ -738,7 +748,10 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         // directory.
         let output = match job.output_path.clone() {
             Some(output) => output,
-            None if job.temporary => continue,
+            None if job.temporary => {
+                without_destination.push(id);
+                continue;
+            }
             None => {
                 let stem = job.path.file_stem().unwrap_or_default().to_string_lossy();
                 let parent = job.path.parent().unwrap_or(std::path::Path::new("."));
@@ -767,6 +780,16 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         });
         job_ids.push(id);
         break;
+    }
+
+    let lang = state.config.language;
+    for id in without_destination {
+        if let Some(job) = state.queue.job_by_id_mut(id) {
+            job.status = JobStatus::Error {
+                message: crate::disc::DiscError::NoDestination.message(lang),
+            };
+            state.queue.state.error_count += 1;
+        }
     }
 
     if worker_jobs.is_empty() {
@@ -1015,6 +1038,45 @@ mod tests {
         ));
         drop(state);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_ready_rip_without_an_output_path_fails_instead_of_waiting() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (worker_tx, _worker_rx) = mpsc::channel();
+        let id = {
+            let mut state = lock(&shared);
+            let mut rip =
+                EncodingJob::new(std::path::PathBuf::from("/staging/rip-1-a/DISC_t00.mkv"));
+            rip.status = JobStatus::Ready;
+            rip.temporary = true;
+            rip.metadata = Some(crate::analyzer::VideoMetadata {
+                width: 1920,
+                height: 1080,
+                hdr_type: crate::analyzer::HdrType::Sdr,
+                dv_profile: None,
+                dv_bl_compat: None,
+                hdr10_static: None,
+                codec_name: "hevc".to_string(),
+                frame_rate_num: 24,
+                frame_rate_den: 1,
+                duration_secs: 1.0,
+            });
+            rip.source_identity = Some(crate::queue::SourceIdentity::from_metadata(
+                &std::fs::metadata(std::env::temp_dir()).unwrap(),
+            ));
+            state.queue.push(rip)
+        };
+
+        maybe_start_session(&shared, &worker_tx);
+
+        let state = lock(&shared);
+        assert!(!state.encoding_active);
+        assert!(matches!(
+            state.queue.job_by_id(id).unwrap().status,
+            JobStatus::Error { .. }
+        ));
+        assert_eq!(state.queue.state.error_count, 1);
     }
 
     #[test]
