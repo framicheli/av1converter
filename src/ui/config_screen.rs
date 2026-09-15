@@ -334,7 +334,7 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
     },
     ConfigItem {
         label: Msg::CfgOutputContainer,
-        kind: ConfigItemKind::Text,
+        kind: ConfigItemKind::Cycle,
         field: ConfigField::OutputContainer,
     },
     ConfigItem {

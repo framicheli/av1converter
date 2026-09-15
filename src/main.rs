@@ -1209,7 +1209,6 @@ fn start_config_edit(app: &mut App) {
     };
     let buffer = match item.field {
         ConfigField::OutputSuffix => app.config.output.suffix.clone(),
-        ConfigField::OutputContainer => app.config.output.container.clone(),
         ConfigField::OutputDirectory => app
             .config
             .output
@@ -1252,7 +1251,6 @@ fn commit_config_edit(app: &mut App) {
     let value = buf.trim().to_string();
     match item.field {
         ConfigField::OutputSuffix => app.config.output.suffix = value,
-        ConfigField::OutputContainer => app.config.output.container = value,
         ConfigField::OutputDirectory => {
             app.config.output.output_directory = (!value.is_empty()).then_some(value);
         }
@@ -1455,6 +1453,19 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             app.config.performance.nvenc_preset = presets[next].to_string();
         }
         ConfigField::QualityPreset => cycle_quality_preset(app, increase),
+        ConfigField::OutputContainer => {
+            let containers = config::OutputConfig::CONTAINERS;
+            let current = containers
+                .iter()
+                .position(|c| *c == app.config.output.container)
+                .unwrap_or(0);
+            let next = if increase {
+                (current + 1) % containers.len()
+            } else {
+                (current + containers.len() - 1) % containers.len()
+            };
+            app.config.output.container = containers[next].to_string();
+        }
         ConfigField::SameDirectory => {
             app.config.output.same_directory = !app.config.output.same_directory;
         }
@@ -1494,7 +1505,6 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         }
         // Text fields are edited via Enter, not ← →
         ConfigField::OutputSuffix
-        | ConfigField::OutputContainer
         | ConfigField::OutputDirectory
         | ConfigField::AudioLanguages
         | ConfigField::SubtitleLanguages
@@ -1712,6 +1722,29 @@ mod tests {
         assert_eq!(app.config.daemon.port, original);
         assert_eq!(app.config_edit_buffer.as_deref(), Some("0"));
         assert_eq!(app.message_kind, app::MessageKind::Error);
+    }
+
+    /// ← → cycles the output container through the supported set, wrapping
+    /// at both ends.
+    #[test]
+    fn output_container_cycles_through_supported_containers() {
+        use crate::ui::config_screen::{ConfigField, visible_config_items};
+
+        let mut app = App::new();
+        app.config.output.container = "mkv".to_string();
+        let index = visible_config_items(&app.config)
+            .iter()
+            .position(|item| item.field == ConfigField::OutputContainer)
+            .unwrap();
+
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            adjust_config_value(&mut app, index, true);
+            seen.push(app.config.output.container.clone());
+        }
+        assert_eq!(seen, ["mp4", "webm", "mkv"]);
+        adjust_config_value(&mut app, index, false);
+        assert_eq!(app.config.output.container, "webm");
     }
 
     #[test]

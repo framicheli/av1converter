@@ -1708,6 +1708,7 @@ addEventListener("beforeunload", (event) => {
 const LANGS = [["en", "English"], ["it", "Italiano"], ["es", "Español"], ["fr", "Français"], ["de", "Deutsch"], ["zh", "中文"]];
 const ENCODERS = [["SvtAv1", "SVT-AV1 (Software)"], ["Nvenc", "NVENC (NVIDIA)"], ["Qsv", "Quick Sync (Intel)"], ["Amf", "AMF (AMD)"]];
 const NVENC_PRESETS = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"].map((p) => [p, p]);
+const CONTAINERS = ["mkv", "mp4", "webm"].map((c) => [c, c]);
 
 // Built on each render rather than held in a const: the string map arrives
 // after this file is evaluated, so a const would capture the untranslated text.
@@ -1770,7 +1771,7 @@ function settingsFields(cfg) {
   fields.push(
     { group: tr("group_output") },
     { path: "output.suffix", label: tr("cfg_output_suffix"), type: "text" },
-    { path: "output.container", label: tr("cfg_output_container"), type: "text" },
+    { path: "output.container", label: tr("cfg_output_container"), type: "select", options: CONTAINERS },
     { path: "output.same_directory", label: tr("cfg_same_directory"), type: "checkbox", rebuild: true },
     { path: "output.output_directory", label: tr("cfg_output_directory"), type: "text", nullable: true, disabled: cfg.output.same_directory, required: !cfg.output.same_directory, browse: true },
     { group: tr("group_tracks") },
