@@ -9,17 +9,24 @@ use tracing::info;
 
 static VMAF_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Escape a value going into a filtergraph argument: `:` separates options, and
-/// `\`, `'`, `[`, `]`, `,` and `;` are all meaningful to the parser.
+/// Escape a value going into a `-lavfi` filter option. The string is unescaped
+/// twice: first by the graph parser (`\ ' [ ] , ;`), then by the option parser
+/// (`\ : '`).
 fn escape_filter_value(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for c in value.chars() {
-        if matches!(c, '\\' | ':' | '\'' | '[' | ']' | ',' | ';') {
-            out.push('\\');
+    let escape = |value: &str, special: &[char]| {
+        let mut out = String::with_capacity(value.len());
+        for c in value.chars() {
+            if special.contains(&c) {
+                out.push('\\');
+            }
+            out.push(c);
         }
-        out.push(c);
-    }
-    out
+        out
+    };
+    escape(
+        &escape(value, &['\\', ':', '\'']),
+        &['\\', '\'', '[', ']', ',', ';'],
+    )
 }
 
 /// Wait for a child process, killing it as soon as the cancel flag is raised.
@@ -247,14 +254,18 @@ pub fn calculate_vmaf(
 mod tests {
     use super::escape_filter_value;
 
+    /// Option-level escapes are escaped again for the graph parser.
     #[test]
     fn filter_values_escape_graph_syntax() {
         assert_eq!(escape_filter_value("/tmp/plain.json"), "/tmp/plain.json");
         assert_eq!(
-            escape_filter_value("/tmp/od:d[dir]/v.json"),
-            "/tmp/od\\:d\\[dir\\]/v.json"
+            escape_filter_value("/tmp/x:y[c],d'e/v.json"),
+            r"/tmp/x\\:y\[c\]\,d\\\'e/v.json"
         );
-        assert_eq!(escape_filter_value(r"C:\tmp\v.json"), r"C\:\\tmp\\v.json");
+        assert_eq!(
+            escape_filter_value(r"C:\Temp\v.json"),
+            r"C\\:\\\\Temp\\\\v.json"
+        );
     }
 }
 
