@@ -39,7 +39,7 @@
 ### Known limitations
 
 - Dolby Vision profile 7 UHD discs are extracted by MakeMKV with the enhancement layer as a separate MKV track, which FFmpeg will not recombine. Those discs encode from the HDR10 base layer and the EL/RPU track shows up as a stray stream.
-- The disc test suite runs against a fake `makemkvcon`; the manual checklist in `docs/disc-manual-checklist.md` has not been run against real hardware.
+- The disc test suite runs against a fake `makemkvcon`; ripping has not been checked against real hardware.
 
 ## [3.0.0]
 
