@@ -296,18 +296,18 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
 }
 
 /// Read a JSON array of track indices, keeping only ones the job really has.
-fn valid_indices(body: &Value, key: &str, known: &[usize]) -> Vec<usize> {
-    let mut out: Vec<usize> = body
-        .get(key)
-        .and_then(Value::as_array)
-        .map(|a| {
+/// An absent key yields `current`.
+fn valid_indices(body: &Value, key: &str, known: &[usize], current: &[usize]) -> Vec<usize> {
+    let mut out: Vec<usize> = body.get(key).and_then(Value::as_array).map_or_else(
+        || current.to_vec(),
+        |a| {
             a.iter()
                 .filter_map(Value::as_u64)
                 .filter_map(|i| usize::try_from(i).ok())
                 .filter(|i| known.contains(i))
                 .collect()
-        })
-        .unwrap_or_default();
+        },
+    );
     out.sort_unstable();
     out.dedup();
     out
@@ -412,17 +412,25 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
         let audio_known: Vec<usize> = job.audio_tracks.iter().map(|t| t.index).collect();
         let subtitle_known: Vec<usize> = job.subtitle_tracks.iter().map(|t| t.index).collect();
 
-        let audio_indices = valid_indices(body, "audio_indices", &audio_known);
+        let current = &job.track_selection;
+        let audio_indices =
+            valid_indices(body, "audio_indices", &audio_known, &current.audio_indices);
         // Kept a subset of the selection: the plan indexes per-stream codec
         // options by output position.
-        let audio_to_opus: Vec<usize> = valid_indices(body, "audio_to_opus", &audio_known)
-            .into_iter()
-            .filter(|i| audio_indices.contains(i))
-            .collect();
+        let audio_to_opus: Vec<usize> =
+            valid_indices(body, "audio_to_opus", &audio_known, &current.audio_to_opus)
+                .into_iter()
+                .filter(|i| audio_indices.contains(i))
+                .collect();
 
         let selection = crate::tracks::TrackSelection {
             audio_indices,
-            subtitle_indices: valid_indices(body, "subtitle_indices", &subtitle_known),
+            subtitle_indices: valid_indices(
+                body,
+                "subtitle_indices",
+                &subtitle_known,
+                &current.subtitle_indices,
+            ),
             audio_to_opus,
         };
 
@@ -2309,6 +2317,33 @@ mod tests {
             assert_eq!(code, 200);
             assert_eq!(body["remux_only"], json!(true));
             assert!(lock(&shared).queue.job_by_id(id).unwrap().remux_only);
+        }
+
+        /// Absent track lists leave the stored selection unchanged.
+        #[test]
+        fn omitting_track_lists_leaves_the_selection_alone() {
+            let (shared, id) = shared_with_job();
+            {
+                let mut state = lock(&shared);
+                let job = state.queue.job_by_id_mut(id).unwrap();
+                job.subtitle_tracks = vec![crate::tracks::SubtitleTrack {
+                    index: 3,
+                    language: None,
+                    codec: "subrip".to_string(),
+                    title: None,
+                    forced: false,
+                }];
+                job.track_selection.audio_indices = vec![0, 2];
+                job.track_selection.audio_to_opus = vec![2];
+                job.track_selection.subtitle_indices = vec![3];
+            }
+
+            let (code, body) = job_tracks_set(&shared, &json!({"id": id, "remux_only": true}));
+
+            assert_eq!(code, 200);
+            assert_eq!(body["audio_indices"], json!([0, 2]));
+            assert_eq!(body["audio_to_opus"], json!([2]));
+            assert_eq!(body["subtitle_indices"], json!([3]));
         }
 
         /// A source with no Dolby Vision layer has no DV decision to make.
