@@ -357,8 +357,8 @@ fieldset.field-group > legend {
   overflow-wrap: anywhere;
   white-space: normal;
 }
-.crumbs .crumb + .crumb::after { content: none; }
-.crumbs .crumb:not(:last-child)::after { content: "/"; margin-left: 6px; color: var(--border); }
+/* The root crumb is itself "/" and takes no separator. */
+.crumbs .crumb:not(:first-child):not(:last-child)::after { content: "/"; margin-left: 6px; color: var(--border); }
 .crumbs .crumb[aria-current] { color: var(--ink); opacity: 1; }
 @media (hover: hover) {
   .crumbs .crumb:not(:disabled):hover { background: var(--track); color: var(--ink); border-color: transparent; }
@@ -517,6 +517,12 @@ fieldset.field-group > legend {
   #browser { width: calc(100% - 16px); height: calc(100% - 16px); }
   .browser-foot .spacer { flex-basis: 100%; }
   .browser-foot button { flex: 1; }
+
+  /* The Opus target label wraps onto its own line below the track name and
+     its select. */
+  .track-row { flex-wrap: wrap; }
+  .track-target { order: 1; flex-basis: 100%; white-space: normal; }
+  .track-target:empty { display: none; }
 
   /* The filename column stays in view while the rest of the row scrolls.
      overflow-wrap:anywhere leaves a one-character min-content width, which the
