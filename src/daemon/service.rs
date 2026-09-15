@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::io::Write;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command, Stdio};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::time::{Duration, Instant};
 
 /// Whether this platform can install a login service.
@@ -170,27 +170,35 @@ fn linux_install(exe: &Path, path: &str) -> io::Result<()> {
     } else {
         systemctl(&["enable", "--now", UNIT_NAME])?;
         // A failed start leaves no unit behind.
-        wait_for_unit_listen().inspect_err(|_| {
+        wait_for_service_listen(
+            || {
+                let state = systemctl(&["show", "-p", "ActiveState", "--value", UNIT_NAME])?;
+                Ok(unit_starting_or_up(&state))
+            },
+            &format!("the service failed to start; see journalctl --user -u {UNIT_NAME}"),
+        )
+        .inspect_err(|_| {
             let _ = linux_uninstall();
         })?;
     }
     Ok(())
 }
 
-/// Wait until the started unit's daemon records its listen address, failing
-/// once the unit is no longer starting or running.
-#[cfg(target_os = "linux")]
-fn wait_for_unit_listen() -> io::Result<()> {
+/// Wait until the started service's daemon records its listen address, failing
+/// with `failed` once `coming_up` reports the service is no longer starting or
+/// running.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn wait_for_service_listen(
+    coming_up: impl Fn() -> io::Result<bool>,
+    failed: &str,
+) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if super::lifecycle::running_listen().is_some() {
             return Ok(());
         }
-        let state = systemctl(&["show", "-p", "ActiveState", "--value", UNIT_NAME])?;
-        if !unit_starting_or_up(&state) {
-            return Err(io::Error::other(format!(
-                "the service failed to start; see journalctl --user -u {UNIT_NAME}"
-            )));
+        if !coming_up()? {
+            return Err(io::Error::other(failed.to_string()));
         }
         if Instant::now() >= deadline {
             return Err(io::Error::other(
@@ -351,8 +359,33 @@ fn macos_install(exe: &Path, path: &str) -> io::Result<()> {
     if super::lifecycle::running_pid().is_none() {
         let _ = launchctl(&["bootout", &format!("{domain}/{PLIST_LABEL}")]);
         launchctl(&["bootstrap", &domain, &dest.to_string_lossy()])?;
+        // A failed start leaves no agent behind.
+        wait_for_service_listen(
+            || {
+                let print = launchctl(&["print", &format!("{domain}/{PLIST_LABEL}")])?;
+                Ok(!launchd_job_exited(&print))
+            },
+            "the service failed to start; run av1converter --start-foreground to see why",
+        )
+        .inspect_err(|_| {
+            let _ = macos_uninstall();
+        })?;
     }
     Ok(())
+}
+
+/// Whether `launchctl print` output shows a job that has run and is no longer
+/// running.
+#[cfg(any(test, target_os = "macos"))]
+fn launchd_job_exited(print: &str) -> bool {
+    let field = |name: &str| {
+        print
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(name))
+            .map(str::trim)
+    };
+    field("state = ") == Some("not running")
+        && field("last exit code = ").is_some_and(|code| code != "(never exited)")
 }
 
 #[cfg(target_os = "macos")]
@@ -394,14 +427,15 @@ fn remove_plist() -> io::Result<()> {
     Ok(())
 }
 
+/// Run `launchctl` and return its stdout.
 #[cfg(target_os = "macos")]
-fn launchctl(args: &[&str]) -> io::Result<()> {
+fn launchctl(args: &[&str]) -> io::Result<String> {
     let output = Command::new("launchctl")
         .args(args)
         .stdin(Stdio::null())
         .output()?;
     if output.status.success() {
-        Ok(())
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let msg = stderr.trim();
@@ -480,6 +514,16 @@ mod tests {
         assert!(unit.contains("Nice=10"));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(unit.contains("Environment=\"PATH=/usr/bin\""));
+    }
+
+    #[test]
+    fn a_launchd_job_counts_as_exited_only_after_it_ran_and_stopped() {
+        let running = "com.av1converter.daemon = {\n\tstate = running\n\tpid = 3224\n\tlast exit code = (never exited)\n\t\tstate = active\n}";
+        let waiting = "com.av1converter.daemon = {\n\tstate = not running\n\tlast exit code = (never exited)\n}";
+        let failed = "com.av1converter.daemon = {\n\tstate = not running\n\truns = 1\n\tlast exit code = 1\n\t\tstate = active\n}";
+        assert!(!launchd_job_exited(running));
+        assert!(!launchd_job_exited(waiting));
+        assert!(launchd_job_exited(failed));
     }
 
     #[test]
