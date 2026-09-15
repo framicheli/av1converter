@@ -996,11 +996,15 @@ impl Drop for DiscClaim {
 /// Start scanning a drive (`{"drive": N}`) or a disc folder on disk
 /// (`{"folder": "<path>"}`). The titles arrive in `/api/status`.
 pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value) -> (u16, Value) {
-    let mut state = lock(shared);
-    if state.disc.active {
-        return (409, json!({"error": "a disc operation is already running"}));
-    }
-    let config = state.config.clone();
+    // The folder and binary checks touch the filesystem and run with no lock
+    // held, against a snapshot.
+    let (config, drives) = {
+        let state = lock(shared);
+        if state.disc.active {
+            return (409, json!({"error": "a disc operation is already running"}));
+        }
+        (state.config.clone(), state.disc.drives.clone())
+    };
 
     let source = if let Some(folder) = body.get("folder").and_then(Value::as_str) {
         // The same boundary the file browser enforces: a client cannot read a
@@ -1019,13 +1023,7 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
         let Some(drive) = body.get("drive").and_then(Value::as_u64).and_then(as_id) else {
             return (400, json!({"error": "missing or invalid 'drive'"}));
         };
-        let Some(disc_drive) = state
-            .disc
-            .drives
-            .iter()
-            .find(|known| known.id == drive)
-            .cloned()
-        else {
+        let Some(disc_drive) = drives.into_iter().find(|known| known.id == drive) else {
             return (400, json!({"error": "unknown drive id"}));
         };
         crate::disc::DiscSource::Drive(disc_drive)
@@ -1036,6 +1034,10 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
         Err(e) => return disc_failure(&e, config.language),
     };
 
+    let mut state = lock(shared);
+    if state.disc.active {
+        return (409, json!({"error": "a disc operation is already running"}));
+    }
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     state.disc.cancel_flag = Some(cancel.clone());
     state.disc.active = true;
@@ -1056,6 +1058,7 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
 }
 
 /// Extract the named titles, one after another, into the staging directory.
+#[allow(clippy::too_many_lines)]
 pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value) -> (u16, Value) {
     let Some(requested) = body.get("titles").and_then(Value::as_array) else {
         return (400, json!({"error": "missing 'titles'"}));
@@ -1071,27 +1074,29 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
         );
     };
 
-    let mut state = lock(shared);
-    if state.disc.active {
-        return (409, json!({"error": "a disc operation is already running"}));
-    }
-    let Some(source) = state
-        .disc
-        .scanned_source
-        .clone()
-        .filter(|scanned| match scanned {
-            crate::disc::DiscSource::Drive(drive) => {
-                body.get("drive").and_then(Value::as_u64).and_then(as_id) == Some(drive.id)
-            }
-            crate::disc::DiscSource::Folder(path) => body
-                .get("folder")
-                .and_then(Value::as_str)
-                .and_then(|folder| {
-                    confined_path(Path::new(folder), &state.config.daemon.browse_root)
-                })
-                .is_some_and(|folder| folder == *path),
-        })
-    else {
+    // The folder, destination and binary checks touch the filesystem and run
+    // with no lock held, against a snapshot.
+    let (scanned_source, scanned_titles, config) = {
+        let state = lock(shared);
+        if state.disc.active {
+            return (409, json!({"error": "a disc operation is already running"}));
+        }
+        (
+            state.disc.scanned_source.clone(),
+            state.disc.titles.clone(),
+            state.config.clone(),
+        )
+    };
+    let Some(source) = scanned_source.filter(|scanned| match scanned {
+        crate::disc::DiscSource::Drive(drive) => {
+            body.get("drive").and_then(Value::as_u64).and_then(as_id) == Some(drive.id)
+        }
+        crate::disc::DiscSource::Folder(path) => body
+            .get("folder")
+            .and_then(Value::as_str)
+            .and_then(|folder| confined_path(Path::new(folder), &config.daemon.browse_root))
+            .is_some_and(|folder| folder == *path),
+    }) else {
         return (
             400,
             json!({"error": "scan the disc before ripping from it"}),
@@ -1100,7 +1105,7 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
     // Only titles this server reported, and each of them once.
     let mut titles = Vec::new();
     for id in &ids {
-        let Some(title) = state.disc.titles.iter().find(|title| title.id == *id) else {
+        let Some(title) = scanned_titles.iter().find(|title| title.id == *id) else {
             return (400, json!({"error": format!("unknown title id {id}")}));
         };
         if titles
@@ -1114,7 +1119,6 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
         }
         titles.push(title.clone());
     }
-    let config = state.config.clone();
     if let Err(e) = crate::disc::staging::require_destination(&config) {
         return disc_failure(&e, config.language);
     }
@@ -1122,6 +1126,26 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
         Ok(bin) => bin,
         Err(e) => return disc_failure(&e, config.language),
     };
+
+    let mut state = lock(shared);
+    if state.disc.active {
+        return (409, json!({"error": "a disc operation is already running"}));
+    }
+    if state.disc.scanned_source.as_ref() != Some(&source) {
+        return (
+            400,
+            json!({"error": "scan the disc before ripping from it"}),
+        );
+    }
+    let config = state.config.clone();
+    if config
+        .output
+        .output_directory
+        .as_deref()
+        .is_none_or(|dir| dir.trim().is_empty())
+    {
+        return disc_failure(&crate::disc::DiscError::NoDestination, config.language);
+    }
 
     state.queue.state.reset_session_if_finished();
 
