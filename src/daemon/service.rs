@@ -131,9 +131,8 @@ const UNIT_NAME: &str = "av1converter.service";
 
 #[cfg(target_os = "linux")]
 fn systemd_user_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+    crate::config::env_dir("XDG_CONFIG_HOME")
+        .or_else(|| crate::config::env_dir("HOME").map(|home| home.join(".config")))
         .map(|dir| dir.join("systemd/user"))
 }
 
@@ -286,9 +285,8 @@ const PLIST_LABEL: &str = "com.av1converter.daemon";
 
 #[cfg(target_os = "macos")]
 fn plist_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| {
-        PathBuf::from(home)
-            .join("Library/LaunchAgents")
+    crate::config::env_dir("HOME").map(|home| {
+        home.join("Library/LaunchAgents")
             .join(format!("{PLIST_LABEL}.plist"))
     })
 }

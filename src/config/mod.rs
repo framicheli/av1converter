@@ -50,6 +50,14 @@ fn default_quality_preset() -> QualityPreset {
     QualityPreset::Custom
 }
 
+/// The directory named by environment variable `name`. An empty or relative
+/// value counts as unset, as the XDG base directory specification requires.
+pub fn env_dir(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+}
+
 /// Replace a leading `~` or `~/` with the home directory.
 fn expand_home(path: &mut String) {
     let rest = match path.as_str() {
@@ -194,10 +202,9 @@ impl AppConfig {
 
     /// Get the default configuration file path
     pub fn config_path() -> PathBuf {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-            .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
+        env_dir("XDG_CONFIG_HOME")
+            .or_else(|| env_dir("HOME").map(|home| home.join(".config")))
+            .or_else(|| env_dir("APPDATA"))
             .unwrap_or_else(|| PathBuf::from("."))
             .join("av1converter")
             .join("config.toml")

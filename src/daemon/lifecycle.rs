@@ -21,10 +21,9 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Data directory for the PID file, queue and background log
 /// (same location the debug logger uses).
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
+    crate::config::env_dir("XDG_DATA_HOME")
+        .or_else(|| crate::config::env_dir("HOME").map(|home| home.join(".local/share")))
+        .or_else(|| crate::config::env_dir("LOCALAPPDATA"))
         .unwrap_or_else(|| PathBuf::from("."))
         .join("av1converter")
 }
