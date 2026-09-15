@@ -13,6 +13,8 @@ use std::path::PathBuf;
 use std::io::Write;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command, Stdio};
+#[cfg(target_os = "linux")]
+use std::time::{Duration, Instant};
 
 /// Whether this platform can install a login service.
 pub fn supported() -> bool {
@@ -167,8 +169,42 @@ fn linux_install(exe: &Path, path: &str) -> io::Result<()> {
         systemctl(&["enable", UNIT_NAME])?;
     } else {
         systemctl(&["enable", "--now", UNIT_NAME])?;
+        // A failed start leaves no unit behind.
+        wait_for_unit_listen().inspect_err(|_| {
+            let _ = linux_uninstall();
+        })?;
     }
     Ok(())
+}
+
+/// Wait until the started unit's daemon records its listen address, failing
+/// once the unit is no longer starting or running.
+#[cfg(target_os = "linux")]
+fn wait_for_unit_listen() -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if super::lifecycle::running_listen().is_some() {
+            return Ok(());
+        }
+        let state = systemctl(&["show", "-p", "ActiveState", "--value", UNIT_NAME])?;
+        if !unit_starting_or_up(&state) {
+            return Err(io::Error::other(format!(
+                "the service failed to start; see journalctl --user -u {UNIT_NAME}"
+            )));
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::other(
+                "the service did not start listening in time",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Whether a systemd `ActiveState` is on the way up or running.
+#[cfg(any(test, target_os = "linux"))]
+fn unit_starting_or_up(state: &str) -> bool {
+    matches!(state.trim(), "activating" | "active" | "reloading")
 }
 
 #[cfg(target_os = "linux")]
@@ -196,8 +232,9 @@ fn remove_unit() -> io::Result<()> {
     Ok(())
 }
 
+/// Run `systemctl --user` and return its stdout.
 #[cfg(target_os = "linux")]
-fn systemctl(args: &[&str]) -> io::Result<()> {
+fn systemctl(args: &[&str]) -> io::Result<String> {
     let output = Command::new("systemctl")
         .arg("--user")
         .args(args)
@@ -211,7 +248,7 @@ fn systemctl(args: &[&str]) -> io::Result<()> {
             }
         })?;
     if output.status.success() {
-        Ok(())
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let msg = stderr.trim();
@@ -443,6 +480,16 @@ mod tests {
         assert!(unit.contains("Nice=10"));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(unit.contains("Environment=\"PATH=/usr/bin\""));
+    }
+
+    #[test]
+    fn only_a_starting_or_running_unit_counts_as_coming_up() {
+        for state in ["activating", "active", "reloading", "active\n"] {
+            assert!(unit_starting_or_up(state), "{state}");
+        }
+        for state in ["failed", "inactive", "deactivating", ""] {
+            assert!(!unit_starting_or_up(state), "{state}");
+        }
     }
 
     #[test]
