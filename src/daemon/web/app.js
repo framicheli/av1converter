@@ -527,6 +527,7 @@ function createRow(job) {
   remove.setAttribute("aria-label", tr("remove_from_queue"));
   remove.addEventListener("click", async () => {
     if (remove.getAttribute("aria-busy") === "true") return;
+    if (entry.temporary && !await askConfirm(tr("remove_rip_prompt"))) return;
     remove.disabled = true;
     remove.setAttribute("aria-busy", "true");
     try {
@@ -604,6 +605,7 @@ function updateRow(row, job) {
   }
 
   row.kind = job.status.kind;
+  row.temporary = Boolean(job.temporary);
   row.tracksEditable = job.tracks_editable;
   row.canMoveUp = job.can_move_up;
   row.applyDisabled();
@@ -621,6 +623,8 @@ function updateRow(row, job) {
 let queueRefresh = null;
 let clearingFinished = false;
 let hasFinishedJobs = false;
+// Whether any finished job is a ripped disc title; clearing it deletes the rip.
+let hasTemporaryFinished = false;
 $("btn-clear").disabled = true;
 
 function updateClearFinished() {
@@ -649,9 +653,11 @@ async function refreshQueueNow() {
   }
   const tbody = $("queue-body");
   $("queue-empty").classList.toggle("hidden", data.jobs.length > 0);
-  hasFinishedJobs = data.jobs.some((job) => [
+  const finished = data.jobs.filter((job) => [
     "done", "done_vmaf", "done_vmaf_failed", "skipped", "error", "quality_warning",
   ].includes(job.status.kind));
+  hasFinishedJobs = finished.length > 0;
+  hasTemporaryFinished = finished.some((job) => job.temporary);
   updateClearFinished();
 
   const seen = new Set();
@@ -732,6 +738,7 @@ $("btn-cancel-disc").addEventListener("click", async () => {
 
 $("btn-clear").addEventListener("click", async () => {
   if (clearingFinished) return;
+  if (hasTemporaryFinished && !await askConfirm(tr("clear_finished_rip_prompt"))) return;
   const button = $("btn-clear");
   clearingFinished = true;
   button.setAttribute("aria-busy", "true");

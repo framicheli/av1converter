@@ -401,6 +401,8 @@ pub enum Msg {
     WebLoading,
     WebFinishedWithErrors,
     WebConversionStopped,
+    WebRemoveRipPrompt,
+    WebClearFinishedRipPrompt,
     TerminalTooSmall,
 }
 
@@ -3004,6 +3006,30 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             }
             Zh => "永久操作：视频质量检查通过后将删除源文件。音频、字幕和元数据不会进行质量检查。",
         },
+        Msg::WebRemoveRipPrompt => match lang {
+            En => "Remove this job? Its ripped disc file will be deleted.",
+            It => "Rimuovere questo lavoro? Il file estratto dal disco verrà eliminato.",
+            Es => "¿Quitar este trabajo? Se eliminará el archivo extraído del disco.",
+            Fr => "Retirer cette tâche ? Le fichier extrait du disque sera supprimé.",
+            De => "Diesen Auftrag entfernen? Die vom Datenträger gerippte Datei wird gelöscht.",
+            Zh => "移除此任务？从光盘提取的文件将被删除。",
+        },
+        Msg::WebClearFinishedRipPrompt => match lang {
+            En => "Clear finished jobs? Ripped disc files among them will be deleted.",
+            It => {
+                "Rimuovere i lavori completati? I file estratti dal disco tra questi verranno eliminati."
+            }
+            Es => {
+                "¿Quitar los trabajos terminados? Se eliminarán los archivos extraídos del disco entre ellos."
+            }
+            Fr => {
+                "Retirer les tâches terminées ? Les fichiers extraits du disque parmi elles seront supprimés."
+            }
+            De => {
+                "Abgeschlossene Aufträge entfernen? Darunter vom Datenträger gerippte Dateien werden gelöscht."
+            }
+            Zh => "清除已完成的任务？其中从光盘提取的文件将被删除。",
+        },
         Msg::TerminalTooSmall => match lang {
             En => "Terminal too small. Resize to at least {w} × {h}. Press q to quit.",
             It => {
@@ -3162,6 +3188,8 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
         Msg::WebReasonVerificationCancelled,
     ),
     ("remove_from_queue", Msg::WebRemoveFromQueue),
+    ("remove_rip_prompt", Msg::WebRemoveRipPrompt),
+    ("clear_finished_rip_prompt", Msg::WebClearFinishedRipPrompt),
     ("removed_finished", Msg::WebRemovedFinished),
     ("remux_hint", Msg::WebRemuxHint),
     ("remux_only", Msg::RemuxOnly),
