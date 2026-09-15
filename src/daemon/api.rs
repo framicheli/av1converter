@@ -1035,6 +1035,12 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
     };
 
     let mut state = lock(shared);
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return (503, json!({"error": "daemon is shutting down"}));
+    }
     if state.disc.active {
         return (409, json!({"error": "a disc operation is already running"}));
     }
@@ -1128,6 +1134,12 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
     };
 
     let mut state = lock(shared);
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return (503, json!({"error": "daemon is shutting down"}));
+    }
     if state.disc.active {
         return (409, json!({"error": "a disc operation is already running"}));
     }
@@ -1845,6 +1857,35 @@ mod tests {
             for dir in [&root, &outside] {
                 let _ = std::fs::remove_dir_all(dir);
             }
+        }
+
+        /// Once shutdown starts, neither a scan nor a rip claims the drive.
+        #[cfg(unix)]
+        #[test]
+        fn no_disc_run_starts_once_shutdown_begins() {
+            use crate::disc::testing::{Fake, fake_makemkvcon};
+
+            let dir =
+                std::env::temp_dir().join(format!("av1c_api_disc_shutdown_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let shared = scanned(Some("/tmp".to_string()));
+            {
+                let mut state = lock(&shared);
+                let bin = fake_makemkvcon(&dir.join("bin"), &Fake::FolderScan);
+                state.config.disc.makemkvcon_path = Some(bin.to_string_lossy().into_owned());
+                state
+                    .shutting_down
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            let (tx, _rx) = mpsc::channel();
+
+            assert_eq!(discs_scan(&shared, &tx, &json!({"drive": 0})).0, 503);
+            assert_eq!(rip(&shared, &json!({"drive": 0, "titles": [3]})).0, 503);
+            let state = lock(&shared);
+            assert!(!state.disc.active);
+            assert!(state.queue.state.jobs.is_empty());
+            drop(state);
+            let _ = std::fs::remove_dir_all(dir);
         }
 
         /// The scan stores the canonical folder path; a rip request may spell
