@@ -83,17 +83,25 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
                     Some(DvMode::KeepDolbyVision) => {
                         format!("Dolby Vision{profile} ({})", t(lang, Msg::DvKeptTag))
                     }
-                    Some(DvMode::ToHdr10) => format!("Dolby Vision{profile} → HDR10"),
+                    Some(DvMode::ToHdr10) => {
+                        format!("Dolby Vision{profile} ({})", t(lang, Msg::DvConvertedTag))
+                    }
                     None => format!("Dolby Vision{profile}"),
                 }
             } else {
-                job.hdr_string().to_string()
+                job.metadata.as_ref().map_or_else(
+                    || t(lang, Msg::Unknown).to_string(),
+                    |_| job.hdr_string().to_string(),
+                )
             }
         };
 
         (
             job.filename(),
-            job.resolution_string(),
+            job.metadata.as_ref().map_or_else(
+                || t(lang, Msg::Unknown).to_string(),
+                |_| job.resolution_string(),
+            ),
             job.hdr_string().to_string(),
             hdr_display,
             audio_data,

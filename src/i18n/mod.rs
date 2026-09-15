@@ -145,6 +145,10 @@ pub enum Msg {
     NoVideoFiles,
     ScanningFiles,
     FolderScanFailed,
+    NonUtf8Path,
+    DriveDiscoveryStopped,
+    DiscRunStopped,
+    EncodingStopped,
 
     // ── File confirm ─────────────────────────────────────────────────────────
     ConfirmSelection,
@@ -178,6 +182,7 @@ pub enum Msg {
     DvRequiresSvt,
     DvModeHelp,
     DvKeptTag,
+    DvConvertedTag,
     UseRecommended,
 
     // ── Queue ────────────────────────────────────────────────────────────────
@@ -277,6 +282,8 @@ pub enum Msg {
     CfgRfUhdHdr,
     CfgRfUhdDv,
     CfgFilmGrain,
+    CfgQsvQuality,
+    CfgAmfQuality,
     CfgOutputSuffix,
     CfgOutputContainer,
     CfgSameDirectory,
@@ -1090,6 +1097,38 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Die Ordnersuche wurde unerwartet beendet",
             Zh => "文件夹扫描意外停止",
         },
+        Msg::NonUtf8Path => match lang {
+            En => "File path contains non-UTF-8 characters",
+            It => "Il percorso del file contiene caratteri non UTF-8",
+            Es => "La ruta del archivo contiene caracteres no UTF-8",
+            Fr => "Le chemin du fichier contient des caractères non UTF-8",
+            De => "Der Dateipfad enthält Nicht-UTF-8-Zeichen",
+            Zh => "文件路径包含非 UTF-8 字符",
+        },
+        Msg::DriveDiscoveryStopped => match lang {
+            En => "drive discovery stopped unexpectedly",
+            It => "la ricerca delle unità si è interrotta inaspettatamente",
+            Es => "la detección de unidades se detuvo inesperadamente",
+            Fr => "la détection des lecteurs s'est arrêtée de façon inattendue",
+            De => "die Laufwerkssuche wurde unerwartet beendet",
+            Zh => "驱动器检测意外停止",
+        },
+        Msg::DiscRunStopped => match lang {
+            En => "the run stopped unexpectedly",
+            It => "l'operazione si è interrotta inaspettatamente",
+            Es => "la operación se detuvo inesperadamente",
+            Fr => "l'opération s'est arrêtée de façon inattendue",
+            De => "der Vorgang wurde unerwartet beendet",
+            Zh => "操作意外停止",
+        },
+        Msg::EncodingStopped => match lang {
+            En => "Encoding stopped unexpectedly",
+            It => "La codifica si è interrotta inaspettatamente",
+            Es => "La codificación se detuvo inesperadamente",
+            Fr => "L'encodage s'est arrêté de façon inattendue",
+            De => "Die Kodierung wurde unerwartet beendet",
+            Zh => "编码意外停止",
+        },
 
         // ── File confirm ─────────────────────────────────────────────────────
         Msg::ConfirmSelection => match lang {
@@ -1269,6 +1308,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "conservé",
             De => "beibehalten",
             Zh => "保留",
+        },
+        Msg::DvConvertedTag => match lang {
+            En => "to HDR10",
+            It => "in HDR10",
+            Es => "a HDR10",
+            Fr => "vers HDR10",
+            De => "zu HDR10",
+            Zh => "转为 HDR10",
         },
         Msg::UseRecommended => match lang {
             En => "Use recommended",
@@ -1974,6 +2021,22 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Grain de film",
             De => "Filmkorn",
             Zh => "胶片颗粒",
+        },
+        Msg::CfgQsvQuality => match lang {
+            En => "QSV Quality",
+            It => "Qualità QSV",
+            Es => "Calidad QSV",
+            Fr => "Qualité QSV",
+            De => "QSV-Qualität",
+            Zh => "QSV 质量",
+        },
+        Msg::CfgAmfQuality => match lang {
+            En => "AMF Quality",
+            It => "Qualità AMF",
+            Es => "Calidad AMF",
+            Fr => "Qualité AMF",
+            De => "AMF-Qualität",
+            Zh => "AMF 质量",
         },
         Msg::CfgOutputSuffix => match lang {
             En => "Output Suffix",

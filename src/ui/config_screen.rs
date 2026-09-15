@@ -845,8 +845,8 @@ fn config_item_label(lang: crate::i18n::Language, item: &ConfigItem) -> String {
                 PresetMetric::Crf => "CRF",
                 PresetMetric::FilmGrain => t(lang, Msg::CfgFilmGrain),
                 PresetMetric::NvencCq => "NVENC CQ",
-                PresetMetric::QsvQuality => "QSV Quality",
-                PresetMetric::AmfQuality => "AMF Quality",
+                PresetMetric::QsvQuality => t(lang, Msg::CfgQsvQuality),
+                PresetMetric::AmfQuality => t(lang, Msg::CfgAmfQuality),
             };
             format!("{tier} · {metric}")
         }

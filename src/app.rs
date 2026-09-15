@@ -852,6 +852,7 @@ impl App {
     /// keep going: a title that has just finished ripping joins them rather
     /// than waiting for a round to end.
     fn analyze_indices(&mut self, indices: &[usize]) {
+        let non_utf8 = crate::i18n::t(self.config.language, crate::i18n::Msg::NonUtf8Path);
         let mut work: Vec<(usize, String)> = Vec::new();
         for &index in indices {
             let Some(job) = self.queue.jobs.get_mut(index) else {
@@ -867,7 +868,7 @@ impl App {
                 job.status = JobStatus::Analyzing;
             } else {
                 job.status = JobStatus::Error {
-                    message: "File path contains non-UTF-8 characters".to_string(),
+                    message: non_utf8.to_string(),
                 };
                 self.queue.error_count += 1;
             }
@@ -1291,7 +1292,11 @@ impl App {
                     Ok(result) => Some(result),
                     Err(mpsc::TryRecvError::Empty) => None,
                     Err(mpsc::TryRecvError::Disconnected) => Some(Err(DiscError::Failed(
-                        "drive discovery stopped unexpectedly".to_string(),
+                        crate::i18n::t(
+                            self.config.language,
+                            crate::i18n::Msg::DriveDiscoveryStopped,
+                        )
+                        .to_string(),
                     ))),
                 });
         let Some(result) = result else {
@@ -1587,9 +1592,10 @@ impl App {
             if self.disc_state == DiscState::Cancelling {
                 self.finish_disc_cancellation();
             } else {
-                let message =
-                    crate::disc::DiscError::Failed("the run stopped unexpectedly".to_string())
-                        .message(lang);
+                let message = crate::disc::DiscError::Failed(
+                    crate::i18n::t(lang, crate::i18n::Msg::DiscRunStopped).to_string(),
+                )
+                .message(lang);
                 // The failure lands on the title that was being extracted:
                 // the first job still in `Ripping`.
                 let failed = self
@@ -1817,13 +1823,14 @@ impl App {
 
         // The worker is gone; close out whatever it left unfinished.
         if worker_gone && self.encoding_active {
+            let stopped = crate::i18n::t(self.config.language, crate::i18n::Msg::EncodingStopped);
             self.progress_receiver = None;
             for &index in &self.encoding_session_indices {
                 if let Some(job) = self.queue.jobs.get_mut(index)
                     && !job.status.is_terminal()
                 {
                     job.status = JobStatus::Error {
-                        message: "Encoding stopped unexpectedly".to_string(),
+                        message: stopped.to_string(),
                     };
                     self.queue.error_count += 1;
                     self.queue.encoding_progress_done += 1;
