@@ -548,3 +548,5 @@ fieldset.field-group > legend {
 @media (prefers-reduced-motion: reduce) {
   progress.bar::-webkit-progress-value { transition: none; }
 }
+
+#queue-table td.size-cell { white-space: nowrap; }
