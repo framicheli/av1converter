@@ -79,9 +79,14 @@ impl EncodingParams {
         }
     }
 
-    /// Dolby Vision source with an HLG base layer (profile 8.4)
-    fn dv_base_is_hlg(&self) -> bool {
-        self.hdr_type == HdrType::DolbyVision && self.dv_bl_compat == Some(4)
+    /// Primaries, transfer and matrix of a Dolby Vision base layer: BT.709 SDR
+    /// (profile 8.2), HLG (8.4), or PQ BT.2020 otherwise.
+    fn dv_base_color(&self) -> [&'static str; 3] {
+        match self.dv_bl_compat {
+            Some(2) => ["bt709", "bt709", "bt709"],
+            Some(4) => ["bt2020", "arib-std-b67", "bt2020nc"],
+            _ => ["bt2020", "smpte2084", "bt2020nc"],
+        }
     }
 
     /// Dolby Vision source that keeps its RPU in the AV1 output (profile 10)
@@ -236,8 +241,10 @@ fn get_svtav1_params(params: &EncodingParams) -> Vec<String> {
 
     // Attach HDR10 static metadata so PQ output is true HDR10, not bare PQ.
     // Applies to native HDR10 sources and to DV sources (both modes: the
-    // HDR10 base of a kept-DV stream benefits from it too).
+    // HDR10 base of a kept-DV stream benefits from it too). An SDR base layer
+    // (profile 8.2) gets none.
     if matches!(params.hdr_type, HdrType::Pq | HdrType::DolbyVision)
+        && params.dv_bl_compat != Some(2)
         && let Some(ref hdr10) = params.hdr10_static
     {
         use std::fmt::Write;
@@ -362,17 +369,13 @@ fn build_video_filter(params: &EncodingParams) -> String {
     let mut filters = vec!["format=yuv420p10le".to_string()];
 
     if params.hdr_type == HdrType::DolbyVision {
-        // Cross-compatible profiles (7/8) have a BT.2020 base layer, PQ or
-        // HLG (8.4), often left untagged in the source. Keep-DV profile 5
-        // stays in Dolby's own space and is left alone.
+        // Cross-compatible profiles (7/8) have a PQ or HLG (8.4) BT.2020 base
+        // layer, or a BT.709 SDR one (8.2), often left untagged in the source.
+        // Keep-DV profile 5 stays in Dolby's own space and is left alone.
         if params.dv_profile != Some(5) {
-            let trc = if params.dv_base_is_hlg() {
-                "arib-std-b67"
-            } else {
-                "smpte2084"
-            };
+            let [primaries, trc, matrix] = params.dv_base_color();
             filters.push(format!(
-                "setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc={trc}"
+                "setparams=colorspace={matrix}:color_primaries={primaries}:color_trc={trc}"
             ));
         }
     }
@@ -387,18 +390,14 @@ fn get_dolby_vision_color_params(params: &EncodingParams) -> Vec<String> {
         return Vec::new();
     }
 
-    let trc = if params.dv_base_is_hlg() {
-        "arib-std-b67"
-    } else {
-        "smpte2084"
-    };
+    let [primaries, trc, matrix] = params.dv_base_color();
     vec![
         "-color_primaries".to_string(),
-        "bt2020".to_string(),
+        primaries.to_string(),
         "-color_trc".to_string(),
         trc.to_string(),
         "-colorspace".to_string(),
-        "bt2020nc".to_string(),
+        matrix.to_string(),
     ]
 }
 
@@ -486,6 +485,47 @@ mod tests {
             Some("arib-std-b67".to_string())
         );
         assert!(!args.iter().any(|arg| arg.contains("smpte2084")));
+    }
+
+    /// Profile 8.2 has an SDR BT.709 base layer: no PQ, BT.2020 or HDR10
+    /// mastering metadata in either DV mode.
+    #[test]
+    fn sdr_base_layer_is_tagged_bt709() {
+        for mode in [DvMode::ToHdr10, DvMode::KeepDolbyVision] {
+            let mut params = dv_params(Encoder::SvtAv1, mode, Some(8));
+            params.dv_bl_compat = Some(2);
+            params.hdr10_static = Some(Hdr10StaticMetadata {
+                red: (0.708, 0.292),
+                green: (0.17, 0.797),
+                blue: (0.131, 0.046),
+                white_point: (0.3127, 0.329),
+                max_luminance: 1000.0,
+                min_luminance: 0.005,
+                max_cll: 1000,
+                max_fall: 400,
+            });
+            let args = build_ffmpeg_args(&params);
+            assert!(
+                arg_after(&args, "-vf")
+                    .unwrap()
+                    .contains("setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709")
+            );
+            assert_eq!(arg_after(&args, "-color_trc").as_deref(), Some("bt709"));
+            assert_eq!(
+                arg_after(&args, "-color_primaries").as_deref(),
+                Some("bt709")
+            );
+            assert!(
+                !args
+                    .iter()
+                    .any(|arg| arg.contains("bt2020") || arg.contains("smpte2084"))
+            );
+            assert!(
+                !arg_after(&args, "-svtav1-params")
+                    .unwrap()
+                    .contains("mastering")
+            );
+        }
     }
 
     #[test]
