@@ -497,7 +497,7 @@ fn apply_disc_event(
                     if failed {
                         state.queue.state.error_count += 1;
                     } else {
-                        state.queue.state.skipped_count += 1;
+                        state.queue.state.count_cancelled(1);
                     }
                 }
                 state.disc.error = Some(message);
@@ -512,7 +512,7 @@ fn apply_disc_event(
                         job.status = JobStatus::Skipped {
                             reason: "Cancelled".to_string(),
                         };
-                        state.queue.state.skipped_count += 1;
+                        state.queue.state.count_cancelled(1);
                     }
                 }
                 state.disc.settle();
@@ -752,7 +752,7 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
             job.status = JobStatus::Skipped {
                 reason: "Cancelled".to_string(),
             };
-            state.queue.state.skipped_count += 1;
+            state.queue.state.count_cancelled(1);
         }
         Err(e) => {
             job.status = JobStatus::Error {
@@ -961,7 +961,7 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
                     job.status = JobStatus::Skipped {
                         reason: "Cancelled".to_string(),
                     };
-                    state.queue.state.skipped_count += 1;
+                    state.queue.state.count_cancelled(1);
                     // A cancelled job counts as done for the session.
                     state.queue.state.encoding_progress_done += 1;
                 }

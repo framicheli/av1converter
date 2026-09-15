@@ -69,14 +69,6 @@ pub fn status(shared: &SharedState) -> Value {
         .iter()
         .filter(|j| !is_terminal(&j.status))
         .count();
-    // Cancelling marks unfinished jobs Skipped with this reason.
-    // `skipped_count` includes those rows; `cancelled` is reported separately
-    // so the summary does not count them twice.
-    let cancelled = queue
-        .jobs
-        .iter()
-        .filter(|j| matches!(&j.status, JobStatus::Skipped { reason } if reason == "Cancelled"))
-        .count();
     let (saved_bytes, saved_human) = queue.total_space_saved();
 
     json!({
@@ -95,8 +87,9 @@ pub fn status(shared: &SharedState) -> Value {
             "awaiting_config": awaiting_config,
             "ready": ready,
             "converted": queue.converted_count,
-            "skipped": queue.skipped_count.saturating_sub(cancelled),
-            "cancelled": cancelled,
+            // `skipped_count` includes the cancelled jobs.
+            "skipped": queue.skipped_count.saturating_sub(queue.cancelled_count),
+            "cancelled": queue.cancelled_count,
             "errors": queue.error_count,
         },
         "total_space_saved": { "bytes": saved_bytes, "human": saved_human },
@@ -781,7 +774,7 @@ pub fn queue_cancel(shared: &SharedState) -> (u16, Value) {
             };
             skipped += 1;
         }
-        state.queue.state.skipped_count += skipped;
+        state.queue.state.count_cancelled(skipped);
         state.queue.state.encoding_progress_done += skipped;
     }
     (200, json!({"ok": true}))
@@ -802,7 +795,7 @@ pub fn queue_cancel_analysis(shared: &SharedState) -> (u16, Value) {
             skipped += 1;
         }
     }
-    state.queue.state.skipped_count += skipped;
+    state.queue.state.count_cancelled(skipped);
     (200, json!({"ok": true, "skipped": skipped}))
 }
 
@@ -1546,20 +1539,12 @@ mod tests {
         assert!(status(&shared)["current"].is_null());
     }
 
+    /// Both counts are session counters: they hold after the rows are cleared.
     #[test]
     fn cancelled_jobs_are_not_counted_again_as_skipped() {
         let mut state = DaemonState::new(AppConfig::default());
-        let mut cancelled = EncodingJob::new(PathBuf::from("/tmp/a.mkv"));
-        cancelled.status = JobStatus::Skipped {
-            reason: "Cancelled".to_string(),
-        };
-        let mut av1 = EncodingJob::new(PathBuf::from("/tmp/b.mkv"));
-        av1.status = JobStatus::Skipped {
-            reason: "Already AV1".to_string(),
-        };
-        state.queue.push(cancelled);
-        state.queue.push(av1);
-        state.queue.state.skipped_count = 2;
+        state.queue.state.skipped_count = 1;
+        state.queue.state.count_cancelled(1);
         let shared = Arc::new(Mutex::new(state));
 
         let counts = &status(&shared)["counts"];
@@ -1623,6 +1608,7 @@ mod tests {
             JobStatus::Skipped { .. }
         ));
         assert_eq!(state.queue.state.skipped_count, 1);
+        assert_eq!(state.queue.state.cancelled_count, 1);
     }
 
     #[test]

@@ -20,6 +20,8 @@ pub struct QueueState {
     pub total_jobs_to_encode: usize,
     pub converted_count: usize,
     pub skipped_count: usize,
+    /// The part of `skipped_count` skipped as "Cancelled".
+    pub cancelled_count: usize,
     pub error_count: usize,
     pub encoding_progress_done: usize,
     /// Net byte change from finished jobs no longer in `jobs`.
@@ -37,6 +39,7 @@ impl QueueState {
             total_jobs_to_encode: 0,
             converted_count: 0,
             skipped_count: 0,
+            cancelled_count: 0,
             error_count: 0,
             encoding_progress_done: 0,
             cleared_saved_bytes: 0,
@@ -155,6 +158,12 @@ impl QueueState {
         self.cleared_saved_bytes = 0;
     }
 
+    /// Count `jobs` skipped with the "Cancelled" reason.
+    pub fn count_cancelled(&mut self, jobs: usize) {
+        self.skipped_count += jobs;
+        self.cancelled_count += jobs;
+    }
+
     /// Reset results when fresh work follows a fully settled queue.
     pub fn reset_session_if_finished(&mut self) {
         if self.all_completed() {
@@ -170,6 +179,7 @@ impl QueueState {
         self.total_jobs_to_encode = 0;
         self.converted_count = 0;
         self.skipped_count = 0;
+        self.cancelled_count = 0;
         self.error_count = 0;
         self.encoding_progress_done = 0;
     }
