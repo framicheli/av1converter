@@ -97,6 +97,24 @@ pub fn fake_makemkvcon(dir: &Path, mode: &Fake) -> PathBuf {
     let path = dir.join("makemkvcon");
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // A child forked by another test thread holds the script's write
+    // descriptor until it execs, and exec fails with `ExecutableFileBusy` while
+    // any process has the file open for writing. The script is run once,
+    // retrying until it starts.
+    loop {
+        match std::process::Command::new(&path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            _ => break,
+        }
+    }
     path
 }
 
