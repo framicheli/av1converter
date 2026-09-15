@@ -1197,7 +1197,9 @@ fn merged_settings(
     let mut config: AppConfig =
         serde_json::from_value(body.clone()).map_err(|e| format!("invalid settings: {e}"))?;
     if local_request {
-        if config.daemon.auth_token.trim().is_empty() {
+        config.daemon.browse_root = config.daemon.browse_root.trim().to_string();
+        config.daemon.auth_token = config.daemon.auth_token.trim().to_string();
+        if config.daemon.auth_token.is_empty() {
             config.daemon.auth_token.clone_from(&live.daemon.auth_token);
         } else if config.daemon.auth_token.trim().len() < 32 {
             return Err("daemon access token must contain at least 32 characters".to_string());
@@ -2061,6 +2063,24 @@ mod tests {
                         .to_string_lossy()
                         .into_owned()
                 )
+            );
+        }
+
+        /// Whitespace around a new browse root is trimmed before the path is
+        /// resolved.
+        #[test]
+        fn a_padded_browse_root_is_accepted() {
+            let current = live();
+            let root = std::env::temp_dir();
+            let mut body = serde_json::to_value(&current).unwrap();
+            body["daemon"]["auth_token"] = json!("");
+            body["daemon"]["browse_root"] = json!(format!("  {}  ", root.display()));
+
+            let merged = merged_settings(&body, &current, true).unwrap();
+
+            assert_eq!(
+                merged.daemon.browse_root,
+                root.canonicalize().unwrap().to_string_lossy()
             );
         }
 
