@@ -396,7 +396,7 @@ fn create_audio_track_item(
         Style::default().fg(Color::DarkGray)
     };
 
-    ListItem::new(format!("{prefix}{checkbox} {}{extra}{target}", row.name)).style(style)
+    ListItem::new(format!("{prefix}{checkbox} {}{target}{extra}", row.name)).style(style)
 }
 
 /// One row of the subtitle panel, already resolved against the output container.
