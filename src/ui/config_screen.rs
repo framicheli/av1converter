@@ -1,4 +1,4 @@
-use super::common::message_color;
+use super::common::{message_color, wrapped_rows};
 use crate::app::App;
 use crate::config::{AppConfig, AudioMode, EncodingPreset, QualityPreset};
 use crate::i18n::{Msg, t};
@@ -632,18 +632,67 @@ fn bool_display(lang: crate::i18n::Language, v: bool) -> String {
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 pub fn render_config_screen(f: &mut Frame, app: &App) {
+    let lang = app.config.language;
+
+    let help_text = if app.config_edit_buffer.is_some() {
+        Line::from(vec![
+            Span::styled("←→", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Confirm))),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}", t(lang, Msg::Cancel))),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+            Span::styled("←→", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Adjust))),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::EditText))),
+            Span::styled("s", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Save))),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
+            Span::styled("q", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
+        ])
+    };
+
+    let notice = if let Some(ref msg) = app.message {
+        Some(Line::from(Span::styled(
+            msg.clone(),
+            Style::default()
+                .fg(message_color(app.message_kind))
+                .add_modifier(Modifier::BOLD),
+        )))
+    } else {
+        selected_config_hint(app).map(|hint| {
+            Line::from(Span::styled(
+                t(lang, hint),
+                Style::default().fg(Color::Yellow),
+            ))
+        })
+    };
+
+    // Footer text width: the frame minus the 1-cell margins.
+    let footer_width = f.area().width.saturating_sub(2);
+    let notice_rows = notice.as_ref().map_or(0, |line| {
+        wrapped_rows(&line.to_string(), footer_width).min(4)
+    });
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(3),
+            Constraint::Length(notice_rows),
+            Constraint::Length(wrapped_rows(&help_text.to_string(), footer_width)),
         ])
         .margin(1)
         .split(f.area());
-
-    let lang = app.config.language;
 
     // Title
     let title = Paragraph::new(t(lang, Msg::Configuration))
@@ -693,52 +742,19 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
 
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 
-    let help_text = if app.config_edit_buffer.is_some() {
-        Line::from(vec![
-            Span::styled("←→", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Confirm))),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}", t(lang, Msg::Cancel))),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
-            Span::styled("←→", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Adjust))),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::EditText))),
-            Span::styled("s", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Save))),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
-            Span::styled("q", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
-        ])
-    };
-
-    let mut footer = Vec::new();
-    if let Some(ref msg) = app.message {
-        footer.push(Line::from(Span::styled(
-            msg.clone(),
-            Style::default()
-                .fg(message_color(app.message_kind))
-                .add_modifier(Modifier::BOLD),
-        )));
-    } else if let Some(hint) = selected_config_hint(app) {
-        footer.push(Line::from(Span::styled(
-            t(lang, hint),
-            Style::default().fg(Color::Yellow),
-        )));
+    if let Some(notice) = notice {
+        f.render_widget(
+            Paragraph::new(notice)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true }),
+            chunks[2],
+        );
     }
-    footer.push(help_text);
     f.render_widget(
-        Paragraph::new(footer)
+        Paragraph::new(help_text)
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true }),
-        chunks[2],
+        chunks[3],
     );
 }
 
