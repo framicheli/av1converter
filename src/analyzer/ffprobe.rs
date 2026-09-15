@@ -73,7 +73,7 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height,pix_fmt,color_primaries,color_transfer,color_space,codec_name,r_frame_rate,avg_frame_rate,bit_rate,duration:stream_side_data_list:format=duration,bit_rate",
+        "stream=width,height,pix_fmt,color_primaries,color_transfer,color_space,codec_name,r_frame_rate,avg_frame_rate,bit_rate,duration:stream_tags=DURATION:stream_side_data_list:format=duration,bit_rate",
         "-of",
         "json",
         input_path,
@@ -137,20 +137,7 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
     .find(|&(num, _)| num > 0)
     .unwrap_or((0, 1));
 
-    // Parse duration — prefer format-level, fall back to stream-level
-    let stream_duration = stream
-        .duration
-        .as_deref()
-        .and_then(|d| d.parse::<f64>().ok())
-        .filter(|&d| d > 0.0);
-    let duration_secs = data
-        .format
-        .as_ref()
-        .and_then(|f| f.duration.as_deref())
-        .and_then(|d| d.parse::<f64>().ok())
-        .filter(|&d| d > 0.0)
-        .or(stream_duration)
-        .unwrap_or(0.0);
+    let duration_secs = video_duration_secs(&stream, data.format.as_ref());
 
     Ok(VideoMetadata {
         width: stream.width,
@@ -254,6 +241,44 @@ fn probe_frame_hdr10_static(input_path: &str, cancel: &AtomicBool) -> Option<Hdr
         .iter()
         .filter_map(|f| f.side_data_list.as_deref())
         .find_map(parse_hdr10_static)
+}
+
+/// Duration of the primary video stream: its own duration or Matroska
+/// `DURATION` tag, else the container duration, which spans every stream.
+fn video_duration_secs(stream: &VideoStream, format: Option<&FormatInfo>) -> f64 {
+    let positive = |secs: f64| (secs > 0.0).then_some(secs);
+    stream
+        .duration
+        .as_deref()
+        .and_then(|d| d.parse::<f64>().ok())
+        .and_then(positive)
+        .or_else(|| {
+            stream
+                .tags
+                .as_ref()
+                .and_then(|tags| tags.duration.as_deref())
+                .and_then(parse_timestamp_secs)
+                .and_then(positive)
+        })
+        .or_else(|| {
+            format
+                .and_then(|f| f.duration.as_deref())
+                .and_then(|d| d.parse::<f64>().ok())
+                .and_then(positive)
+        })
+        .unwrap_or(0.0)
+}
+
+/// Parse an `HH:MM:SS.fraction` timestamp into seconds.
+fn parse_timestamp_secs(value: &str) -> Option<f64> {
+    let mut parts = value.trim().split(':');
+    let hours = parts.next()?.parse::<f64>().ok()?;
+    let minutes = parts.next()?.parse::<f64>().ok()?;
+    let seconds = parts.next()?.parse::<f64>().ok()?;
+    parts
+        .next()
+        .is_none()
+        .then_some(hours * 3600.0 + minutes * 60.0 + seconds)
 }
 
 /// Parse frame rate from ffprobe format
@@ -460,6 +485,13 @@ struct VideoStream {
     avg_frame_rate: Option<String>,
     side_data_list: Option<Vec<Value>>,
     duration: Option<String>,
+    tags: Option<VideoTags>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoTags {
+    #[serde(rename = "DURATION")]
+    duration: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -535,6 +567,29 @@ mod tests {
             "G(0.17000,0.79700)B(0.13100,0.04600)R(0.70800,0.29200)\
              WP(0.31270,0.32900)L(1000.0000,0.0050)"
         );
+    }
+
+    /// A Matroska video stream carries its length only as a tag; the container
+    /// duration also spans an audio track that runs past the video.
+    #[test]
+    fn source_duration_is_the_video_stream_not_the_container() {
+        let parse = |json: &str| {
+            let data: FfprobeOutput = serde_json::from_str(json).unwrap();
+            let stream = data.streams.into_iter().next().unwrap();
+            video_duration_secs(&stream, data.format.as_ref())
+        };
+        let mkv = r#"{"streams": [{"width": 320, "height": 240,
+            "tags": {"DURATION": "00:01:40.000000000"}}],
+            "format": {"duration": "104.005000"}}"#;
+        assert!((parse(mkv) - 100.0).abs() < 1e-9);
+
+        let mp4 = r#"{"streams": [{"width": 320, "height": 240, "duration": "99.5"}],
+            "format": {"duration": "104.0"}}"#;
+        assert!((parse(mp4) - 99.5).abs() < 1e-9);
+
+        let untagged = r#"{"streams": [{"width": 320, "height": 240}],
+            "format": {"duration": "104.0"}}"#;
+        assert!((parse(untagged) - 104.0).abs() < 1e-9);
     }
 
     #[test]
