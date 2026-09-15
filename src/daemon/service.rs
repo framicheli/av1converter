@@ -267,7 +267,13 @@ fn systemd_quote(s: &str) -> String {
     {
         s.to_string()
     } else {
-        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+        format!(
+            "\"{}\"",
+            s.replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('%', "%%")
+                .replace('$', "$$")
+        )
     }
 }
 
@@ -410,6 +416,12 @@ mod tests {
         let unit = systemd_unit(Path::new("/home/user/My Apps/av1converter"), "");
         assert!(unit.contains("ExecStart=\"/home/user/My Apps/av1converter\" --start-foreground"));
         assert!(!unit.contains("Environment="));
+    }
+
+    #[test]
+    fn systemd_unit_escapes_specifiers_and_variables_in_the_binary_path() {
+        let unit = systemd_unit(Path::new("/opt/100%/$HOME/av1converter"), "");
+        assert!(unit.contains("ExecStart=\"/opt/100%%/$$HOME/av1converter\" --start-foreground"));
     }
 
     #[test]
