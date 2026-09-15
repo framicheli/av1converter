@@ -80,10 +80,18 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         let shared = shared.clone();
         thread::spawn(move || {
             for (id, path) in probe_rx {
-                if shutdown.load(Ordering::SeqCst) {
-                    break;
-                }
-                let cancel = lock(&shared).analysis_cancel.clone();
+                // Shutdown is read under the lock the shutdown path cancels
+                // the current flag under.
+                let cancel = {
+                    let mut state = lock(&shared);
+                    if shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let Some(cancel) = claim_probe(&mut state, id) else {
+                        continue;
+                    };
+                    cancel
+                };
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     analyzer::analyze(&path, &cancel)
                 }))
@@ -395,7 +403,6 @@ fn apply_disc_event(
                     if let Some(path) = job.path.to_str() {
                         job.status = JobStatus::Analyzing;
                         ready = Some((id, path.to_string()));
-                        state.analysis_cancel = Arc::new(AtomicBool::new(false));
                     } else {
                         job.status = JobStatus::Error {
                             message: "File path contains non-UTF-8 characters".to_string(),
@@ -505,6 +512,21 @@ fn persist_queue(
     }
 }
 
+/// Install a fresh analysis cancel flag for probing job `id`, or `None` when
+/// the job was removed or no longer awaits analysis.
+fn claim_probe(state: &mut DaemonState, id: u64) -> Option<Arc<AtomicBool>> {
+    if !state
+        .queue
+        .job_by_id(id)
+        .is_some_and(|job| job.status.awaits_analysis())
+    {
+        return None;
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    state.analysis_cancel = cancel.clone();
+    Some(cancel)
+}
+
 /// Queue new files and hand them to the prober.
 fn add_paths(
     shared: &SharedState,
@@ -539,7 +561,6 @@ fn add_paths(
 
     {
         let mut state = lock(shared);
-        state.analysis_cancel = Arc::new(AtomicBool::new(false));
         state.queue.state.reset_session_if_finished();
         for (_, job) in state
             .queue
@@ -965,33 +986,27 @@ mod tests {
     }
 
     #[test]
-    fn a_ripped_title_starts_with_a_fresh_analysis_token() {
-        use crate::disc::worker::DiscEvent;
+    fn a_probe_holds_the_flag_cancel_sets_and_skips_settled_jobs() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut waiting = EncodingJob::new(std::path::PathBuf::from("a.mkv"));
+        waiting.status = JobStatus::Analyzing;
+        let waiting = state.queue.push(waiting);
+        let mut cancelled = EncodingJob::new(std::path::PathBuf::from("b.mkv"));
+        cancelled.status = JobStatus::Skipped {
+            reason: "Cancelled".to_string(),
+        };
+        let cancelled = state.queue.push(cancelled);
+        state.analysis_cancel.store(true, Ordering::Relaxed);
 
-        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
-        let (probe_tx, probe_rx) = mpsc::channel();
-        {
-            let mut state = lock(&shared);
-            let mut job = EncodingJob::new(std::path::PathBuf::from("Title 0"));
-            job.status = JobStatus::Ripping { progress: 0.0 };
-            job.temporary = true;
-            let id = state.queue.push(job);
-            state.disc.job_ids = vec![id];
-            state.disc.active = true;
-            state.analysis_cancel.store(true, Ordering::Relaxed);
-        }
-
-        apply_disc_event(
-            &shared,
-            &probe_tx,
-            DiscEvent::TitleReady {
-                index: 0,
-                path: std::path::PathBuf::from("/staging/rip-a/DISC_t00.mkv"),
-            },
+        let cancel = claim_probe(&mut state, waiting).expect("an analyzing job is probed");
+        assert!(!cancel.load(Ordering::Relaxed));
+        state.analysis_cancel.store(true, Ordering::Relaxed);
+        assert!(
+            cancel.load(Ordering::Relaxed),
+            "cancel reaches the running probe"
         );
-
-        assert!(probe_rx.try_recv().is_ok());
-        assert!(!lock(&shared).analysis_cancel.load(Ordering::Relaxed));
+        assert!(claim_probe(&mut state, cancelled).is_none());
+        assert!(claim_probe(&mut state, 999).is_none());
     }
 
     #[cfg(unix)]

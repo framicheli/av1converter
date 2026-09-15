@@ -190,7 +190,8 @@ pub struct DaemonState {
     pub disc_worker: Option<JoinHandle<()>>,
     /// Same flag the HTTP accept loop watches; mutations refuse once set.
     pub shutting_down: Arc<AtomicBool>,
-    /// Replaced when new files are queued so a cancelled probe keeps dying.
+    /// Cancel flag of the running probe. The prober installs a fresh one for
+    /// each file it starts.
     pub analysis_cancel: Arc<AtomicBool>,
 }
 
