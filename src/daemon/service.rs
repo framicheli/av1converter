@@ -90,7 +90,7 @@ pub fn uninstall_keep_running() -> io::Result<()> {
     }
     #[cfg(target_os = "macos")]
     {
-        remove_plist()
+        macos_uninstall_keep_running()
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -279,7 +279,7 @@ fn systemd_quote(s: &str) -> String {
 
 // ── launchd (macOS) ──────────────────────────────────────────────────────────
 
-#[cfg(target_os = "macos")]
+#[cfg(any(test, target_os = "macos"))]
 const PLIST_LABEL: &str = "com.av1converter.daemon";
 
 #[cfg(target_os = "macos")]
@@ -297,7 +297,10 @@ fn macos_install(exe: &Path, path: &str) -> io::Result<()> {
         plist_path().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
     write_file(&dest, &launchd_plist(exe, path))?;
     // SAFETY: getuid is always safe.
-    let domain = format!("gui/{}", unsafe { libc::getuid() });
+    let uid = unsafe { libc::getuid() };
+    let domain = format!("gui/{uid}");
+    let [verb, target] = launchd_toggle_args(true, uid);
+    launchctl(&[&verb, &target])?;
     if super::lifecycle::running_pid().is_none() {
         let _ = launchctl(&["bootout", &format!("{domain}/{PLIST_LABEL}")]);
         launchctl(&["bootstrap", &domain, &dest.to_string_lossy()])?;
@@ -311,6 +314,25 @@ fn macos_uninstall() -> io::Result<()> {
     let domain = format!("gui/{}", unsafe { libc::getuid() });
     let _ = launchctl(&["bootout", &format!("{domain}/{PLIST_LABEL}")]);
     remove_plist()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_uninstall_keep_running() -> io::Result<()> {
+    // SAFETY: getuid is always safe.
+    let [verb, target] = launchd_toggle_args(false, unsafe { libc::getuid() });
+    launchctl(&[&verb, &target])?;
+    remove_plist()
+}
+
+/// `launchctl enable|disable gui/<uid>/<label>`. The override persists across
+/// reboots; disabling leaves a running instance running and stops launchd from
+/// relaunching or loading it.
+#[cfg(any(test, target_os = "macos"))]
+fn launchd_toggle_args(enable: bool, uid: u32) -> [String; 2] {
+    [
+        if enable { "enable" } else { "disable" }.to_string(),
+        format!("gui/{uid}/{PLIST_LABEL}"),
+    ]
 }
 
 #[cfg(target_os = "macos")]
@@ -438,6 +460,18 @@ mod tests {
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<key>Crashed</key>"));
         assert!(!plist.contains("SuccessfulExit"));
+    }
+
+    #[test]
+    fn launchd_autostart_toggles_the_users_gui_service() {
+        assert_eq!(
+            launchd_toggle_args(false, 501),
+            ["disable", "gui/501/com.av1converter.daemon"]
+        );
+        assert_eq!(
+            launchd_toggle_args(true, 501),
+            ["enable", "gui/501/com.av1converter.daemon"]
+        );
     }
 
     #[test]
