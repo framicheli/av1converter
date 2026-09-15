@@ -2145,8 +2145,6 @@ mod tests {
             let output_dir = new_root.join("out");
             std::fs::create_dir_all(&old_root).unwrap();
             std::fs::create_dir_all(&output_dir).unwrap();
-            // The config write lands in the temp directory, not the user's own.
-            unsafe { std::env::set_var("XDG_CONFIG_HOME", base.join("config")) };
 
             let live = AppConfig {
                 daemon: DaemonConfig {

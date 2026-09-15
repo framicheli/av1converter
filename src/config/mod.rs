@@ -58,6 +58,26 @@ pub fn env_dir(name: &str) -> Option<PathBuf> {
         .filter(|dir| dir.is_absolute())
 }
 
+/// A config home unique to the calling test thread, removed when the thread
+/// exits.
+#[cfg(test)]
+fn test_config_home() -> PathBuf {
+    struct TestDir(PathBuf);
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    thread_local! {
+        static DIR: TestDir = TestDir(std::env::temp_dir().join(format!(
+            "av1c_test_config_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        )));
+    }
+    DIR.with(|dir| dir.0.clone())
+}
+
 /// Replace a leading `~` or `~/` with the home directory.
 fn expand_home(path: &mut String) {
     let rest = match path.as_str() {
@@ -202,12 +222,14 @@ impl AppConfig {
 
     /// Get the default configuration file path
     pub fn config_path() -> PathBuf {
-        env_dir("XDG_CONFIG_HOME")
+        #[cfg(test)]
+        let base = test_config_home();
+        #[cfg(not(test))]
+        let base = env_dir("XDG_CONFIG_HOME")
             .or_else(|| env_dir("HOME").map(|home| home.join(".config")))
             .or_else(|| env_dir("APPDATA"))
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("av1converter")
-            .join("config.toml")
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join("av1converter").join("config.toml")
     }
 
     /// Clamp all numeric fields to their valid ranges and repair output naming.
@@ -382,6 +404,26 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each test thread gets its own config file under the temp directory, and
+    /// it is gone once the thread exits.
+    #[test]
+    fn tests_use_a_private_config_path_per_thread() {
+        let here = AppConfig::config_path();
+        assert!(here.starts_with(std::env::temp_dir()));
+
+        let there = std::thread::spawn(|| {
+            AppConfig::default().save().unwrap();
+            let path = AppConfig::config_path();
+            assert!(path.exists());
+            path
+        })
+        .join()
+        .unwrap();
+
+        assert_ne!(here, there);
+        assert!(!there.exists());
+    }
 
     #[test]
     fn a_tilde_output_directory_expands_to_the_home_directory() {
