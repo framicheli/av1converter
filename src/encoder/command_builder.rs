@@ -307,15 +307,17 @@ fn get_qsv_params(params: &EncodingParams) -> Vec<String> {
 }
 
 /// Constant-QP rate control. `-quality` on `av1_amf` selects a speed preset
-/// and never sets the quantizer.
+/// and never sets the quantizer. `-qp_i`/`-qp_p` take an AV1 `q_index` (0-255);
+/// the configured 0-51 quantizer is scaled onto that range.
 fn get_amf_params(params: &EncodingParams) -> Vec<String> {
+    let q_index = (u16::from(params.crf) * 5).min(255).to_string();
     vec![
         "-rc".to_string(),
         "cqp".to_string(),
         "-qp_i".to_string(),
-        params.crf.to_string(),
+        q_index.clone(),
         "-qp_p".to_string(),
-        params.crf.to_string(),
+        q_index,
         "-usage".to_string(),
         "transcoding".to_string(),
     ]
@@ -528,9 +530,16 @@ mod tests {
     fn amf_quality_sets_the_constant_qp() {
         let args = build_ffmpeg_args(&dv_params(Encoder::Amf, DvMode::ToHdr10, None));
         assert_eq!(arg_after(&args, "-rc"), Some("cqp".to_string()));
-        assert_eq!(arg_after(&args, "-qp_i"), Some("27".to_string()));
-        assert_eq!(arg_after(&args, "-qp_p"), Some("27".to_string()));
+        assert_eq!(arg_after(&args, "-qp_i"), Some("135".to_string()));
+        assert_eq!(arg_after(&args, "-qp_p"), Some("135".to_string()));
         assert!(!args.contains(&"-quality".to_string()));
+
+        let mut max = dv_params(Encoder::Amf, DvMode::ToHdr10, None);
+        max.crf = Encoder::Amf.max_quality();
+        assert_eq!(
+            arg_after(&build_ffmpeg_args(&max), "-qp_i"),
+            Some("255".to_string())
+        );
     }
 
     #[test]
