@@ -15,7 +15,9 @@ function fmtBytes(n) {
 function fmtDuration(secs) {
   if (secs == null) return "—";
   const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = Math.floor(secs % 60);
-  return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+  return h > 0 ? trf("duration_hm", { h, m }, "{h}h {m}m")
+    : m > 0 ? trf("duration_ms", { m, s }, "{m}m {s}s")
+    : trf("duration_s", { s }, "{s}s");
 }
 
 // Writes into one of the two live regions in index.html. Their role and

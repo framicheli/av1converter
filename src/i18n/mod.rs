@@ -403,6 +403,9 @@ pub enum Msg {
     WebConversionStopped,
     WebRemoveRipPrompt,
     WebClearFinishedRipPrompt,
+    WebDurationHoursMinutes,
+    WebDurationMinutesSeconds,
+    WebDurationSeconds,
     TerminalTooSmall,
 }
 
@@ -3030,6 +3033,24 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             }
             Zh => "清除已完成的任务？其中从光盘提取的文件将被删除。",
         },
+        Msg::WebDurationHoursMinutes => match lang {
+            En => "{h}h {m}m",
+            It | Es | Fr => "{h} h {m} min",
+            De => "{h} Std. {m} Min.",
+            Zh => "{h}小时{m}分钟",
+        },
+        Msg::WebDurationMinutesSeconds => match lang {
+            En => "{m}m {s}s",
+            It | Es | Fr => "{m} min {s} s",
+            De => "{m} Min. {s} Sek.",
+            Zh => "{m}分钟{s}秒",
+        },
+        Msg::WebDurationSeconds => match lang {
+            En => "{s}s",
+            It | Es | Fr => "{s} s",
+            De => "{s} Sek.",
+            Zh => "{s}秒",
+        },
         Msg::TerminalTooSmall => match lang {
             En => "Terminal too small. Resize to at least {w} × {h}. Press q to quit.",
             It => {
@@ -3190,6 +3211,9 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("remove_from_queue", Msg::WebRemoveFromQueue),
     ("remove_rip_prompt", Msg::WebRemoveRipPrompt),
     ("clear_finished_rip_prompt", Msg::WebClearFinishedRipPrompt),
+    ("duration_hm", Msg::WebDurationHoursMinutes),
+    ("duration_ms", Msg::WebDurationMinutesSeconds),
+    ("duration_s", Msg::WebDurationSeconds),
     ("removed_finished", Msg::WebRemovedFinished),
     ("remux_hint", Msg::WebRemuxHint),
     ("remux_only", Msg::RemuxOnly),
