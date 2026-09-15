@@ -137,7 +137,7 @@ To also delete configuration and daemon state (queue, logs, access token), run:
 av1converter --purge
 ```
 
-It lists the directories it will remove and asks `Are you sure? [y/N]`. Login autostart is removed too, without a second prompt. The binary, encoded files, and a custom disc staging directory are left alone. Package uninstall does not delete user data, so `--purge` has to run while the binary is still installed.
+It refuses while the daemon is running, lists the directories (and the login service, if installed) it will remove, and asks `Are you sure? [y/N]`; answering anything but yes changes nothing. The binary, encoded files, and a custom disc staging directory are left alone. Package uninstall does not delete user data, so `--purge` has to run while the binary is still installed.
 
 Then use the same tool that installed it:
 

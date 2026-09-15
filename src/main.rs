@@ -437,17 +437,13 @@ fn purge_entry() {
     }
 
     let had_service = daemon::service::installed();
-    if had_service && let Err(e) = daemon::service::uninstall() {
-        eprintln!("Could not remove the login service: {e}");
-        std::process::exit(1);
-    }
-
     let existing: Vec<PathBuf> = purge_dirs()
         .into_iter()
         .filter(|dir| dir.exists())
         .collect();
     if existing.is_empty() {
         if had_service {
+            uninstall_service_or_exit();
             println!("Removed the login service.");
         } else {
             println!("Nothing to delete.");
@@ -458,6 +454,9 @@ fn purge_entry() {
     println!("This will permanently delete:");
     for dir in &existing {
         println!("  {}", dir.display());
+    }
+    if had_service {
+        println!("  the login service");
     }
     print!("Are you sure? [y/N] ");
     let _ = io::stdout().flush();
@@ -475,12 +474,22 @@ fn purge_entry() {
         }
     }
 
+    if had_service {
+        uninstall_service_or_exit();
+    }
     for dir in &existing {
         if let Err(e) = std::fs::remove_dir_all(dir) {
             eprintln!("Could not delete {}: {e}", dir.display());
             std::process::exit(1);
         }
         println!("Deleted {}", dir.display());
+    }
+}
+
+fn uninstall_service_or_exit() {
+    if let Err(e) = daemon::service::uninstall() {
+        eprintln!("Could not remove the login service: {e}");
+        std::process::exit(1);
     }
 }
 
