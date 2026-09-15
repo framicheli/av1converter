@@ -2266,7 +2266,8 @@ mod tests {
             let mut body = serde_json::to_value(&current).unwrap();
             body["daemon"]["enabled"] = json!(true);
             body["daemon"]["auth_token"] = json!("");
-            body["disc"]["staging_directory"] = json!("/tmp");
+            let staging = std::env::temp_dir();
+            body["disc"]["staging_directory"] = json!(staging);
 
             let merged = merged_settings(&body, &current, true).unwrap();
 
@@ -2275,7 +2276,7 @@ mod tests {
             assert_eq!(
                 merged.disc.staging_directory,
                 Some(
-                    Path::new("/tmp")
+                    staging
                         .canonicalize()
                         .unwrap()
                         .to_string_lossy()
