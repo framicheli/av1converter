@@ -389,12 +389,16 @@ fn scan_discs_entry() {
                     println!("  {kind}");
                 }
                 for title in scan.titles {
+                    let chapters = if title.chapters > 0 {
+                        format!("  {} chapters", title.chapters)
+                    } else {
+                        String::new()
+                    };
                     println!(
-                        "  title {:>2}  {}  {}  {} chapters  {}",
+                        "  title {:>2}  {}  {}{chapters}  {}",
                         title.id,
                         utils::format_duration(title.duration),
                         utils::format_file_size(title.size_bytes),
-                        title.chapters,
                         title.name
                     );
                     for track in &title.tracks {

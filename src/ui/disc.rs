@@ -172,15 +172,18 @@ pub fn render_disc_titles(f: &mut Frame, app: &mut App) {
                 .map(|(i, title)| {
                     let selected = app.disc_selected.contains(&title.id);
                     let cursor = i == app.disc_cursor;
+                    let chapters = if title.chapters > 0 {
+                        format!("  {} {}", title.chapters, t(lang, Msg::DiscChapters))
+                    } else {
+                        String::new()
+                    };
                     ListItem::new(format!(
-                        "{}{} {} — {}  {}  {} {}",
+                        "{}{} {} — {}  {}{chapters}",
                         if cursor { "> " } else { "  " },
                         if selected { "[x]" } else { "[ ]" },
                         title.name,
                         format_duration(title.duration),
                         format_file_size(title.size_bytes),
-                        title.chapters,
-                        t(lang, Msg::DiscChapters),
                     ))
                     .style(
                         Style::default()
