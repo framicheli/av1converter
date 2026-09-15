@@ -120,26 +120,46 @@ pub fn running_pid() -> Option<u32> {
     }
 }
 
+/// Lock the PID file at `path`. A lock won on an inode a departing daemon has
+/// already unlinked is dropped and the path opened again.
 #[cfg(unix)]
 fn lock_pid_file(path: &std::path::Path, pid: u32) -> io::Result<File> {
     use std::os::fd::AsRawFd;
 
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)?;
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "another daemon owns the PID file",
-        ));
+    loop {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "another daemon owns the PID file",
+            ));
+        }
+        if !is_linked_at(&file, path)? {
+            continue;
+        }
+        file.set_len(0)?;
+        file.write_all(pid.to_string().as_bytes())?;
+        file.sync_all()?;
+        return Ok(file);
     }
-    file.set_len(0)?;
-    file.write_all(pid.to_string().as_bytes())?;
-    file.sync_all()?;
-    Ok(file)
+}
+
+/// Whether `file` is the inode currently linked at `path`.
+#[cfg(unix)]
+fn is_linked_at(file: &File, path: &std::path::Path) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let open = file.metadata()?;
+    match std::fs::metadata(path) {
+        Ok(linked) => Ok(open.ino() == linked.ino() && open.dev() == linked.dev()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(not(unix))]
@@ -304,6 +324,20 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(locked_pid(&path), None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pid_file_replaced_after_opening_is_not_the_linked_one() {
+        let path = std::env::temp_dir().join(format!("av1c_pid_inode_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let stale = lock_pid_file(&path, std::process::id()).unwrap();
+        assert!(is_linked_at(&stale, &path).unwrap());
+        std::fs::remove_file(&path).unwrap();
+        assert!(!is_linked_at(&stale, &path).unwrap());
+        drop(lock_pid_file(&path, std::process::id()).unwrap());
+        assert!(!is_linked_at(&stale, &path).unwrap());
         let _ = std::fs::remove_file(path);
     }
 
