@@ -14,8 +14,9 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long `stop` waits for the daemon to exit. Covers the daemon's
-/// `SHUTDOWN_GRACE` for a rip followed by the same grace for an encode.
-const STOP_TIMEOUT: Duration = Duration::from_secs(25);
+/// `HTTP_JOIN_GRACE`, then its `SHUTDOWN_GRACE` for a rip followed by the same
+/// grace for an encode.
+const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Data directory for the PID file, queue and background log
 /// (same location the debug logger uses).

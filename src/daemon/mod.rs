@@ -25,6 +25,9 @@ use tracing::{info, warn};
 const TICK: Duration = Duration::from_millis(250);
 /// How long shutdown waits for the worker to acknowledge cancellation.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+/// How long shutdown waits for in-flight HTTP requests before leaving their
+/// threads detached.
+const HTTP_JOIN_GRACE: Duration = Duration::from_secs(5);
 /// Number of HTTP worker threads, so a slow scan or listing does not stall the
 /// dashboard poll behind it.
 const SERVER_THREADS: usize = 4;
@@ -185,14 +188,22 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         );
     }
 
-    // HTTP stops accepting once `shutdown` is set. Join it before taking
-    // worker handles so an in-flight rip is stored (and then cancelled)
-    // rather than spawned after take().
-    for handle in server_handles {
-        let _ = handle.join();
+    // Probes and a drive listing wait on ffprobe and makemkvcon; both are
+    // cancelled before the HTTP threads are joined.
+    {
+        let state = lock(&shared);
+        state.analysis_cancel.store(true, Ordering::Relaxed);
+        state.disc.cancel();
     }
 
-    lock(&shared).analysis_cancel.store(true, Ordering::Relaxed);
+    // HTTP stops accepting once `shutdown` is set. It is joined before taking
+    // worker handles so an in-flight rip is stored (and then cancelled)
+    // rather than spawned after take(). A thread still blocked on a stalled
+    // client after `HTTP_JOIN_GRACE` is left detached.
+    let http_joined = join_within(server_handles, HTTP_JOIN_GRACE);
+    if !http_joined {
+        warn!("HTTP requests still in flight after the shutdown grace; not waiting for them");
+    }
 
     // Graceful shutdown: cancel any running encode and wait for the worker
     // to kill ffmpeg and acknowledge.
@@ -263,10 +274,31 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         &mut last_save_warning,
     );
     // The analyzer owns ffprobe children; closing its input and joining it
-    // leaves none behind.
+    // leaves none behind. A detached HTTP thread still holds a sender, and the
+    // prober is then left running.
     drop(probe_tx);
-    let _ = analysis_handle.join();
+    if http_joined {
+        let _ = analysis_handle.join();
+    }
     Ok(())
+}
+
+/// Join `handles`, waiting at most `grace` for them to finish. Returns whether
+/// every one was joined.
+fn join_within(handles: Vec<thread::JoinHandle<()>>, grace: Duration) -> bool {
+    let deadline = Instant::now() + grace;
+    while Instant::now() < deadline && !handles.iter().all(thread::JoinHandle::is_finished) {
+        thread::sleep(Duration::from_millis(50));
+    }
+    let mut joined = true;
+    for handle in handles {
+        if handle.is_finished() {
+            let _ = handle.join();
+        } else {
+            joined = false;
+        }
+    }
+    joined
 }
 
 /// Apply leftover worker/disc messages after join, then skip anything still
@@ -1327,6 +1359,19 @@ mod tests {
             JobStatus::Error { message } if message == "probe failed"
         ));
         assert_eq!(state.queue.state.error_count, 0);
+    }
+
+    #[test]
+    fn joining_http_threads_gives_up_after_the_grace() {
+        let quick = thread::spawn(|| {});
+        let stuck = thread::spawn(|| thread::sleep(Duration::from_secs(2)));
+        let started = Instant::now();
+        assert!(!join_within(vec![quick, stuck], Duration::from_millis(200)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(join_within(
+            vec![thread::spawn(|| {})],
+            Duration::from_secs(1)
+        ));
     }
 
     #[test]
