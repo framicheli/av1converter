@@ -301,8 +301,6 @@ fn get_qsv_params(params: &EncodingParams) -> Vec<String> {
         params.crf.to_string(),
         "-preset".to_string(),
         "veryslow".to_string(),
-        "-look_ahead".to_string(),
-        "1".to_string(),
         "-look_ahead_depth".to_string(),
         "40".to_string(),
     ]
