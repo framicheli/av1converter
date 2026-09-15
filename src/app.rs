@@ -1614,6 +1614,7 @@ impl App {
             self.disc_state = DiscState::Failed(message.to_string());
             return;
         }
+        self.disc_state = DiscState::Ready;
         self.fail_remaining_rips(index, message);
         self.settle_after_rips();
     }
@@ -2127,6 +2128,7 @@ mod tests {
 
         assert!(app.queue.jobs[0].status.is_terminal());
         assert!(app.queue.all_completed());
+        assert_eq!(app.disc_state, DiscState::Ready);
     }
 
     #[test]
