@@ -725,6 +725,9 @@ $("btn-cancel").addEventListener("click", async () => {
   if (!encoding && !analyzing) return;
   const prompt = encoding ? tr("cancel_encoding_prompt") : tr("cancel_analysis_prompt");
   if (!await askConfirm(prompt)) return;
+  // Nothing is cancelled when the work that was running changed during the prompt.
+  const unchanged = encoding ? lastWork.encoding : !lastWork.encoding && lastWork.analyzing;
+  if (!unchanged) return;
   try {
     if (encoding) await post("/api/queue/cancel");
     else await post("/api/queue/cancel_analysis");
@@ -734,7 +737,7 @@ $("btn-cancel").addEventListener("click", async () => {
 
 $("btn-cancel-disc").addEventListener("click", async () => {
   if (!lastWork.ripping) return;
-  if (!await askConfirm(tr("cancel_disc_prompt"))) return;
+  if (!await askConfirm(tr("cancel_disc_prompt")) || !lastWork.ripping) return;
   try {
     await post("/api/discs/cancel");
     toast(tr("cancelling"));
