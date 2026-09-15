@@ -226,7 +226,8 @@ button:disabled, button[aria-disabled="true"] { opacity: 0.4; cursor: default; b
 #summary-dismiss { margin-left: auto; }
 
 /* ── Queue table ────────────────────────────────────────────────── */
-.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+/* Containing block for the absolutely positioned .sr-only column labels. */
+.table-wrap { position: relative; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
 table { width: 100%; border-collapse: collapse; background: var(--panel); }
 th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 thead th { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-2); font-weight: 500; }
