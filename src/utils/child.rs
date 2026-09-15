@@ -53,17 +53,17 @@ pub fn kill_all() {
 }
 
 #[cfg(unix)]
-fn kill_pid(pid: u32) {
+pub(crate) fn kill_pid(pid: u32) {
     // Negative pid: the group created by [`configure`].
     let _ = unsafe { libc::kill(-pid.cast_signed(), libc::SIGKILL) };
 }
 
 #[cfg(windows)]
-fn kill_pid(pid: u32) {
+pub(crate) fn kill_pid(pid: u32) {
     let _ = std::process::Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .output();
 }
 
 #[cfg(not(any(unix, windows)))]
-fn kill_pid(_pid: u32) {}
+pub(crate) fn kill_pid(_pid: u32) {}

@@ -489,7 +489,7 @@ fn run_robot(
         }
         if cancel.load(Ordering::Relaxed) {
             cancelled = true;
-            let _ = child.kill();
+            crate::utils::child::kill_pid(child.id());
             break;
         }
     }
