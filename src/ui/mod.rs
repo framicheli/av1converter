@@ -266,6 +266,29 @@ mod disc_screen_tests {
         assert!(app.disc_receiver.is_none());
     }
 
+    /// An unmarked title uses the terminal's default foreground.
+    #[test]
+    fn unmarked_titles_use_the_default_foreground() {
+        let mut app = with_titles();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|f| super::render_disc_titles(f, &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = (0..buffer.area.height)
+            .find(|&y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("title01.mkv")
+            })
+            .unwrap();
+        let x = (0..buffer.area.width)
+            .find(|&x| buffer[(x, row)].symbol() == "t")
+            .unwrap();
+        assert_eq!(buffer[(x, row)].fg, ratatui::style::Color::Reset);
+    }
+
     /// Sizes on the title list use the same binary units as the rest of the app.
     #[test]
     fn title_sizes_use_binary_units() {

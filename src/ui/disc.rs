@@ -184,7 +184,7 @@ pub fn render_disc_titles(f: &mut Frame, app: &mut App) {
                     ))
                     .style(
                         Style::default()
-                            .fg(if selected { Color::Green } else { Color::Gray })
+                            .fg(if selected { Color::Green } else { Color::Reset })
                             .add_modifier(if cursor {
                                 Modifier::BOLD
                             } else {
