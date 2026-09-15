@@ -3,8 +3,39 @@ use crate::i18n::{Language, Msg, t};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::Line,
     widgets::ListItem,
 };
+
+/// Rows `text` fills when word-wrapped to `width` cells. Words break at
+/// spaces only; a word wider than the row spills onto further rows.
+pub fn wrapped_rows(text: &str, width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    let rows: usize = text
+        .lines()
+        .map(|line| {
+            let mut rows = 1;
+            let mut used = 0;
+            for word in line.split(' ').filter(|word| !word.is_empty()) {
+                let word_width = Line::raw(word).width();
+                if used == 0 {
+                    used = word_width;
+                } else if used + 1 + word_width <= width {
+                    used += 1 + word_width;
+                } else {
+                    rows += 1;
+                    used = word_width;
+                }
+                if used > width {
+                    rows += (used - 1) / width;
+                    used = (used - 1) % width + 1;
+                }
+            }
+            rows
+        })
+        .sum();
+    u16::try_from(rows).unwrap_or(u16::MAX)
+}
 
 /// Translate a job status `reason` string for display.
 ///

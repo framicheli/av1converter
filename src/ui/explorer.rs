@@ -1,4 +1,4 @@
-use super::common::message_color;
+use super::common::{message_color, wrapped_rows};
 use crate::app::{App, Entry, SelectionMode};
 use crate::disc::is_iso;
 use crate::i18n::{Msg, t};
@@ -15,24 +15,18 @@ use ratatui::{
 #[allow(clippy::too_many_lines)]
 pub fn render_explorer(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
-    let has_message = app.message.is_some();
+    // Notice text width: the frame minus the 1-cell margins and the borders.
+    let notice_rows = app.message.as_deref().map_or(0, |msg| {
+        wrapped_rows(msg, f.area().width.saturating_sub(4)).min(4) + 2
+    });
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(if has_message {
-            vec![
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Min(5),
-                Constraint::Length(3),
-            ]
-        } else {
-            vec![
-                Constraint::Length(3),
-                Constraint::Length(0),
-                Constraint::Min(5),
-                Constraint::Length(3),
-            ]
-        })
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(notice_rows),
+            Constraint::Min(5),
+            Constraint::Length(3),
+        ])
         .margin(1)
         .split(f.area());
 

@@ -1,4 +1,4 @@
-use super::common::{create_menu_item, message_color};
+use super::common::{create_menu_item, message_color, wrapped_rows};
 use crate::app::App;
 use crate::i18n::{Msg, t};
 use ratatui::{
@@ -10,11 +10,15 @@ use ratatui::{
 };
 
 pub fn render_home(f: &mut Frame, app: &App) {
+    // Notice text width: the frame minus the 2-cell margins and the borders.
+    let notice_rows = app.message.as_deref().map_or(0, |msg| {
+        wrapped_rows(msg, f.area().width.saturating_sub(6)).min(4) + 2
+    });
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Length(if app.message.is_some() { 3 } else { 0 }),
+            Constraint::Length(notice_rows),
             Constraint::Min(5),
             Constraint::Length(3),
             Constraint::Length(3),
@@ -199,5 +203,23 @@ mod tests {
         assert!(screen.contains("MakeMKV was not found"));
         // The menu still renders below it.
         assert!(screen.contains("AV1 Video Converter"));
+    }
+
+    #[test]
+    fn a_wrapped_notice_shows_every_line() {
+        let mut app = App::new();
+        app.set_message(&format!("{}LASTWORD", "word ".repeat(20)));
+
+        let mut terminal = Terminal::new(TestBackend::new(50, 30)).unwrap();
+        terminal.draw(|f| render_home(f, &app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+
+        assert!(screen.contains("LASTWORD"));
     }
 }
