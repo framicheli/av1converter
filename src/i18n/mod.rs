@@ -236,6 +236,7 @@ pub enum Msg {
     ExitAppTitle,
     ExitAppPrompt,
     ExitAppActivePrompt,
+    ExitAppUnsavedPrompt,
     AbandonTrackConfigTitle,
     AbandonTrackConfigPrompt,
     DiscardConfigTitle,
@@ -1717,6 +1718,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Le travail en cours sera annulé avant de quitter. Continuer ?",
             De => "Aktive Vorgänge werden vor dem Beenden abgebrochen. Fortfahren?",
             Zh => "退出前将取消正在进行的任务。是否继续？",
+        },
+        Msg::ExitAppUnsavedPrompt => match lang {
+            En => "Unsaved settings will be lost. Exit anyway?",
+            It => "Le impostazioni non salvate andranno perse. Uscire comunque?",
+            Es => "Los ajustes sin guardar se perderán. ¿Salir de todos modos?",
+            Fr => "Les réglages non enregistrés seront perdus. Quitter quand même ?",
+            De => "Ungespeicherte Einstellungen gehen verloren. Trotzdem beenden?",
+            Zh => "未保存的设置将丢失。仍要退出吗？",
         },
         Msg::AbandonTrackConfigTitle => match lang {
             En => "Discard Batch",

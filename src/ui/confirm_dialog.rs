@@ -1,5 +1,5 @@
 use super::common::centered_rect;
-use crate::app::{App, ConfirmAction};
+use crate::app::{App, ConfirmAction, Screen};
 use crate::i18n::{Msg, t};
 use ratatui::{
     Frame,
@@ -31,6 +31,8 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
                 lang,
                 if app.work_active() {
                     Msg::ExitAppActivePrompt
+                } else if app.current_screen == Screen::Configuration && app.config_is_dirty() {
+                    Msg::ExitAppUnsavedPrompt
                 } else {
                     Msg::ExitAppPrompt
                 },
@@ -139,4 +141,32 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
 
     let buttons_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
     f.render_widget(buttons_paragraph, chunks[2]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_confirm_dialog;
+    use crate::app::{App, ConfirmAction};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn quitting_with_unsaved_settings_says_so() {
+        let mut app = App::new();
+        app.config.language = crate::i18n::Language::English;
+        app.navigate_to_configuration();
+        app.config.quality.vmaf_enabled = !app.config.quality.vmaf_enabled;
+        app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| render_confirm_dialog(f, &app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+
+        assert!(screen.contains("Unsaved settings"));
+    }
 }
