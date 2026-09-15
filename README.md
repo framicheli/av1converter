@@ -199,7 +199,7 @@ Each file in the queue is processed in one of two modes. The mode is chosen per 
 
 ### Encode Mode (Encode Video → AV1)
 
-The default mode for non-AV1 sources. The video stream is re-encoded to AV1 using the detected hardware or software encoder, with parameters chosen automatically from the resolution and HDR format (see [Encoding Presets](#encoding-presets)). Selected subtitle tracks are copied when the output container supports their format, otherwise compatible text subtitles are converted; audio tracks are copied unless you convert them to Opus (see [Audio Transcoding](#audio-transcoding)). Output is written to the configured container (e.g. `mkv`) with the configured suffix (default `_av1`), and the result is verified with VMAF before the source can be deleted.
+The default mode for non-AV1 sources. The video stream is re-encoded to AV1 using the detected hardware or software encoder, with parameters chosen automatically from the resolution and HDR format (see [Encoding Presets](#encoding-presets)). Selected subtitle tracks are copied when the output container supports their format, otherwise compatible text subtitles are converted; audio tracks are copied unless you convert them to Opus (see [Audio Transcoding](#audio-transcoding)). Output is written to the configured container (`mkv`, `mp4` or `webm`) with the configured suffix (default `_av1`), and the result is verified with VMAF before the source can be deleted. MKV output keeps attachments such as embedded fonts and cover art. Subtitles the container cannot hold (bitmap subtitles in WebM, bitmap subtitles other than DVD in MP4) are left out, and WebM output converts any audio that is not already Opus or Vorbis to Opus, which also keeps the source from being auto-deleted.
 
 ### Demux/Remux Mode (Remux Only → Copy Video)
 
@@ -387,7 +387,7 @@ nvenc_preset = "p4"        # NVENC preset: p1 (best quality) – p7 (fastest)
 
 [output]
 suffix = "_av1"            # Appended to output filenames
-container = "mkv"          # Output container (mkv, mp4, …)
+container = "mkv"          # Output container: mkv, mp4 or webm (anything else falls back to mkv)
 same_directory = true      # Write output next to source file
 # output_directory = "/path/to/output"  # Existing directory; required when same_directory = false and for disc rips
 
