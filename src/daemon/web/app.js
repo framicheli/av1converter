@@ -228,6 +228,7 @@ async function poll() {
   try {
     const s = await api("/api/status");
     setOffline(false);
+    if (Object.keys(strings).length === 0) loadStrings().catch(() => {});
 
     const pill = $("status-pill");
     const kind = s.current?.status.kind;
@@ -394,15 +395,25 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") poll();
 });
 
+// Fetches and applies the string map. Concurrent callers share one request.
+function loadStrings() {
+  loadStrings.pending ??= api("/api/strings")
+    .then((map) => {
+      strings = map;
+      applyStrings();
+      document.documentElement.lang = strings.html_lang ?? document.documentElement.lang;
+    })
+    .finally(() => { loadStrings.pending = null; });
+  return loadStrings.pending;
+}
+
 // Strings first, so nothing renders in English and then flips a moment later.
 // If the fetch fails the page keeps the English in index.html and carries on:
 // an unreachable or unauthorized daemon is already reported by the poll, and
-// an untranslated UI beats a blank one.
+// an untranslated UI beats a blank one. A later successful poll retries it.
 (async () => {
   try {
-    strings = await api("/api/strings");
-    applyStrings();
-    document.documentElement.lang = strings.html_lang ?? document.documentElement.lang;
+    await loadStrings();
   } catch {
     // Left in English on purpose.
   }
