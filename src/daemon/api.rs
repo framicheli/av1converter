@@ -660,7 +660,7 @@ pub fn queue_add(
     }
     files.sort();
 
-    let (added, already_queued) = super::add_paths(shared, probe_tx, files);
+    let (added, already_queued) = super::add_paths(shared, probe_tx, files, &browse_root);
     (
         200,
         json!({"added": added, "already_queued": already_queued}),
@@ -1255,9 +1255,37 @@ fn merged_settings(
     Ok(config)
 }
 
+/// Held by settings writes from the snapshot of the live config through its
+/// save and commit.
+static SETTINGS_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Why `config` cannot replace `live` while `jobs` — unfinished jobs as
+/// `(source, output, temporary)` — are queued. `inside` tells whether a path
+/// lies within a browse root.
+fn queue_conflict(
+    live: &AppConfig,
+    config: &AppConfig,
+    jobs: &[(PathBuf, Option<PathBuf>, bool)],
+    inside: impl Fn(&Path, &str) -> bool,
+) -> Option<&'static str> {
+    let root = &config.daemon.browse_root;
+    (live.daemon.browse_root != *root
+        && jobs.iter().any(|(path, output, temporary)| {
+            (!temporary && !inside(path, root))
+                || output
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .is_some_and(|parent| !inside(parent, root))
+        }))
+    .then_some("browse root excludes one or more queued jobs")
+}
+
 /// Replace the configuration: sanitize, persist to config.toml, and swap the
 /// live copy. Changes apply from the next analysis/encode.
 pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) -> (u16, Value) {
+    let _writing = SETTINGS_WRITES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Merging, the browse-root check and the config write all touch the
     // filesystem and run with no lock held, against a snapshot of the live
     // config and the queued paths.
@@ -1278,24 +1306,32 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
         Ok(config) => config,
         Err(e) => return (400, json!({"error": e})),
     };
-    if live.daemon.browse_root != config.daemon.browse_root
-        && job_paths.iter().any(|(path, output, temporary)| {
-            (!temporary && !within_root(path, &config.daemon.browse_root))
-                || output
-                    .as_deref()
-                    .and_then(Path::parent)
-                    .is_some_and(|parent| !within_root(parent, &config.daemon.browse_root))
-        })
-    {
-        return (
-            409,
-            json!({"error": "browse root excludes one or more queued jobs"}),
-        );
+    if let Some(error) = queue_conflict(&live, &config, &job_paths, within_root) {
+        return (409, json!({"error": error}));
     }
     if let Err(e) = config.save() {
         return (500, json!({"error": format!("failed to save: {e}")}));
     }
     let mut state = lock(shared);
+    // Jobs queued since the snapshot are compared by path prefix, without
+    // touching the filesystem.
+    let queued_since: Vec<(PathBuf, Option<PathBuf>, bool)> = state
+        .queue
+        .state
+        .jobs
+        .iter()
+        .filter(|job| {
+            !is_terminal(&job.status) && !job_paths.iter().any(|(path, ..)| *path == job.path)
+        })
+        .map(|job| (job.path.clone(), job.output_path.clone(), job.temporary))
+        .collect();
+    if let Some(error) = queue_conflict(&live, &config, &queued_since, |path, root| {
+        root.is_empty() || path.starts_with(root)
+    }) {
+        drop(state);
+        let _ = live.save();
+        return (409, json!({"error": error}));
+    }
     let output_changed = state.config.output != config.output;
     let saved = redacted(&config);
     state.config = config;
@@ -1332,6 +1368,9 @@ pub fn settings_service_post(
     let Some(enabled) = body.get("enabled").and_then(Value::as_bool) else {
         return (400, json!({"error": "enabled must be a boolean"}));
     };
+    let _writing = SETTINGS_WRITES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // The config write runs with no lock held.
     let enabled_config = if enabled {
         let config = {
@@ -1353,7 +1392,7 @@ pub fn settings_service_post(
                         json!({"error": format!("failed to enable daemon: {error}")}),
                     );
                 }
-                lock(shared).config = config;
+                lock(shared).config.daemon.enabled = true;
                 true
             }
         }
@@ -1375,11 +1414,10 @@ pub fn settings_service_post(
         ),
         Err(error) => {
             if enabled_config {
-                let mut state = lock(shared);
-                let mut config = state.config.clone();
+                let mut config = lock(shared).config.clone();
                 config.daemon.enabled = false;
                 if config.save().is_ok() {
-                    state.config = config;
+                    lock(shared).config.daemon.enabled = false;
                 }
             }
             (500, json!({"error": error.to_string()}))
@@ -2111,6 +2149,59 @@ mod tests {
             body["daemon"]["auth_token"] = json!(replacement);
             let merged = merged_settings(&body, &current, true).unwrap();
             assert_eq!(merged.daemon.auth_token, replacement);
+        }
+
+        /// A job queued since the settings snapshot is checked against the
+        /// new browse root by resolved-path prefix.
+        #[test]
+        fn a_job_queued_since_the_snapshot_blocks_a_browse_root_change() {
+            let live = live();
+            let mut config = live.clone();
+            config.daemon.browse_root = "/new-root".to_string();
+            let prefix = |path: &Path, root: &str| path.starts_with(root);
+
+            let outside = [(PathBuf::from("/media/movie.mkv"), None, false)];
+            assert!(queue_conflict(&live, &config, &outside, prefix).is_some());
+            let inside = [(PathBuf::from("/new-root/movie.mkv"), None, false)];
+            assert!(queue_conflict(&live, &config, &inside, prefix).is_none());
+            // An unchanged root is never a conflict.
+            assert!(queue_conflict(&live, &live, &outside, prefix).is_none());
+        }
+
+        /// Paths confined against a browse root that has since changed are
+        /// re-checked against the live one when they are queued.
+        #[test]
+        fn adding_rechecks_a_browse_root_changed_since_confinement() {
+            use crate::daemon::state::DaemonState;
+            use std::sync::{Arc, Mutex};
+
+            let base = std::env::temp_dir().join(format!("av1c_add_root_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(base.join("root")).unwrap();
+            let base = base.canonicalize().unwrap();
+            let root = base.join("root");
+            let outside = base.join("outside.mkv");
+            let inside = root.join("inside.mkv");
+            std::fs::write(&outside, b"video").unwrap();
+            std::fs::write(&inside, b"video").unwrap();
+
+            let config = AppConfig {
+                daemon: DaemonConfig {
+                    browse_root: root.to_string_lossy().into_owned(),
+                    ..DaemonConfig::default()
+                },
+                ..AppConfig::default()
+            };
+            let shared = Arc::new(Mutex::new(DaemonState::new(config)));
+            let (tx, _rx) = std::sync::mpsc::channel();
+
+            crate::daemon::add_paths(&shared, &tx, vec![outside, inside.clone()], "");
+
+            let state = lock(&shared);
+            let queued: Vec<&PathBuf> = state.queue.state.jobs.iter().map(|j| &j.path).collect();
+            assert_eq!(queued, [&inside]);
+            drop(state);
+            let _ = std::fs::remove_dir_all(base);
         }
 
         #[test]

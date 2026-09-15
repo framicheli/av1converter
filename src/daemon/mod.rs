@@ -594,6 +594,7 @@ fn add_paths(
     shared: &SharedState,
     probe_tx: &Sender<(u64, String)>,
     paths: Vec<std::path::PathBuf>,
+    browse_root: &str,
 ) -> (usize, usize) {
     let requested = paths.len();
     let mut added = 0;
@@ -634,8 +635,19 @@ fn add_paths(
             }
         }
 
+        // `paths` were confined against `browse_root`. A live root that differs
+        // was stored resolved by the settings API and is compared by prefix.
+        let live_root = std::path::PathBuf::from(&state.config.daemon.browse_root);
+        let root_changed = state.config.daemon.browse_root != browse_root;
+
         // Paths already queued and not yet finished are skipped
         for (canonical, path) in canonical_paths {
+            if root_changed
+                && !live_root.as_os_str().is_empty()
+                && !canonical.starts_with(&live_root)
+            {
+                continue;
+            }
             if !existing.insert(canonical) {
                 continue;
             }
@@ -1282,11 +1294,12 @@ mod tests {
             add_paths(
                 &shared,
                 &tx,
-                vec![path.clone(), dir.join(".").join("movie.mkv")]
+                vec![path.clone(), dir.join(".").join("movie.mkv")],
+                ""
             ),
             (1, 1)
         );
-        assert_eq!(add_paths(&shared, &tx, vec![path]), (0, 1));
+        assert_eq!(add_paths(&shared, &tx, vec![path], ""), (0, 1));
         assert_eq!(lock(&shared).queue.state.jobs.len(), 1);
 
         let _ = std::fs::remove_dir_all(dir);
@@ -1314,7 +1327,7 @@ mod tests {
         }
         let (tx, _rx) = mpsc::channel();
 
-        assert_eq!(add_paths(&shared, &tx, vec![path]), (1, 0));
+        assert_eq!(add_paths(&shared, &tx, vec![path], ""), (1, 0));
         let state = lock(&shared);
         assert_eq!(state.queue.state.converted_count, 0);
         assert_eq!(state.queue.state.skipped_count, 0);
