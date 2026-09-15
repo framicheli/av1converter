@@ -45,9 +45,10 @@ pub fn installed() -> bool {
 /// restart policy, loop).
 pub fn install() -> io::Result<InstallOutcome> {
     let exe = current_exe()?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let path = std::env::var("PATH").unwrap_or_default();
     #[cfg(target_os = "linux")]
     {
-        let path = std::env::var("PATH").unwrap_or_default();
         linux_install(&exe, &path)?;
         Ok(InstallOutcome {
             linger_hint: linger_hint(),
@@ -55,7 +56,7 @@ pub fn install() -> io::Result<InstallOutcome> {
     }
     #[cfg(target_os = "macos")]
     {
-        macos_install(&exe)?;
+        macos_install(&exe, &path)?;
         Ok(InstallOutcome { linger_hint: false })
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -285,10 +286,10 @@ fn plist_path() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_install(exe: &Path) -> io::Result<()> {
+fn macos_install(exe: &Path, path: &str) -> io::Result<()> {
     let dest =
         plist_path().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
-    write_file(&dest, &launchd_plist(exe))?;
+    write_file(&dest, &launchd_plist(exe, path))?;
     // SAFETY: getuid is always safe.
     let domain = format!("gui/{}", unsafe { libc::getuid() });
     if super::lifecycle::running_pid().is_none() {
@@ -338,8 +339,20 @@ fn launchctl(args: &[&str]) -> io::Result<()> {
 }
 
 #[cfg(any(test, target_os = "macos"))]
-pub(crate) fn launchd_plist(exe: &Path) -> String {
+pub(crate) fn launchd_plist(exe: &Path, path: &str) -> String {
     let exe = xml_escape(&exe.to_string_lossy());
+    let environment = if path.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\t<key>EnvironmentVariables</key>\n\
+             \t<dict>\n\
+             \t\t<key>PATH</key>\n\
+             \t\t<string>{}</string>\n\
+             \t</dict>\n",
+            xml_escape(path)
+        )
+    };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
@@ -364,6 +377,7 @@ pub(crate) fn launchd_plist(exe: &Path) -> String {
          \t<integer>10</integer>\n\
          \t<key>ProcessType</key>\n\
          \t<string>Background</string>\n\
+         {environment}\
          </dict>\n\
          </plist>\n"
     )
@@ -400,8 +414,14 @@ mod tests {
 
     #[test]
     fn launchd_plist_starts_at_login_and_restarts_only_on_crash() {
-        let plist = launchd_plist(Path::new("/usr/local/bin/av1converter"));
+        let plist = launchd_plist(
+            Path::new("/usr/local/bin/av1converter"),
+            "/opt/homebrew/bin:/usr/bin",
+        );
         assert!(plist.contains("<string>/usr/local/bin/av1converter</string>"));
+        assert!(plist.contains(
+            "<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n\t\t<string>/opt/homebrew/bin:/usr/bin</string>"
+        ));
         assert!(plist.contains("<string>--start-foreground</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<key>Crashed</key>"));
@@ -410,8 +430,12 @@ mod tests {
 
     #[test]
     fn launchd_plist_escapes_xml_in_the_binary_path() {
-        let plist = launchd_plist(Path::new("/opt/foo&bar/av1converter"));
+        let plist = launchd_plist(Path::new("/opt/foo&bar/av1converter"), "/opt/a&b/bin");
         assert!(plist.contains("/opt/foo&amp;bar/av1converter"));
+        assert!(plist.contains("<string>/opt/a&amp;b/bin</string>"));
+        assert!(
+            !launchd_plist(Path::new("/bin/av1converter"), "").contains("EnvironmentVariables")
+        );
         assert!(!plist.contains("/opt/foo&bar/"));
     }
 
