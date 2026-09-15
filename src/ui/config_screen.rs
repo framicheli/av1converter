@@ -902,7 +902,7 @@ fn edit_display(field: ConfigField, value: &str, cursor: usize, max_width: usize
 fn config_group(field: ConfigField) -> Option<Msg> {
     match field {
         ConfigField::Language => Some(Msg::WebGroupGeneral),
-        ConfigField::SvtPreset | ConfigField::NvencPreset => Some(Msg::WebGroupPerformance),
+        ConfigField::SvtPreset => Some(Msg::WebGroupPerformance),
         ConfigField::QualityPreset => Some(Msg::WebGroupQuality),
         ConfigField::Preset(PresetTier::Sd, PresetMetric::Crf) => Some(Msg::WebGroupRateFactors),
         ConfigField::OutputSuffix => Some(Msg::WebGroupOutput),
@@ -947,6 +947,7 @@ mod tests {
             config_group(ConfigField::Language),
             Some(Msg::WebGroupGeneral)
         );
+        assert_eq!(config_group(ConfigField::NvencPreset), None);
         assert_eq!(
             config_group(ConfigField::DaemonEnabled),
             Some(Msg::WebGroupDaemon)
