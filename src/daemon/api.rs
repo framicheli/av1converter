@@ -1272,13 +1272,16 @@ fn merged_settings(
         config.presets = presets;
     }
     config.sanitize();
-    if !config.output.same_directory {
-        let directory = config
-            .output
-            .output_directory
-            .as_deref()
-            .filter(|dir| !dir.is_empty())
-            .ok_or_else(|| "output directory is required".to_string())?;
+    let directory = config
+        .output
+        .output_directory
+        .as_deref()
+        .filter(|dir| !dir.is_empty());
+    if directory.is_none() && !config.output.same_directory {
+        return Err("output directory is required".to_string());
+    }
+    // Ripped files encode into the output directory whatever `same_directory` says.
+    if let Some(directory) = directory {
         let path = Path::new(directory);
         if !path.is_dir() {
             return Err("output directory does not exist".to_string());
@@ -1305,15 +1308,28 @@ fn queue_conflict(
     inside: impl Fn(&Path, &str) -> bool,
 ) -> Option<&'static str> {
     let root = &config.daemon.browse_root;
-    (live.daemon.browse_root != *root
+    if live.daemon.browse_root != *root
         && jobs.iter().any(|(path, output, temporary)| {
             (!temporary && !inside(path, root))
                 || output
                     .as_deref()
                     .and_then(Path::parent)
                     .is_some_and(|parent| !inside(parent, root))
-        }))
-    .then_some("browse root excludes one or more queued jobs")
+        })
+    {
+        return Some("browse root excludes one or more queued jobs");
+    }
+    let has_directory = |config: &AppConfig| {
+        config
+            .output
+            .output_directory
+            .as_deref()
+            .is_some_and(|dir| !dir.trim().is_empty())
+    };
+    (has_directory(live)
+        && !has_directory(config)
+        && jobs.iter().any(|(_, _, temporary)| *temporary))
+    .then_some("queued disc rips need an output directory")
 }
 
 /// Replace the configuration: sanitize, persist to config.toml, and swap the
@@ -2090,6 +2106,22 @@ mod tests {
                 .is_err()
             );
 
+            // Ripped files use the output directory even when outputs sit
+            // next to their sources.
+            body["output"]["same_directory"] = json!(true);
+            assert!(
+                merged_settings(
+                    &body,
+                    &AppConfig {
+                        daemon: daemon.clone(),
+                        ..AppConfig::default()
+                    },
+                    false,
+                )
+                .is_err()
+            );
+            body["output"]["same_directory"] = json!(false);
+
             body["output"]["output_directory"] = json!(inside);
             let merged = merged_settings(
                 &body,
@@ -2214,6 +2246,23 @@ mod tests {
             body["daemon"]["auth_token"] = json!(replacement);
             let merged = merged_settings(&body, &current, true).unwrap();
             assert_eq!(merged.daemon.auth_token, replacement);
+        }
+
+        /// The output directory cannot be cleared while ripped files wait to
+        /// be encoded into it.
+        #[test]
+        fn clearing_the_output_directory_is_refused_while_rips_are_queued() {
+            let mut live = live();
+            live.output.output_directory = Some("/out".to_string());
+            let mut cleared = live.clone();
+            cleared.output.output_directory = None;
+            let inside = |_: &Path, _: &str| true;
+
+            let rip = [(PathBuf::from("/staging/rip-a1/DISC_t00.mkv"), None, true)];
+            assert!(queue_conflict(&live, &cleared, &rip, inside).is_some());
+            let file = [(PathBuf::from("/media/movie.mkv"), None, false)];
+            assert!(queue_conflict(&live, &cleared, &file, inside).is_none());
+            assert!(queue_conflict(&live, &live, &rip, inside).is_none());
         }
 
         /// A job queued since the settings snapshot is checked against the
