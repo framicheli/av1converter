@@ -1,6 +1,6 @@
 # AV1Converter
 
-A terminal-based interactive tool to batch convert video files to the AV1 codec using FFmpeg. It auto-detects available hardware encoders, verifies output quality with VMAF, and manages the full encoding pipeline through a TUI.
+A tool to batch convert video files to the AV1 codec using FFmpeg. It auto-detects available hardware encoders, verifies output quality with VMAF, and manages the full encoding pipeline through a terminal UI or a local web UI.
 
 ## Features
 
@@ -17,11 +17,11 @@ A terminal-based interactive tool to batch convert video files to the AV1 codec 
 - **Disc ripping** — Import titles straight from a DVD or Blu-ray through MakeMKV, ripping one title while the previous one encodes (see [Disc Ripping](#disc-ripping))
 - **Daemon mode with web UI** — Run headless and manage the queue from a browser (see [Daemon Mode](#daemon-mode-and-web-ui))
 - **Multi-language UI** — TUI and web UI available in English (default), Italian, Spanish, French, German, and Chinese; selectable in Settings
-- **Configurable** — All key settings adjustable through the built-in configuration screen or `~/.config/av1converter/config.toml`
+- **Configurable** — All key settings adjustable through the built-in configuration screen, the web settings page, or `config.toml` (see [Configuration](#configuration))
 
 ## Prerequisites
 
-`ffmpeg` and `ffprobe` must be on your `PATH`. (Ripping discs additionally needs MakeMKV — see [Disc Ripping](#disc-ripping); nothing else depends on it.) **FFmpeg 8.0 or newer is required** for Dolby Vision passthrough ("Dolby Vision profile 10 support in AV1" landed in 8.0; the tool is developed and tested against 8.1).
+`ffmpeg` and `ffprobe` must be on your `PATH`. (Ripping discs additionally needs MakeMKV — see [Disc Ripping](#disc-ripping); nothing else depends on it.) **FFmpeg 8.0 or newer is required** for Dolby Vision passthrough ("Dolby Vision profile 10 support in AV1" landed in 8.0; the tool is developed and tested against 8.1). The version is not checked at startup.
 
 Not every FFmpeg build includes every feature this tool uses. What you need depends on which features you use:
 
@@ -64,6 +64,8 @@ Maintainers must publish each release to crates.io with `cargo publish --locked`
 
 ### Nix
 
+The flake builds the binary only; `ffmpeg` and `ffprobe` still have to be on your `PATH`.
+
 Run without installing:
 
 ```bash
@@ -78,7 +80,7 @@ nix profile install github:framicheli/av1converter
 
 ### Homebrew
 
-macOS only; installs the prebuilt release binary and pulls in `ffmpeg`.
+macOS (Apple Silicon and Intel) and x86_64 Linux; installs the prebuilt release binary and pulls in `ffmpeg`.
 
 ```bash
 brew tap framicheli/tap
@@ -156,7 +158,7 @@ For a manual installation, remove the binary you placed on `PATH`.
 ./av1converter
 ```
 
-No command-line arguments are needed. All interaction happens through the TUI.
+With no arguments it starts the TUI. The options below control the web-UI daemon and maintenance tasks.
 
 ```
 Usage: av1converter [OPTION]
@@ -173,19 +175,23 @@ Usage: av1converter [OPTION]
   --purge              delete configuration and daemon state after confirmation
   --help               show this help
   --version            show the version
+
+Legacy aliases: --daemon is --start; --daemon-foreground is --start-foreground
 ```
+
+`-h` and `-V` are short for `--help` and `--version`. An unknown option prints a suggestion and exits with status 2.
 
 `--scan-discs` is a diagnostic: it prints what MakeMKV reported, so a disc that lists oddly can be seen rather than guessed at.
 
 ### Workflow
 
 1. **Home menu** — Open a single file, a folder, or a folder recursively; rip a DVD or Blu-ray; or go to Configuration
-2. **File selection** — Navigate with arrow keys; `Space` to toggle, `Enter` to confirm. For a disc, pick the drive (skipped when there is only one) and then the titles, and extraction feeds the same steps below
-3. **Track configuration** — Select audio and subtitle tracks to include, and switch the per-file mode (encode or demux/remux) with `r`
-4. **File review** — Confirm the queue before encoding starts
-5. **Encoding** — Monitor per-file and overall progress; `Esc` to cancel
-6. **VMAF verification** — Quality score is computed after each file; the source is deleted only if `delete_source_on_success` is on and the score meets the threshold (encode mode only)
-7. **Finish** — View a summary of conversions, skipped files, and space saved
+2. **Selection** — Navigate with arrow keys. For a file, `Enter` picks it; for a folder, `Enter` opens it and `Space` selects it. For a disc, pick the drive (skipped when there is only one), or open a disc folder or `.iso` image, then toggle titles with `Space`; extraction feeds the same steps below
+3. **File review** — Confirm the list of files found (multiple files or a folder only; a single file skips this step)
+4. **Analysis** — Each file is probed for its streams, resolution and HDR format
+5. **Track configuration** — Select audio and subtitle tracks to include, and switch the per-file mode (encode or demux/remux) with `r`
+6. **Encoding and VMAF verification** — Monitor per-file and overall progress; `Esc` asks before cancelling. A quality score is computed after each file; the source is deleted only if `delete_source_on_success` is on and the score meets the threshold (encode mode only, never when audio was transcoded or the job was cancelled)
+7. **Finish** — View a summary of conversions, skipped files, and space saved; `Enter` starts a new conversion after a confirmation, `Esc` returns to the queue
 
 ## Modes
 
@@ -197,7 +203,7 @@ The default mode for non-AV1 sources. The video stream is re-encoded to AV1 usin
 
 ### Demux/Remux Mode (Remux Only → Copy Video)
 
-A fast, lossless repackaging mode that copies the video, audio, and subtitle streams without recompression. Use it to change the container, drop unwanted audio/subtitle tracks, or clean up files that are already AV1 — no quality is lost and the operation is near-instant since nothing is re-encoded. The output keeps the source file's container extension and uses the `_remux` suffix. Because no video encoding happens, VMAF verification is skipped.
+A fast, lossless repackaging mode that copies the video, audio, and subtitle streams without recompression. Use it to drop unwanted audio/subtitle tracks or clean up files that are already AV1 — no quality is lost and the operation is near-instant since nothing is re-encoded. The output keeps the source file's container extension and uses the `_remux` suffix. Because no video encoding happens, VMAF verification is skipped.
 
 Audio is the one exception: tracks you convert to Opus are re-encoded even here, so an already-AV1 file with an oversized lossless track can be shrunk without touching the video.
 
@@ -205,7 +211,7 @@ Files that are already encoded in AV1 default to demux/remux mode automatically;
 
 ### Dolby Vision Handling
 
-When a Dolby Vision source is queued for encoding, a dialog asks how to convert it (reopen it anytime with `d`):
+When a Dolby Vision source is queued for encoding with SVT-AV1, a dialog asks how to convert it (reopen it anytime with `d`). Hardware encoders cannot write the RPU, so with NVENC, QSV or AMF the output is HDR10 without asking:
 
 1. **AV1 with Dolby Vision (profile 10)** — the DV dynamic metadata (RPU) is carried into the AV1 stream. Requires the SVT-AV1 encoder; hardware encoders (NVENC/QSV/AMF) cannot write the RPU and always produce HDR10. For cross-compatible profiles (7/8) the HDR10 base layer is preserved, so players without DV support still get correct HDR10 playback.
 2. **AV1 with true HDR10** — the DV layer is dropped and the HDR10 static metadata (mastering display, MaxCLL/MaxFALL) from the source is written into the AV1 stream.
@@ -236,22 +242,27 @@ Two things worth knowing:
 
 ### Keyboard Controls
 
-| Key | Action |
-|-----|--------|
-| `↑` / `k`, `↓` / `j` | Navigate |
-| `Enter` | Select / Confirm |
-| `Space` | Toggle file selection |
-| `Esc` | Go back / Cancel |
-| `Tab` | Switch focus (track config screen) |
-| `r` | Switch mode: encode ↔ demux/remux (track config screen) |
-| `d` | Change Dolby Vision handling (track config screen, DV sources) |
-| `a` | Toggle all audio tracks |
-| `s` | Toggle all subtitle tracks |
-| `o` | Convert the highlighted audio track to Opus (track config screen) |
-| `O` | Convert all selected audio tracks to Opus (track config screen) |
-| `h` / `l` | Decrease / Increase config value |
-| `s` | Save configuration (config screen) |
-| `q` | Quit (with confirmation) |
+| Key | Where | Action |
+|-----|-------|--------|
+| `↑` / `k`, `↓` / `j` | Everywhere | Navigate |
+| `Enter` | Everywhere | Select / Confirm; on the queue, configure the next job waiting for tracks |
+| `Space` | Selection, disc titles, track config | Select a folder, toggle a disc title, toggle the highlighted track |
+| `Esc` | Everywhere | Go back; on the queue, cancel the disc rip, analysis or encode (asks first) |
+| `PgUp` / `PgDn` | Queue, finish, disc titles | Scroll the detail pane |
+| `K` | Queue | Move the highlighted waiting job up |
+| `Tab` | Track config | Cycle focus: audio → subtitles → Continue |
+| `←` / `h`, `→` / `l` | Track config | Previous / next file |
+| `r` | Track config | Switch mode: encode ↔ demux/remux |
+| `d` | Track config | Change Dolby Vision handling (DV sources) |
+| `a` / `s` | Track config | Toggle all audio / subtitle tracks |
+| `o` | Track config, audio focused | Convert the highlighted audio track to Opus |
+| `O` | Track config | Convert all selected audio tracks to Opus; press again to undo |
+| `←` / `h`, `→` / `l` | Configuration | Decrease / increase the value |
+| `Enter` | Configuration | Edit a text field (`Enter` commits, `Esc` aborts) |
+| `s` | Configuration | Save configuration |
+| `1` / `2` | Dolby Vision dialog | Pick an option (`Esc` applies the recommended one) |
+| `y` / `n` | Confirmation dialogs | Answer yes / no |
+| `q`, `Ctrl+C` | Everywhere | Quit (with confirmation; `q` is ignored while editing a text field) |
 
 ## Disc Ripping
 
@@ -265,7 +276,9 @@ Ripping needs **MakeMKV**, which is not bundled:
 | Linux | `makemkv-oss` + `makemkv-bin` from source, or a distro package (AUR `makemkv`, the Ubuntu PPA) | On `PATH`. The GUI is optional: `./configure --disable-gui` skips Qt entirely. Your user must be in the `cdrom` group. |
 | Windows | The installer from makemkv.com | `C:\Program Files (x86)\MakeMKV\` |
 
-Set `makemkvcon_path` under `[disc]` if it lives somewhere else — a Flatpak install, for instance, needs a small wrapper script since it is run through `flatpak run`. Set `staging_directory` to a scratch drive: a Blu-ray title needs 100 GB or more, and the staging file is deleted once its encode succeeds. An output directory must be configured before a rip can start (a disc job cannot write next to its source, which is the staging directory).
+Set `makemkvcon_path` under `[disc]` if it lives somewhere else — a Flatpak install, for instance, needs a small wrapper script since it is run through `flatpak run`. Set `staging_directory` to a scratch drive: a Blu-ray title needs 100 GB or more, and the staging file is deleted once its encode succeeds. An existing output directory must be configured before a rip can start (a disc job cannot write next to its source, which is the staging directory); disc jobs write there even when `same_directory` is on. In the TUI the field appears once `same_directory` is switched off.
+
+Besides a physical drive, a disc folder (`VIDEO_TS` / `BDMV`) or an `.iso` image can be opened. Titles shorter than 60 seconds are hidden, and output is named `<disc label>_t<NN>` plus the configured suffix.
 
 DVD decryption is free permanently. Blu-ray needs a purchased MakeMKV licence or the free beta key, and **that key expires every couple of months** — refresh it in MakeMKV when the app reports it as expired. That expiry is MakeMKV's, not this tool's.
 
@@ -291,23 +304,27 @@ av1converter --install-service    # systemd user unit (Linux) or launchd agent (
 av1converter --uninstall-service  # remove it
 ```
 
+`--install-service` also sets `enabled = true`, generates a token if needed, and starts the daemon right away when it is not already running.
+
 `--stop` lasts until the next login; uninstall is what prevents it coming back. On a headless Linux machine the user unit dies at logout unless lingering is enabled (`loginctl enable-linger $USER`). Re-run `--install-service` after moving the binary so `ExecStart` stays correct.
 
 Turning **Run at Startup** off from the web settings page leaves the current daemon session running and prevents it from starting at the next login.
 
-Both `--stop` and `--restart` cancel an active encode cleanly. Background mode is Unix-only; elsewhere use `--start-foreground`. The old `--daemon` and `--daemon-foreground` spellings remain available as compatibility aliases. Logs go to `~/.local/share/av1converter/daemon.log`.
+Both `--stop` and `--restart` cancel an active encode cleanly. `--start`, `--stop` and `--restart` are Unix-only; on Windows run `--start-foreground` and stop it with `Ctrl+C`. The old `--daemon` and `--daemon-foreground` spellings remain available as compatibility aliases. `--start` logs to `$XDG_DATA_HOME/av1converter/daemon.log` (default `~/.local/share/av1converter/daemon.log`); `--start-foreground` and the systemd unit log to stdout (the journal).
+
+The queue is saved to `queue.json` in the same directory, with the previous save kept as `queue.json.bak`. The TUI does not persist its queue.
 
 ### Security
 
 The web UI can browse the filesystem, start encodes and rewrite the configuration, so it binds to `127.0.0.1` and is guarded by an access token.
 
-**The token is generated for you.** If `auth_token` is empty or shorter than 32 bytes when the daemon starts, a random 128-bit token is minted and saved to `config.toml`, and the startup output prints the URL that carries it:
+**The token is generated for you.** If `auth_token` is empty or shorter than 32 bytes when the daemon starts, a random 128-bit token is minted and saved to `config.toml`, and `--start` prints the URL that carries it:
 
 ```
 Web UI listening on http://127.0.0.1:8399/#token=aa2006351b5214a820e3fdc64da870af
 ```
 
-Open that link once and the browser keeps the token for the tab's session; `av1converter --status` prints it again whenever you need it. The fragment after `#` is not sent to the HTTP server or included in HTTP logs. Clearing or weakening `auth_token` does not disable authentication — a strong token is generated on the next start.
+Open that link once and the browser keeps the token for the tab's session; `av1converter --status` prints it again whenever you need it (use it after `--start-foreground`, which prints the URL without the token). The fragment after `#` is not sent to the HTTP server or included in HTTP logs. Clearing or weakening `auth_token` does not disable authentication — a strong token is generated on the next start.
 
 Two things are worth knowing before exposing the daemon to a network:
 
@@ -316,7 +333,7 @@ Two things are worth knowing before exposing the daemon to a network:
 
 The daemon serves plain HTTP. If it must be reachable beyond the local machine, put it behind an HTTPS reverse proxy with connection/request timeouts and rate limiting, and keep the direct daemon port firewalled from untrusted networks. The embedded server is intended for trusted local or LAN use, not direct internet exposure.
 
-All configuration fields are shown in both the TUI and web settings pages. Settings that can widen host access or select an executable — the `[daemon]` and `[disc]` blocks — are writable in the web UI only when it is opened through a loopback origin such as `http://127.0.0.1:8399/` or `http://localhost:8399/`. They remain visible but read-only to LAN and reverse-proxy clients. Bind-address and port changes take effect after a daemon restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
+Every configuration field exists in both the TUI and web settings pages; the TUI hides rows that do not apply (per-tier values outside `custom`, VMAF options while VMAF is off, `output_directory` while `same_directory` is on) and the web page greys them out. Settings that can widen host access or select an executable — the `[daemon]` and `[disc]` blocks — are writable in the web UI only when it is opened through a loopback origin such as `http://127.0.0.1:8399/` or `http://localhost:8399/`. They remain visible but read-only to LAN and reverse-proxy clients. Bind-address and port changes take effect after a daemon restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
 
 The current access token is never returned to a browser. A local web session can leave the token field blank to keep it or enter a replacement containing at least 32 characters. The accepted replacement becomes the browser session token immediately.
 
@@ -328,8 +345,8 @@ Presets are selected automatically based on resolution and HDR format:
 
 | Resolution | HDR          | Preset         | VMAF Model         |
 |------------|--------------|----------------|--------------------|
-| SD (≤480p) | No           | **SD**         | vmaf_v0.6.1        |
-| HD (720p)  | No           | **HD**         | vmaf_v0.6.1        |
+| SD (below 1280×600, e.g. 480p/576p) | Any | **SD** | vmaf_v0.6.1 (HDR: vmaf_v0.6.1neg) |
+| HD (720p)  | Any          | **HD**         | vmaf_v0.6.1 (HDR: vmaf_v0.6.1neg) |
 | 1080p      | No           | **1080p SDR**  | vmaf_v0.6.1        |
 | 1080p      | Yes (HDR10/HLG) | **1080p HDR**  | vmaf_v0.6.1neg     |
 | 1080p      | Dolby Vision    | **1080p DV**   | vmaf_v0.6.1neg     |
@@ -337,42 +354,44 @@ Presets are selected automatically based on resolution and HDR format:
 | 4K         | Yes (HDR10/HLG) | **4K HDR**     | vmaf_4k_v0.6.1neg  |
 | 4K         | Dolby Vision    | **4K DV**      | vmaf_4k_v0.6.1neg  |
 
+Sources above 4K use the 4K presets. The 4K VMAF models are used for sources at least 3840 pixels wide; narrower 4K-tier sources use the 1080p models. Dolby Vision counts as HDR for model selection.
+
 Files already encoded in AV1 default to demux/remux mode instead of being re-encoded.
 
 ## Encoder Detection
 
-The tool detects available encoders at startup with the following priority:
+On first run (when no `config.toml` exists yet) the tool picks an encoder with the following priority. It only looks at the GPU, not at what your FFmpeg build supports; change it in Settings afterwards:
 
 1. **NVIDIA NVENC** (`av1_nvenc`) — RTX 40/50 series and compatible Ada/L-series GPUs
 2. **Intel Quick Sync** (`av1_qsv`) — Intel Arc GPUs (Linux/Windows only)
 3. **AMD AMF** (`av1_amf`) — RDNA3 architecture, RX 7000 series (Linux/Windows only)
-4. **SVT-AV1** (`libsvtav1`) — Software fallback; always used on macOS
+4. **SVT-AV1** (`libsvtav1`) — Software fallback; always detected on macOS
 
 ## Configuration
 
-Configuration is stored at `~/.config/av1converter/config.toml` and can be edited directly or through the built-in configuration screen.
+Configuration is stored at `$XDG_CONFIG_HOME/av1converter/config.toml` (default `~/.config/av1converter/config.toml`; `%APPDATA%\av1converter\config.toml` on Windows) and can be edited directly or through either settings interface. The first run writes a complete file. The excerpt below leaves out the `[presets.*]` tables, so edit the generated file rather than replacing it with this block.
 
 ```toml
 language = "en"                # UI language: en, it, es, fr, de, zh (English if omitted)
 encoder = "SvtAv1"             # Selected encoder: Nvenc, Qsv, Amf, SvtAv1 (auto-detected on first run, then overridable)
-quality_preset = "medium"      # Quality preset: low, medium, high, custom
+quality_preset = "medium"      # Quality preset: low, medium, high, custom (new files get medium; a file without this key loads as custom)
 
-[Quality]
+[quality]
 vmaf_threshold = 90.0          # VMAF score required to consider encoding successful (0–100)
 vmaf_enabled = true            # Enable/disable VMAF verification after encoding
 delete_source_on_success = false  # Delete source file when VMAF score meets threshold
 
-[Performance]
+[performance]
 svt_preset = 4             # SVT-AV1 preset: 0 (slowest) – 13 (fastest)
 nvenc_preset = "p4"        # NVENC preset: p1 (best quality) – p7 (fastest)
 
-[Output]
+[output]
 suffix = "_av1"            # Appended to output filenames
 container = "mkv"          # Output container (mkv, mp4, …)
 same_directory = true      # Write output next to source file
-output_directory = null    # Custom output path (used when same_directory = false)
+# output_directory = "/path/to/output"  # Existing directory; required when same_directory = false and for disc rips
 
-[Tracks]
+[tracks]
 preferred_audio_languages = ["eng", "ita"]
 preferred_subtitle_languages = ["eng"]
 select_all_fallback = true # Select all tracks if no preferred language is found
@@ -390,17 +409,17 @@ browse_root = ""           # Confine the web file browser to this directory ("" 
 auth_token = ""            # API secret (empty or under 32 bytes = regenerate on next start)
 
 [disc]
-makemkvcon_path = ""       # Unset: PATH, then the platform's MakeMKV install location
-staging_directory = ""     # Where ripped titles wait to be encoded (unset = system temp)
+# makemkvcon_path = ""      # Unset: PATH, then the platform's MakeMKV install location
+# staging_directory = ""    # Where ripped titles wait to be encoded (unset = <system temp>/av1converter-staging)
 ```
 
-If `config.toml` cannot be parsed it is left untouched and defaults are used for that run, so a typo never costs you your settings.
+If `config.toml` cannot be parsed it is left untouched and defaults are used for that run. Saving settings afterwards first copies the broken file to `config.toml.bak`.
 
 Each resolution preset exposes per-encoder quality values (`crf`, `nvenc_cq`, `qsv_quality`, `amf_quality`) and `film_grain` synthesis strength in both settings interfaces.
 
 `quality_preset` controls how those per-resolution values are managed: `low`, `medium`, and `high` apply built-in values across every tier at once (overwriting the `presets` table), while `custom` leaves the complete preset matrix editable in either settings interface or the configuration file.
 
-When `same_directory` is disabled, `output_directory` is required. It can be entered in the TUI configuration screen or edited directly in the file; the web settings page also exposes it within `browse_root`.
+When `same_directory` is disabled, `output_directory` is required and must be an existing directory; a leading `~` is expanded. It can be entered in the TUI configuration screen or edited directly in the file; the web settings page also exposes it within `browse_root`.
 
 ## Debugging
 
@@ -410,6 +429,8 @@ Set the `AV1_DEBUG` environment variable to enable log output:
 AV1_DEBUG=1 ./av1converter
 ```
 
-Logs are written to:
-- **macOS/Linux:** `~/.local/share/av1converter/av1converter.log`
-- **Windows:** `%LOCALAPPDATA%\av1converter\av1converter.log`
+Logs roll daily and are written to:
+- **macOS/Linux:** `$XDG_DATA_HOME/av1converter/av1converter.log.<date>` (default `~/.local/share/av1converter/`)
+- **Windows:** `%LOCALAPPDATA%\av1converter\av1converter.log.<date>`
+
+For the daemon, `AV1_DEBUG` raises the log level of stdout or `daemon.log` to debug.
