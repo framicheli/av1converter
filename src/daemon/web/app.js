@@ -458,6 +458,10 @@ function badgeText(st) {
 const rows = new Map();
 const promptedTrackJobs = new Set();
 let openingTracks = false;
+// Highest job id seen in the queue, and the id at or below which jobs are not
+// auto-prompted: set when a tracks dialog closes without saving.
+let maxJobId = 0;
+let trackPromptFloor = 0;
 
 function createRow(job) {
   const row = document.createElement("tr");
@@ -653,6 +657,7 @@ async function refreshQueueNow() {
   const seen = new Set();
   for (const [position, job] of data.jobs.entries()) {
     seen.add(job.id);
+    maxJobId = Math.max(maxJobId, job.id);
     let row = rows.get(job.id);
     if (!row) {
       row = createRow(job);
@@ -673,7 +678,8 @@ async function refreshQueueNow() {
 
   const next = !data.jobs.some((job) => job.status.kind === "analyzing")
     && data.jobs.find((job) =>
-      job.status.kind === "awaiting_config" && !promptedTrackJobs.has(job.id));
+      job.status.kind === "awaiting_config" && job.id > trackPromptFloor
+      && !promptedTrackJobs.has(job.id));
   const settingsOpen = activeTab === "settings" && settingsDirty();
   if (next && !openingTracks && !settingsOpen && !document.querySelector("dialog[open]")) {
     promptedTrackJobs.add(next.id);
@@ -749,7 +755,10 @@ let trackEditor = null;
 
 $("tracks-close").addEventListener("click", () => closeTracks());
 $("tracks-back").addEventListener("click", () => closeTracks());
-$("tracks-modal").addEventListener("close", () => { trackEditor = null; });
+$("tracks-modal").addEventListener("close", () => {
+  if (trackEditor && !trackEditor.saved) trackPromptFloor = maxJobId;
+  trackEditor = null;
+});
 $("tracks-modal").addEventListener("cancel", (event) => {
   if (!tracksDirty()) return;
   event.preventDefault();
@@ -1045,6 +1054,7 @@ $("tracks-save").addEventListener("click", async () => {
       ...(dv ? { dv_mode: dvMode } : {}),
     });
     editor.snapshot = tracksSnapshot(editor);
+    editor.saved = true;
     if (trackEditor === editor) closeTracks();
     toast(r.applied > 1
       ? trf("tracks_applied", { n: r.applied })
