@@ -40,6 +40,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - AMF encodes no longer come out near-lossless: the 0–51 quality value is scaled onto AMF's 0–255 quantizer.
 - The output container is limited to `mkv`, `mp4` and `webm`. Streams a container cannot hold are left out or converted instead of failing the encode: bitmap subtitles are dropped from WebM (and from MP4, except DVD subtitles), WebM audio that is not Opus or Vorbis becomes Opus, and TrueHD copies into MP4 work.
 - MKV output keeps attachments such as embedded fonts and cover art.
+- The output container is chosen from `mkv`, `mp4` and `webm` in both settings screens, and the track screens show which audio tracks the container converts to Opus (with the bitrate) and which selected subtitles it leaves out.
 - VMAF verification works when the temporary path contains `:`, as every Windows path does.
 - Dolby Vision profile 8.2 sources (SDR base layer) are tagged BT.709 instead of PQ/BT.2020.
 - QSV no longer passes the `-look_ahead` option, which `av1_qsv` does not have.
