@@ -167,6 +167,8 @@ pub fn queue(shared: &SharedState) -> Value {
                 "output_size": job.output_size,
                 "saved_percent": saved_percent,
                 "source_deleted": job.source_deleted,
+                // A ripped file whose staging copy is deleted with the job.
+                "temporary": job.temporary,
                 "tracks_editable": tracks_editable(&state, id),
                 "can_move_up": can_move_up,
             })
