@@ -93,6 +93,7 @@ pub enum Msg {
     SkipAlreadyOpus,
     OpenFolderAction,
     SelectThisFolder,
+    SelectCurrentFolder,
     SwitchFile,
     Cancelling,
     ShuttingDown,
@@ -641,6 +642,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Sélectionner ce dossier",
             De => "Diesen Ordner wählen",
             Zh => "选择此文件夹",
+        },
+        Msg::SelectCurrentFolder => match lang {
+            En => "Select current folder",
+            It => "Seleziona la cartella corrente",
+            Es => "Seleccionar la carpeta actual",
+            Fr => "Sélectionner le dossier actuel",
+            De => "Aktuellen Ordner wählen",
+            Zh => "选择当前文件夹",
         },
         Msg::SwitchFile => match lang {
             En => "Switch file",

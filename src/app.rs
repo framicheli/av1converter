@@ -737,12 +737,14 @@ impl App {
                 }
             }
             SelectionMode::Folder | SelectionMode::FolderRecursive => {
-                if selected == Path::new("..") || !selected.is_dir() {
-                    self.enter_directory();
+                // The highlighted subfolder, or the open folder from any other row.
+                let folder = if entry.is_dir && !entry.is_parent() {
+                    selected
                 } else {
-                    let recursive = self.selection_mode == SelectionMode::FolderRecursive;
-                    self.scan_folder(selected, recursive);
-                }
+                    self.current_dir.clone()
+                };
+                let recursive = self.selection_mode == SelectionMode::FolderRecursive;
+                self.scan_folder(folder, recursive);
             }
         }
     }
@@ -2280,6 +2282,22 @@ mod tests {
         app.reset();
 
         assert!(!app.analysis_cancel_flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn space_off_a_subfolder_selects_the_open_folder() {
+        let dir = std::env::temp_dir().join(format!("av1c-folder-select-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::new();
+        app.selection_mode = SelectionMode::Folder;
+        app.current_dir.clone_from(&dir);
+        app.refresh_dir_entries();
+
+        app.select_explorer_entry();
+
+        assert_eq!(app.current_dir, dir);
+        assert!(app.folder_scan_receiver.is_some());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

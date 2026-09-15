@@ -127,18 +127,29 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
             }
             Line::from(spans)
         }
-        SelectionMode::Folder | SelectionMode::FolderRecursive => Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::OpenFolderAction))),
-            Span::styled("Space", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::SelectThisFolder))),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
-            Span::styled("q", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
-        ]),
+        SelectionMode::Folder | SelectionMode::FolderRecursive => {
+            let subfolder_selected = app
+                .dir_entries
+                .get(app.explorer_index)
+                .is_some_and(|entry| entry.is_dir && !entry.is_parent());
+            let space_action = if subfolder_selected {
+                Msg::SelectThisFolder
+            } else {
+                Msg::SelectCurrentFolder
+            };
+            Line::from(vec![
+                Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::OpenFolderAction))),
+                Span::styled("Space", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("\u{a0}{}  ", t(lang, space_action))),
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
+                Span::styled("q", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
+            ])
+        }
         SelectionMode::DiscFolder => {
             let image_selected = app
                 .dir_entries
