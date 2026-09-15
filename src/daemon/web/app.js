@@ -214,6 +214,8 @@ function updateModalActions() {
 
 let pollInFlight = false;
 let pollSkipped = false;
+// Sequence number of the most recently started poll.
+let pollSeq = 0;
 let lastWork = { encoding: false, ripping: false, analyzing: false };
 
 async function poll() {
@@ -222,6 +224,7 @@ async function poll() {
     return;
   }
   pollInFlight = true;
+  const seq = ++pollSeq;
   try {
     const s = await api("/api/status");
     setOffline(false);
@@ -272,7 +275,7 @@ async function poll() {
     updateWorkButtons();
 
     updateSummary(s);
-    onDiscStatus(s.disc);
+    onDiscStatus(s.disc, seq);
 
     if (activeTab === "queue") await refreshQueue();
   } catch (e) {
@@ -1313,7 +1316,7 @@ async function openDisc() {
   }
   const session = disc = {
     drives: [], drive: null, folder: null, selected: new Set(),
-    error: null, loading: true, scanPending: false,
+    error: null, loading: true, scanPending: false, statusAfter: Infinity,
   };
   renderDisc();
   $("disc-modal").showModal();
@@ -1359,9 +1362,11 @@ async function scanDiscFolder(path) {
   session.error = null;
   session.loading = true;
   session.scanPending = true;
+  session.statusAfter = Infinity;
   updateBrowserChoose();
   try {
     await post("/api/discs/scan", { folder: path });
+    session.statusAfter = pollSeq;
     if (disc !== session) post("/api/discs/cancel").catch(() => {});
   } catch (e) {
     if (disc === session) {
@@ -1387,9 +1392,11 @@ async function scanDisc(id) {
   session.error = null;
   session.loading = true;
   session.scanPending = true;
+  session.statusAfter = Infinity;
   renderDisc();
   try {
     await post("/api/discs/scan", { drive: id });
+    session.statusAfter = pollSeq;
     if (disc !== session) post("/api/discs/cancel").catch(() => {});
   } catch (e) {
     if (disc === session) {
@@ -1405,17 +1412,14 @@ async function scanDisc(id) {
 // polls without asking for it again.
 let discState = { active: false, scanning: false, titles: [], error: null };
 
-function onDiscStatus(state) {
+function onDiscStatus(state, seq) {
   discState = state ?? discState;
-  // Held until the poll reports the scan, its titles or its failure. The window
-  // between the request returning and the next poll reports neither.
-  if (disc?.loading
-      && (discState.scanning || discState.titles.length > 0 || discState.error)) {
+  // A requested scan ends its loading state only on a poll that started after
+  // the scan request returned. The daemon marks the scan as running before it
+  // answers, so such a poll reports either the running scan or its result.
+  if (disc?.scanPending && seq > disc.statusAfter) {
     disc.loading = false;
-  }
-  if (disc?.scanPending && !discState.scanning
-      && (discState.titles.length > 0 || discState.error)) {
-    disc.scanPending = false;
+    if (!discState.scanning) disc.scanPending = false;
   }
   if ($("disc-modal").open) renderDisc();
 }
