@@ -53,6 +53,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - `--start` reports success only once the daemon is listening, and a failed bind as a failure. Shutdown cancels disc and analysis work before waiting for HTTP requests and no longer waits indefinitely for a stalled client. A running probe is reached by cancellation. A PID lock can no longer be taken on an already-deleted PID file.
 - Starting the daemon no longer deletes staged rips that a running TUI is waiting to encode, quitting the TUI removes its staged rips, leftover staging directories are also swept when a disc run ends, and cancelling a rip kills makemkvcon's whole process group.
 - A ripped title with no output directory is reported as an error instead of waiting in Ready forever.
+- On Windows, staging directories and partial encodes owned by a running instance are recognised as in use instead of being treated as leftovers.
 - `--install-service` reports a daemon that fails to start (a port already in use, for example) as a failure and removes the unit or agent, instead of claiming it will start at login. A daemon that is still starting after 30 seconds stays installed, with a note to check `--status`.
 - The launchd agent runs as a standard process rather than a background one, so macOS no longer throttles its disk access; `Nice` still lowers its CPU priority.
 - `--purge` removes the login service only after the confirmation.
