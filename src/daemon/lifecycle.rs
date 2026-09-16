@@ -226,8 +226,18 @@ pub(crate) fn alive(pid: u32) -> bool {
                     let mut fields = line.trim_matches('"').split("\",\"");
                     Some((fields.next()?, fields.next()?.parse::<u32>().ok()?))
                 })
-                .any(|(image, found)| image.eq_ignore_ascii_case(&expected_image) && found == pid)
+                .any(|(image, found)| image_matches(image, &expected_image) && found == pid)
         })
+}
+
+/// Whether an image name reported by `tasklist` names `expected`, ignoring
+/// case. `tasklist` can cut long names; a cut name of at least 25 characters
+/// that starts `expected` matches.
+#[cfg(any(test, windows))]
+fn image_matches(reported: &str, expected: &str) -> bool {
+    let reported = reported.to_ascii_lowercase();
+    let expected = expected.to_ascii_lowercase();
+    reported == expected || (reported.chars().count() >= 25 && expected.starts_with(&reported))
 }
 
 #[cfg(all(not(unix), not(windows)))]
@@ -333,6 +343,26 @@ pub fn stop(_pid: u32) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_cut_tasklist_image_name_still_names_this_executable() {
+        let expected = "av1converter-8cdc7a6885f2f4cc.exe";
+        assert!(super::image_matches(
+            "AV1CONVERTER-8CDC7A6885F2F4CC.EXE",
+            expected
+        ));
+        assert!(super::image_matches(
+            "av1converter-8cdc7a6885f2f4cc.e",
+            expected
+        ));
+        assert!(super::image_matches("av1converter.exe", "av1converter.exe"));
+        assert!(!super::image_matches("av1converter.exe", expected));
+        assert!(!super::image_matches("av1", expected));
+        assert!(!super::image_matches(
+            "other-8cdc7a6885f2f4cc.exe",
+            expected
+        ));
+    }
+
     use super::*;
 
     #[cfg(unix)]
