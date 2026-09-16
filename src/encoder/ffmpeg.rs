@@ -43,8 +43,7 @@ pub(crate) fn pid_alive(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
-        let _ = pid;
-        false
+        crate::daemon::lifecycle::alive(pid)
     }
 }
 
@@ -516,6 +515,12 @@ mod tests {
 
     /// The scratch file sits next to the real output, keeps its extension, and
     /// is never the destination path itself.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn the_current_process_counts_as_alive() {
+        assert!(super::pid_alive(std::process::id()));
+    }
+
     #[test]
     fn partial_path_is_a_distinct_sibling_with_the_same_extension() {
         let output = "/media/films/movie_av1.mkv";

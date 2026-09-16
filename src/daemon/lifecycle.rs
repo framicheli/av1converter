@@ -199,13 +199,14 @@ pub fn write_pid_file() -> io::Result<PidGuard> {
 }
 
 #[cfg(unix)]
-fn alive(pid: u32) -> bool {
+pub(crate) fn alive(pid: u32) -> bool {
     // Signal 0 performs the permission/existence check without signalling
     unsafe { libc::kill(pid.cast_signed(), 0) == 0 }
 }
 
+/// Whether `pid` is a running process with this executable's image name.
 #[cfg(windows)]
-fn alive(pid: u32) -> bool {
+pub(crate) fn alive(pid: u32) -> bool {
     let expected_image = std::env::current_exe()
         .ok()
         .and_then(|path| {
@@ -230,7 +231,7 @@ fn alive(pid: u32) -> bool {
 }
 
 #[cfg(all(not(unix), not(windows)))]
-fn alive(_pid: u32) -> bool {
+pub(crate) fn alive(_pid: u32) -> bool {
     false
 }
 
