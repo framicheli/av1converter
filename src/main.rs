@@ -324,6 +324,9 @@ fn install_service_entry() -> io::Result<()> {
         Ok(outcome) => {
             println!("{}", t(lang, Msg::DaemonServiceInstalled));
             println!("{} {}", t(lang, Msg::DaemonListening), config.daemon.url());
+            if outcome.still_starting {
+                println!("{}", t(lang, Msg::DaemonServiceStillStarting));
+            }
             if outcome.linger_hint {
                 println!("{}", t(lang, Msg::DaemonServiceLingerHint));
             }
@@ -1369,6 +1372,10 @@ fn apply_autostart(app: &mut App, enable: bool) {
         match daemon::service::install() {
             Ok(outcome) => {
                 let mut msg = t(lang, Msg::DaemonServiceInstalled).to_string();
+                if outcome.still_starting {
+                    msg.push(' ');
+                    msg.push_str(t(lang, Msg::DaemonServiceStillStarting));
+                }
                 if outcome.linger_hint {
                     msg.push(' ');
                     msg.push_str(t(lang, Msg::DaemonServiceLingerHint));

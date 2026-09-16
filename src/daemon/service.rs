@@ -13,8 +13,12 @@ use std::path::PathBuf;
 use std::io::Write;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command, Stdio};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 use std::time::{Duration, Instant};
+
+/// How long an install waits for the started daemon to listen.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const SERVICE_START_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Whether this platform can install a login service.
 pub fn supported() -> bool {
@@ -26,6 +30,9 @@ pub struct InstallOutcome {
     /// Headless Linux without lingering: the unit dies at logout unless the
     /// user runs `loginctl enable-linger`.
     pub linger_hint: bool,
+    /// The started daemon was not listening yet when the install stopped
+    /// waiting; the service stays installed.
+    pub still_starting: bool,
 }
 
 /// Whether a login service is installed (cheap: filesystem only, no subprocess).
@@ -53,15 +60,19 @@ pub fn install() -> io::Result<InstallOutcome> {
     let path = std::env::var("PATH").unwrap_or_default();
     #[cfg(target_os = "linux")]
     {
-        linux_install(&exe, &path)?;
+        let still_starting = linux_install(&exe, &path)?;
         Ok(InstallOutcome {
             linger_hint: linger_hint(),
+            still_starting,
         })
     }
     #[cfg(target_os = "macos")]
     {
-        macos_install(&exe, &path)?;
-        Ok(InstallOutcome { linger_hint: false })
+        let still_starting = macos_install(&exe, &path)?;
+        Ok(InstallOutcome {
+            linger_hint: false,
+            still_starting,
+        })
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -158,8 +169,9 @@ fn enabled_link() -> Option<PathBuf> {
     systemd_user_dir().map(|dir| dir.join("default.target.wants").join(UNIT_NAME))
 }
 
+/// Returns whether the started daemon was still coming up when the wait ended.
 #[cfg(target_os = "linux")]
-fn linux_install(exe: &Path, path: &str) -> io::Result<()> {
+fn linux_install(exe: &Path, path: &str) -> io::Result<bool> {
     let dest = unit_path().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "HOME / XDG_CONFIG_HOME is not set")
     })?;
@@ -167,43 +179,45 @@ fn linux_install(exe: &Path, path: &str) -> io::Result<()> {
     systemctl(&["daemon-reload"])?;
     if super::lifecycle::running_pid().is_some() {
         systemctl(&["enable", UNIT_NAME])?;
-    } else {
-        systemctl(&["enable", "--now", UNIT_NAME])?;
-        // A failed start leaves no unit behind.
-        wait_for_service_listen(
-            || {
-                let state = systemctl(&["show", "-p", "ActiveState", "--value", UNIT_NAME])?;
-                Ok(unit_starting_or_up(&state))
-            },
-            &format!("the service failed to start; see journalctl --user -u {UNIT_NAME}"),
-        )
-        .inspect_err(|_| {
-            let _ = linux_uninstall();
-        })?;
+        return Ok(false);
     }
-    Ok(())
+    systemctl(&["enable", "--now", UNIT_NAME])?;
+    // A failed start leaves no unit behind.
+    let listening = wait_for_service_listen(
+        || super::lifecycle::running_listen().is_some(),
+        || {
+            let state = systemctl(&["show", "-p", "ActiveState", "--value", UNIT_NAME])?;
+            Ok(unit_starting_or_up(&state))
+        },
+        SERVICE_START_TIMEOUT,
+        &format!("the service failed to start; see journalctl --user -u {UNIT_NAME}"),
+    )
+    .inspect_err(|_| {
+        let _ = linux_uninstall();
+    })?;
+    Ok(!listening)
 }
 
-/// Wait until the started service's daemon records its listen address, failing
-/// with `failed` once `coming_up` reports the service is no longer starting or
-/// running.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// Wait until `listening` reports that the started daemon listens. Returns
+/// `false` when `timeout` passes while `coming_up` still reports the service as
+/// starting or running, and fails with `failed` once it does not.
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn wait_for_service_listen(
+    listening: impl Fn() -> bool,
     coming_up: impl Fn() -> io::Result<bool>,
+    timeout: Duration,
     failed: &str,
-) -> io::Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(30);
+) -> io::Result<bool> {
+    let deadline = Instant::now() + timeout;
     loop {
-        if super::lifecycle::running_listen().is_some() {
-            return Ok(());
+        if listening() {
+            return Ok(true);
         }
         if !coming_up()? {
             return Err(io::Error::other(failed.to_string()));
         }
         if Instant::now() >= deadline {
-            return Err(io::Error::other(
-                "the service did not start listening in time",
-            ));
+            return Ok(false);
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -346,8 +360,9 @@ fn plist_path() -> Option<PathBuf> {
     })
 }
 
+/// Returns whether the started daemon was still coming up when the wait ended.
 #[cfg(target_os = "macos")]
-fn macos_install(exe: &Path, path: &str) -> io::Result<()> {
+fn macos_install(exe: &Path, path: &str) -> io::Result<bool> {
     let dest =
         plist_path().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
     write_file(&dest, &launchd_plist(exe, path))?;
@@ -356,22 +371,25 @@ fn macos_install(exe: &Path, path: &str) -> io::Result<()> {
     let domain = format!("gui/{uid}");
     let [verb, target] = launchd_toggle_args(true, uid);
     launchctl(&[&verb, &target])?;
-    if super::lifecycle::running_pid().is_none() {
-        let _ = launchctl(&["bootout", &format!("{domain}/{PLIST_LABEL}")]);
-        launchctl(&["bootstrap", &domain, &dest.to_string_lossy()])?;
-        // A failed start leaves no agent behind.
-        wait_for_service_listen(
-            || {
-                let print = launchctl(&["print", &format!("{domain}/{PLIST_LABEL}")])?;
-                Ok(!launchd_job_exited(&print))
-            },
-            "the service failed to start; run av1converter --start-foreground to see why",
-        )
-        .inspect_err(|_| {
-            let _ = macos_uninstall();
-        })?;
+    if super::lifecycle::running_pid().is_some() {
+        return Ok(false);
     }
-    Ok(())
+    let _ = launchctl(&["bootout", &format!("{domain}/{PLIST_LABEL}")]);
+    launchctl(&["bootstrap", &domain, &dest.to_string_lossy()])?;
+    // A failed start leaves no agent behind.
+    let listening = wait_for_service_listen(
+        || super::lifecycle::running_listen().is_some(),
+        || {
+            let print = launchctl(&["print", &format!("{domain}/{PLIST_LABEL}")])?;
+            Ok(!launchd_job_exited(&print))
+        },
+        SERVICE_START_TIMEOUT,
+        "the service failed to start; run av1converter --start-foreground to see why",
+    )
+    .inspect_err(|_| {
+        let _ = macos_uninstall();
+    })?;
+    Ok(!listening)
 }
 
 /// Whether `launchctl print` output shows a job that has run and is no longer
@@ -485,7 +503,7 @@ pub(crate) fn launchd_plist(exe: &Path, path: &str) -> String {
          \t<key>Nice</key>\n\
          \t<integer>10</integer>\n\
          \t<key>ProcessType</key>\n\
-         \t<string>Background</string>\n\
+         \t<string>Standard</string>\n\
          {environment}\
          </dict>\n\
          </plist>\n"
@@ -514,6 +532,45 @@ mod tests {
         assert!(unit.contains("Nice=10"));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(unit.contains("Environment=\"PATH=/usr/bin\""));
+    }
+
+    #[test]
+    fn a_service_that_starts_listening_is_reported_up() {
+        let checks = std::cell::Cell::new(0);
+        let listening = || {
+            checks.set(checks.get() + 1);
+            checks.get() > 2
+        };
+        let up = super::wait_for_service_listen(
+            listening,
+            || Ok(true),
+            std::time::Duration::from_secs(5),
+            "failed",
+        );
+        assert!(up.unwrap());
+    }
+
+    #[test]
+    fn a_slow_service_is_reported_as_still_starting() {
+        let up = super::wait_for_service_listen(
+            || false,
+            || Ok(true),
+            std::time::Duration::ZERO,
+            "failed",
+        );
+        assert!(!up.unwrap());
+    }
+
+    #[test]
+    fn a_service_that_stops_before_listening_is_a_failure() {
+        let error = super::wait_for_service_listen(
+            || false,
+            || Ok(false),
+            std::time::Duration::from_secs(5),
+            "it stopped",
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "it stopped");
     }
 
     #[test]

@@ -320,6 +320,7 @@ pub enum Msg {
     DaemonStopFailed,
     DaemonStopHint,
     DaemonServiceInstalled,
+    DaemonServiceStillStarting,
     DaemonServiceUninstalled,
     DaemonServiceFailed,
     DaemonServiceUnsupported,
@@ -2381,6 +2382,22 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Arrêtez-le avec : av1converter --stop",
             De => "Beenden mit: av1converter --stop",
             Zh => "使用 av1converter --stop 停止",
+        },
+        Msg::DaemonServiceStillStarting => match lang {
+            En => {
+                "The daemon is still starting; run av1converter --status in a moment to check it."
+            }
+            It => {
+                "Il daemon si sta ancora avviando; esegui av1converter --status tra poco per controllarlo."
+            }
+            Es => {
+                "El daemon todavía se está iniciando; ejecuta av1converter --status en un momento para comprobarlo."
+            }
+            Fr => {
+                "Le daemon démarre encore ; lancez av1converter --status dans un instant pour le vérifier."
+            }
+            De => "Der Daemon startet noch; prüfen Sie ihn gleich mit av1converter --status.",
+            Zh => "守护进程仍在启动；稍后运行 av1converter --status 查看状态。",
         },
         Msg::DaemonServiceInstalled => match lang {
             En => "Daemon will start at login",
