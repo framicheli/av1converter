@@ -521,7 +521,10 @@ mod tests {
         let output = "/media/films/movie_av1.mkv";
         let partial = partial_output_path(output, "123_4");
 
-        assert_eq!(partial, "/media/films/movie_av1.part.123_4.mkv");
+        assert_eq!(
+            Path::new(&partial),
+            Path::new("/media/films/movie_av1.part.123_4.mkv")
+        );
         assert_ne!(partial, output);
         assert_eq!(Path::new(&partial).parent(), Path::new(output).parent());
         assert_eq!(Path::new(&partial).extension().unwrap(), "mkv");
@@ -530,8 +533,8 @@ mod tests {
     #[test]
     fn partial_path_handles_an_extensionless_output() {
         assert_eq!(
-            partial_output_path("/tmp/movie", "123_4"),
-            "/tmp/movie.part.123_4"
+            Path::new(&partial_output_path("/tmp/movie", "123_4")),
+            Path::new("/tmp/movie.part.123_4")
         );
     }
 
