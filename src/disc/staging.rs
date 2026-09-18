@@ -238,7 +238,7 @@ pub fn sweep_orphans(config: &AppConfig, jobs: &[EncodingJob], min_age: Duration
         if !path.is_dir() || !is_staging_dir(&path) || live.contains(&path) {
             continue;
         }
-        if owner_pid(&path).is_some_and(crate::encoder::ffmpeg::pid_alive) {
+        if owner_pid(&path).is_some_and(crate::utils::child::pid_alive) {
             info!(
                 "Leaving staging directory {} of a running process",
                 path.display()
@@ -453,6 +453,7 @@ mod tests {
             (
                 JobStatus::QualityWarning {
                     vmaf: 80.0,
+                    min_score: 70.0,
                     threshold: 90.0,
                 },
                 true,

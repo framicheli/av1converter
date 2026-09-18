@@ -63,6 +63,11 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
             t(config.language, Msg::DaemonPublicHttpRefused).to_string(),
         ));
     }
+    if config.daemon.binds_publicly() && config.daemon.browse_root.trim().is_empty() {
+        return Err(AppError::CommandExecution(
+            "browse_root is required when the daemon binds outside loopback".to_string(),
+        ));
+    }
     if config.daemon.binds_publicly() {
         warn!("Daemon is network-facing over plain HTTP; use HTTPS termination or a trusted LAN");
     }
@@ -203,7 +208,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     // cancelled before the HTTP threads are joined.
     {
         let state = lock(&shared);
-        state.analysis_cancel.store(true, Ordering::Relaxed);
+        state.analysis_cancel.store(true, Ordering::Release);
         state.disc.cancel();
     }
 
@@ -221,7 +226,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     let cancelling = {
         let state = lock(&shared);
         if let Some(session) = state.session.as_ref().filter(|_| state.encoding_active) {
-            session.cancel_flag.store(true, Ordering::Relaxed);
+            session.cancel_flag.store(true, Ordering::Release);
             true
         } else {
             false
@@ -270,11 +275,15 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         let mut state = lock(&shared);
         (state.encode_worker.take(), state.disc_worker.take())
     };
+    let mut worker_handles = Vec::new();
     if let Some(handle) = encode_worker {
-        let _ = handle.join();
+        worker_handles.push(handle);
     }
     if let Some(handle) = disc_worker {
-        let _ = handle.join();
+        worker_handles.push(handle);
+    }
+    if !join_within(worker_handles, SHUTDOWN_GRACE) {
+        warn!("encode/disc workers did not finish within the shutdown grace");
     }
     drain_shutdown_channels(&shared, &worker_rx, &disc_rx, &probe_tx);
 
@@ -597,33 +606,48 @@ fn claim_probe(state: &mut DaemonState, id: u64) -> Option<Arc<AtomicBool>> {
 }
 
 /// Queue new files and hand them to the prober.
+///
+/// Returns `(added, duplicates, filtered)` where `filtered` covers paths
+/// rejected for reasons other than already being queued (e.g. outside the
+/// live browse root).
 fn add_paths(
     shared: &SharedState,
     probe_tx: &Sender<(u64, String)>,
     paths: Vec<std::path::PathBuf>,
     browse_root: &str,
-) -> (usize, usize) {
-    let requested = paths.len();
-    let mut added = 0;
+) -> (usize, usize, usize) {
+    let mut added: usize = 0;
+    let mut duplicates: usize = 0;
+    let mut filtered: usize = 0;
     let mut to_analyze: Vec<(u64, String)> = Vec::new();
+    let requested = paths.len();
 
     // Canonicalization touches the filesystem and runs with no lock held.
-    // Jobs added by other requests in between are caught by the raw-path
-    // recheck under the lock; two different spellings of one file added
-    // concurrently can both queue.
-    let queued_paths: Vec<std::path::PathBuf> = {
+    // Under the lock we also compare filesystem identities so two spellings
+    // of the same inode cannot both queue.
+    let (queued_paths, queued_identities): (
+        Vec<std::path::PathBuf>,
+        Vec<crate::queue::SourceIdentity>,
+    ) = {
         let state = lock(shared);
-        state
+        let jobs: Vec<_> = state
             .queue
             .jobs_with_ids()
             .filter(|(_, job)| !is_terminal(&job.status))
             .map(|(_, job)| job.path.clone())
-            .collect()
+            .collect();
+        let identities = jobs
+            .iter()
+            .filter_map(|path| crate::queue::SourceIdentity::from_path(path).ok())
+            .collect();
+        (jobs, identities)
     };
     let mut existing: std::collections::HashSet<std::path::PathBuf> = queued_paths
         .iter()
         .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
         .collect();
+    let mut existing_ids: std::collections::HashSet<crate::queue::SourceIdentity> =
+        queued_identities.into_iter().collect();
     let canonical_paths: Vec<(std::path::PathBuf, std::path::PathBuf)> = paths
         .into_iter()
         .map(|path| (path.canonicalize().unwrap_or_else(|_| path.clone()), path))
@@ -631,6 +655,12 @@ fn add_paths(
 
     {
         let mut state = lock(shared);
+        if state
+            .shutting_down
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return (0, 0, requested);
+        }
         state.queue.state.reset_session_if_finished();
         for (_, job) in state
             .queue
@@ -639,6 +669,9 @@ fn add_paths(
         {
             if !queued_paths.contains(&job.path) {
                 existing.insert(job.path.clone());
+                if let Ok(identity) = crate::queue::SourceIdentity::from_path(&job.path) {
+                    existing_ids.insert(identity);
+                }
             }
         }
 
@@ -647,15 +680,21 @@ fn add_paths(
         let live_root = std::path::PathBuf::from(&state.config.daemon.browse_root);
         let root_changed = state.config.daemon.browse_root != browse_root;
 
-        // Paths already queued and not yet finished are skipped
         for (canonical, path) in canonical_paths {
             if root_changed
                 && !live_root.as_os_str().is_empty()
                 && !canonical.starts_with(&live_root)
             {
+                filtered += 1;
                 continue;
             }
-            if !existing.insert(canonical) {
+            let identity = crate::queue::SourceIdentity::from_path(&canonical).ok();
+            let path_dup = !existing.insert(canonical);
+            let id_dup = identity
+                .as_ref()
+                .is_some_and(|id| !existing_ids.insert(id.clone()));
+            if path_dup || id_dup {
+                duplicates += 1;
                 continue;
             }
             let mut job = EncodingJob::new(path);
@@ -700,12 +739,13 @@ fn add_paths(
                     message: "Analysis is not running".to_string(),
                 };
                 state.queue.state.error_count += 1;
-                added -= 1;
+                added = added.saturating_sub(1);
+                filtered += 1;
             }
         }
     }
 
-    (added, requested - added)
+    (added, duplicates, filtered)
 }
 
 /// Apply one finished analysis: mirror the TUI's `apply_analysis_results`,
@@ -939,11 +979,15 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
                 JobStatus::DoneVmafFailed { reason },
             );
         }
-        WorkerMessage::QualityWarning(idx, vmaf, threshold) => {
+        WorkerMessage::QualityWarning(idx, vmaf, min_score, threshold) => {
             pending_size = finish_job(
                 &mut state,
                 id_for(idx),
-                JobStatus::QualityWarning { vmaf, threshold },
+                JobStatus::QualityWarning {
+                    vmaf,
+                    min_score,
+                    threshold,
+                },
             );
         }
         WorkerMessage::Error(idx, message) => {
@@ -958,7 +1002,7 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
                 job.source_deleted = true;
             }
         }
-        WorkerMessage::SourceKeptLowVmaf(idx, vmaf) => {
+        WorkerMessage::SourceKeptLowVmaf(idx, vmaf, _min) => {
             if let Some(job) = id_for(idx).and_then(|id| state.queue.job_by_id_mut(id)) {
                 job.source_kept_vmaf = Some(vmaf);
             }
@@ -1159,11 +1203,11 @@ mod tests {
             reason: "Cancelled".to_string(),
         };
         let cancelled = state.queue.push(cancelled);
-        state.analysis_cancel.store(true, Ordering::Relaxed);
+        state.analysis_cancel.store(true, Ordering::Release);
 
         let cancel = claim_probe(&mut state, waiting).expect("an analyzing job is probed");
         assert!(!cancel.load(Ordering::Relaxed));
-        state.analysis_cancel.store(true, Ordering::Relaxed);
+        state.analysis_cancel.store(true, Ordering::Release);
         assert!(
             cancel.load(Ordering::Relaxed),
             "cancel reaches the running probe"
@@ -1324,9 +1368,9 @@ mod tests {
                 vec![path.clone(), dir.join(".").join("movie.mkv")],
                 ""
             ),
-            (1, 1)
+            (1, 1, 0)
         );
-        assert_eq!(add_paths(&shared, &tx, vec![path], ""), (0, 1));
+        assert_eq!(add_paths(&shared, &tx, vec![path], ""), (0, 1, 0));
         assert_eq!(lock(&shared).queue.state.jobs.len(), 1);
 
         let _ = std::fs::remove_dir_all(dir);
@@ -1354,7 +1398,7 @@ mod tests {
         }
         let (tx, _rx) = mpsc::channel();
 
-        assert_eq!(add_paths(&shared, &tx, vec![path], ""), (1, 0));
+        assert_eq!(add_paths(&shared, &tx, vec![path], ""), (1, 0, 0));
         let state = lock(&shared);
         assert_eq!(state.queue.state.converted_count, 0);
         assert_eq!(state.queue.state.skipped_count, 0);

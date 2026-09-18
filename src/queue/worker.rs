@@ -23,16 +23,17 @@ pub enum WorkerMessage {
     DoneVmafFailed(usize, String),
     /// Error occurred
     Error(usize, String),
-    /// Quality below threshold
-    QualityWarning(usize, f64, f64),
+    /// Quality below threshold (index, mean, min, threshold)
+    QualityWarning(usize, f64, f64, f64),
     /// Encoding was cancelled
     Cancelled,
     /// Every job assigned to this worker session has finished
     Finished,
     /// Source file was deleted after successful encoding
     SourceDeleted(usize),
-    /// Source file was kept: VMAF was below the configured threshold
-    SourceKeptLowVmaf(usize, f64),
+    /// Source file was kept: VMAF mean and/or min was below the threshold
+    /// (index, mean, min)
+    SourceKeptLowVmaf(usize, f64, f64),
 }
 
 /// Data needed by the worker thread for one job
@@ -61,7 +62,7 @@ pub fn run_worker(
     tx: &Sender<WorkerMessage>,
 ) {
     for job in jobs {
-        if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+        if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
             let _ = tx.send(WorkerMessage::Cancelled);
             return;
         }
@@ -135,15 +136,37 @@ pub fn run_worker(
                 let _ = tx.send(WorkerMessage::Error(job.index, e));
             }
             FullEncodeResult::QualityWarning { vmaf, threshold } => {
-                let score = vmaf.score;
-                info!(
-                    "Source file kept: {} (VMAF {:.1} < {:.0})",
-                    job.input.display(),
-                    score,
-                    threshold
-                );
-                let _ = tx.send(WorkerMessage::SourceKeptLowVmaf(job.index, score));
-                let _ = tx.send(WorkerMessage::QualityWarning(job.index, score, threshold));
+                let mean = vmaf.score;
+                let min = vmaf.min_score;
+                if mean < threshold && min < threshold {
+                    info!(
+                        "Source file kept: {} (VMAF mean {:.1} and min {:.1} < {:.0})",
+                        job.input.display(),
+                        mean,
+                        min,
+                        threshold
+                    );
+                } else if min < threshold {
+                    info!(
+                        "Source file kept: {} (VMAF min {:.1} < {:.0}, mean {:.1})",
+                        job.input.display(),
+                        min,
+                        threshold,
+                        mean
+                    );
+                } else {
+                    info!(
+                        "Source file kept: {} (VMAF mean {:.1} < {:.0}, min {:.1})",
+                        job.input.display(),
+                        mean,
+                        threshold,
+                        min
+                    );
+                }
+                let _ = tx.send(WorkerMessage::SourceKeptLowVmaf(job.index, mean, min));
+                let _ = tx.send(WorkerMessage::QualityWarning(
+                    job.index, mean, min, threshold,
+                ));
             }
         }
     }

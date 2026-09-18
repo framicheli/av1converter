@@ -132,6 +132,13 @@ pub fn run_encoding_pipeline(
                 info!("Skipping VMAF: DV profile 5 tone-mapped output is not comparable");
             }
 
+            // A cancel that arrived after ffmpeg exited but before verification
+            // should not leave a finished output that blocks the next run.
+            if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
+                let _ = std::fs::remove_file(output);
+                return FullEncodeResult::Cancelled;
+            }
+
             // Notify the UI for VMAF verification phase
             let vmaf_threshold = if config.quality.vmaf_enabled && !remux_only && !tone_mapped {
                 if let Some(cb) = on_before_vmaf {
@@ -147,6 +154,7 @@ pub fn run_encoding_pipeline(
                 vmaf_threshold,
                 metadata.hdr_type,
                 metadata.width,
+                metadata.height,
                 cancel_flag,
             );
 
@@ -172,7 +180,7 @@ pub fn run_encoding_pipeline(
                     ..
                 } = result
                 {
-                    if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
                         warn!("Keeping source file {input}: cancellation was requested");
                     } else if !expected_source.matches_path(input) {
                         warn!("Keeping source file {input}: it changed while the job was running");
@@ -211,6 +219,7 @@ fn run_vmaf_check(
     threshold: Option<f64>,
     hdr_type: HdrType,
     width: u32,
+    height: u32,
     cancel_flag: &AtomicBool,
 ) -> FullEncodeResult {
     let Some(threshold) = threshold else {
@@ -222,22 +231,40 @@ fn run_vmaf_check(
     let input_path = std::path::Path::new(input);
     let output_path = std::path::Path::new(output);
 
-    match verifier::calculate_vmaf(input_path, output_path, hdr_type, width, cancel_flag) {
-        // The encode itself finished and the output already sits at its final
-        // path; only the quality check was interrupted. Reported as
-        // encoded-but-unverified, the same state a daemon restart during
-        // verification resolves to.
-        Ok(verifier::VmafOutcome::Cancelled) => FullEncodeResult::VmafFailed {
-            message: "Verification was cancelled".to_string(),
-        },
+    match verifier::calculate_vmaf(
+        input_path,
+        output_path,
+        hdr_type,
+        width,
+        height,
+        cancel_flag,
+    ) {
+        // Cancel during verification: drop the finished output so a retry is
+        // not blocked by "output already exists", and report Cancelled.
+        Ok(verifier::VmafOutcome::Cancelled) => {
+            let _ = std::fs::remove_file(output);
+            FullEncodeResult::Cancelled
+        }
         Ok(verifier::VmafOutcome::Scored(vmaf)) => {
             info!("VMAF score: {:.2} ({})", vmaf.score, vmaf.quality_grade());
 
             if !vmaf.meets_threshold(threshold) {
-                warn!(
-                    "VMAF score {:.2} is below threshold {:.2}",
-                    vmaf.score, threshold
-                );
+                if vmaf.min_score < threshold && vmaf.score >= threshold {
+                    warn!(
+                        "VMAF min frame {:.2} is below threshold {:.2} (mean {:.2})",
+                        vmaf.min_score, threshold, vmaf.score
+                    );
+                } else if vmaf.score < threshold && vmaf.min_score >= threshold {
+                    warn!(
+                        "VMAF mean {:.2} is below threshold {:.2} (min {:.2})",
+                        vmaf.score, threshold, vmaf.min_score
+                    );
+                } else {
+                    warn!(
+                        "VMAF mean {:.2} and min {:.2} are below threshold {:.2}",
+                        vmaf.score, vmaf.min_score, threshold
+                    );
+                }
                 return FullEncodeResult::QualityWarning { vmaf, threshold };
             }
 

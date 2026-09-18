@@ -10,7 +10,7 @@ use tracing::warn;
 /// Filesystem identity captured while a source is analyzed. The encoder
 /// re-checks it before doing any work and before an automatic source deletion,
 /// so a file replaced at the same path is detected.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SourceIdentity {
     len: u64,
     modified: Option<SystemTime>,
@@ -85,8 +85,12 @@ pub enum JobStatus {
     Skipped { reason: String },
     /// Error occurred
     Error { message: String },
-    /// Encoded but quality below threshold
-    QualityWarning { vmaf: f64, threshold: f64 },
+    /// Encoded but quality below threshold (mean and/or min sampled frame)
+    QualityWarning {
+        vmaf: f64,
+        min_score: f64,
+        threshold: f64,
+    },
 }
 
 impl JobStatus {
@@ -319,7 +323,7 @@ fn collect_video_files_inner(
     root: Option<&Path>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> std::io::Result<()> {
-    if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+    if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
         return Ok(());
     }
     let real_dir = dir.canonicalize()?;
@@ -331,7 +335,7 @@ fn collect_video_files_inner(
     }
 
     for entry in std::fs::read_dir(real_dir)? {
-        if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+        if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return Ok(());
         }
         let entry = entry?;
@@ -424,9 +428,14 @@ fn language_matches(preferred: &str, track: &str) -> bool {
 }
 
 /// Map a 2- or 3-letter language tag to a shared lowercase 3-letter key.
+/// BCP-47 region/script subtags are stripped (`en-US` → `en`, `zh-Hans` → `zh`).
 fn language_canonical(tag: &str) -> Option<&'static str> {
     let lower = tag.to_ascii_lowercase();
-    match lower.as_str() {
+    let primary = lower
+        .split(['-', '_'])
+        .next()
+        .unwrap_or(lower.as_str());
+    match primary {
         "en" | "eng" => Some("eng"),
         "it" | "ita" => Some("ita"),
         "es" | "spa" => Some("spa"),
@@ -807,19 +816,19 @@ mod tests {
     }
 
     #[test]
-    fn auto_select_audio_falls_back_to_first_when_prefs_miss() {
+    fn auto_select_matches_bcp47_region_subtags() {
         let mut job = EncodingJob::new(PathBuf::from("movie.mkv"));
-        job.audio_tracks = vec![audio(0, "jpn"), audio(1, "kor")];
-        job.subtitle_tracks = vec![subtitle(2, "jpn")];
+        job.audio_tracks = vec![audio(0, "en-US"), audio(1, "ja-JP")];
+        job.subtitle_tracks = vec![subtitle(2, "eng-GB")];
         let tracks = crate::config::TrackPresetConfig {
             preferred_audio_languages: vec!["eng".into()],
-            preferred_subtitle_languages: vec!["eng".into()],
+            preferred_subtitle_languages: vec!["en".into()],
             select_all_fallback: false,
         };
 
         auto_select_tracks(&mut job, &tracks, &crate::config::AudioConfig::default());
 
         assert_eq!(job.track_selection.audio_indices, vec![0]);
-        assert!(job.track_selection.subtitle_indices.is_empty());
+        assert_eq!(job.track_selection.subtitle_indices, vec![2]);
     }
 }

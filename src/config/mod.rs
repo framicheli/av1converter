@@ -339,6 +339,11 @@ impl AppConfig {
         {
             return Err("daemon bind address must be an IP address".to_string());
         }
+        if self.daemon.binds_publicly() && self.daemon.browse_root.trim().is_empty() {
+            return Err(
+                "browse_root is required when the daemon binds outside loopback".to_string(),
+            );
+        }
         Ok(())
     }
 
@@ -705,6 +710,16 @@ mod tests {
         cfg.daemon.bind_address = "::1".to_string();
         assert!(!cfg.daemon.binds_publicly());
         assert_eq!(cfg.daemon.listen_address(), "[::1]:8399");
+    }
+
+    #[test]
+    fn public_bind_requires_a_browse_root() {
+        let mut cfg = AppConfig::default();
+        cfg.daemon.bind_address = "0.0.0.0".to_string();
+        cfg.daemon.browse_root.clear();
+        assert!(cfg.validate_settings().is_err());
+        cfg.daemon.browse_root = "/tmp".to_string();
+        assert!(cfg.validate_settings().is_ok());
     }
 
     #[test]

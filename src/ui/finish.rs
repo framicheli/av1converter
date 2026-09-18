@@ -102,7 +102,11 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
                 ),
             ]));
         }
-        JobStatus::QualityWarning { vmaf, threshold } => {
+        JobStatus::QualityWarning {
+            vmaf,
+            min_score,
+            threshold,
+        } => {
             let vmaf_color = get_vmaf_color(*vmaf);
             lines.push(Line::from(vec![
                 Span::styled(
@@ -121,7 +125,7 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
                     Style::default().fg(vmaf_color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" ({}: {threshold:.0})", t(lang, Msg::ThresholdLabel)),
+                    format!(" (min {min_score:.1}, {}: {threshold:.0})", t(lang, Msg::ThresholdLabel)),
                     Style::default().fg(Color::Red),
                 ),
             ]));
@@ -264,7 +268,7 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
     // Help
     let help_text = Line::from(vec![
         Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
-        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Status))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::VideoInfo))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::NewConversion))),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
@@ -431,7 +435,7 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
         Span::styled("↑↓", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
         Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
-        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Status))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::VideoInfo))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::NewConversion))),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
@@ -454,8 +458,12 @@ fn result_detail(job: &crate::queue::EncodingJob, lang: Language) -> String {
         JobStatus::DoneVmafFailed { reason } => reason.clone(),
         JobStatus::Skipped { reason } => super::common::translate_reason(lang, reason),
         JobStatus::Error { message } => message.clone(),
-        JobStatus::QualityWarning { vmaf, threshold } => {
-            format!("VMAF {vmaf:.1} < {threshold:.0}")
+        JobStatus::QualityWarning {
+            vmaf,
+            min_score,
+            threshold,
+        } => {
+            format!("VMAF {vmaf:.1} (min {min_score:.1}) < {threshold:.0}")
         }
         _ => t(lang, Msg::Unknown).to_string(),
     }
@@ -552,7 +560,11 @@ fn create_result_item(
             ListItem::new(format!("{prefix}✗ {name}: {}", t(lang, Msg::Error)))
                 .style(Style::default().fg(Color::Red).add_modifier(bold_mod))
         }
-        JobStatus::QualityWarning { vmaf, threshold } => {
+        JobStatus::QualityWarning {
+            vmaf,
+            min_score,
+            threshold,
+        } => {
             let vmaf_color = get_vmaf_color(*vmaf);
             let mut spans = vec![
                 Span::styled(format!("{prefix}⚠ "), Style::default().fg(Color::Yellow)),
@@ -564,7 +576,10 @@ fn create_result_item(
                     Style::default().fg(vmaf_color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" < {threshold:.0} {}", t(lang, Msg::ThresholdLabel)),
+                    format!(
+                        " (min {min_score:.1}) < {threshold:.0} {}",
+                        t(lang, Msg::ThresholdLabel)
+                    ),
                     Style::default().fg(Color::Red),
                 ),
             ];

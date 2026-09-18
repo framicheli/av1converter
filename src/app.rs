@@ -439,7 +439,13 @@ impl App {
 
     /// Re-open the DV-mode dialog from the track config screen ('d' key).
     pub fn reopen_dv_dialog(&mut self) {
-        let Some(meta) = self.current_config_job().and_then(|j| j.metadata.as_ref()) else {
+        let Some(job) = self.current_config_job() else {
+            return;
+        };
+        if job.remux_only {
+            return;
+        }
+        let Some(meta) = job.metadata.as_ref() else {
             return;
         };
         if meta.hdr_type != HdrType::DolbyVision {
@@ -450,9 +456,8 @@ impl App {
             self.set_timed_message(msg, 3);
             return;
         }
-        let current = self
-            .current_config_job()
-            .and_then(|j| j.dv_mode)
+        let current = job
+            .dv_mode
             .unwrap_or_else(|| DvMode::recommended_for(meta.dv_profile));
         self.dv_dialog = Some(dv_mode_index(current));
     }
@@ -803,7 +808,7 @@ impl App {
                     )?;
                 } else {
                     for entry in std::fs::read_dir(&folder)? {
-                        if cancel.load(Ordering::Relaxed) {
+                        if cancel.load(Ordering::Acquire) {
                             break;
                         }
                         let path = entry?.path();
@@ -821,7 +826,7 @@ impl App {
     }
 
     pub fn cancel_folder_scan(&mut self) {
-        self.folder_scan_cancel_flag.store(true, Ordering::Relaxed);
+        self.folder_scan_cancel_flag.store(true, Ordering::Release);
         self.set_info_message(crate::i18n::t(
             self.config.language,
             crate::i18n::Msg::Cancelling,
@@ -842,7 +847,7 @@ impl App {
         };
         self.folder_scan_receiver = None;
 
-        if self.folder_scan_cancel_flag.load(Ordering::Relaxed) {
+        if self.folder_scan_cancel_flag.load(Ordering::Acquire) {
             self.clear_message();
             return;
         }
@@ -1012,6 +1017,7 @@ impl App {
             // A rip still running has more titles to add to this queue.
             self.navigate_to_finish();
         }
+        self.dismiss_stale_cancel_confirm();
     }
 
     /// Poll the analysis channel; called every frame from the main loop.
@@ -1039,7 +1045,7 @@ impl App {
 
     /// Detach the current analysis round: late probe results are dropped.
     fn drop_analysis_round(&mut self) {
-        self.analysis_cancel_flag.store(true, Ordering::Relaxed);
+        self.analysis_cancel_flag.store(true, Ordering::Release);
         self.analysis_receiver = None;
         self.analysis_sender = None;
         self.analysis_outstanding = 0;
@@ -1291,7 +1297,7 @@ impl App {
     }
 
     pub fn cancel_encoding(&mut self) {
-        self.cancel_flag.store(true, Ordering::Relaxed);
+        self.cancel_flag.store(true, Ordering::Release);
         let ready = self
             .queue
             .jobs
@@ -1315,7 +1321,7 @@ impl App {
             }
         }
         // A queue can hold a rip as well as an encode.
-        self.disc_cancel_flag.store(true, Ordering::Relaxed);
+        self.disc_cancel_flag.store(true, Ordering::Release);
     }
 
     // Disc ripping
@@ -1567,7 +1573,7 @@ impl App {
 
     pub fn cancel_disc_operation(&mut self) {
         if self.disc_operation_active() {
-            self.disc_cancel_flag.store(true, Ordering::Relaxed);
+            self.disc_cancel_flag.store(true, Ordering::Release);
             self.disc_state = DiscState::Cancelling;
         }
     }
@@ -1645,6 +1651,7 @@ impl App {
                 DiscEvent::Finished => {
                     self.disc_receiver = None;
                     self.settle_after_rips();
+                    self.dismiss_stale_cancel_confirm();
                 }
             }
         }
@@ -1686,6 +1693,7 @@ impl App {
         } else {
             self.settle_after_rips();
         }
+        self.dismiss_stale_cancel_confirm();
     }
 
     /// Report a failure where the user is looking: on the title screen while
@@ -1844,8 +1852,15 @@ impl App {
                         self.queue.encoding_progress_done += 1;
                     }
                 }
-                WorkerMessage::QualityWarning(idx, vmaf, threshold) => {
-                    self.finish_job(idx, JobStatus::QualityWarning { vmaf, threshold });
+                WorkerMessage::QualityWarning(idx, vmaf, min_score, threshold) => {
+                    self.finish_job(
+                        idx,
+                        JobStatus::QualityWarning {
+                            vmaf,
+                            min_score,
+                            threshold,
+                        },
+                    );
                 }
                 WorkerMessage::Verifying(idx) => {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
@@ -1860,7 +1875,7 @@ impl App {
                         job.source_deleted = true;
                     }
                 }
-                WorkerMessage::SourceKeptLowVmaf(idx, vmaf) => {
+                WorkerMessage::SourceKeptLowVmaf(idx, vmaf, _min) => {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
                         job.source_kept_vmaf = Some(vmaf);
                     }
@@ -1935,6 +1950,7 @@ impl App {
             if self.current_screen != Screen::TrackConfig && self.current_screen != Screen::Finish {
                 self.current_screen = Screen::Queue;
             }
+            self.dismiss_stale_cancel_confirm();
         }
     }
 
@@ -1982,7 +1998,7 @@ fn analyze_batch(
                         break;
                     };
                     let result = match path {
-                        _ if cancel_flag.load(Ordering::Relaxed) => Err(AppError::Cancelled),
+                        _ if cancel_flag.load(Ordering::Acquire) => Err(AppError::Cancelled),
                         Ok(path) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             analyzer::analyze(path, cancel_flag)
                         }))
@@ -2276,13 +2292,13 @@ mod tests {
         job.status = JobStatus::Ripping { progress: 0.0 };
         job.temporary = true;
         app.queue.jobs.push(job);
-        app.analysis_cancel_flag.store(true, Ordering::Relaxed);
+        app.analysis_cancel_flag.store(true, Ordering::Release);
 
         app.analyze_indices(&[0]);
 
         assert!(matches!(app.queue.jobs[0].status, JobStatus::Analyzing));
         assert_eq!(app.analysis_outstanding, 1);
-        assert!(!app.analysis_cancel_flag.load(Ordering::Relaxed));
+        assert!(!app.analysis_cancel_flag.load(Ordering::Acquire));
     }
 
     #[test]
@@ -2385,11 +2401,11 @@ mod tests {
     #[test]
     fn reset_starts_with_a_fresh_analysis_token() {
         let mut app = App::new();
-        app.analysis_cancel_flag.store(true, Ordering::Relaxed);
+        app.analysis_cancel_flag.store(true, Ordering::Release);
 
         app.reset();
 
-        assert!(!app.analysis_cancel_flag.load(Ordering::Relaxed));
+        assert!(!app.analysis_cancel_flag.load(Ordering::Acquire));
     }
 
     #[test]

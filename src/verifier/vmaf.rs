@@ -36,17 +36,18 @@ fn wait_or_cancel(
     cancel_flag: &AtomicBool,
 ) -> Result<Option<std::process::ExitStatus>, AppError> {
     loop {
-        if cancel_flag.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
+        if cancel_flag.load(Ordering::Acquire) {
+            crate::utils::child::kill_and_wait(child);
             return Ok(None);
         }
         match child.try_wait() {
-            Ok(Some(status)) => return Ok(Some(status)),
+            Ok(Some(status)) => {
+                crate::utils::child::ChildGuard::unregister(child.id());
+                return Ok(Some(status));
+            }
             Ok(None) => std::thread::sleep(Duration::from_millis(250)),
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                crate::utils::child::kill_and_wait(child);
                 return Err(AppError::Vmaf(format!(
                     "Failed to check VMAF ffmpeg status: {e}"
                 )));
@@ -74,9 +75,12 @@ pub struct VmafResult {
 }
 
 impl VmafResult {
-    /// Check if quality meets threshold
+    /// Check if quality meets threshold. Both the mean score and the worst
+    /// sampled frame must clear the threshold so a few catastrophic scenes
+    /// cannot hide behind a passing average (frames are scored with
+    /// `n_subsample=10`).
     pub fn meets_threshold(&self, threshold: f64) -> bool {
-        self.score >= threshold
+        self.score >= threshold && self.min_score >= threshold
     }
 
     /// Get human-readable quality grade
@@ -120,6 +124,7 @@ pub fn calculate_vmaf(
     encoded: &Path,
     hdr_type: HdrType,
     width: u32,
+    height: u32,
     cancel_flag: &AtomicBool,
 ) -> Result<VmafOutcome, AppError> {
     let uid = VMAF_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -129,9 +134,11 @@ pub fn calculate_vmaf(
         crate::utils::scratch_path(&format!("av1c_vmaf_{}_{}.json", std::process::id(), uid))
             .map_err(AppError::Vmaf)?;
 
-    let (model_suffix, model_name) = if width >= 3840 && hdr_type.is_hdr() {
+    // Match encoding-preset tiering: portrait 4K (e.g. 2160×3840) is still UHD.
+    let long_side = width.max(height);
+    let (model_suffix, model_name) = if long_side >= 3840 && hdr_type.is_hdr() {
         (":model='version=vmaf_4k_v0.6.1neg'", "vmaf_4k_v0.6.1neg")
-    } else if width >= 3840 {
+    } else if long_side >= 3840 {
         (":model='version=vmaf_4k_v0.6.1'", "vmaf_4k_v0.6.1")
     } else if hdr_type.is_hdr() {
         (":model='version=vmaf_v0.6.1neg'", "vmaf_v0.6.1neg")

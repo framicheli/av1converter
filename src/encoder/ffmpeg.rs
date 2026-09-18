@@ -26,26 +26,7 @@ fn partial_output_path(output: &str, tag: &str) -> String {
     parent.join(name).to_string_lossy().into_owned()
 }
 
-/// Whether a process with this pid currently exists. A pid that does not fit
-/// `pid_t` counts as gone.
-pub(crate) fn pid_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        let Ok(pid) = libc::pid_t::try_from(pid) else {
-            return false;
-        };
-        if unsafe { libc::kill(pid, 0) } == 0 {
-            return true;
-        }
-        // EPERM answers for a live process owned by someone else; only ESRCH
-        // proves the pid is free.
-        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-    }
-    #[cfg(not(unix))]
-    {
-        crate::daemon::lifecycle::alive(pid)
-    }
-}
+pub(crate) use crate::utils::child::pid_alive;
 
 /// Scratch files left next to `output` by an encode that never finished, as
 /// produced by [`partial_output_path`]. The match is by shape — both halves of
@@ -232,8 +213,7 @@ pub fn encode_video(
         )
     }))
     .unwrap_or_else(|_| {
-        let _ = child.kill();
-        let _ = child.wait();
+        crate::utils::child::kill_and_wait(&mut child);
         let _ = std::fs::remove_file(&partial);
         EncodeResult::Error("encode panicked".to_string())
     });
@@ -242,39 +222,75 @@ pub fn encode_video(
     let _ = std::fs::remove_file(&progress_file);
     let _ = std::fs::remove_file(&stderr_path);
 
+    // Cancel can win the race against a successful ffmpeg exit: treat that as
+    // Cancelled and leave no finished output behind.
+    let result = if matches!(result, EncodeResult::Success)
+        && cancel_flag.load(Ordering::Acquire)
+    {
+        let _ = std::fs::remove_file(&partial);
+        EncodeResult::Cancelled
+    } else {
+        result
+    };
+
     // The scratch file becomes the output only now, when the encode is known to
     // have succeeded. Failure and cancellation already removed it. `hard_link`
     // fails with `AlreadyExists` instead of replacing an existing destination;
-    // filesystems without hard links fall back to the checked rename.
-    if matches!(result, EncodeResult::Success) {
-        match std::fs::hard_link(&partial, &params.output) {
-            Ok(()) => {
-                let _ = std::fs::remove_file(&partial);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let _ = std::fs::remove_file(&partial);
-                return EncodeResult::Error(
-                    "Output appeared while encoding; refusing to overwrite it".to_string(),
-                );
-            }
-            Err(_) => {
-                if path_occupied(Path::new(&params.output)) {
-                    let _ = std::fs::remove_file(&partial);
-                    return EncodeResult::Error(
-                        "Output appeared while encoding; refusing to overwrite it".to_string(),
-                    );
-                }
-                if let Err(e) = std::fs::rename(&partial, &params.output) {
-                    let _ = std::fs::remove_file(&partial);
-                    return EncodeResult::Error(format!(
-                        "Failed to move the encoded file into place: {e}"
-                    ));
-                }
-            }
-        }
+    // filesystems without hard links fall back to an exclusive create+copy so
+    // a destination that appears mid-publish is never clobbered.
+    if matches!(result, EncodeResult::Success)
+        && let Err(message) = publish_partial(&partial, &params.output)
+    {
+        let _ = std::fs::remove_file(&partial);
+        return EncodeResult::Error(message);
     }
 
     result
+}
+
+/// Move `partial` onto `output` without ever replacing an existing file.
+fn publish_partial(partial: &str, output: &str) -> Result<(), String> {
+    match std::fs::hard_link(partial, output) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(partial);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(
+            "Output appeared while encoding; refusing to overwrite it".to_string(),
+        ),
+        Err(_) => {
+            // Exclusive create: fails atomically if the destination exists.
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(output)
+            {
+                Ok(mut dest) => {
+                    let copy = File::open(partial).and_then(|mut src| {
+                        std::io::copy(&mut src, &mut dest).map(|_| ())
+                    });
+                    match copy {
+                        Ok(()) => {
+                            let _ = std::fs::remove_file(partial);
+                            Ok(())
+                        }
+                        Err(e) => {
+                            let _ = std::fs::remove_file(output);
+                            Err(format!(
+                                "Failed to move the encoded file into place: {e}"
+                            ))
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(
+                    "Output appeared while encoding; refusing to overwrite it".to_string(),
+                ),
+                Err(e) => Err(format!(
+                    "Failed to move the encoded file into place: {e}"
+                )),
+            }
+        }
+    }
 }
 
 /// Run the encoding loop with progress updates
@@ -299,9 +315,8 @@ fn run_encode_loop(
 
     loop {
         // Check cancellation
-        if cancel_flag.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
+        if cancel_flag.load(Ordering::Acquire) {
+            crate::utils::child::kill_and_wait(child);
             let _ = std::fs::remove_file(output);
             return EncodeResult::Cancelled;
         }
@@ -344,6 +359,7 @@ fn run_encode_loop(
         // Check if FFmpeg finished
         match child.try_wait() {
             Ok(Some(status)) => {
+                crate::utils::child::ChildGuard::unregister(child.id());
                 // A zero exit covers encodes FFmpeg ended early after a
                 // tolerated read error.
                 let short = status
@@ -369,6 +385,11 @@ fn run_encode_loop(
                         stderr_path,
                     ));
                 }
+                // ffmpeg exited after the last cancel poll; honour a late cancel.
+                if cancel_flag.load(Ordering::Acquire) {
+                    let _ = std::fs::remove_file(output);
+                    return EncodeResult::Cancelled;
+                }
                 return EncodeResult::Success;
             }
             Ok(None) => {
@@ -378,8 +399,7 @@ fn run_encode_loop(
                 thread::sleep(Duration::from_millis(poll_ms));
             }
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                crate::utils::child::kill_and_wait(child);
                 let _ = std::fs::remove_file(output);
                 return EncodeResult::Error(format!("Failed to check ffmpeg status: {e}"));
             }

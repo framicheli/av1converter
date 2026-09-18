@@ -41,7 +41,7 @@
 
       <div class="panel">
         <h3 class="panel-title" id="current-label" data-i18n="current_file">Current file</h3>
-        <div id="current-file" class="filename" data-i18n="idle_nothing">Idle — nothing encoding</div>
+        <div id="current-file" class="filename">Idle — nothing encoding</div>
         <progress class="bar" id="current-progress" aria-labelledby="current-label"
                   max="100" value="0">0%</progress>
         <div class="bar-meta">
@@ -67,7 +67,7 @@
       <button id="btn-add-recursive" data-i18n="add_folder_recursive">+ Folder (recursive)</button>
       <button id="btn-add-disc" data-i18n="add_disc">+ Disc</button>
       <span class="spacer"></span>
-      <button id="btn-cancel" class="danger" data-i18n="cancel_encoding">Cancel encoding</button>
+      <button id="btn-cancel" class="danger">Cancel encoding</button>
       <button id="btn-cancel-disc" class="danger" data-i18n="cancel_disc" hidden>Cancel disc</button>
       <button id="btn-clear" data-i18n="clear_finished">Clear finished</button>
     </div>
@@ -132,7 +132,7 @@
 <!-- ── Server-side file browser ────────────────────────────────── -->
 <dialog id="browser" aria-labelledby="browser-title">
   <div class="browser-head">
-    <h2 id="browser-title" data-i18n="select_video_file">Select a video file</h2>
+    <h2 id="browser-title">Select a video file</h2>
     <!-- Filled by loadDir() with one button per path segment. -->
     <div id="browser-path" class="crumbs"></div>
     <span id="browser-busy" class="muted hidden" data-i18n="loading">Loading…</span>
@@ -141,7 +141,7 @@
   <div class="browser-foot">
     <label class="muted"><input type="checkbox" id="browser-hidden"> <span data-i18n="hidden_files">Hidden files</span></label>
     <span class="spacer"></span>
-    <button id="browser-choose" class="primary hidden" data-i18n="select_this_folder">Add this folder</button>
+    <button id="browser-choose" class="primary hidden">Add this folder</button>
     <button id="browser-close" data-i18n="cancel">Cancel</button>
   </div>
 </dialog>

@@ -67,8 +67,10 @@ fn secret_eq(a: &str, b: &str) -> bool {
 /// Accepted as `Authorization: Bearer <token>`. The launch URL carries the
 /// token in its fragment, which browsers never send to this HTTP server.
 fn authorized(request: &Request, token: &str) -> bool {
+    // An empty token is never accepted: startup always regenerates one, and a
+    // cleared runtime token must not open the API.
     if token.is_empty() {
-        return true;
+        return false;
     }
     let header = request
         .headers()

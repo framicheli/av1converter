@@ -9,10 +9,10 @@ A tool to batch convert video files to the AV1 codec using FFmpeg. It auto-detec
 - **Hardware acceleration** — Automatically detects and uses NVIDIA NVENC, Intel QSV, or AMD AMF; the choice can be overridden manually in Settings
 - **Batch processing** — Convert a single file, a folder, or an entire directory tree recursively
 - **Smart preset selection** — Automatically picks encoding parameters based on resolution and HDR type
-- **Dolby Vision support** — Keep Dolby Vision in the AV1 output (profile 10) or convert to true HDR10 with static metadata; profile 5 sources are tone-mapped on the GPU
+- **Dolby Vision support** — Keep Dolby Vision in the AV1 output (profile 10) or convert to HDR10; profile 5 sources are tone-mapped on the GPU when converting to HDR10. True HDR10 static metadata (mastering display, MaxCLL/MaxFALL) is written for SVT-AV1 encodes; hardware encoders get PQ color tags only
 - **Quality presets** — Low, Medium, or High shifts CRF/CQ values across every resolution tier at once; Custom leaves each tier's values manually editable
-- **VMAF quality verification** — Scores output quality after encoding; deletes the source only when a VMAF score actually met the threshold (never for remuxes, disabled VMAF, or tone-mapped DV profile 5)
-- **Track selection** — Auto-selects audio and subtitle tracks by preferred language (ISO 639-1 and 639-2 tags are treated as aliases, e.g. `en`/`eng`); when nothing matches, audio falls back to the first track and subtitles to none unless "select all" fallback is enabled
+- **VMAF quality verification** — Scores output quality after encoding (mean and minimum sampled frame, every 10th frame); deletes the source only when both meet the threshold (never for remuxes, disabled VMAF, tone-mapped DV profile 5, or when audio was transcoded to Opus)
+- **Track selection** — Auto-selects audio and subtitle tracks by preferred language (ISO 639-1/639-2 and BCP-47 tags like `en-US` are treated as aliases, e.g. `en`/`eng`); when nothing matches, audio falls back to the first track and subtitles to none unless "select all" fallback is enabled (the default)
 - **Audio transcoding** — Copy audio tracks untouched (the default) or convert any of them to Opus at the source's own channel layout; per-track in both the TUI and the web UI
 - **Disc ripping** — Import titles straight from a DVD or Blu-ray through MakeMKV, ripping one title while the previous one encodes (see [Disc Ripping](#disc-ripping))
 - **Daemon mode with web UI** — Run headless and manage the queue from a browser (see [Daemon Mode](#daemon-mode-and-web-ui))
@@ -190,7 +190,7 @@ Legacy aliases: --daemon is --start; --daemon-foreground is --start-foreground
 3. **File review** — Confirm the list of files found (multiple files or a folder only; a single file skips this step)
 4. **Analysis** — Each file is probed for its streams, resolution and HDR format
 5. **Track configuration** — Select audio and subtitle tracks to include, and switch the per-file mode (encode or demux/remux) with `r`
-6. **Encoding and VMAF verification** — Monitor per-file and overall progress; `Esc` asks before cancelling. Cancelling during analysis stops only the analysis; files already analysed stay queued. A quality score is computed after each file; the source is deleted only if `delete_source_on_success` is on and the score meets the threshold (encode mode only, never when audio was transcoded or the job was cancelled)
+6. **Encoding and VMAF verification** — Monitor per-file and overall progress; `Esc` asks before cancelling. Cancelling during analysis stops only the analysis; files already analysed stay queued. Mean and minimum sampled-frame VMAF scores are computed after each file; the source is deleted only if `delete_source_on_success` is on and both meet the threshold (encode mode only, never when audio was transcoded or the job was cancelled)
 7. **Finish** — View a summary of conversions, skipped files, and space saved; `Enter` starts a new conversion after a confirmation, `Esc` returns to the queue
 
 ## Modes
@@ -214,9 +214,11 @@ Files that are already encoded in AV1 default to demux/remux mode automatically;
 When a Dolby Vision source is queued for encoding with SVT-AV1, a dialog asks how to convert it (reopen it anytime with `d`). Hardware encoders cannot write the RPU, so with NVENC, QSV or AMF the output is HDR10 without asking:
 
 1. **AV1 with Dolby Vision (profile 10)** — the DV dynamic metadata (RPU) is carried into the AV1 stream. Requires the SVT-AV1 encoder; hardware encoders (NVENC/QSV/AMF) cannot write the RPU and always produce HDR10. For cross-compatible profiles (7/8) the HDR10 base layer is preserved, so players without DV support still get correct HDR10 playback.
-2. **AV1 with true HDR10** — the DV layer is dropped and the HDR10 static metadata (mastering display, MaxCLL/MaxFALL) from the source is written into the AV1 stream.
+2. **AV1 with true HDR10** — the DV layer is dropped and the HDR10 static metadata (mastering display, MaxCLL/MaxFALL) from the source is written into the AV1 stream when encoding with SVT-AV1. Hardware encoders still convert to PQ HDR10 color tags, but do not currently re-attach mastering/CLL SEI.
 
-**Profile 5** sources (IPT-PQ-c2, no HDR10-compatible base layer) are special: converting to HDR10 tone-maps the video on the GPU via `libplacebo` (requires Vulkan), while keeping DV produces output that only plays correctly on DV-capable players. HDR10 conversion is the recommended default for profile 5; keeping DV is recommended for profiles 7/8. VMAF verification is skipped for tone-mapped profile 5 output, since the pixels are intentionally changed.
+**Profile 5** sources (IPT-PQ-c2, no HDR10-compatible base layer) are special: converting to HDR10 tone-maps the video on the GPU via `libplacebo` (requires Vulkan), while keeping DV produces output that only plays correctly on DV-capable players. HDR10 conversion is the recommended default for profile 5; keeping DV is recommended for profiles 7/8. VMAF verification is skipped for tone-mapped profile 5 output, since the pixels are intentionally changed. Sources that carry Dolby Vision side data without a readable `dv_profile` are rejected at analysis so a missing profile cannot skip tonemap and produce wrong colors.
+
+HDR10+ dynamic metadata is not preserved; only static HDR10 mastering/CLL (on SVT-AV1) and PQ/HLG color tags are carried forward.
 
 ### Audio Transcoding
 
@@ -328,12 +330,12 @@ Open that link once and the browser keeps the token for the tab's session; `av1c
 
 Two things are worth knowing before exposing the daemon to a network:
 
-- `browse_root` — set it. It is the only directory the file browser and the queue will accept paths under, and it is the difference between "manage my media library" and "read every file this user can read".
+- `browse_root` — set it. It is the only directory the file browser and the queue will accept paths under, and it is the difference between "manage my media library" and "read every file this user can read". An empty `browse_root` is refused when the daemon binds outside loopback.
 - `bind_address` — leave it on loopback unless you mean it. A non-loopback bind is refused unless `allow_insecure_lan = true` (plain HTTP would otherwise expose the Bearer token on the LAN); even with that opt-in, prefer an HTTPS reverse proxy on a trusted network.
 
 The daemon serves plain HTTP. If it must be reachable beyond the local machine, put it behind an HTTPS reverse proxy with connection/request timeouts and rate limiting, and keep the direct daemon port firewalled from untrusted networks. The embedded server is intended for trusted local or LAN use, not direct internet exposure.
 
-Every configuration field exists in both the TUI and web settings pages; the TUI hides rows that do not apply (per-tier values outside `custom`, VMAF options while VMAF is off, `output_directory` while `same_directory` is on) and the web page greys them out. Settings that can widen host access or select an executable — the `[daemon]` and `[disc]` blocks — are writable in the web UI only when it is opened through a loopback origin such as `http://127.0.0.1:8399/` or `http://localhost:8399/`. They remain visible but read-only to LAN and reverse-proxy clients; a request carrying `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP` or `Forwarded` counts as remote. The web Settings tab re-reads the configuration each time it opens, unless it has unsaved edits. Bind-address and port changes take effect after a daemon restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
+Every configuration field exists in both the TUI and web settings pages; the TUI hides rows that do not apply (per-tier values outside `custom`, VMAF options while VMAF is off, `film_grain` unless the encoder is SVT-AV1, `output_directory` while `same_directory` is on) and the web page greys them out or omits them. Settings that can widen host access or select an executable — the `[daemon]` and `[disc]` blocks — are writable in the web UI only when it is opened through a loopback origin such as `http://127.0.0.1:8399/` or `http://localhost:8399/`. They remain visible but read-only to LAN and reverse-proxy clients; a request carrying `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP` or `Forwarded` counts as remote. The web Settings tab re-reads the configuration each time it opens, unless it has unsaved edits. Bind-address and port changes take effect after a daemon restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
 
 The current access token is never returned to a browser. A local web session can leave the token field blank to keep it or enter a replacement containing at least 32 characters. The accepted replacement becomes the browser session token immediately.
 
@@ -360,7 +362,7 @@ Presets are selected automatically based on resolution and HDR format. Classific
 | 4K         | Yes (HDR10/HLG) | **4K HDR**     | vmaf_4k_v0.6.1neg  |
 | 4K         | Dolby Vision    | **4K DV**      | vmaf_4k_v0.6.1neg  |
 
-Sources above 4K use the 4K presets. The 4K VMAF models are used for sources at least 3840 pixels wide; narrower 4K-tier sources use the 1080p models. Dolby Vision counts as HDR for model selection.
+Sources above 4K use the 4K presets. The 4K VMAF models are used when the longer side is at least 3840 pixels (portrait 2160×3840 included); narrower 4K-tier sources use the 1080p models. Dolby Vision counts as HDR for model selection. VMAF scores every 10th frame (`n_subsample=10`); source auto-deletion requires both the mean and the minimum sampled frame score to meet `vmaf_threshold`.
 
 Files already encoded in AV1 default to demux/remux mode instead of being re-encoded.
 
@@ -383,9 +385,9 @@ encoder = "SvtAv1"             # Selected encoder: Nvenc, Qsv, Amf, SvtAv1 (auto
 quality_preset = "medium"      # Quality preset: low, medium, high, custom (new files get medium; a file without this key loads as custom)
 
 [quality]
-vmaf_threshold = 90.0          # VMAF score required to consider encoding successful (0–100)
+vmaf_threshold = 90.0          # Mean and min sampled-frame VMAF must both meet this (0–100)
 vmaf_enabled = true            # Enable/disable VMAF verification after encoding
-delete_source_on_success = false  # Delete source file when VMAF score meets threshold
+delete_source_on_success = false  # Delete source when mean and min VMAF both meet the threshold
 
 [performance]
 svt_preset = 4             # SVT-AV1 preset: 0 (slowest) – 13 (fastest)
@@ -400,7 +402,7 @@ same_directory = true      # Write output next to source file
 [tracks]
 preferred_audio_languages = ["eng", "ita"]
 preferred_subtitle_languages = ["eng"]
-select_all_fallback = true # Select all tracks if no preferred language is found
+select_all_fallback = true # Default: select all tracks if no preferred language is found (set false for first-audio / no-subs fallback)
 
 [audio]
 default_mode = "copy"          # What newly queued files start as: "copy" or "opus"
@@ -411,7 +413,7 @@ skip_already_opus = true       # Leave tracks that are already Opus alone
 enabled = false            # Required before `--start` will start the daemon
 bind_address = "127.0.0.1" # Loopback by default; see the security note below
 port = 8399
-browse_root = ""           # Confine the web file browser to this directory ("" = whole filesystem)
+browse_root = ""           # Confine the web file browser to this directory ("" = whole filesystem; required when binding off-loopback)
 auth_token = ""            # API secret (empty or under 32 bytes = regenerate on next start)
 allow_insecure_lan = false # Required to bind off-loopback over plain HTTP
 
@@ -422,7 +424,7 @@ allow_insecure_lan = false # Required to bind off-loopback over plain HTTP
 
 If `config.toml` cannot be parsed it is left untouched and defaults are used for that run. Saving settings afterwards first copies the broken file to `config.toml.bak`.
 
-Each resolution preset exposes per-encoder quality values (`crf`, `nvenc_cq`, `qsv_quality`, `amf_quality`) and `film_grain` synthesis strength in both settings interfaces.
+Each resolution preset exposes per-encoder quality values (`crf`, `nvenc_cq`, `qsv_quality`, `amf_quality`). `film_grain` synthesis strength is SVT-AV1 only and is hidden in the settings UI when a hardware encoder is selected.
 
 `quality_preset` controls how those per-resolution values are managed: `low`, `medium`, and `high` apply built-in values across every tier at once (overwriting the `presets` table), while `custom` leaves the complete preset matrix editable in either settings interface or the configuration file.
 

@@ -259,9 +259,10 @@ fn get_svtav1_params(params: &EncodingParams) -> Vec<String> {
     };
 
     // Attach HDR10 static metadata so PQ output is true HDR10, not bare PQ.
-    // Applies to native HDR10 sources and to DV sources (both modes: the
-    // HDR10 base of a kept-DV stream benefits from it too). An SDR base layer
-    // (profile 8.2) gets none.
+    // SVT-AV1 only: hardware encoders get color tags below but not mastering /
+    // MaxCLL SEI today (see README). Applies to native HDR10 sources and to DV
+    // sources (both modes: the HDR10 base of a kept-DV stream benefits from it
+    // too). An SDR base layer (profile 8.2) gets none.
     if matches!(params.hdr_type, HdrType::Pq | HdrType::DolbyVision)
         && params.dv_bl_compat != Some(2)
         && let Some(ref hdr10) = params.hdr10_static

@@ -163,7 +163,7 @@ impl DiscSession {
     /// own event says otherwise.
     pub fn cancel(&self) {
         if let Some(flag) = self.cancel_flag.as_ref() {
-            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            flag.store(true, std::sync::atomic::Ordering::Release);
         }
     }
 

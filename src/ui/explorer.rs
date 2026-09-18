@@ -98,7 +98,13 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
     f.render_stateful_widget(list, chunks[2], &mut app.explorer_list_state);
 
     // Help
-    let help_text = match app.selection_mode {
+    let help_text = if app.folder_scan_receiver.is_some() {
+        Line::from(vec![
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}", t(lang, Msg::Cancel))),
+        ])
+    } else {
+        match app.selection_mode {
         SelectionMode::File => {
             let mut spans = vec![
                 Span::styled("↑↓", Style::default().fg(Color::Yellow)),
@@ -177,6 +183,7 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
                 Span::styled("q", Style::default().fg(Color::Yellow)),
                 Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
             ])
+        }
         }
     };
 

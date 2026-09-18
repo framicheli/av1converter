@@ -1,6 +1,7 @@
 use crate::analyzer::{DvMode, HdrType};
 use crate::app::{App, TrackFocus};
 use crate::i18n::{Msg, t};
+use crate::ui::common::message_color;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -113,15 +114,33 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         )
     };
 
+    let notice_rows = app.message.as_deref().map_or(0, |msg| {
+        crate::ui::common::wrapped_rows(msg, f.area().width.saturating_sub(4))
+            .saturating_add(2)
+            .min(6)
+    });
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(notice_rows),
             Constraint::Length(6),
             Constraint::Min(5),
             Constraint::Length(if narrow { 5 } else { 3 }),
         ])
         .margin(1)
         .split(f.area());
+
+    if let Some(ref msg) = app.message {
+        let notice = Paragraph::new(msg.as_str())
+            .style(Style::default().fg(message_color(app.message_kind)))
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(message_color(app.message_kind))),
+            );
+        f.render_widget(notice, chunks[0]);
+    }
 
     // File info header
     let info_lines = vec![
@@ -189,13 +208,35 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         ]),
     ];
 
-    let total_jobs = app.queue.jobs.len();
-    let info_title = if total_jobs > 1 {
+    let configurable = app
+        .queue
+        .jobs
+        .iter()
+        .filter(|job| {
+            matches!(
+                job.status,
+                crate::queue::JobStatus::AwaitingConfig | crate::queue::JobStatus::Ready
+            )
+        })
+        .count()
+        .max(1);
+    let current_number = app
+        .queue
+        .jobs
+        .iter()
+        .take(app.queue.config_job_index + 1)
+        .filter(|job| {
+            matches!(
+                job.status,
+                crate::queue::JobStatus::AwaitingConfig | crate::queue::JobStatus::Ready
+            )
+        })
+        .count()
+        .max(1);
+    let info_title = if configurable > 1 {
         format!(
-            " {} ({}/{}) ",
+            " {} ({current_number}/{configurable}) ",
             t(lang, Msg::VideoInfo),
-            app.queue.config_job_index + 1,
-            total_jobs
         )
     } else {
         format!(" {} ", t(lang, Msg::VideoInfo))
@@ -207,7 +248,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             .border_style(Style::default().fg(Color::DarkGray))
             .title(info_title),
     );
-    f.render_widget(info, chunks[0]);
+    f.render_widget(info, chunks[1]);
 
     // Track selection area
     let track_chunks = Layout::default()
@@ -217,7 +258,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             Direction::Horizontal
         })
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[1]);
+        .split(chunks[2]);
 
     // Audio tracks with bitrate/sample rate
     let audio_items: Vec<ListItem> = audio_data
@@ -328,11 +369,11 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         Span::styled("O", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::AllOpus))),
     ];
-    if hdr_string == "Dolby Vision" {
+    if hdr_string == "Dolby Vision" && !remux_only {
         help_spans.push(Span::styled("d", Style::default().fg(Color::Yellow)));
         help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::DvModeHelp))));
     }
-    if total_jobs > 1 {
+    if configurable > 1 {
         help_spans.push(Span::styled("←→", Style::default().fg(Color::Yellow)));
         help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::SwitchFile))));
     }
@@ -353,7 +394,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE))
         .wrap(Wrap { trim: true });
-    f.render_widget(help, chunks[2]);
+    f.render_widget(help, chunks[3]);
 }
 
 /// One row of the audio panel, already resolved against the audio settings.

@@ -490,9 +490,17 @@ fn config_field_path(field: ConfigField) -> Option<String> {
 /// [`QualityPreset::Custom`]; otherwise their values are driven by the preset.
 pub fn visible_config_items(config: &AppConfig) -> Vec<&'static ConfigItem> {
     let show_rf = config.quality_preset == QualityPreset::Custom;
+    let show_film_grain = matches!(config.encoder, crate::config::Encoder::SvtAv1);
     CONFIG_ITEMS
         .iter()
         .filter(|item| show_rf || !is_rf_field(item.field))
+        .filter(|item| {
+            show_film_grain
+                || !matches!(
+                    item.field,
+                    ConfigField::Preset(_, PresetMetric::FilmGrain)
+                )
+        })
         .filter(|item| {
             config.quality.vmaf_enabled
                 || !matches!(
@@ -656,20 +664,28 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
             Span::raw(format!("\u{a0}{}", t(lang, Msg::Cancel))),
         ])
     } else {
-        Line::from(vec![
+        let selected = visible_config_items(&app.config)
+            .get(app.config_selected)
+            .map(|item| item.kind);
+        let mut spans = vec![
             Span::styled("↑↓", Style::default().fg(Color::Yellow)),
             Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
             Span::styled("←→", Style::default().fg(Color::Yellow)),
             Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Adjust))),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::EditText))),
+        ];
+        if selected == Some(ConfigItemKind::Text) {
+            spans.push(Span::styled("Enter", Style::default().fg(Color::Yellow)));
+            spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::EditText))));
+        }
+        spans.extend([
             Span::styled("s", Style::default().fg(Color::Yellow)),
             Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Save))),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
             Span::styled("q", Style::default().fg(Color::Yellow)),
             Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
-        ])
+        ]);
+        Line::from(spans)
     };
 
     let notice = if let Some(ref msg) = app.message {

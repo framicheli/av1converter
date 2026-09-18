@@ -327,22 +327,33 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
     )
 }
 
-/// Read a JSON array of track indices, keeping only ones the job really has.
-/// An absent key yields `current`.
-fn valid_indices(body: &Value, key: &str, known: &[usize], current: &[usize]) -> Vec<usize> {
-    let mut out: Vec<usize> = body.get(key).and_then(Value::as_array).map_or_else(
-        || current.to_vec(),
-        |a| {
-            a.iter()
-                .filter_map(Value::as_u64)
-                .filter_map(|i| usize::try_from(i).ok())
-                .filter(|i| known.contains(i))
-                .collect()
-        },
-    );
+/// Read a JSON array of track indices. An absent key yields `current`.
+/// Unknown indices are rejected rather than silently dropped.
+fn valid_indices(
+    body: &Value,
+    key: &str,
+    known: &[usize],
+    current: &[usize],
+) -> Result<Vec<usize>, String> {
+    let Some(array) = body.get(key).and_then(Value::as_array) else {
+        return Ok(current.to_vec());
+    };
+    let mut out = Vec::with_capacity(array.len());
+    for value in array {
+        let Some(raw) = value.as_u64() else {
+            return Err(format!("{key} must contain non-negative integers"));
+        };
+        let Ok(index) = usize::try_from(raw) else {
+            return Err(format!("{key} contains an out-of-range index"));
+        };
+        if !known.contains(&index) {
+            return Err(format!("{key} contains unknown track index {index}"));
+        }
+        out.push(index);
+    }
     out.sort_unstable();
     out.dedup();
-    out
+    Ok(out)
 }
 
 /// Map one file's choices onto another file by track order. Extra target
@@ -445,24 +456,43 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
         let subtitle_known: Vec<usize> = job.subtitle_tracks.iter().map(|t| t.index).collect();
 
         let current = &job.track_selection;
-        let audio_indices =
-            valid_indices(body, "audio_indices", &audio_known, &current.audio_indices);
+        let audio_indices = match valid_indices(
+            body,
+            "audio_indices",
+            &audio_known,
+            &current.audio_indices,
+        ) {
+            Ok(indices) => indices,
+            Err(error) => return (400, json!({"error": error})),
+        };
         // Kept a subset of the selection: the plan indexes per-stream codec
         // options by output position.
-        let audio_to_opus: Vec<usize> =
-            valid_indices(body, "audio_to_opus", &audio_known, &current.audio_to_opus)
+        let audio_to_opus = match valid_indices(
+            body,
+            "audio_to_opus",
+            &audio_known,
+            &current.audio_to_opus,
+        ) {
+            Ok(indices) => indices
                 .into_iter()
                 .filter(|i| audio_indices.contains(i))
-                .collect();
+                .collect(),
+            Err(error) => return (400, json!({"error": error})),
+        };
+
+        let subtitle_indices = match valid_indices(
+            body,
+            "subtitle_indices",
+            &subtitle_known,
+            &current.subtitle_indices,
+        ) {
+            Ok(indices) => indices,
+            Err(error) => return (400, json!({"error": error})),
+        };
 
         let selection = crate::tracks::TrackSelection {
             audio_indices,
-            subtitle_indices: valid_indices(
-                body,
-                "subtitle_indices",
-                &subtitle_known,
-                &current.subtitle_indices,
-            ),
+            subtitle_indices,
             audio_to_opus,
         };
 
@@ -602,6 +632,9 @@ pub fn queue_add(
     body: &Value,
     shutdown: &AtomicBool,
 ) -> (u16, Value) {
+    if shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+        return (503, json!({"error": "daemon is shutting down"}));
+    }
     let Some(path) = body.get("path").and_then(Value::as_str) else {
         return (400, json!({"error": "missing 'path'"}));
     };
@@ -647,13 +680,21 @@ pub fn queue_add(
             if !path.is_dir() {
                 return (400, json!({"error": "not a directory"}));
             }
-            if let Ok(entries) = std::fs::read_dir(&path) {
-                files.extend(
-                    entries
-                        .filter_map(Result::ok)
-                        .map(|e| e.path())
-                        .filter(|p| p.is_file() && is_video_file(p)),
-                );
+            match std::fs::read_dir(&path) {
+                Ok(entries) => {
+                    files.extend(
+                        entries
+                            .filter_map(Result::ok)
+                            .map(|e| e.path())
+                            .filter(|p| p.is_file() && is_video_file(p)),
+                    );
+                }
+                Err(e) => {
+                    return (
+                        400,
+                        json!({"error": format!("could not read directory: {e}")}),
+                    );
+                }
             }
         }
         "folder_recursive" => {
@@ -689,10 +730,15 @@ pub fn queue_add(
     }
     files.sort();
 
-    let (added, already_queued) = super::add_paths(shared, probe_tx, files, &browse_root);
+    let (added, already_queued, skipped) =
+        super::add_paths(shared, probe_tx, files, &browse_root);
     (
         200,
-        json!({"added": added, "already_queued": already_queued}),
+        json!({
+            "added": added,
+            "already_queued": already_queued,
+            "skipped": skipped,
+        }),
     )
 }
 
@@ -790,7 +836,7 @@ pub fn queue_cancel(shared: &SharedState) -> (u16, Value) {
     if let Some(session) = state.session.as_ref().filter(|_| state.encoding_active) {
         session
             .cancel_flag
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+            .store(true, std::sync::atomic::Ordering::Release);
         let ready = state
             .queue
             .state
@@ -821,7 +867,7 @@ pub fn queue_cancel_analysis(shared: &SharedState) -> (u16, Value) {
     let mut state = lock(shared);
     state
         .analysis_cancel
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+        .store(true, std::sync::atomic::Ordering::Release);
     let mut skipped = 0;
     for job in &mut state.queue.state.jobs {
         if matches!(job.status, JobStatus::Analyzing | JobStatus::Pending) {
@@ -970,6 +1016,12 @@ pub fn discs_list(shared: &SharedState) -> (u16, Value) {
     // makemkvcon at a time.
     let config = {
         let mut state = lock(shared);
+        if state
+            .shutting_down
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return (503, json!({"error": "daemon is shutting down"}));
+        }
         if state.disc.active {
             return (409, json!({"error": "a disc operation is already running"}));
         }
@@ -1543,8 +1595,17 @@ fn status_json(status: &JobStatus) -> Value {
         }
         JobStatus::Skipped { reason } => json!({"kind": "skipped", "reason": reason}),
         JobStatus::Error { message } => json!({"kind": "error", "message": message}),
-        JobStatus::QualityWarning { vmaf, threshold } => {
-            json!({"kind": "quality_warning", "vmaf": vmaf, "threshold": threshold})
+        JobStatus::QualityWarning {
+            vmaf,
+            min_score,
+            threshold,
+        } => {
+            json!({
+                "kind": "quality_warning",
+                "vmaf": vmaf,
+                "min_score": min_score,
+                "threshold": threshold,
+            })
         }
     }
 }
@@ -2519,18 +2580,32 @@ mod tests {
             assert_eq!(selection.audio_to_opus, vec![2]);
         }
 
-        /// Indices the file does not have are dropped rather than stored.
+        /// Indices the file does not have are rejected rather than stored.
         #[test]
         fn unknown_track_indices_are_rejected() {
             let (shared, id) = shared_with_job();
+            let before = lock(&shared)
+                .queue
+                .job_by_id(id)
+                .unwrap()
+                .track_selection
+                .clone();
 
             let (code, body) = job_tracks_set(
                 &shared,
                 &json!({"id": id, "audio_indices": [0, 99], "audio_to_opus": [99]}),
             );
-            assert_eq!(code, 200);
-            assert_eq!(body["audio_indices"], json!([0]));
-            assert_eq!(body["audio_to_opus"], json!([]));
+            assert_eq!(code, 400);
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("unknown track index")),
+                "{body}"
+            );
+            let state = lock(&shared);
+            let after = &state.queue.job_by_id(id).unwrap().track_selection;
+            assert_eq!(after.audio_indices, before.audio_indices);
+            assert!(!after.audio_indices.contains(&99));
         }
 
         #[test]

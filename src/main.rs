@@ -168,6 +168,10 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
         eprintln!("{}", t(lang, Msg::DaemonPublicHttpRefused));
         std::process::exit(1);
     }
+    if config.daemon.binds_publicly() && config.daemon.browse_root.trim().is_empty() {
+        eprintln!("browse_root is required when the daemon binds outside loopback");
+        std::process::exit(1);
+    }
     if config.daemon.binds_publicly() {
         eprintln!("{}", t(lang, Msg::DaemonPublicHttp));
     }
@@ -769,18 +773,24 @@ fn handle_dv_dialog_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Enter | KeyCode::Char(' ') => app.confirm_dv_dialog(),
         KeyCode::Esc => app.dismiss_dv_dialog(),
+        KeyCode::Char('q') => {
+            app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+        }
         _ => {}
     }
 }
 
 fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
-    // Work may have finished while the dialog was open; do not cancel idle state.
-    app.dismiss_stale_cancel_confirm();
-    if matches!(
-        action,
-        ConfirmAction::CancelEncoding | ConfirmAction::CancelAnalysis | ConfirmAction::CancelDisc
-    ) && app.confirm_dialog.is_none()
-    {
+    // The dialog was already taken before this call. Gate cancel on live work
+    // so a confirm that raced with completion is a no-op, without treating the
+    // missing dialog itself as "stale".
+    let still_active = match action {
+        ConfirmAction::CancelEncoding => app.encoding_active,
+        ConfirmAction::CancelAnalysis => app.analysis_receiver.is_some(),
+        ConfirmAction::CancelDisc => app.disc_receiver.is_some(),
+        _ => true,
+    };
+    if !still_active {
         return;
     }
     match action {
@@ -790,14 +800,14 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
         ConfirmAction::CancelDisc => app.cancel_disc_operation(),
         ConfirmAction::ExitApp => {
             app.cancel_flag
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+                .store(true, std::sync::atomic::Ordering::Release);
             app.analysis_cancel_flag
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+                .store(true, std::sync::atomic::Ordering::Release);
             // Disc worker cancellation.
             app.disc_cancel_flag
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+                .store(true, std::sync::atomic::Ordering::Release);
             app.folder_scan_cancel_flag
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+                .store(true, std::sync::atomic::Ordering::Release);
             app.should_quit = true;
         }
         ConfirmAction::AbandonTrackConfig => {
@@ -1447,6 +1457,10 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
                 (current + encoders.len() - 1) % encoders.len()
             };
             app.config.encoder = encoders[next];
+            let count = ui::config_screen::visible_config_items(&app.config).len();
+            if app.config_selected >= count {
+                app.config_selected = count.saturating_sub(1);
+            }
         }
         ConfigField::VmafThreshold => {
             let delta = if increase { 1.0 } else { -1.0 };
@@ -1809,5 +1823,47 @@ mod tests {
         assert!(app.confirm_dialog.as_ref().unwrap().1);
         handle_confirm_dialog_key(&mut app, KeyCode::Right);
         assert!(!app.confirm_dialog.as_ref().unwrap().1);
+    }
+
+    #[test]
+    fn confirming_cancel_encoding_sets_the_cancel_flag() {
+        let mut app = App::new();
+        app.encoding_active = true;
+        app.cancel_flag
+            .store(false, std::sync::atomic::Ordering::Release);
+        // Dialog was already taken (as handle_confirm_dialog_key does).
+        execute_confirm_action(&mut app, ConfirmAction::CancelEncoding);
+        assert!(
+            app.cancel_flag
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+    }
+
+    #[test]
+    fn confirming_cancel_encoding_is_a_noop_when_idle() {
+        let mut app = App::new();
+        app.encoding_active = false;
+        app.cancel_flag
+            .store(false, std::sync::atomic::Ordering::Release);
+        execute_confirm_action(&mut app, ConfirmAction::CancelEncoding);
+        assert!(
+            !app.cancel_flag
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+    }
+
+    #[test]
+    fn confirm_yes_cancels_encoding_after_dialog_take() {
+        let mut app = App::new();
+        app.encoding_active = true;
+        app.cancel_flag
+            .store(false, std::sync::atomic::Ordering::Release);
+        app.confirm_dialog = Some((ConfirmAction::CancelEncoding, true));
+        handle_confirm_dialog_key(&mut app, KeyCode::Char('y'));
+        assert!(app.confirm_dialog.is_none());
+        assert!(
+            app.cancel_flag
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
     }
 }

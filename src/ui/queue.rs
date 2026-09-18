@@ -65,13 +65,21 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
         format!("{} ({analyzed}/{total})", t(lang, Msg::AnalyzingFilesTitle))
     } else if app.encoding_active {
         if let Some(job) = app.queue.jobs.get(app.queue.current_job_index) {
-            if matches!(job.status, JobStatus::Encoding { .. }) {
+            if matches!(
+                job.status,
+                JobStatus::Encoding { .. } | JobStatus::Verifying
+            ) {
                 let current_number = (app.queue.encoding_progress_done + 1).min(total_to_encode);
+                let phase = if matches!(job.status, JobStatus::Verifying) {
+                    t(lang, Msg::StatusVerifying)
+                } else {
+                    t(lang, Msg::Encoding)
+                };
                 format!(
                     "[{}/{}] {}: {}",
                     current_number,
                     total_to_encode,
-                    t(lang, Msg::Encoding),
+                    phase,
                     job.filename()
                 )
             } else {
@@ -197,8 +205,12 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 JobStatus::DoneVmafFailed { reason } => {
                     format!("{} (VMAF: {reason})", t(lang, Msg::Complete))
                 }
-                JobStatus::QualityWarning { vmaf, threshold } => format!(
-                    "{}: VMAF {vmaf:.1} < {threshold:.0} {}",
+                JobStatus::QualityWarning {
+                    vmaf,
+                    min_score,
+                    threshold,
+                } => format!(
+                    "{}: VMAF {vmaf:.1} (min {min_score:.1}) < {threshold:.0} {}",
                     t(lang, Msg::QualityWarning),
                     t(lang, Msg::ThresholdLabel)
                 ),
@@ -270,12 +282,15 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
             Msg::CancelEncodingTitle
         };
         help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, cancel_action))));
+    } else {
+        help_spans.push(Span::styled("Esc", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))));
     }
     help_spans.push(Span::styled(
         "PgUp/PgDn",
         Style::default().fg(Color::Yellow),
     ));
-    help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Status))));
+    help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::VideoInfo))));
     help_spans.push(Span::styled("q", Style::default().fg(Color::Yellow)));
     help_spans.push(Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))));
     let help_text = Line::from(help_spans);
@@ -373,7 +388,11 @@ fn create_queue_item(
             message.lines().next().unwrap_or_default()
         ))
         .style(Style::default().fg(Color::Red).add_modifier(bold_mod)),
-        JobStatus::QualityWarning { vmaf, threshold } => {
+        JobStatus::QualityWarning {
+            vmaf,
+            min_score,
+            threshold,
+        } => {
             let vmaf_color = get_vmaf_color(*vmaf);
             ListItem::new(Line::from(vec![
                 Span::styled(
@@ -385,7 +404,7 @@ fn create_queue_item(
                     Style::default().fg(vmaf_color).add_modifier(bold_mod),
                 ),
                 Span::styled(
-                    format!(" < {threshold:.0}"),
+                    format!(" (min {min_score:.1}) < {threshold:.0}"),
                     Style::default().fg(Color::Red).add_modifier(bold_mod),
                 ),
             ]))

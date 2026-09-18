@@ -125,7 +125,9 @@ pub fn render_dv_dialog(f: &mut Frame, app: &App) {
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Confirm))),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
-        Span::raw(format!("\u{a0}{}", t(lang, Msg::UseRecommended))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::UseRecommended))),
+        Span::styled("q", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
     ]);
     f.render_widget(Paragraph::new(help).alignment(Alignment::Center), chunks[4]);
 }

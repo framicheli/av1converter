@@ -103,6 +103,16 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
     let dv_profile = dovi_entry.and_then(|v| dovi_u8(v, "dv_profile"));
     let dv_bl_compat = dovi_entry.and_then(|v| dovi_u8(v, "dv_bl_signal_compatibility_id"));
 
+    // A Dolby Vision stream without a readable profile can be IPT (profile 5)
+    // with no HDR10-compatible base. Refusing here avoids applying PQ tags
+    // without a tonemap and producing wrong colors.
+    if dovi_entry.is_some() && dv_profile.is_none() {
+        return Err(AppError::Analysis(
+            "Dolby Vision detected but dv_profile is missing; cannot choose a safe encode path"
+                .to_string(),
+        ));
+    }
+
     // Determine HDR type
     let hdr_type = if dovi_entry.is_some() {
         HdrType::DolbyVision
@@ -155,10 +165,13 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
 
 /// Read a small integer field from a DOVI configuration record.
 fn dovi_u8(entry: &Value, key: &str) -> Option<u8> {
-    entry
-        .get(key)
-        .and_then(Value::as_u64)
-        .and_then(|n| u8::try_from(n).ok())
+    let value = entry.get(key)?;
+    if let Some(n) = value.as_u64() {
+        return u8::try_from(n).ok();
+    }
+    value
+        .as_str()
+        .and_then(|s| s.trim().parse::<u8>().ok())
 }
 
 /// Parse an ffprobe rational like `"35400/50000"` (or a plain number) to f64.
@@ -391,7 +404,7 @@ fn run_command(
     cancel: &AtomicBool,
     timeout: Duration,
 ) -> Result<std::process::Output, AppError> {
-    if cancel.load(Ordering::Relaxed) {
+    if cancel.load(Ordering::Acquire) {
         return Err(AppError::Cancelled);
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -406,10 +419,9 @@ fn run_command(
     let stderr_reader = std::thread::spawn(move || read_capped(&mut stderr, FFPROBE_STDERR_LIMIT));
     let started = Instant::now();
     let status = loop {
-        if cancel.load(Ordering::Relaxed) || started.elapsed() >= timeout {
-            let cancelled = cancel.load(Ordering::Relaxed);
-            let _ = child.kill();
-            let _ = child.wait();
+        if cancel.load(Ordering::Acquire) || started.elapsed() >= timeout {
+            let cancelled = cancel.load(Ordering::Acquire);
+            crate::utils::child::kill_and_wait(&mut child);
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
             return Err(if cancelled {
@@ -419,11 +431,13 @@ fn run_command(
             });
         }
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => {
+                crate::utils::child::ChildGuard::unregister(child.id());
+                break status;
+            }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                crate::utils::child::kill_and_wait(&mut child);
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
                 return Err(AppError::Analysis(format!(
@@ -600,6 +614,11 @@ mod tests {
         .unwrap();
         assert_eq!(dovi_u8(&entry, "dv_profile"), Some(8));
         assert_eq!(dovi_u8(&entry, "dv_bl_signal_compatibility_id"), Some(4));
+        let as_string: Value = serde_json::from_str(
+            r#"{"side_data_type": "DOVI configuration record", "dv_profile": "5"}"#,
+        )
+        .unwrap();
+        assert_eq!(dovi_u8(&as_string, "dv_profile"), Some(5));
     }
 
     #[test]

@@ -110,6 +110,11 @@ function applyStrings(root = document) {
       if (text != null) setter(el, text);
     }
   }
+  // Dynamic nodes are not marked data-i18n; refresh them from live state.
+  if (typeof updateWorkButtons === "function") updateWorkButtons();
+  if (typeof setBrowserMode === "function" && typeof browser !== "undefined" && browser?.mode) {
+    setBrowserMode(browser.mode, browser.onPick);
+  }
 }
 
 async function api(path, options) {
@@ -262,8 +267,9 @@ async function poll() {
       setText($("current-file"), s.current.filename);
       // Encoding and ripping carry a percentage; the other phases do not.
       if (st.kind === "encoding" || st.kind === "ripping") {
-        setProgress("current", st.progress);
-        setText($("current-pct"), `${st.progress.toFixed(1)}%`);
+        const progress = Number(st.progress);
+        setProgress("current", Number.isFinite(progress) ? progress : 0);
+        setText($("current-pct"), Number.isFinite(progress) ? `${progress.toFixed(1)}%` : "");
       } else {
         setIndeterminate("current");
         setText($("current-pct"), "");
@@ -276,8 +282,9 @@ async function poll() {
       setText($("current-stage"), "");
     }
 
-    setProgress("overall", s.overall_progress);
-    setText($("overall-pct"), `${s.overall_progress.toFixed(1)}%`);
+    const overall = Number(s.overall_progress);
+    setProgress("overall", Number.isFinite(overall) ? overall : 0);
+    setText($("overall-pct"), Number.isFinite(overall) ? `${overall.toFixed(1)}%` : "");
     setText($("eta"), s.eta_secs != null ? `${tr("eta")} ${fmtDuration(s.eta_secs)}` : "");
 
     setText($("stat-total"), String(s.counts.total));
@@ -465,12 +472,18 @@ function trReason(reason) {
 }
 
 function badgeText(st) {
+  const pct = (value) => (Number.isFinite(Number(value)) ? Number(value).toFixed(1) : "?");
   switch (st.kind) {
-    case "encoding": return `${tr("status_encoding")} ${st.progress.toFixed(1)}%`;
-    case "ripping": return `${tr("status_ripping")} ${st.progress.toFixed(1)}%`;
-    case "done_vmaf": return `${tr("badge_done")} · VMAF ${st.vmaf.toFixed(1)}`;
+    case "encoding": return `${tr("status_encoding")} ${pct(st.progress)}%`;
+    case "ripping": return `${tr("status_ripping")} ${pct(st.progress)}%`;
+    case "done_vmaf": return `${tr("badge_done")} · VMAF ${pct(st.vmaf)}`;
     case "done_vmaf_failed": return `${tr("badge_done")} · ${tr("badge_vmaf_failed")}`;
-    case "quality_warning": return `${tr("badge_low_vmaf")} ${st.vmaf.toFixed(1)}`;
+    case "quality_warning": {
+      const min = Number.isFinite(Number(st.min_score))
+        ? ` (min ${pct(st.min_score)})`
+        : "";
+      return `${tr("badge_low_vmaf")} ${pct(st.vmaf)}${min}`;
+    }
     case "skipped": return `${tr("badge_skipped")} · ${trReason(st.reason)}`;
     default: return tr(BADGE_KEY[st.kind] ?? "", st.kind);
   }
@@ -757,6 +770,7 @@ $("btn-cancel").addEventListener("click", async () => {
     if (encoding) await post("/api/queue/cancel");
     else await post("/api/queue/cancel_analysis");
     toast(tr("cancelling"));
+    forceRefreshQueue();
   } catch (e) { toast(e.message, true); }
 });
 
@@ -766,6 +780,7 @@ $("btn-cancel-disc").addEventListener("click", async () => {
   try {
     await post("/api/discs/cancel");
     toast(tr("cancelling"));
+    forceRefreshQueue();
   } catch (e) { toast(e.message, true); }
 });
 
@@ -1352,12 +1367,15 @@ async function addToQueue(path, mode) {
   try {
     const r = await post("/api/queue/add", { path, mode });
     if (browser.session === session && $("browser").open) $("browser").close();
-    const skipped = r.already_queued
-      ? `, ${trf("already_queued", { n: r.already_queued })}`
-      : "";
+    const skippedParts = [];
+    if (r.already_queued) skippedParts.push(trf("already_queued", { n: r.already_queued }));
+    if (r.skipped) skippedParts.push(trf("skipped_files", { n: r.skipped }));
+    const skipped = skippedParts.length ? `, ${skippedParts.join(", ")}` : "";
     toast(r.added > 0
       ? `${trf("added_files", { n: r.added })}${skipped}`
-      : trf("nothing_added", { n: r.already_queued }));
+      : (r.already_queued || r.skipped)
+        ? trf("nothing_added", { n: (r.already_queued || 0) + (r.skipped || 0) })
+        : tr("nothing_added_generic", "Nothing was added"));
     forceRefreshQueue();
   } catch (e) { toast(e.message, true); }
   finally {
@@ -1775,7 +1793,7 @@ function settingsFields(cfg) {
   fields.push({ group: tr("group_rate_factors") });
   const presetMetrics = [
     ["crf", "CRF", 63],
-    ["film_grain", tr("cfg_film_grain"), 50],
+    ...(cfg.encoder === "SvtAv1" ? [["film_grain", tr("cfg_film_grain"), 50]] : []),
     ["nvenc_cq", "NVENC CQ", 51],
     ["qsv_quality", "QSV Quality", 51],
     ["amf_quality", "AMF Quality", 51],
@@ -1826,7 +1844,11 @@ function verifySettingsCoverage(cfg, paths) {
   const represented = new Set(
     settingsFields(cfg).filter((field) => field.path).map((field) => field.path),
   );
-  const missing = paths.filter((path) => !represented.has(path));
+  // film_grain is SVT-AV1 only; the form omits those leaves for HW encoders.
+  const expected = cfg.encoder === "SvtAv1"
+    ? paths
+    : paths.filter((path) => !path.endsWith(".film_grain"));
+  const missing = expected.filter((path) => !represented.has(path));
   if (missing.length) throw new Error(`Settings form is missing: ${missing.join(", ")}`);
 }
 

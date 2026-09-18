@@ -279,7 +279,7 @@ mod tests {
         while !cancelled {
             match rx.recv_timeout(TIMEOUT).expect("an event") {
                 // Cancel from inside the run, at the first sign of progress.
-                DiscEvent::Ripping { .. } => cancel.store(true, Ordering::Relaxed),
+                DiscEvent::Ripping { .. } => cancel.store(true, Ordering::Release),
                 DiscEvent::Cancelled => cancelled = true,
                 other => panic!("expected a cancellation, got {other:?}"),
             }

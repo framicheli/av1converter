@@ -427,7 +427,7 @@ fn run_robot(
     cancel: &AtomicBool,
     mut on_line: impl FnMut(&str, &[String]),
 ) -> Result<RobotRun, DiscError> {
-    if cancel.load(Ordering::Relaxed) {
+    if cancel.load(Ordering::Acquire) {
         return Err(DiscError::Cancelled);
     }
 
@@ -487,7 +487,7 @@ fn run_robot(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.load(Ordering::Acquire) {
             cancelled = true;
             crate::utils::child::kill_pid(child.id());
             break;
@@ -497,6 +497,7 @@ fn run_robot(
     let status = child
         .wait()
         .map_err(|e| DiscError::Failed(format!("makemkvcon could not be waited for: {e}")))?;
+    crate::utils::child::ChildGuard::unregister(child.id());
 
     // After wait (and process-group kill on cancel), the write end of the pipe
     // should close. Join with a short grace so a stuck grandchild cannot pin a
@@ -790,7 +791,7 @@ mod tests {
             &drive_source(),
             0,
             &dest,
-            |_| cancel.store(true, Ordering::Relaxed),
+            |_| cancel.store(true, Ordering::Release),
             &cancel,
         );
         assert_eq!(result, Err(DiscError::Cancelled));

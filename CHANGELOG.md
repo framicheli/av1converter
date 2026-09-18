@@ -22,6 +22,20 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 
 ### Fixed
 
+- TUI cancel confirm (Esc → Yes) actually cancels encoding, analysis, and disc work instead of only closing the dialog.
+- Encode/probe/VMAF cancel kills the whole process group; shutdown `kill_all` skips reused PIDs and on Windows no longer requires the child image to match this binary.
+- Output publish never clobbers an existing file (exclusive create instead of checked rename).
+- Cancelling after a successful encode or during VMAF removes the finished output so a retry is not blocked.
+- VMAF auto-delete and quality warnings require both mean and minimum sampled-frame scores; UIs and logs report the min as well as the mean.
+- Portrait 4K uses the 4K VMAF models (long side ≥ 3840).
+- Dolby Vision without a readable `dv_profile` fails analysis instead of encoding IPT as bare PQ.
+- `film_grain` is SVT-AV1 only in settings; the web Settings tab no longer breaks when a hardware encoder is selected.
+- Public binds require a non-empty `browse_root` at settings save and at daemon start.
+- Web i18n refresh no longer clobbers live status text or clears the file-browser pick callback.
+- Queue add reports true duplicates separately from other skips; concurrent add of the same inode is deduped.
+- Empty auth tokens never open the API.
+- Cancelling disc listing respects shutdown; encode/disc workers join within the shutdown grace.
+- Preferred languages match BCP-47 region tags (`en-US` ↔ `eng`).
 - Cancelling a `makemkvcon` run could block until its child processes exited; the output reader is no longer waited on after a cancellation.
 - A job's analysis result no longer overwrites a status the job had already reached, so a file that failed keeps the reason it failed.
 - The web UI's Cancel button now stops an in-progress disc rip, not only an encode. `+ Disc` is disabled while a rip is running.
