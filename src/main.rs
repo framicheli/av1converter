@@ -164,6 +164,10 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
         std::process::exit(1);
     }
 
+    if config.daemon.refuses_public_bind() {
+        eprintln!("{}", t(lang, Msg::DaemonPublicHttpRefused));
+        std::process::exit(1);
+    }
     if config.daemon.binds_publicly() {
         eprintln!("{}", t(lang, Msg::DaemonPublicHttp));
     }
@@ -639,10 +643,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             let compact = ui::terminal_too_small(app.current_screen, terminal.size()?.into());
             let control_c =
                 key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
+            let allow_esc_cancel = key.code == KeyCode::Esc && app.work_active();
             if !compact
                 || app.confirm_dialog.is_some()
                 || key.code == KeyCode::Char('q')
                 || control_c
+                || allow_esc_cancel
             {
                 if control_c {
                     app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
@@ -768,6 +774,15 @@ fn handle_dv_dialog_key(app: &mut App, key: KeyCode) {
 }
 
 fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
+    // Work may have finished while the dialog was open; do not cancel idle state.
+    app.dismiss_stale_cancel_confirm();
+    if matches!(
+        action,
+        ConfirmAction::CancelEncoding | ConfirmAction::CancelAnalysis | ConfirmAction::CancelDisc
+    ) && app.confirm_dialog.is_none()
+    {
+        return;
+    }
     match action {
         ConfirmAction::CancelEncoding => {
             app.cancel_encoding();
@@ -913,6 +928,9 @@ fn handle_file_confirm_key(app: &mut App, key: KeyCode) {
 #[allow(clippy::too_many_lines)]
 fn handle_track_config_key(app: &mut App, key: KeyCode) {
     let Some(job) = app.current_config_job() else {
+        if key == KeyCode::Esc {
+            app.navigate_to_queue();
+        }
         return;
     };
 
@@ -1054,6 +1072,7 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
         KeyCode::Esc if app.encoding_active => {
             app.confirm_dialog = Some((ConfirmAction::CancelEncoding, false));
         }
+        KeyCode::Esc => app.navigate_to_home(),
         KeyCode::Up | KeyCode::Char('k') => app.queue_move_cursor(false),
         KeyCode::Down | KeyCode::Char('j') => app.queue_move_cursor(true),
         KeyCode::Char('K') => app.queue_move_selected_up(),
@@ -1482,6 +1501,9 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         }
         ConfigField::DaemonEnabled => {
             app.config.daemon.enabled = !app.config.daemon.enabled;
+        }
+        ConfigField::DaemonAllowInsecureLan => {
+            app.config.daemon.allow_insecure_lan = !app.config.daemon.allow_insecure_lan;
         }
         ConfigField::DaemonAutostart => {
             apply_autostart(app, !daemon::service::installed());

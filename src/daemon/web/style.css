@@ -181,6 +181,10 @@ button {
   border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
+  /* Flex toolbars default to shrink:1; with nowrap that clips the label past
+     the border instead of wrapping the button to the next row. */
+  flex-shrink: 0;
+  max-width: 100%;
 }
 /* One accented button per surface, on the action that commits the work.
    Destructive actions carry their colour at rest, not only on hover. */
@@ -248,6 +252,21 @@ tbody tr:last-child td, tbody tr:last-child th { border-bottom: none; }
   color: var(--ink-2);
   white-space: nowrap;
 }
+/* Interactive badges (e.g. Confirm tracks in the status column) must wrap
+   when the column is narrow; nowrap + a squeezed width paints text past the
+   border. */
+button.badge {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 8px;
+  white-space: normal;
+  overflow-wrap: break-word;
+  text-align: center;
+  line-height: 1.3;
+  vertical-align: middle;
+  height: auto;
+  min-height: 0;
+}
 .badge.encoding, .badge.verifying, .badge.analyzing { color: var(--accent); border-color: var(--accent); }
 .badge.done { color: var(--good); border-color: var(--good); }
 .badge.warn { color: var(--warn); border-color: var(--warn); }
@@ -264,6 +283,8 @@ td.grew { color: var(--warn); }
      raises these to 44px. */
   min-width: 24px;
   min-height: 24px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* ── Settings form ──────────────────────────────────────────────── */
@@ -430,6 +451,7 @@ fieldset.field-group > legend {
   align-items: center;
   gap: 8px;
   padding: 12px 16px;
+  flex-shrink: 0;
 }
 .modal-head { border-bottom: 1px solid var(--border); font-weight: 600; }
 .modal-head > h2 { overflow-wrap: anywhere; flex: 1; }
@@ -438,8 +460,13 @@ fieldset.field-group > legend {
 /* Takes a full row of the wrapping footer, below the checkbox it describes. */
 #tracks-apply-hint { flex-basis: 100%; }
 .modal-foot { border-top: 1px solid var(--border); font-size: 12px; flex-wrap: wrap; }
+.modal-foot button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
 .apply-remaining { display: flex; align-items: center; gap: 6px; }
-.modal-body { overflow-y: auto; padding: 8px 16px 16px; }
+.modal-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 16px 16px; }
 
 .track-group {
   display: flex;
@@ -518,6 +545,11 @@ fieldset.field-group > legend {
   #browser { width: calc(100% - 16px); height: calc(100% - 16px); }
   .browser-foot .spacer { flex-basis: 100%; }
   .browser-foot button { flex: 1; }
+  .toolbar button {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
+  }
 
   /* The Opus target label wraps onto its own line below the track name and
      its select. */

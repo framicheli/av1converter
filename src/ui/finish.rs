@@ -304,7 +304,14 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
         .unwrap_or_default();
     let (heading, heading_color) = if app.queue.error_count > 0 {
         (Msg::Errors, Color::Red)
-    } else if app.queue.skipped_count > 0 {
+    } else if app.queue.skipped_count > 0
+        || app.queue.jobs.iter().any(|job| {
+            matches!(
+                job.status,
+                JobStatus::QualityWarning { .. } | JobStatus::DoneVmafFailed { .. }
+            )
+        })
+    {
         (Msg::Summary, Color::Yellow)
     } else {
         (Msg::ConversionComplete, Color::Green)

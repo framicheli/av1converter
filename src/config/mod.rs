@@ -20,8 +20,9 @@ pub struct AppConfig {
     pub language: Language,
     /// Selected encoder
     pub encoder: Encoder,
-    /// Overall quality preset, default to
-    /// `Custom`.
+    /// Overall quality preset. New configs and `Default` use `Medium`; a
+    /// missing TOML key deserializes as `Custom` for legacy files (see
+    /// [`default_quality_preset`]).
     #[serde(default = "default_quality_preset")]
     pub quality_preset: QualityPreset,
     /// Quality settings
@@ -692,8 +693,13 @@ mod tests {
     fn public_bind_addresses_are_recognised() {
         let mut cfg = AppConfig::default();
         assert!(!cfg.daemon.binds_publicly());
+        assert!(!cfg.daemon.refuses_public_bind());
         cfg.daemon.bind_address = "0.0.0.0".to_string();
         assert!(cfg.daemon.binds_publicly());
+        assert!(cfg.daemon.refuses_public_bind());
+        cfg.daemon.allow_insecure_lan = true;
+        assert!(!cfg.daemon.refuses_public_bind());
+        cfg.daemon.allow_insecure_lan = false;
         cfg.daemon.bind_address = "192.168.1.10".to_string();
         assert!(cfg.daemon.binds_publicly());
         cfg.daemon.bind_address = "::1".to_string();

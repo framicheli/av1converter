@@ -316,6 +316,11 @@ pub struct DaemonConfig {
     /// bytes are replaced with a generated token when the daemon starts.
     #[serde(default)]
     pub auth_token: String,
+    /// Explicit opt-in to bind off-loopback over plain HTTP. Without this the
+    /// daemon refuses a public bind address so the Bearer token is not sent
+    /// cleartext on the LAN by accident.
+    #[serde(default)]
+    pub allow_insecure_lan: bool,
 }
 
 impl DaemonConfig {
@@ -374,6 +379,11 @@ impl DaemonConfig {
             Err(_) => false,
         }
     }
+
+    /// Public bind without the explicit insecure-LAN opt-in.
+    pub fn refuses_public_bind(&self) -> bool {
+        self.binds_publicly() && !self.allow_insecure_lan
+    }
 }
 
 impl Default for DaemonConfig {
@@ -384,6 +394,7 @@ impl Default for DaemonConfig {
             port: 8399,
             browse_root: String::new(),
             auth_token: String::new(),
+            allow_insecure_lan: false,
         }
     }
 }

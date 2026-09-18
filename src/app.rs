@@ -199,6 +199,8 @@ pub struct App {
     pub vmaf_deps: bool,
     /// Whether this `FFmpeg` build can encode Opus
     pub opus_deps: bool,
+    /// Whether the configured encoder exists in this FFmpeg build
+    pub encoder_deps: bool,
 
     // UI state
     pub message: Option<String>,
@@ -264,8 +266,19 @@ impl App {
         let deps = DependencyStatus::check();
         let vmaf_deps = DependencyStatus::vmaf_available();
         let opus_deps = DependencyStatus::libopus_available();
+        let encoder_name = config.encoder.ffmpeg_name();
+        let encoder_deps = DependencyStatus::encoder_available(encoder_name);
 
         info!("Using encoder: {}", config.encoder);
+
+        let (message, message_kind) = if !encoder_deps {
+            (
+                Some(crate::i18n::t(config.language, crate::i18n::Msg::EncoderUnavailable).to_string()),
+                MessageKind::Warning,
+            )
+        } else {
+            (None, MessageKind::Info)
+        };
 
         Self {
             current_screen: Screen::Home,
@@ -314,8 +327,9 @@ impl App {
             deps,
             vmaf_deps,
             opus_deps,
-            message: None,
-            message_kind: MessageKind::Info,
+            encoder_deps,
+            message,
+            message_kind,
             message_expiry: None,
             confirm_dialog: None,
             dv_dialog: None,
@@ -512,9 +526,27 @@ impl App {
                 job.output_size = std::fs::metadata(output_path).ok().map(|m| m.len());
             }
         }
+        self.dismiss_stale_cancel_confirm();
         self.finish_cursor = 0;
         self.detail_scroll = 0;
         self.current_screen = Screen::Finish;
+    }
+
+    /// Drop cancel confirms once the matching work is already idle so Enter/y
+    /// cannot cancel finished work after auto-navigation to Finish.
+    pub fn dismiss_stale_cancel_confirm(&mut self) {
+        let Some((action, _)) = self.confirm_dialog else {
+            return;
+        };
+        let stale = match action {
+            ConfirmAction::CancelEncoding => !self.encoding_active,
+            ConfirmAction::CancelAnalysis => self.analysis_receiver.is_none(),
+            ConfirmAction::CancelDisc => self.disc_receiver.is_none(),
+            _ => false,
+        };
+        if stale {
+            self.confirm_dialog = None;
+        }
     }
 
     pub fn navigate_to_configuration(&mut self) {
@@ -910,6 +942,7 @@ impl App {
         let output_config = self.config.output.clone();
         let track_config = self.config.tracks.clone();
         let audio_config = self.config.audio.clone();
+        let lang = self.config.language;
         let Some(job) = self.queue.jobs.get_mut(index) else {
             return;
         };
@@ -928,6 +961,13 @@ impl App {
                 job.remux_only = is_av1;
                 auto_select_tracks(job, &track_config, &audio_config);
                 job.generate_output_path(&output_config);
+                if job.temporary && job.output_path.is_none() {
+                    job.status = JobStatus::Error {
+                        message: crate::disc::DiscError::NoDestination.message(lang),
+                    };
+                    self.queue.error_count += 1;
+                    return;
+                }
                 job.status = JobStatus::AwaitingConfig;
             }
             Err(AppError::Cancelled) => {
@@ -1130,11 +1170,6 @@ impl App {
         info!("Starting encoding process");
         let follow_active = self.current_screen != Screen::Queue
             || self.queue_cursor == self.queue.current_job_index;
-        self.encoding_active = true;
-        self.cancel_flag = Arc::new(AtomicBool::new(false));
-
-        let (tx, rx) = mpsc::channel();
-        self.progress_receiver = Some(rx);
 
         let output_config = self.config.output.clone();
         let audio_config = self.config.audio.clone();
@@ -1185,6 +1220,34 @@ impl App {
             .collect();
 
         info!("Jobs to encode: {}", worker_jobs.len());
+
+        // Mirror the daemon: never arm an empty session. Temporary Ready jobs
+        // without a destination are skipped by filter_map above but would
+        // otherwise restart forever after Finished.
+        if worker_jobs.is_empty() {
+            let lang = self.config.language;
+            for job in &mut self.queue.jobs {
+                if matches!(job.status, JobStatus::Ready)
+                    && job.temporary
+                    && job.output_path.is_none()
+                {
+                    job.status = JobStatus::Error {
+                        message: crate::disc::DiscError::NoDestination.message(lang),
+                    };
+                    self.queue.error_count += 1;
+                }
+            }
+            self.encoding_active = false;
+            self.progress_receiver = None;
+            self.encoding_session_indices.clear();
+            return;
+        }
+
+        self.encoding_active = true;
+        self.cancel_flag = Arc::new(AtomicBool::new(false));
+
+        let (tx, rx) = mpsc::channel();
+        self.progress_receiver = Some(rx);
 
         self.encoding_session_indices = worker_jobs.iter().map(|job| job.index).collect();
         if let Some(&index) = self.encoding_session_indices.first() {
@@ -1628,6 +1691,10 @@ impl App {
     /// Report a failure where the user is looking: on the title screen while
     /// scanning, on the queue once titles are being extracted.
     fn fail_disc_run(&mut self, index: usize, message: &str) {
+        if self.disc_state == DiscState::Cancelling {
+            self.finish_disc_cancellation();
+            return;
+        }
         if matches!(self.disc_state, DiscState::Scanning)
             || self.current_screen == Screen::DiscTitles
         {
@@ -1954,6 +2021,43 @@ fn dv_mode_index(mode: DvMode) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_encode_session_does_not_arm_encoding() {
+        let mut app = App::new();
+        let mut job = EncodingJob::new(PathBuf::from("ripped.mkv"));
+        job.status = JobStatus::Ready;
+        job.temporary = true;
+        job.output_path = None;
+        // Enough fields that a naive filter would keep it Ready forever.
+        job.metadata = Some(crate::analyzer::VideoMetadata {
+            width: 1920,
+            height: 1080,
+            hdr_type: crate::analyzer::HdrType::Sdr,
+            dv_profile: None,
+            dv_bl_compat: None,
+            hdr10_static: None,
+            codec_name: "h264".into(),
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            duration_secs: 1.0,
+        });
+        let exe = std::env::current_exe().unwrap();
+        job.source_identity = Some(crate::queue::SourceIdentity::from_metadata(
+            &std::fs::metadata(exe).unwrap(),
+        ));
+        app.queue.jobs.push(job);
+
+        app.start_encoding();
+
+        assert!(!app.encoding_active);
+        assert!(app.progress_receiver.is_none());
+        assert!(matches!(
+            app.queue.jobs[0].status,
+            JobStatus::Error { .. }
+        ));
+        assert_eq!(app.queue.error_count, 1);
+    }
 
     #[test]
     fn moving_a_ready_job_up_keeps_the_cursor_on_it() {

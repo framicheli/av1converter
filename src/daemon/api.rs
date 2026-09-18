@@ -487,7 +487,8 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
                     Some(DV_HDR10) => Some(DvMode::ToHdr10),
                     // Only SVT-AV1 can write the RPU.
                     Some(DV_KEEP) if encoder == Encoder::SvtAv1 => Some(DvMode::KeepDolbyVision),
-                    // A keep mode stored under SVT-AV1, sent back unchanged.
+                    // A stale keep under a hardware encoder cannot retain the
+                    // RPU; rewrite to HDR10.
                     Some(DV_KEEP) if job.dv_mode == Some(DvMode::KeepDolbyVision) => {
                         Some(DvMode::ToHdr10)
                     }
@@ -1073,6 +1074,11 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
         return (409, json!({"error": "a disc operation is already running"}));
     }
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Some(previous) = state.disc_worker.take() {
+        // `active` was false, so the previous run has settled; join before
+        // arming the next one so shutdown always sees a live handle.
+        let _ = previous.join();
+    }
     state.disc.cancel_flag = Some(cancel.clone());
     state.disc.active = true;
     state.disc.scanning = true;
@@ -1080,9 +1086,7 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
     state.disc.titles.clear();
     state.disc.disc_type = None;
     state.disc.scanned_source = Some(source.clone());
-    drop(state);
-
-    lock(shared).disc_worker = Some(crate::disc::worker::spawn_scan(
+    state.disc_worker = Some(crate::disc::worker::spawn_scan(
         bin,
         source,
         &cancel,
@@ -1203,14 +1207,15 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
         .collect();
 
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Some(previous) = state.disc_worker.take() {
+        let _ = previous.join();
+    }
     state.disc.cancel_flag = Some(cancel.clone());
     state.disc.active = true;
     state.disc.scanning = false;
     state.disc.error = None;
     state.disc.job_ids.clone_from(&job_ids);
-    drop(state);
-
-    lock(shared).disc_worker = Some(crate::disc::worker::spawn_rips(
+    state.disc_worker = Some(crate::disc::worker::spawn_rips(
         bin,
         config,
         source,

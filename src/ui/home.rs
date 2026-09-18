@@ -128,12 +128,18 @@ pub fn render_home(f: &mut Frame, app: &App) {
 }
 
 fn render_status_info(app: &App) -> Line<'static> {
+    let lang = app.config.language;
+    if !app.encoder_deps {
+        return Line::from(vec![
+            Span::styled("⚠ ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}: {}", t(lang, Msg::EncoderLabel), app.config.encoder),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]);
+    }
     let encoder_span = Span::styled(
-        format!(
-            "{}: {}",
-            t(app.config.language, Msg::EncoderLabel),
-            app.config.encoder
-        ),
+        format!("{}: {}", t(lang, Msg::EncoderLabel), app.config.encoder),
         Style::default().fg(Color::Cyan),
     );
 

@@ -410,6 +410,55 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
     }
 }
 
+/// Whether preferred and track language tags match, treating common
+/// ISO 639-1 / 639-2 aliases as equal (`en` ↔ `eng`, `it` ↔ `ita`, …).
+fn language_matches(preferred: &str, track: &str) -> bool {
+    let preferred = preferred.trim();
+    let track = track.trim();
+    if preferred.eq_ignore_ascii_case(track) {
+        return true;
+    }
+    language_canonical(preferred)
+        .zip(language_canonical(track))
+        .is_some_and(|(a, b)| a == b)
+}
+
+/// Map a 2- or 3-letter language tag to a shared lowercase 3-letter key.
+fn language_canonical(tag: &str) -> Option<&'static str> {
+    let lower = tag.to_ascii_lowercase();
+    match lower.as_str() {
+        "en" | "eng" => Some("eng"),
+        "it" | "ita" => Some("ita"),
+        "es" | "spa" => Some("spa"),
+        "fr" | "fra" | "fre" => Some("fra"),
+        "de" | "deu" | "ger" => Some("deu"),
+        "zh" | "zho" | "chi" => Some("zho"),
+        "ja" | "jpn" => Some("jpn"),
+        "ko" | "kor" => Some("kor"),
+        "pt" | "por" => Some("por"),
+        "ru" | "rus" => Some("rus"),
+        "nl" | "nld" | "dut" => Some("nld"),
+        "pl" | "pol" => Some("pol"),
+        "sv" | "swe" => Some("swe"),
+        "no" | "nor" => Some("nor"),
+        "da" | "dan" => Some("dan"),
+        "fi" | "fin" => Some("fin"),
+        "cs" | "ces" | "cze" => Some("ces"),
+        "hu" | "hun" => Some("hun"),
+        "ro" | "ron" | "rum" => Some("ron"),
+        "el" | "ell" | "gre" => Some("ell"),
+        "tr" | "tur" => Some("tur"),
+        "ar" | "ara" => Some("ara"),
+        "hi" | "hin" => Some("hin"),
+        "he" | "heb" => Some("heb"),
+        "th" | "tha" => Some("tha"),
+        "vi" | "vie" => Some("vie"),
+        "uk" | "ukr" => Some("ukr"),
+        "und" => Some("und"),
+        _ => None,
+    }
+}
+
 /// Select audio and subtitle tracks based on configured language preferences,
 /// then apply the configured audio default to whatever was selected.
 pub fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig, audio: &AudioConfig) {
@@ -422,7 +471,7 @@ pub fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig, aud
                 config
                     .preferred_audio_languages
                     .iter()
-                    .any(|p| p.eq_ignore_ascii_case(l))
+                    .any(|p| language_matches(p, l))
             })
         })
         .map(|t| t.index)
@@ -448,7 +497,7 @@ pub fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig, aud
                 config
                     .preferred_subtitle_languages
                     .iter()
-                    .any(|p| p.eq_ignore_ascii_case(l))
+                    .any(|p| language_matches(p, l))
             })
         })
         .map(|t| t.index)
@@ -459,6 +508,8 @@ pub fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig, aud
     } else if config.select_all_fallback || config.preferred_subtitle_languages.is_empty() {
         job.subtitle_tracks.iter().map(|t| t.index).collect()
     } else {
+        // Preferences were set but nothing matched: leave subs empty
+        // (unlike audio, which falls back to the first track).
         Vec::new()
     };
 
@@ -713,5 +764,62 @@ mod tests {
         job.output_size = Some(9_950);
 
         assert_eq!(job.size_reduction(), Some((50, 0.5)));
+    }
+
+    fn audio(index: usize, language: &str) -> crate::tracks::AudioTrack {
+        crate::tracks::AudioTrack {
+            index,
+            language: Some(language.to_string()),
+            codec: "aac".into(),
+            channels: Some(2),
+            channel_layout: None,
+            title: None,
+            bitrate: None,
+            sample_rate: None,
+        }
+    }
+
+    fn subtitle(index: usize, language: &str) -> crate::tracks::SubtitleTrack {
+        crate::tracks::SubtitleTrack {
+            index,
+            language: Some(language.to_string()),
+            codec: "subrip".into(),
+            title: None,
+            forced: false,
+        }
+    }
+
+    #[test]
+    fn auto_select_matches_iso639_1_and_2_aliases() {
+        let mut job = EncodingJob::new(PathBuf::from("movie.mkv"));
+        job.audio_tracks = vec![audio(0, "en"), audio(1, "ita")];
+        job.subtitle_tracks = vec![subtitle(2, "eng"), subtitle(3, "it")];
+        let tracks = crate::config::TrackPresetConfig {
+            preferred_audio_languages: vec!["eng".into()],
+            preferred_subtitle_languages: vec!["ita".into()],
+            select_all_fallback: false,
+        };
+
+        auto_select_tracks(&mut job, &tracks, &crate::config::AudioConfig::default());
+
+        assert_eq!(job.track_selection.audio_indices, vec![0]);
+        assert_eq!(job.track_selection.subtitle_indices, vec![3]);
+    }
+
+    #[test]
+    fn auto_select_audio_falls_back_to_first_when_prefs_miss() {
+        let mut job = EncodingJob::new(PathBuf::from("movie.mkv"));
+        job.audio_tracks = vec![audio(0, "jpn"), audio(1, "kor")];
+        job.subtitle_tracks = vec![subtitle(2, "jpn")];
+        let tracks = crate::config::TrackPresetConfig {
+            preferred_audio_languages: vec!["eng".into()],
+            preferred_subtitle_languages: vec!["eng".into()],
+            select_all_fallback: false,
+        };
+
+        auto_select_tracks(&mut job, &tracks, &crate::config::AudioConfig::default());
+
+        assert_eq!(job.track_selection.audio_indices, vec![0]);
+        assert!(job.track_selection.subtitle_indices.is_empty());
     }
 }

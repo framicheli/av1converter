@@ -68,6 +68,7 @@ pub const SERIALIZED_SETTING_PATHS: &[&str] = &[
     "daemon.port",
     "daemon.browse_root",
     "daemon.auth_token",
+    "daemon.allow_insecure_lan",
     "disc.makemkvcon_path",
     "disc.staging_directory",
 ];
@@ -79,6 +80,7 @@ pub const LOCAL_ONLY_SETTING_PATHS: &[&str] = &[
     "daemon.port",
     "daemon.browse_root",
     "daemon.auth_token",
+    "daemon.allow_insecure_lan",
     "disc.makemkvcon_path",
     "disc.staging_directory",
 ];

@@ -280,7 +280,7 @@ async function poll() {
     setText($("overall-pct"), `${s.overall_progress.toFixed(1)}%`);
     setText($("eta"), s.eta_secs != null ? `${tr("eta")} ${fmtDuration(s.eta_secs)}` : "");
 
-    setText($("stat-total"), String(s.counts.active));
+    setText($("stat-total"), String(s.counts.total));
     setText($("stat-saved"), s.total_space_saved.human);
 
     lastWork.encoding = Boolean(s.encoding_active);
@@ -796,7 +796,9 @@ let trackEditor = null;
 $("tracks-close").addEventListener("click", () => closeTracks());
 $("tracks-back").addEventListener("click", () => closeTracks());
 $("tracks-modal").addEventListener("close", () => {
-  if (trackEditor && !trackEditor.saved) trackPromptFloor = maxJobId;
+  if (trackEditor && !trackEditor.saved) {
+    trackPromptFloor = Math.max(trackPromptFloor, trackEditor.id);
+  }
   trackEditor = null;
 });
 $("tracks-modal").addEventListener("cancel", (event) => {
@@ -1131,8 +1133,13 @@ $("tracks-save").addEventListener("click", async () => {
 
 const browser = { mode: "file", path: "", session: 0 };
 
-// Join a directory and an entry name without doubling the separator at root.
-const joinPath = (dir, name) => (dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`);
+// Join a directory and an entry name without doubling the separator.
+const pathSep = (path) => (path.includes("\\") && !path.includes("/") ? "\\" : "/");
+const joinPath = (dir, name) => {
+  if (!dir) return name;
+  const sep = pathSep(dir);
+  return dir.endsWith("/") || dir.endsWith("\\") ? `${dir}${name}` : `${dir}${sep}${name}`;
+};
 
 $("btn-add-file").addEventListener("click", () => openBrowser("file"));
 $("btn-add-folder").addEventListener("click", () => openBrowser("folder"));
@@ -1289,12 +1296,27 @@ async function loadDir(path, takeFocus = false) {
   }
 }
 
-// One button per segment of the current path, rooted at "/". The segment for
-// the directory on screen is inert and marked aria-current.
+// One button per segment of the current path. Roots like "/" or "C:\" are
+// shown as the first crumb; Windows paths keep their backslash separators.
 function renderCrumbs(path) {
   const crumbs = $("browser-path");
   crumbs.textContent = "";
-  const segments = path.split("/").filter(Boolean);
+  const sep = pathSep(path);
+  const unc = path.startsWith("\\\\");
+  const drive = /^[A-Za-z]:/.exec(path);
+  let root;
+  let rest;
+  if (unc) {
+    const parts = path.replace(/^\\\\/, "").split(/\\+/).filter(Boolean);
+    root = `\\\\${parts.slice(0, 2).join("\\")}`;
+    rest = parts.slice(2);
+  } else if (drive) {
+    root = `${drive[0]}\\`;
+    rest = path.slice(drive[0].length).split(/[/\\]+/).filter(Boolean);
+  } else {
+    root = "/";
+    rest = path.split("/").filter(Boolean);
+  }
   const add = (label, target, isCurrent) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -1309,11 +1331,12 @@ function renderCrumbs(path) {
     }
     crumbs.appendChild(button);
   };
-  add("/", "/", segments.length === 0);
-  let walked = "";
-  segments.forEach((segment, index) => {
-    walked += `/${segment}`;
-    add(segment, walked, index === segments.length - 1);
+  const atRoot = rest.length === 0;
+  add(root === "/" ? "/" : root.replace(/[\\/]+$/, "") || root, root, atRoot);
+  let walked = root.endsWith("\\") || root.endsWith("/") ? root.slice(0, -1) : root;
+  rest.forEach((segment, index) => {
+    walked += `${sep}${segment}`;
+    add(segment, walked, index === rest.length - 1);
   });
 }
 
@@ -1399,7 +1422,7 @@ async function openDisc() {
   renderDisc();
   $("disc-modal").showModal();
   try {
-    const { drives } = await api("/api/discs");
+    const { drives } = await post("/api/discs/list", {});
     if (disc !== session) return;
     session.drives = drives;
     session.loading = false;
@@ -1791,6 +1814,7 @@ function settingsFields(cfg) {
     { path: "daemon.port", label: tr("cfg_daemon_port"), type: "number", min: 1, max: 65535, disabled: !local, hint: [localHint, restartHint].filter(Boolean).join(" ") },
     { path: "daemon.browse_root", label: tr("cfg_daemon_browse_root"), type: "text", disabled: !local, browse: true, hint: localHint },
     { path: "daemon.auth_token", label: tr("cfg_daemon_auth_token"), type: "password", disabled: !local, minLength: 32, placeholder: settingsAccess?.auth_token_set ? "••••••••" : "", hint: [localHint, tr("token_hint")].filter(Boolean).join(" ") },
+    { path: "daemon.allow_insecure_lan", label: tr("cfg_daemon_allow_insecure_lan"), type: "checkbox", disabled: !local, hint: [localHint, restartHint].filter(Boolean).join(" ") },
     { group: tr("group_disc") },
     { path: "disc.makemkvcon_path", label: tr("cfg_makemkvcon_path"), type: "text", nullable: true, disabled: !local, hint: localHint },
     { path: "disc.staging_directory", label: tr("cfg_staging_directory"), type: "text", nullable: true, disabled: !local, browse: true, hint: localHint },

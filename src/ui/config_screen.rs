@@ -51,6 +51,7 @@ pub enum ConfigField {
     DaemonPort,
     DaemonBrowseRoot,
     DaemonAuthToken,
+    DaemonAllowInsecureLan,
     DiscMakemkvconPath,
     DiscStagingDirectory,
 }
@@ -408,6 +409,11 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         field: ConfigField::DaemonAuthToken,
     },
     ConfigItem {
+        label: Msg::CfgDaemonAllowInsecureLan,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::DaemonAllowInsecureLan,
+    },
+    ConfigItem {
         label: Msg::CfgMakemkvconPath,
         kind: ConfigItemKind::Text,
         field: ConfigField::DiscMakemkvconPath,
@@ -450,6 +456,7 @@ fn config_field_path(field: ConfigField) -> Option<String> {
         ConfigField::DaemonPort => "daemon.port",
         ConfigField::DaemonBrowseRoot => "daemon.browse_root",
         ConfigField::DaemonAuthToken => "daemon.auth_token",
+        ConfigField::DaemonAllowInsecureLan => "daemon.allow_insecure_lan",
         ConfigField::DiscMakemkvconPath => "disc.makemkvcon_path",
         ConfigField::DiscStagingDirectory => "disc.staging_directory",
         ConfigField::DaemonAutostart => return None,
@@ -587,6 +594,9 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
             } else {
                 "••••••••".to_string()
             }
+        }
+        ConfigField::DaemonAllowInsecureLan => {
+            bool_display(config.language, config.daemon.allow_insecure_lan)
         }
     }
 }

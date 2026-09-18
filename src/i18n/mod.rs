@@ -303,11 +303,13 @@ pub enum Msg {
     CfgMakemkvconPath,
     CfgStagingDirectory,
     CfgDaemonAuthToken,
+    CfgDaemonAllowInsecureLan,
 
     // ── Daemon mode ──────────────────────────────────────────────────────────
     DaemonDisabledError,
     DaemonListening,
     DaemonPublicHttp,
+    DaemonPublicHttpRefused,
     DaemonTokenGenerated,
     EncoderUnavailable,
     DaemonShuttingDown,
@@ -2225,6 +2227,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Daemon-Zugriffstoken",
             Zh => "守护进程访问令牌",
         },
+        Msg::CfgDaemonAllowInsecureLan => match lang {
+            En => "Allow insecure LAN bind (plain HTTP)",
+            It => "Consenti bind LAN non sicuro (HTTP in chiaro)",
+            Es => "Permitir bind LAN inseguro (HTTP sin cifrar)",
+            Fr => "Autoriser une écoute LAN non sécurisée (HTTP clair)",
+            De => "Unsicheren LAN-Bind erlauben (Klartext-HTTP)",
+            Zh => "允许不安全的局域网绑定（明文 HTTP）",
+        },
         Msg::DaemonDisabledError => match lang {
             En => {
                 "Daemon mode is disabled. Enable it in Settings or set enabled = true under [daemon] in config.toml."
@@ -2309,6 +2319,26 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             }
             Zh => {
                 "警告：此网络守护进程使用未加密的 HTTP。请在前端配置 HTTPS，或仅在可信网络中使用。"
+            }
+        },
+        Msg::DaemonPublicHttpRefused => match lang {
+            En => {
+                "Refusing a non-loopback bind over plain HTTP. Set daemon.allow_insecure_lan = true to opt in, or bind to 127.0.0.1 and use an HTTPS reverse proxy."
+            }
+            It => {
+                "Rifiuto di un bind non-loopback su HTTP in chiaro. Imposta daemon.allow_insecure_lan = true per accettare, oppure usa 127.0.0.1 con un reverse proxy HTTPS."
+            }
+            Es => {
+                "Se rechaza un bind fuera de loopback sobre HTTP sin cifrar. Pon daemon.allow_insecure_lan = true para aceptarlo, o usa 127.0.0.1 con un proxy HTTPS."
+            }
+            Fr => {
+                "Refus d'une écoute hors loopback en HTTP clair. Définissez daemon.allow_insecure_lan = true pour accepter, ou écoutez sur 127.0.0.1 derrière un reverse proxy HTTPS."
+            }
+            De => {
+                "Nicht-Loopback-Bind über Klartext-HTTP wird abgelehnt. Setzen Sie daemon.allow_insecure_lan = true, oder binden Sie an 127.0.0.1 hinter einem HTTPS-Reverse-Proxy."
+            }
+            Zh => {
+                "拒绝在非回环地址上使用明文 HTTP。请设置 daemon.allow_insecure_lan = true，或绑定到 127.0.0.1 并使用 HTTPS 反向代理。"
             }
         },
         Msg::DaemonShuttingDown => match lang {
@@ -3275,6 +3305,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("cfg_audio_mode_opus", Msg::WebCfgAudioModeOpus),
     ("cfg_delete_source", Msg::CfgDeleteSource),
     ("cfg_daemon_auth_token", Msg::CfgDaemonAuthToken),
+    ("cfg_daemon_allow_insecure_lan", Msg::CfgDaemonAllowInsecureLan),
     ("cfg_daemon_autostart", Msg::CfgDaemonAutostart),
     ("cfg_daemon_bind_address", Msg::CfgDaemonBindAddress),
     ("cfg_daemon_browse_root", Msg::CfgDaemonBrowseRoot),

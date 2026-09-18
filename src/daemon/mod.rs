@@ -58,6 +58,11 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     let listen = config.daemon.listen_address();
 
     // Plain HTTP: the token and media paths travel unencrypted.
+    if config.daemon.refuses_public_bind() {
+        return Err(AppError::CommandExecution(
+            t(config.language, Msg::DaemonPublicHttpRefused).to_string(),
+        ));
+    }
     if config.daemon.binds_publicly() {
         warn!("Daemon is network-facing over plain HTTP; use HTTPS termination or a trusted LAN");
     }
@@ -257,8 +262,10 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
 
     if lock(&shared).encoding_active || lock(&shared).disc.active {
         warn!("shutdown grace elapsed; killing leftover child processes");
-        crate::utils::child::kill_all();
     }
+    // Always reap child process groups: analysis-only ffprobe may still be
+    // alive, and children use their own PGID so parent exit will not reap them.
+    crate::utils::child::kill_all();
     let (encode_worker, disc_worker) = {
         let mut state = lock(&shared);
         (state.encode_worker.take(), state.disc_worker.take())
@@ -279,12 +286,12 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         &mut last_saved,
         &mut last_save_warning,
     );
-    // The analyzer owns ffprobe children; closing its input and joining it
-    // leaves none behind. A detached HTTP thread still holds a sender, and the
-    // prober is then left running.
+    // The analyzer owns ffprobe children; kill_all already reaped them.
+    // Detached HTTP threads may still hold probe_tx clones, so never block
+    // forever on the prober — join with a grace window instead.
     drop(probe_tx);
-    if http_joined {
-        let _ = analysis_handle.join();
+    if !join_within(vec![analysis_handle], HTTP_JOIN_GRACE) {
+        warn!("analysis prober still running after shutdown grace; abandoning join");
     }
     Ok(())
 }
@@ -900,13 +907,16 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
     };
     let id_for = |idx: usize| session_ids.get(idx).copied();
 
+    let mut pending_size: Option<(u64, std::path::PathBuf)> = None;
     match msg {
         WorkerMessage::Progress(idx, progress) => {
             if let Some(id) = id_for(idx) {
                 if let Some(index) = state.queue.index_of(id) {
                     state.queue.state.current_job_index = index;
                 }
-                if let Some(job) = state.queue.job_by_id_mut(id) {
+                if let Some(job) = state.queue.job_by_id_mut(id)
+                    && matches!(job.status, JobStatus::Encoding { .. })
+                {
                     job.status = JobStatus::Encoding { progress };
                 }
             }
@@ -917,20 +927,20 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
             }
         }
         WorkerMessage::Done(idx) => {
-            finish_job(&mut state, id_for(idx), JobStatus::Done);
+            pending_size = finish_job(&mut state, id_for(idx), JobStatus::Done);
         }
         WorkerMessage::DoneWithVmaf(idx, score) => {
-            finish_job(&mut state, id_for(idx), JobStatus::DoneWithVmaf { score });
+            pending_size = finish_job(&mut state, id_for(idx), JobStatus::DoneWithVmaf { score });
         }
         WorkerMessage::DoneVmafFailed(idx, reason) => {
-            finish_job(
+            pending_size = finish_job(
                 &mut state,
                 id_for(idx),
                 JobStatus::DoneVmafFailed { reason },
             );
         }
         WorkerMessage::QualityWarning(idx, vmaf, threshold) => {
-            finish_job(
+            pending_size = finish_job(
                 &mut state,
                 id_for(idx),
                 JobStatus::QualityWarning { vmaf, threshold },
@@ -977,26 +987,43 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
             .job_by_id(id)
             .is_none_or(|job| is_terminal(&job.status))
     });
-    if all_done {
+    let encode_worker = if all_done {
         state.encoding_active = false;
         state.session = None;
         // Set on every session end, not only a fully settled queue.
         state.queue.state.end_time = Some(Instant::now());
         info!("Encode job finished");
+        state.encode_worker.take()
+    } else {
+        None
+    };
+    drop(state);
+
+    if let Some((id, path)) = pending_size {
+        let size = std::fs::metadata(&path).ok().map(|m| m.len());
+        if let Some(job) = lock(shared).queue.job_by_id_mut(id) {
+            job.output_size = size;
+        }
+    }
+    if let Some(handle) = encode_worker {
+        let _ = handle.join();
     }
 }
 
-/// Mark a session job as successfully finished and record the output size.
-fn finish_job(state: &mut DaemonState, id: Option<u64>, status: JobStatus) {
-    let Some(job) = id.and_then(|id| state.queue.job_by_id_mut(id)) else {
-        return;
-    };
+/// Mark a session job as successfully finished. Returns `(id, path)` so the
+/// caller can `metadata` the output without holding the daemon mutex.
+fn finish_job(
+    state: &mut DaemonState,
+    id: Option<u64>,
+    status: JobStatus,
+) -> Option<(u64, std::path::PathBuf)> {
+    let id = id?;
+    let job = state.queue.job_by_id_mut(id)?;
+    let output_path = job.output_path.clone();
     job.status = status;
-    if let Some(ref output_path) = job.output_path {
-        job.output_size = std::fs::metadata(output_path).ok().map(|m| m.len());
-    }
     state.queue.state.converted_count += 1;
     state.queue.state.encoding_progress_done += 1;
+    output_path.map(|path| (id, path))
 }
 
 #[cfg(test)]

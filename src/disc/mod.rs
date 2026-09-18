@@ -497,13 +497,25 @@ fn run_robot(
     let status = child
         .wait()
         .map_err(|e| DiscError::Failed(format!("makemkvcon could not be waited for: {e}")))?;
+
+    // After wait (and process-group kill on cancel), the write end of the pipe
+    // should close. Join with a short grace so a stuck grandchild cannot pin a
+    // reader thread forever; abandon only after the deadline.
+    let join_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < join_deadline && !reader.is_finished() {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if reader.is_finished() {
+        let _ = reader.join();
+    } else {
+        tracing::warn!(
+            "makemkvcon stdout reader did not exit after cancel/wait; abandoning join"
+        );
+    }
+
     if cancelled {
-        // The reader is left to finish on its own: a child of the killed
-        // process can still hold the write end of the pipe, and cancellation
-        // must not wait for it.
         return Err(DiscError::Cancelled);
     }
-    let _ = reader.join();
     Ok(RobotRun {
         success: status.success(),
         messages,

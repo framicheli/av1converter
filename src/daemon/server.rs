@@ -169,7 +169,7 @@ fn blocks_on_shutdown(method: &Method, path: &str) -> bool {
     ) {
         return false;
     }
-    method == &Method::Post || path == "/api/discs"
+    method == &Method::Post
 }
 
 fn handle_request(
@@ -257,7 +257,7 @@ fn handle_request(
             Ok(body) => api::queue_move_up(shared, &body),
             Err(resp) => resp,
         },
-        (Method::Get, "/api/discs") => api::discs_list(shared),
+        (Method::Post, "/api/discs/list") => api::discs_list(shared),
         (Method::Post, "/api/discs/scan") => match read_json_body(&mut request) {
             Ok(body) => api::discs_scan(shared, disc_tx, &body),
             Err(resp) => resp,
@@ -518,7 +518,7 @@ mod tests {
         };
 
         let routes = [
-            ("GET", "/api/discs"),
+            ("POST", "/api/discs/list"),
             ("POST", "/api/discs/scan"),
             ("POST", "/api/discs/rip"),
             ("POST", "/api/discs/cancel"),

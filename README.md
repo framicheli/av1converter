@@ -12,7 +12,7 @@ A tool to batch convert video files to the AV1 codec using FFmpeg. It auto-detec
 - **Dolby Vision support** — Keep Dolby Vision in the AV1 output (profile 10) or convert to true HDR10 with static metadata; profile 5 sources are tone-mapped on the GPU
 - **Quality presets** — Low, Medium, or High shifts CRF/CQ values across every resolution tier at once; Custom leaves each tier's values manually editable
 - **VMAF quality verification** — Scores output quality after encoding; deletes the source only when a VMAF score actually met the threshold (never for remuxes, disabled VMAF, or tone-mapped DV profile 5)
-- **Track selection** — Auto-selects audio and subtitle tracks by preferred language; Selects all tracks or first track when no match is found
+- **Track selection** — Auto-selects audio and subtitle tracks by preferred language (ISO 639-1 and 639-2 tags are treated as aliases, e.g. `en`/`eng`); when nothing matches, audio falls back to the first track and subtitles to none unless "select all" fallback is enabled
 - **Audio transcoding** — Copy audio tracks untouched (the default) or convert any of them to Opus at the source's own channel layout; per-track in both the TUI and the web UI
 - **Disc ripping** — Import titles straight from a DVD or Blu-ray through MakeMKV, ripping one title while the previous one encodes (see [Disc Ripping](#disc-ripping))
 - **Daemon mode with web UI** — Run headless and manage the queue from a browser (see [Daemon Mode](#daemon-mode-and-web-ui))
@@ -329,7 +329,7 @@ Open that link once and the browser keeps the token for the tab's session; `av1c
 Two things are worth knowing before exposing the daemon to a network:
 
 - `browse_root` — set it. It is the only directory the file browser and the queue will accept paths under, and it is the difference between "manage my media library" and "read every file this user can read".
-- `bind_address` — leave it on loopback unless you mean it. The daemon warns at startup when it is reachable from the network.
+- `bind_address` — leave it on loopback unless you mean it. A non-loopback bind is refused unless `allow_insecure_lan = true` (plain HTTP would otherwise expose the Bearer token on the LAN); even with that opt-in, prefer an HTTPS reverse proxy on a trusted network.
 
 The daemon serves plain HTTP. If it must be reachable beyond the local machine, put it behind an HTTPS reverse proxy with connection/request timeouts and rate limiting, and keep the direct daemon port firewalled from untrusted networks. The embedded server is intended for trusted local or LAN use, not direct internet exposure.
 
@@ -341,15 +341,21 @@ The token is also what stops a website you visit from reaching the daemon. A pag
 
 ## Encoding Presets
 
-Presets are selected automatically based on resolution and HDR format:
+Presets are selected automatically based on resolution and HDR format. Classification uses the short and long sides (so portrait 1080×1920 matches landscape 1920×1080):
+
+- **SD** — below HD (e.g. 854×480)
+- **HD** — long ≥ 1280 or short ≥ 720, and not yet Full HD (e.g. 1280×720, 1280×800, 1366×768)
+- **Full HD** — long ≥ 1920 or short ≥ 1080, up to (but not including) UHD; **1440p / QHD uses the 1080p preset matrix**
+- **UHD** — long ≥ 3000 or short ≥ 1800
+- **Above 4K** — long ≥ 4097 or short ≥ 2161 (uses the 4K presets)
 
 | Resolution | HDR          | Preset         | VMAF Model         |
 |------------|--------------|----------------|--------------------|
-| SD (below 1280×600, e.g. 480p/576p) | Any | **SD** | vmaf_v0.6.1 (HDR: vmaf_v0.6.1neg) |
-| HD (720p)  | Any          | **HD**         | vmaf_v0.6.1 (HDR: vmaf_v0.6.1neg) |
-| 1080p      | No           | **1080p SDR**  | vmaf_v0.6.1        |
-| 1080p      | Yes (HDR10/HLG) | **1080p HDR**  | vmaf_v0.6.1neg     |
-| 1080p      | Dolby Vision    | **1080p DV**   | vmaf_v0.6.1neg     |
+| SD (e.g. 480p/576p) | Any | **SD** | vmaf_v0.6.1 (HDR: vmaf_v0.6.1neg) |
+| HD (720p, laptop 16:10, …)  | Any          | **HD**         | vmaf_v0.6.1 (HDR: vmaf_v0.6.1neg) |
+| 1080p / 1440p      | No           | **1080p SDR**  | vmaf_v0.6.1        |
+| 1080p / 1440p      | Yes (HDR10/HLG) | **1080p HDR**  | vmaf_v0.6.1neg     |
+| 1080p / 1440p      | Dolby Vision    | **1080p DV**   | vmaf_v0.6.1neg     |
 | 4K         | No              | **4K SDR**     | vmaf_4k_v0.6.1     |
 | 4K         | Yes (HDR10/HLG) | **4K HDR**     | vmaf_4k_v0.6.1neg  |
 | 4K         | Dolby Vision    | **4K DV**      | vmaf_4k_v0.6.1neg  |
@@ -407,6 +413,7 @@ bind_address = "127.0.0.1" # Loopback by default; see the security note below
 port = 8399
 browse_root = ""           # Confine the web file browser to this directory ("" = whole filesystem)
 auth_token = ""            # API secret (empty or under 32 bytes = regenerate on next start)
+allow_insecure_lan = false # Required to bind off-loopback over plain HTTP
 
 [disc]
 # makemkvcon_path = ""      # Unset: PATH, then the platform's MakeMKV install location
