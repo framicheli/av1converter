@@ -381,6 +381,25 @@ fn analyze_tracks(
     Ok((audio_tracks, subtitle_tracks))
 }
 
+/// Pixel format of the first video stream of `path`. `None` when ffprobe
+/// cannot say.
+pub fn probe_video_pix_fmt(path: &str, cancel: &AtomicBool) -> Option<String> {
+    let args = [
+        "-v",
+        "error",
+        "-select_streams",
+        "V:0",
+        "-show_entries",
+        "stream=pix_fmt",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        path,
+    ];
+    let output = run_ffprobe(&args, cancel).ok()?;
+    let pix_fmt = output.lines().next()?.trim();
+    (!pix_fmt.is_empty() && pix_fmt != "unknown").then(|| pix_fmt.to_string())
+}
+
 /// Streams of a file that an encode does not pick by track selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnselectableStreams {

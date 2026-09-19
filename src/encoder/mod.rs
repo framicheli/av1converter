@@ -230,7 +230,8 @@ fn flush_to_disk(path: &str) -> std::io::Result<()> {
 /// What the output loses that VMAF does not measure, which keeps the source
 /// whatever the score: Dolby Vision that was asked to be kept but is not,
 /// transcoded audio, subtitles converted or left out, a Dolby Vision profile 7
-/// enhancement layer, extra video or data streams, and cover art or
+/// enhancement layer, a source pixel format beyond 4:2:0 at 10 bits or one
+/// that cannot be read, extra video or data streams, and cover art or
 /// attachments the output container does not carry.
 fn keep_source_reason(
     params: &EncodingParams,
@@ -256,6 +257,11 @@ fn keep_source_reason(
     if params.hdr_type == HdrType::DolbyVision && params.dv_profile == Some(7) {
         return Some("its Dolby Vision profile 7 enhancement layer is not carried into the output");
     }
+    if !crate::analyzer::ffprobe::probe_video_pix_fmt(&params.input, cancel)
+        .is_some_and(|pix_fmt| is_yuv420_within_10_bit(&pix_fmt))
+    {
+        return Some("its chroma or bit depth may be reduced by the 4:2:0 10-bit encode");
+    }
     match crate::analyzer::ffprobe::probe_unselectable_streams(&params.input, cancel) {
         None => Some("its streams could not be checked"),
         Some(streams) if streams.other > 0 => {
@@ -270,6 +276,23 @@ fn keep_source_reason(
         }
         Some(_) => Some("its cover art or attachments are not carried into the output"),
     }
+}
+
+/// Whether `pix_fmt` is 4:2:0 at 10 bits per sample or fewer.
+fn is_yuv420_within_10_bit(pix_fmt: &str) -> bool {
+    matches!(
+        pix_fmt,
+        "yuv420p"
+            | "yuvj420p"
+            | "yuv420p9le"
+            | "yuv420p9be"
+            | "yuv420p10le"
+            | "yuv420p10be"
+            | "nv12"
+            | "nv21"
+            | "p010le"
+            | "p010be"
+    )
 }
 
 /// Run VMAF quality check after encoding
@@ -354,7 +377,7 @@ fn skips_vmaf(params: &EncodingParams) -> bool {
 mod tests {
     use super::{
         DvMode, EncodingParams, HdrType, SourceIdentity, VideoMetadata, flush_to_disk,
-        keep_source_reason, skips_vmaf,
+        is_yuv420_within_10_bit, keep_source_reason, skips_vmaf,
     };
     use crate::config::{AppConfig, Encoder};
     use crate::tracks::OutputTracks;
@@ -461,6 +484,18 @@ mod tests {
             ),
             Some("its Dolby Vision profile 7 enhancement layer is not carried into the output")
         );
+    }
+
+    #[test]
+    fn only_4_2_0_formats_up_to_10_bit_count_as_carried() {
+        assert!(is_yuv420_within_10_bit("yuv420p"));
+        assert!(is_yuv420_within_10_bit("yuv420p10le"));
+        assert!(!is_yuv420_within_10_bit("yuv422p10le"));
+        assert!(!is_yuv420_within_10_bit("yuv444p"));
+        assert!(!is_yuv420_within_10_bit("yuv420p12le"));
+        assert!(!is_yuv420_within_10_bit("yuva420p"));
+        assert!(!is_yuv420_within_10_bit("gbrp"));
+        assert!(!is_yuv420_within_10_bit(""));
     }
 
     #[test]

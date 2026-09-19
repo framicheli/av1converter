@@ -445,6 +445,63 @@ fn lost_cover_art_or_subtitles_keep_the_source() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A 4:4:4 or 12-bit source is kept whatever the VMAF score; its 4:2:0 8-bit
+/// counterpart is not.
+#[test]
+fn a_4_4_4_or_12_bit_source_is_kept() {
+    if !DependencyStatus::check() {
+        eprintln!("skipping: ffmpeg is not on PATH");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_pixfmt_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let clip = |name: &str, pix_fmt: &str| {
+        let path = dir.join(name);
+        let built = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x120:rate=24:duration=1",
+                "-c:v",
+                "ffv1",
+                "-pix_fmt",
+                pix_fmt,
+            ])
+            .arg(&path)
+            .status()
+            .is_ok_and(|status| status.success());
+        assert!(built, "ffmpeg builds a {pix_fmt} ffv1 clip");
+        path
+    };
+    let output = dir.join("out.mkv");
+    let reason = |input: &Path| {
+        let params = EncodingParams::from_metadata(
+            input.to_str().unwrap(),
+            output.to_str().unwrap(),
+            &metadata_for(input),
+            &AppConfig::default(),
+            crate::tracks::OutputTracks::default(),
+            DvMode::ToHdr10,
+            false,
+            Vec::new(),
+        );
+        super::keep_source_reason(&params, DvMode::ToHdr10, &AtomicBool::new(false))
+    };
+
+    let kept = Some("its chroma or bit depth may be reduced by the 4:2:0 10-bit encode");
+    assert_eq!(reason(&clip("420.mkv", "yuv420p")), None);
+    assert_eq!(reason(&clip("444.mkv", "yuv444p")), kept);
+    assert_eq!(reason(&clip("420_12.mkv", "yuv420p12le")), kept);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A one-second video-only clip in `dir`.
 fn make_video_fixture(dir: &Path) -> Option<PathBuf> {
     let path = dir.join("video.mkv");
