@@ -585,6 +585,13 @@ fn main() -> io::Result<()> {
 
     // Create app and run
     let mut app = App::new();
+    // Staged rips named by a stopped daemon's queue stay for its next start.
+    let daemon_queue = queue::state::load(&daemon::lifecycle::queue_file());
+    disc::staging::sweep_orphans(
+        &app.config,
+        &daemon_queue.state.jobs,
+        disc::staging::ACTIVE_RIP_WINDOW,
+    );
     let res = run_app(&mut terminal, &mut app);
 
     // Restore terminal

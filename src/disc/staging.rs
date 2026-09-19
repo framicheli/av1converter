@@ -258,9 +258,10 @@ pub fn discard_staged(root: &Path, file: &Path) {
 /// Delete staging directories that no job points into and that nothing has
 /// written to for `min_age`.
 ///
-/// Runs at daemon startup and whenever a disc run settles, where a rip cut
-/// short by a kill has nothing left tracking its file. Only subdirectories of
-/// the staging root are ever removed, never the root itself.
+/// Runs at TUI and daemon startup and whenever a disc run settles, where a rip
+/// cut short by a kill has nothing left tracking its file. In the default root,
+/// a directory whose owner has exited is removed whatever its age. Only
+/// subdirectories of the staging root are ever removed, never the root itself.
 pub fn sweep_orphans(config: &AppConfig, jobs: &[EncodingJob], min_age: Duration) {
     let root = staging_root(config);
     let Ok(entries) = std::fs::read_dir(&root) else {
@@ -283,6 +284,14 @@ pub fn sweep_orphans(config: &AppConfig, jobs: &[EncodingJob], min_age: Duration
                 "Leaving staging directory {} of a running process",
                 path.display()
             );
+            continue;
+        }
+        if configured_root(config).is_none() && owner_pid(&path).is_some() {
+            info!(
+                "Removing staging directory {} of a process that has exited",
+                path.display()
+            );
+            discard_dir(&path);
             continue;
         }
         // A directory another process is still ripping into. Unreadable
@@ -659,6 +668,22 @@ mod tests {
         std::os::unix::fs::symlink(&fresh, &link).unwrap();
         assert!(prepare_private_root(&link).is_err());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_owners_fresh_rip_in_the_default_root_is_swept() {
+        let config = AppConfig::default();
+        let root = staging_root(&config);
+        prepare_private_root(&root).unwrap();
+        let dir = root.join(format!("rip-4294967295-t{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("title_t00.mkv"), b"partial").unwrap();
+
+        sweep_orphans(&config_with_root(&root), &[], ACTIVE_RIP_WINDOW);
+        assert!(dir.exists(), "a configured root keeps a fresh directory");
+        sweep_orphans(&config, &[], ACTIVE_RIP_WINDOW);
+        assert!(!dir.exists());
     }
 
     #[cfg(unix)]
