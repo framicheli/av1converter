@@ -57,10 +57,10 @@ pub fn installed() -> bool {
 pub fn install() -> io::Result<InstallOutcome> {
     let exe = current_exe()?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let path = std::env::var("PATH").unwrap_or_default();
+    let env = unit_env(|name| std::env::var(name).ok());
     #[cfg(target_os = "linux")]
     {
-        let still_starting = linux_install(&exe, &path)?;
+        let still_starting = linux_install(&exe, &env)?;
         Ok(InstallOutcome {
             linger_hint: linger_hint(),
             still_starting,
@@ -68,7 +68,7 @@ pub fn install() -> io::Result<InstallOutcome> {
     }
     #[cfg(target_os = "macos")]
     {
-        let still_starting = macos_install(&exe, &path)?;
+        let still_starting = macos_install(&exe, &env)?;
         Ok(InstallOutcome {
             linger_hint: false,
             still_starting,
@@ -171,11 +171,11 @@ fn enabled_link() -> Option<PathBuf> {
 
 /// Returns whether the started daemon was still coming up when the wait ended.
 #[cfg(target_os = "linux")]
-fn linux_install(exe: &Path, path: &str) -> io::Result<bool> {
+fn linux_install(exe: &Path, env: &[(&str, String)]) -> io::Result<bool> {
     let dest = unit_path().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "HOME / XDG_CONFIG_HOME is not set")
     })?;
-    write_file(&dest, &systemd_unit(exe, path))?;
+    write_file(&dest, &systemd_unit(exe, env))?;
     systemctl(&["daemon-reload"])?;
     if super::lifecycle::running_pid().is_some() {
         systemctl(&["enable", UNIT_NAME])?;
@@ -303,8 +303,26 @@ fn linger_hint() -> bool {
     }
 }
 
+/// The environment the login unit carries over from the installing shell:
+/// `PATH` when it is not empty, and `XDG_CONFIG_HOME` and `XDG_DATA_HOME` when
+/// they are absolute paths.
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+fn unit_env(var: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, String)> {
+    let path = var("PATH")
+        .filter(|path| !path.is_empty())
+        .map(|path| ("PATH", path));
+    let xdg = ["XDG_CONFIG_HOME", "XDG_DATA_HOME"]
+        .into_iter()
+        .filter_map(|name| {
+            var(name)
+                .filter(|dir| Path::new(dir).is_absolute())
+                .map(|dir| (name, dir))
+        });
+    path.into_iter().chain(xdg).collect()
+}
+
 #[cfg(any(test, target_os = "linux"))]
-pub(crate) fn systemd_unit(exe: &Path, path: &str) -> String {
+pub(crate) fn systemd_unit(exe: &Path, env: &[(&str, String)]) -> String {
     let exe = systemd_quote(&exe.to_string_lossy());
     let mut unit = format!(
         "[Unit]\n\
@@ -317,14 +335,14 @@ pub(crate) fn systemd_unit(exe: &Path, path: &str) -> String {
          TimeoutStopSec=45\n\
          Nice=10\n"
     );
-    if !path.is_empty() {
-        let escaped = path
+    for (name, value) in env {
+        let escaped = value
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
             .replace('%', "%%");
-        unit.push_str("Environment=\"PATH=");
-        unit.push_str(&escaped);
-        unit.push_str("\"\n");
+        for part in ["Environment=\"", name, "=", &escaped, "\"\n"] {
+            unit.push_str(part);
+        }
     }
     unit.push_str("\n[Install]\nWantedBy=default.target\n");
     unit
@@ -362,10 +380,10 @@ fn plist_path() -> Option<PathBuf> {
 
 /// Returns whether the started daemon was still coming up when the wait ended.
 #[cfg(target_os = "macos")]
-fn macos_install(exe: &Path, path: &str) -> io::Result<bool> {
+fn macos_install(exe: &Path, env: &[(&str, String)]) -> io::Result<bool> {
     let dest =
         plist_path().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
-    write_file(&dest, &launchd_plist(exe, path))?;
+    write_file(&dest, &launchd_plist(exe, env))?;
     // SAFETY: getuid is always safe.
     let uid = unsafe { libc::getuid() };
     let domain = format!("gui/{uid}");
@@ -466,19 +484,25 @@ fn launchctl(args: &[&str]) -> io::Result<String> {
 }
 
 #[cfg(any(test, target_os = "macos"))]
-pub(crate) fn launchd_plist(exe: &Path, path: &str) -> String {
+pub(crate) fn launchd_plist(exe: &Path, env: &[(&str, String)]) -> String {
     let exe = xml_escape(&exe.to_string_lossy());
-    let environment = if path.is_empty() {
+    let environment = if env.is_empty() {
         String::new()
     } else {
-        format!(
-            "\t<key>EnvironmentVariables</key>\n\
-             \t<dict>\n\
-             \t\t<key>PATH</key>\n\
-             \t\t<string>{}</string>\n\
-             \t</dict>\n",
-            xml_escape(path)
-        )
+        let mut entries = String::from("\t<key>EnvironmentVariables</key>\n\t<dict>\n");
+        for (name, value) in env {
+            for part in [
+                "\t\t<key>",
+                name,
+                "</key>\n\t\t<string>",
+                &xml_escape(value),
+                "</string>\n",
+            ] {
+                entries.push_str(part);
+            }
+        }
+        entries.push_str("\t</dict>\n");
+        entries
     };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -526,7 +550,10 @@ mod tests {
 
     #[test]
     fn systemd_unit_runs_foreground_and_does_not_restart_on_exit_code() {
-        let unit = systemd_unit(Path::new("/usr/bin/av1converter"), "/usr/bin");
+        let unit = systemd_unit(
+            Path::new("/usr/bin/av1converter"),
+            &[("PATH", "/usr/bin".to_string())],
+        );
         assert!(unit.contains("ExecStart=/usr/bin/av1converter --start-foreground"));
         assert!(unit.contains("Restart=on-abnormal"));
         assert!(unit.contains("KillMode=mixed"));
@@ -597,14 +624,14 @@ mod tests {
 
     #[test]
     fn systemd_unit_quotes_a_path_with_spaces() {
-        let unit = systemd_unit(Path::new("/home/user/My Apps/av1converter"), "");
+        let unit = systemd_unit(Path::new("/home/user/My Apps/av1converter"), &[]);
         assert!(unit.contains("ExecStart=\"/home/user/My Apps/av1converter\" --start-foreground"));
         assert!(!unit.contains("Environment="));
     }
 
     #[test]
     fn systemd_unit_escapes_specifiers_and_variables_in_the_binary_path() {
-        let unit = systemd_unit(Path::new("/opt/100%/$HOME/av1converter"), "");
+        let unit = systemd_unit(Path::new("/opt/100%/$HOME/av1converter"), &[]);
         assert!(unit.contains("ExecStart=\"/opt/100%%/$$HOME/av1converter\" --start-foreground"));
     }
 
@@ -612,7 +639,7 @@ mod tests {
     fn launchd_plist_starts_at_login_and_restarts_only_on_crash() {
         let plist = launchd_plist(
             Path::new("/usr/local/bin/av1converter"),
-            "/opt/homebrew/bin:/usr/bin",
+            &[("PATH", "/opt/homebrew/bin:/usr/bin".to_string())],
         );
         assert!(plist.contains("<string>/usr/local/bin/av1converter</string>"));
         assert!(plist.contains(
@@ -639,13 +666,39 @@ mod tests {
 
     #[test]
     fn launchd_plist_escapes_xml_in_the_binary_path() {
-        let plist = launchd_plist(Path::new("/opt/foo&bar/av1converter"), "/opt/a&b/bin");
+        let plist = launchd_plist(
+            Path::new("/opt/foo&bar/av1converter"),
+            &[("PATH", "/opt/a&b/bin".to_string())],
+        );
         assert!(plist.contains("/opt/foo&amp;bar/av1converter"));
         assert!(plist.contains("<string>/opt/a&amp;b/bin</string>"));
         assert!(
-            !launchd_plist(Path::new("/bin/av1converter"), "").contains("EnvironmentVariables")
+            !launchd_plist(Path::new("/bin/av1converter"), &[]).contains("EnvironmentVariables")
         );
         assert!(!plist.contains("/opt/foo&bar/"));
+    }
+
+    #[test]
+    fn the_unit_carries_the_xdg_homes_of_the_installing_shell() {
+        let env = unit_env(|name| match name {
+            "PATH" => Some("/usr/bin".to_string()),
+            "XDG_CONFIG_HOME" => Some("/srv/conf".to_string()),
+            "XDG_DATA_HOME" => Some("relative/data".to_string()),
+            _ => None,
+        });
+        assert_eq!(
+            env,
+            [
+                ("PATH", "/usr/bin".to_string()),
+                ("XDG_CONFIG_HOME", "/srv/conf".to_string()),
+            ]
+        );
+        let unit = systemd_unit(Path::new("/usr/bin/av1converter"), &env);
+        assert!(unit.contains("Environment=\"XDG_CONFIG_HOME=/srv/conf\"\n"));
+        let plist = launchd_plist(Path::new("/usr/bin/av1converter"), &env);
+        assert!(plist.contains(
+            "\t\t<key>PATH</key>\n\t\t<string>/usr/bin</string>\n\t\t<key>XDG_CONFIG_HOME</key>\n\t\t<string>/srv/conf</string>\n\t</dict>"
+        ));
     }
 
     #[test]

@@ -187,6 +187,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Web UI: closing the disc dialog, or going back in it, no longer cancels a disc scan another browser tab started.
 - Web UI: "Clear finished" asks before deleting a finished rip even when the rip finished after the page last refreshed; the daemon refuses to clear finished rips without that confirmation.
 - Web UI: the "daemon unreachable" banner appears on time while the track dialog is loading for a file that just finished analysis.
+- Run at Startup carries `XDG_CONFIG_HOME` and `XDG_DATA_HOME` into the systemd unit and launchd agent, so a daemon started at login uses the same configuration and queue as the shell that installed it. Re-run `--install-service` to pick this up.
 
 ### Known limitations
 

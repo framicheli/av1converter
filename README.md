@@ -315,7 +315,7 @@ av1converter --install-service    # systemd user unit (Linux) or launchd agent (
 av1converter --uninstall-service  # remove it
 ```
 
-`--install-service` also sets `enabled = true`, generates a token if needed, and starts the daemon right away when it is not already running. The systemd unit and the launchd agent record your `PATH` at install time, so an FFmpeg installed through Homebrew or another package manager is found; re-run `--install-service` (or turn Run at Startup off and on) after upgrading from an older version or moving FFmpeg.
+`--install-service` also sets `enabled = true`, generates a token if needed, and starts the daemon right away when it is not already running. The systemd unit and the launchd agent record your `PATH`, and `XDG_CONFIG_HOME` and `XDG_DATA_HOME` when they are set, at install time, so an FFmpeg installed through Homebrew or another package manager is found and the daemon reads the same `config.toml` and queue as the shell that installed it; re-run `--install-service` (or turn Run at Startup off and on) after upgrading from an older version or moving FFmpeg.
 
 `--stop` lasts until the next login; uninstall is what prevents it coming back. On a headless Linux machine the user unit dies at logout unless lingering is enabled (`loginctl enable-linger $USER`). Re-run `--install-service` after moving the binary so `ExecStart` stays correct.
 
