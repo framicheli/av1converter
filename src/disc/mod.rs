@@ -106,11 +106,23 @@ impl DiscSource {
     }
 
     /// What to call the disc: its volume name, or the name of the folder or
-    /// image it was read from.
+    /// image it was read from (the folder above a `BDMV` or `VIDEO_TS` folder,
+    /// an image without its extension).
     pub fn label(&self) -> Option<&str> {
         match self {
             DiscSource::Drive(drive) => drive.disc_label.as_deref(),
-            DiscSource::Folder(path) => path.file_name().and_then(std::ffi::OsStr::to_str),
+            DiscSource::Folder(path) => {
+                let named = if is_iso(path) {
+                    path.file_stem()
+                } else if path.file_name().is_some_and(|name| {
+                    name.eq_ignore_ascii_case("BDMV") || name.eq_ignore_ascii_case("VIDEO_TS")
+                }) {
+                    path.parent().and_then(Path::file_name)
+                } else {
+                    path.file_name()
+                };
+                named.and_then(std::ffi::OsStr::to_str)
+            }
         }
     }
 }
@@ -703,7 +715,10 @@ mod tests {
         assert_eq!(DiscSource::folder(&dvd).unwrap().to_arg(), {
             format!("file:{}", dvd.display())
         });
-        assert!(DiscSource::folder(dvd.join("VIDEO_TS")).is_ok());
+        assert_eq!(
+            DiscSource::folder(dvd.join("VIDEO_TS")).unwrap().label(),
+            Some("SEASON_1")
+        );
         let bluray = dir.join("THE_DISC");
         std::fs::create_dir_all(bluray.join("BDMV")).unwrap();
         assert!(DiscSource::folder(&bluray).is_ok());
@@ -712,7 +727,7 @@ mod tests {
         std::fs::write(&iso, b"not really an image").unwrap();
         let source = DiscSource::folder(&iso).unwrap();
         assert_eq!(source.to_arg(), format!("iso:{}", iso.display()));
-        assert_eq!(source.label(), Some("Movie.ISO"));
+        assert_eq!(source.label(), Some("Movie"));
         // An ISO that is not there is no more usable than a plain directory.
         assert_eq!(
             DiscSource::folder(dir.join("missing.iso")),
