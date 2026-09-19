@@ -10,6 +10,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
 };
+use std::fmt::Write;
 
 #[allow(clippy::too_many_lines)]
 pub fn render_queue(f: &mut Frame, app: &mut App) {
@@ -98,6 +99,25 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
         let total = app.queue.jobs.len();
         format!("{} ({done}/{total})", t(lang, Msg::ConversionQueue))
     };
+
+    let mut title_text = title_text;
+    if total_to_encode > 0 {
+        let _ = write!(title_text, " · {:.0}%", app.queue.overall_progress());
+    }
+    let (saved, saved_human) = app.queue.total_space_saved();
+    if saved != 0 {
+        let label = if saved < 0 {
+            Msg::TotalSpaceIncreased
+        } else {
+            Msg::TotalSpaceSaved
+        };
+        let _ = write!(
+            title_text,
+            " · {}: {}",
+            t(lang, label),
+            saved_human.trim_start_matches('-')
+        );
+    }
 
     let title = Paragraph::new(title_text)
         .style(

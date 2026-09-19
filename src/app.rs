@@ -999,6 +999,7 @@ impl App {
                     reason: "Cancelled".to_string(),
                 };
                 self.queue.skipped_count += 1;
+                self.queue.cancelled_count += 1;
             }
             Err(e) => {
                 job.status = JobStatus::Error {
@@ -1083,6 +1084,7 @@ impl App {
                     reason: "Cancelled".to_string(),
                 };
                 self.queue.skipped_count += 1;
+                self.queue.cancelled_count += 1;
             }
         }
         // A batch left with nothing to configure, encode or show goes home.
@@ -1335,6 +1337,7 @@ impl App {
                     reason: "Cancelled".to_string(),
                 };
                 self.queue.skipped_count += 1;
+                self.queue.cancelled_count += 1;
                 self.queue.encoding_progress_done += 1;
                 if job.temporary {
                     crate::disc::staging::discard_staged(
@@ -1816,6 +1819,7 @@ impl App {
                     reason: "Cancelled".to_string(),
                 };
                 self.queue.skipped_count += 1;
+                self.queue.cancelled_count += 1;
             }
         }
     }
@@ -1928,6 +1932,7 @@ impl App {
                                 reason: "Cancelled".to_string(),
                             };
                             self.queue.skipped_count += 1;
+                            self.queue.cancelled_count += 1;
                             self.queue.encoding_progress_done += 1;
                         }
                     }
@@ -2174,6 +2179,7 @@ mod tests {
             JobStatus::Skipped { .. }
         ));
         assert_eq!(app.queue.skipped_count, 1);
+        assert_eq!(app.queue.cancelled_count, 1);
     }
 
     #[test]

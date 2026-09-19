@@ -344,8 +344,17 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
             Span::raw(format!(
                 "{}: {}",
                 t(lang, Msg::Skipped),
-                app.queue.skipped_count
+                app.queue.skipped_count - app.queue.cancelled_count
             )),
+            Span::raw(if app.queue.cancelled_count > 0 {
+                format!(
+                    "   {}: {}",
+                    t(lang, Msg::Cancelled),
+                    app.queue.cancelled_count
+                )
+            } else {
+                String::new()
+            }),
             Span::raw("   "),
             Span::styled("✗ ", Style::default().fg(Color::Red)),
             Span::raw(format!(
