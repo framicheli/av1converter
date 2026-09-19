@@ -1124,6 +1124,7 @@ $("tracks-save").addEventListener("click", async () => {
   save.disabled = true;
   save.setAttribute("aria-busy", "true");
   const { id, audio, subtitles, remuxOnly, dv, dvMode } = editor;
+  const sent = tracksSnapshot(editor);
   try {
     const r = await post("/api/job/tracks", {
       id,
@@ -1134,7 +1135,7 @@ $("tracks-save").addEventListener("click", async () => {
       apply_to_remaining: $("tracks-apply-remaining").checked,
       ...(dv ? { dv_mode: dvMode } : {}),
     });
-    editor.snapshot = tracksSnapshot(editor);
+    editor.snapshot = sent;
     editor.saved = true;
     if (trackEditor === editor) closeTracks();
     toast(r.applied > 1

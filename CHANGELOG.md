@@ -121,6 +121,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Web: toasts use the full screen width on phones instead of at most half of it.
 - Web: queue text can be selected during an encode, and screen readers no longer re-read every row once a second.
 - Web: a missing VMAF score or progress value shows "?" instead of 0.0.
+- Web: track changes made while a save is still being sent are no longer dropped without asking.
 
 ### Known limitations
 
