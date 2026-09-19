@@ -650,12 +650,14 @@ pub fn track_choices(job: &EncodingJob) -> (Vec<Option<bool>>, Vec<bool>) {
 }
 
 /// Apply track choices by position to every job still awaiting its tracks.
-/// Returns how many jobs were configured.
+/// `dv_mode` goes only to Dolby Vision jobs of `source_dv_profile`; other
+/// profiles keep their own mode. Returns how many jobs were configured.
 pub fn apply_to_remaining(
     jobs: &mut [EncodingJob],
     audio_modes: &[Option<bool>],
     subtitle_selected: &[bool],
     dv_mode: Option<DvMode>,
+    source_dv_profile: Option<u8>,
     output: &OutputConfig,
     encoder: Encoder,
 ) -> usize {
@@ -668,9 +670,12 @@ pub fn apply_to_remaining(
         let target_dv = job
             .metadata
             .as_ref()
-            .is_some_and(|meta| meta.hdr_type == HdrType::DolbyVision)
-            .then(|| dv_mode.or(job.dv_mode))
-            .flatten();
+            .filter(|meta| meta.hdr_type == HdrType::DolbyVision)
+            .and_then(|meta| {
+                dv_mode
+                    .filter(|_| meta.dv_profile == source_dv_profile)
+                    .or(job.dv_mode)
+            });
         // Remux is decided per file at analysis time from its own codec.
         let target_remux = job.remux_only;
         apply_track_config(job, selection, target_remux, target_dv, output, encoder);
@@ -991,5 +996,58 @@ mod tests {
 
         assert_eq!(job.track_selection.audio_indices, vec![0]);
         assert_eq!(job.track_selection.subtitle_indices, vec![2]);
+    }
+
+    fn awaiting_dv_job(profile: u8) -> EncodingJob {
+        let mut job = EncodingJob::new(PathBuf::from(format!("/tmp/p{profile}.mkv")));
+        job.metadata = Some(VideoMetadata {
+            width: 3840,
+            height: 2160,
+            hdr_type: HdrType::DolbyVision,
+            dv_profile: Some(profile),
+            dv_bl_compat: None,
+            hdr10_static: None,
+            codec_name: "hevc".to_string(),
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            duration_secs: 60.0,
+        });
+        job.status = JobStatus::AwaitingConfig;
+        job
+    }
+
+    fn apply_dv(jobs: &mut [EncodingJob], mode: DvMode, source_profile: u8) {
+        apply_to_remaining(
+            jobs,
+            &[],
+            &[],
+            Some(mode),
+            Some(source_profile),
+            &OutputConfig::default(),
+            Encoder::SvtAv1,
+        );
+    }
+
+    #[test]
+    fn a_profile_8_keep_choice_does_not_reach_a_profile_5_file() {
+        let mut jobs = [awaiting_dv_job(5), awaiting_dv_job(8)];
+        apply_dv(&mut jobs, DvMode::KeepDolbyVision, 8);
+        assert_eq!(jobs[0].dv_mode, Some(DvMode::ToHdr10));
+        assert_eq!(jobs[1].dv_mode, Some(DvMode::KeepDolbyVision));
+    }
+
+    #[test]
+    fn a_profile_5_hdr10_choice_does_not_reach_a_profile_8_file() {
+        let mut jobs = [awaiting_dv_job(8), awaiting_dv_job(5)];
+        apply_dv(&mut jobs, DvMode::ToHdr10, 5);
+        assert_eq!(jobs[0].dv_mode, Some(DvMode::KeepDolbyVision));
+        assert_eq!(jobs[1].dv_mode, Some(DvMode::ToHdr10));
+    }
+
+    #[test]
+    fn a_dv_choice_reaches_files_of_the_same_profile() {
+        let mut jobs = [awaiting_dv_job(8)];
+        apply_dv(&mut jobs, DvMode::ToHdr10, 8);
+        assert_eq!(jobs[0].dv_mode, Some(DvMode::ToHdr10));
     }
 }

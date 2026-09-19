@@ -61,6 +61,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Stopping the daemon during a VMAF check no longer marks the job done with no output file; it is encoded again on the next start, and a ripped title stays staged.
 - Cancelling an encode or an analysis in the TUI keeps queued ripped titles, as the web UI does, instead of deleting them.
 - The staging sweep removes only the folders AV1Converter created for a rip. A folder of your own in the staging directory whose name starts with `rip-` is no longer deleted.
+- Applying track choices to remaining files copies the Dolby Vision choice only to files of the same Dolby Vision profile. A profile 5 file no longer inherits "keep Dolby Vision" from a profile 8 file, and a profile 8 file no longer loses its Dolby Vision because a profile 5 file was set to HDR10.
 - Portrait 4K uses the 4K VMAF models (long side ≥ 3840).
 - Dolby Vision without a readable `dv_profile` fails analysis instead of encoding IPT as bare PQ.
 - `film_grain` is SVT-AV1 only in settings; the web Settings tab no longer breaks when a hardware encoder is selected.

@@ -498,6 +498,7 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
     };
 
     let job = state.queue.job_by_id_mut(id).expect("job checked above");
+    let source_dv_profile = job.metadata.as_ref().and_then(|meta| meta.dv_profile);
     apply_track_config(job, selection, remux_only, dv_mode, &output_config, encoder);
 
     let mut applied = json!({
@@ -519,6 +520,7 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
             &audio_modes,
             &subtitle_selected,
             dv_mode,
+            source_dv_profile,
             &output_config,
             encoder,
         );

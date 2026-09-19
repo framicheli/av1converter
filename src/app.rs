@@ -1198,11 +1198,13 @@ impl App {
         let current_awaiting = matches!(job.status, JobStatus::AwaitingConfig);
         let (audio_modes, subtitle_selected) = crate::queue::job::track_choices(job);
         let dv_mode = job.dv_mode;
+        let source_dv_profile = job.metadata.as_ref().and_then(|meta| meta.dv_profile);
         let applied = crate::queue::job::apply_to_remaining(
             &mut self.queue.jobs,
             &audio_modes,
             &subtitle_selected,
             dv_mode,
+            source_dv_profile,
             &self.config.output,
             self.config.encoder,
         );
