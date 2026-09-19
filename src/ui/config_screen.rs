@@ -668,9 +668,10 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
             Span::raw(format!("\u{a0}{}", t(lang, Msg::Cancel))),
         ])
     } else {
-        let selected = visible_config_items(&app.config)
+        let selected_item = visible_config_items(&app.config)
             .get(app.config_selected)
-            .map(|item| item.kind);
+            .copied();
+        let selected = selected_item.map(|item| item.kind);
         let mut spans = vec![
             Span::styled("↑↓", Style::default().fg(Color::Yellow)),
             Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
@@ -680,6 +681,17 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
         if selected == Some(ConfigItemKind::Text) {
             spans.push(Span::styled("Enter", Style::default().fg(Color::Yellow)));
             spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::EditText))));
+        }
+        if selected_item.is_some_and(|item| {
+            matches!(
+                item.field,
+                ConfigField::OutputDirectory
+                    | ConfigField::DaemonBrowseRoot
+                    | ConfigField::DiscStagingDirectory
+            )
+        }) {
+            spans.push(Span::styled("b", Style::default().fg(Color::Yellow)));
+            spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::WebBrowse))));
         }
         spans.extend([
             Span::styled("s", Style::default().fg(Color::Yellow)),

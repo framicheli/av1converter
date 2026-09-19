@@ -79,7 +79,9 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
 
     let title = match app.selection_mode {
         SelectionMode::File => t(lang, Msg::SelectVideoFile),
-        SelectionMode::Folder | SelectionMode::FolderRecursive => t(lang, Msg::SelectFolder),
+        SelectionMode::Folder | SelectionMode::FolderRecursive | SelectionMode::SettingFolder => {
+            t(lang, Msg::SelectFolder)
+        }
         SelectionMode::DiscFolder => t(lang, Msg::DiscSelectFolder),
     };
 
@@ -133,7 +135,9 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
                 }
                 Line::from(spans)
             }
-            SelectionMode::Folder | SelectionMode::FolderRecursive => {
+            SelectionMode::Folder
+            | SelectionMode::FolderRecursive
+            | SelectionMode::SettingFolder => {
                 let subfolder_selected = app
                     .dir_entries
                     .get(app.explorer_index)
@@ -261,7 +265,10 @@ fn create_entry_item(
 
     // Dim non-selectable items in folder mode
     let style = match mode {
-        SelectionMode::Folder | SelectionMode::FolderRecursive | SelectionMode::DiscFolder
+        SelectionMode::Folder
+        | SelectionMode::FolderRecursive
+        | SelectionMode::DiscFolder
+        | SelectionMode::SettingFolder
             if is_video =>
         {
             style.add_modifier(Modifier::DIM)

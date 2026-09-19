@@ -948,6 +948,8 @@ fn handle_explorer_key(app: &mut App, key: KeyCode) {
         KeyCode::Esc => {
             if app.selection_mode == app::SelectionMode::DiscFolder {
                 app.current_screen = Screen::DiscDrives;
+            } else if app.selection_mode == app::SelectionMode::SettingFolder {
+                app.current_screen = Screen::Configuration;
             } else {
                 app.navigate_to_home();
             }
@@ -966,13 +968,15 @@ fn handle_explorer_key(app: &mut App, key: KeyCode) {
             }
             app::SelectionMode::Folder
             | app::SelectionMode::FolderRecursive
-            | app::SelectionMode::DiscFolder => app.enter_directory(),
+            | app::SelectionMode::DiscFolder
+            | app::SelectionMode::SettingFolder => app.enter_directory(),
         },
         KeyCode::Char(' ') => match app.selection_mode {
             app::SelectionMode::File => app.toggle_file_selection(),
             app::SelectionMode::Folder
             | app::SelectionMode::FolderRecursive
-            | app::SelectionMode::DiscFolder => app.select_explorer_entry(),
+            | app::SelectionMode::DiscFolder
+            | app::SelectionMode::SettingFolder => app.select_explorer_entry(),
         },
         _ => {}
     }
@@ -1273,8 +1277,27 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
             }
         }
         KeyCode::Char('s') => save_config(app),
+        KeyCode::Char('b') => browse_config_folder(app),
         _ => {}
     }
+}
+
+/// Open the folder explorer for the selected path setting.
+fn browse_config_folder(app: &mut App) {
+    use crate::ui::config_screen::{ConfigField, visible_config_items};
+    let Some(item) = visible_config_items(&app.config)
+        .get(app.config_selected)
+        .copied()
+    else {
+        return;
+    };
+    let start = match item.field {
+        ConfigField::OutputDirectory => app.config.output.output_directory.clone(),
+        ConfigField::DaemonBrowseRoot => Some(app.config.daemon.browse_root.clone()),
+        ConfigField::DiscStagingDirectory => app.config.disc.staging_directory.clone(),
+        _ => return,
+    };
+    app.browse_for_setting(start.as_deref());
 }
 
 /// Normalize, validate, sanitize, and persist `config`. `previous` is the
@@ -2086,5 +2109,46 @@ mod tests {
             !app.disc_cancel_flag
                 .load(std::sync::atomic::Ordering::Acquire)
         );
+    }
+
+    #[test]
+    fn browse_fills_a_folder_setting_from_the_explorer() {
+        use crate::ui::config_screen::{ConfigField, visible_config_items};
+        let root = std::env::temp_dir().join(format!("av1c-browse-setting-{}", std::process::id()));
+        let picked = root.join("picked");
+        std::fs::create_dir_all(&picked).unwrap();
+        let mut app = App::new();
+        app.current_screen = Screen::Configuration;
+        app.config.output.same_directory = false;
+        app.config.output.output_directory = Some(root.to_string_lossy().into_owned());
+        app.config_selected = visible_config_items(&app.config)
+            .iter()
+            .position(|item| item.field == ConfigField::OutputDirectory)
+            .unwrap();
+
+        handle_config_key(&mut app, KeyCode::Char('b'));
+        assert!(matches!(app.current_screen, Screen::FileExplorer { .. }));
+        assert_eq!(app.selection_mode, app::SelectionMode::SettingFolder);
+        assert_eq!(app.current_dir, root);
+
+        handle_explorer_key(&mut app, KeyCode::Esc);
+        assert_eq!(app.current_screen, Screen::Configuration);
+        assert_eq!(app.config_edit_buffer, None);
+
+        handle_config_key(&mut app, KeyCode::Char('b'));
+        app.explorer_index = app
+            .dir_entries
+            .iter()
+            .position(|entry| entry.path == picked)
+            .unwrap();
+        handle_explorer_key(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.current_screen, Screen::Configuration);
+        handle_config_key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            app.config.output.output_directory,
+            Some(picked.to_string_lossy().into_owned())
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

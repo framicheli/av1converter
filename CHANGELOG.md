@@ -135,6 +135,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - A file under the VMAF threshold is marked "Source kept" only when source deletion is on. The TUI names the score that failed (the mean, or the minimum when only it is low) against the threshold the file was checked with, and the web shows the same on the tag's tooltip and no longer rounds the threshold in the badge.
 - TUI: notices such as "Tracks applied to …" and "Removed … finished" show on the queue screen when they happen, instead of later on Home.
 - Running work can be cancelled one kind at a time: on the TUI queue `A` cancels the analysis and `E` the encode while a rip or analysis also runs, and the web shows a separate Cancel analysis button during an encode. Cancelling an encode in the TUI no longer also stops a running rip.
+- TUI: `b` in Settings picks the output directory, browse root or staging directory in the file explorer, as the web's Browse button does.
 - Web settings cannot clear browse_root while the running daemon listens outside loopback, even when the saved bind address is loopback.
 - A web request from `::ffff:127.0.0.1` counts as loopback.
 - The output directory disc rips need can be set in the web UI and TUI while "same directory" is on; the add-to-queue toast reports skipped and already-queued files separately and is translated.

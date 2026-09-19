@@ -268,6 +268,7 @@ Two things worth knowing:
 | `A` | Track config | Apply these choices to every file still waiting, matching tracks by order |
 | `←` / `h`, `→` / `l` | Configuration | Decrease / increase the value |
 | `Enter` | Configuration | Edit a text field (`Enter` commits, `Esc` aborts) |
+| `b` | Configuration | Pick the output, browse-root or staging folder in the file explorer; the path opens for editing, and `Enter` commits it |
 | `s` | Configuration | Save configuration |
 | `1` / `2` | Dolby Vision dialog | Pick an option; `↑`/`↓` or `Tab` then `Enter` also work. `Esc` keeps the current choice, or applies the recommended one when there is none yet |
 | `y` / `n` | Confirmation dialogs | Answer yes / no |

@@ -81,6 +81,8 @@ pub enum SelectionMode {
     FolderRecursive,
     /// Picking a ripped disc folder or an ISO image instead of a video file.
     DiscFolder,
+    /// Picking the folder for the path setting selected on the Settings screen.
+    SettingFolder,
 }
 
 /// Track configuration focus
@@ -428,6 +430,19 @@ impl App {
         };
         self.refresh_dir_entries();
         self.current_screen = Screen::FileExplorer { select_folder };
+    }
+
+    /// Open the explorer in folder mode for the selected path setting,
+    /// starting at `start` when it is a directory.
+    pub fn browse_for_setting(&mut self, start: Option<&str>) {
+        if let Some(dir) = start.map(PathBuf::from).filter(|dir| dir.is_dir()) {
+            self.current_dir = dir;
+        }
+        self.selection_mode = SelectionMode::SettingFolder;
+        self.refresh_dir_entries();
+        self.current_screen = Screen::FileExplorer {
+            select_folder: true,
+        };
     }
 
     pub fn navigate_to_track_config(&mut self) {
@@ -807,6 +822,17 @@ impl App {
                         self.current_dir.clone()
                     };
                 self.scan_disc_folder(&target);
+            }
+            SelectionMode::SettingFolder => {
+                let folder = if entry.is_dir && !entry.is_parent() {
+                    selected
+                } else {
+                    self.current_dir.clone()
+                };
+                let value = folder.to_string_lossy().into_owned();
+                self.config_edit_cursor = value.chars().count();
+                self.config_edit_buffer = Some(value);
+                self.current_screen = Screen::Configuration;
             }
             SelectionMode::Folder | SelectionMode::FolderRecursive => {
                 // The highlighted subfolder, or the open folder from any other row.
