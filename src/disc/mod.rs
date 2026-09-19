@@ -33,6 +33,8 @@ const INSTALL_PATHS: &[&str] = &["/Applications/MakeMKV.app/Contents/MacOS/makem
 const INSTALL_PATHS: &[&str] = &[
     r"C:\Program Files (x86)\MakeMKV\makemkvcon64.exe",
     r"C:\Program Files (x86)\MakeMKV\makemkvcon.exe",
+    r"C:\Program Files\MakeMKV\makemkvcon64.exe",
+    r"C:\Program Files\MakeMKV\makemkvcon.exe",
 ];
 #[cfg(not(any(target_os = "macos", windows)))]
 const INSTALL_PATHS: &[&str] = &[];

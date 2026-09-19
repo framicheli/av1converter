@@ -109,6 +109,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Rips from a `BDMV` or `VIDEO_TS` folder are named after the folder above it, and rips from an image drop the `.iso` extension from the name.
 - When a rip run stops on an error, the titles it never reached are skipped with that error instead of being shown and counted as cancelled.
 - A rip MakeMKV reports as failed ("… titles saved, 1 failed") is refused even when it exits cleanly and leaves a file behind.
+- On Windows, MakeMKV is also found under `C:\Program Files\MakeMKV`.
 
 ### Known limitations
 
