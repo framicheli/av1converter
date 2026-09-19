@@ -38,6 +38,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - TUI: daemon rows that need a restart say so, as in the web UI.
 - Web UI: the autostart setting explains what it does, as in the TUI.
 - TUI: `a` on the disc title list selects every title, or clears them.
+- TUI: with a single drive, the disc flow scans it straight away, as the web UI does.
 
 ### Fixed
 

@@ -1421,6 +1421,10 @@ impl App {
             }
         }
         self.disc_state = DiscState::Ready;
+        // A single drive is scanned without asking.
+        if self.disc_drives.len() == 1 {
+            self.scan_disc(0);
+        }
     }
 
     /// Start scanning the drive at `index`, or open the file explorer for the
