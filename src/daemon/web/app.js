@@ -1890,7 +1890,7 @@ function settingsFields(cfg) {
     { path: "quality_preset", label: tr("cfg_quality_preset"), type: "select", options: presets(), rebuild: true },
     { group: tr("group_quality") },
     { path: "quality.vmaf_enabled", label: tr("cfg_vmaf_enabled"), type: "checkbox", rebuild: true },
-    { path: "quality.vmaf_threshold", label: tr("cfg_vmaf_threshold"), type: "number", min: 0, max: 100, step: 0.1, disabled: !cfg.quality.vmaf_enabled },
+    { path: "quality.vmaf_threshold", label: tr("cfg_vmaf_threshold"), type: "number", min: 0, max: 100, step: "any", disabled: !cfg.quality.vmaf_enabled },
     { path: "quality.delete_source_on_success", label: tr("cfg_delete_source"), type: "checkbox", disabled: !cfg.quality.vmaf_enabled, warning: tr("delete_source_warning") },
     { group: tr("group_performance") },
     { path: "performance.svt_preset", label: tr("cfg_svt_preset"), type: "number", min: 0, max: 13 },
