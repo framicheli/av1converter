@@ -167,6 +167,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Translation fixes: one term for disc ripping in Chinese, German, Italian and Spanish; "source", "encoder", "settings" and "folder" are used consistently; the Spanish autostart notice says "at login"; German daemon notices use "Sie"; the Chinese Dolby Vision profile label and track dialog are corrected.
 - An unreadable `queue.json` is moved to `queue.json.unreadable-<time>` instead of being replaced by an empty queue, `queue.json.bak` is refreshed only from a queue that reads back, and both UIs say where the file was kept.
 - `--install-service`, and the access token `--start` generates, refuse to run on a `config.toml` that cannot be read instead of saving defaults over it.
+- TUI: finishing an analysis, encode or rip no longer switches away from Home, file selection, file review or Settings; files added on the review screen are analysed once confirmed, and a Settings field being edited stays open.
 
 ### Known limitations
 

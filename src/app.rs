@@ -532,6 +532,15 @@ impl App {
         self.maybe_open_dv_dialog();
     }
 
+    /// Whether finished background work may move the user on: true on the
+    /// Queue, Track Config and Finish screens.
+    fn follows_background_work(&self) -> bool {
+        matches!(
+            self.current_screen,
+            Screen::Queue | Screen::TrackConfig | Screen::Finish
+        )
+    }
+
     pub fn navigate_to_queue(&mut self) {
         self.queue_cursor = 0;
         self.detail_scroll = 0;
@@ -1061,13 +1070,14 @@ impl App {
             self.queue.config_job_index = next_to_configure.unwrap_or(0);
         }
 
+        // Other screens, and an encode already running, keep the screen; the
+        // jobs wait on the queue for the user to open them.
+        let follow = self.follows_background_work() && !self.encoding_active;
         if next_to_configure.is_some() {
-            // An encode already running keeps the screen; the job waits on the
-            // queue for the user to open it.
-            if !self.encoding_active && self.current_screen != Screen::TrackConfig {
+            if follow && self.current_screen != Screen::TrackConfig {
                 self.navigate_to_track_config();
             }
-        } else if !self.encoding_active && self.disc_receiver.is_none() {
+        } else if follow && self.disc_receiver.is_none() {
             // A rip still running has more titles to add to this queue.
             self.navigate_to_finish();
         }
@@ -1896,7 +1906,10 @@ impl App {
     /// The rip run is over. Probes for the titles it produced may still be
     /// running, and they carry the queue on from here.
     fn settle_after_rips(&mut self) {
-        if self.analysis_receiver.is_none() && self.current_screen != Screen::TrackConfig {
+        if self.analysis_receiver.is_none()
+            && self.follows_background_work()
+            && self.current_screen != Screen::TrackConfig
+        {
             self.navigate_to_queue();
         }
     }
@@ -2060,11 +2073,9 @@ impl App {
                 && self.queue.all_completed()
             {
                 self.queue.end_time = Some(std::time::Instant::now());
-                self.navigate_to_finish();
-            }
-            // An open Track Config screen keeps its edit; the queue keeps its cursor.
-            if self.current_screen != Screen::TrackConfig && self.current_screen != Screen::Finish {
-                self.current_screen = Screen::Queue;
+                if self.follows_background_work() {
+                    self.navigate_to_finish();
+                }
             }
             self.dismiss_stale_cancel_confirm();
         }
@@ -2492,6 +2503,119 @@ mod tests {
 
         assert_eq!(app.current_screen, Screen::TrackConfig);
         assert_eq!(app.queue_cursor, 1);
+    }
+
+    #[test]
+    fn a_finished_encode_session_leaves_file_confirm_open_and_its_batch_analysable() {
+        let mut app = App::new();
+        let mut done = EncodingJob::new(PathBuf::from("done.mkv"));
+        done.status = JobStatus::Done;
+        let new_file = EncodingJob::new(PathBuf::from("new.mkv"));
+        app.queue.jobs = vec![done, new_file];
+        app.batch_start = 1;
+        app.encoding_active = true;
+        app.encoding_session_indices = vec![0];
+        app.navigate_to_file_confirm();
+        let (tx, rx) = mpsc::channel();
+        tx.send(WorkerMessage::Finished).unwrap();
+        drop(tx);
+        app.progress_receiver = Some(rx);
+
+        app.process_progress_messages();
+
+        assert_eq!(app.current_screen, Screen::FileConfirm);
+        assert!(matches!(app.queue.jobs[1].status, JobStatus::Pending));
+
+        app.confirm_queued_files();
+
+        assert_eq!(app.current_screen, Screen::Queue);
+        assert!(matches!(app.queue.jobs[1].status, JobStatus::Analyzing));
+        assert!(app.analysis_receiver.is_some());
+    }
+
+    #[test]
+    fn a_finished_encode_session_leaves_the_settings_editor_open() {
+        let mut app = App::new();
+        let mut done = EncodingJob::new(PathBuf::from("done.mkv"));
+        done.status = JobStatus::Done;
+        app.queue.jobs = vec![done];
+        app.encoding_active = true;
+        app.encoding_session_indices = vec![0];
+        app.navigate_to_configuration();
+        app.config_edit_buffer = Some("edit".to_string());
+        let (tx, rx) = mpsc::channel();
+        tx.send(WorkerMessage::Finished).unwrap();
+        drop(tx);
+        app.progress_receiver = Some(rx);
+
+        app.process_progress_messages();
+
+        assert_eq!(app.current_screen, Screen::Configuration);
+        assert_eq!(app.config_edit_buffer.as_deref(), Some("edit"));
+    }
+
+    #[test]
+    fn a_finished_analysis_round_leaves_other_screens_alone() {
+        for (screen, next) in [
+            (Screen::FileConfirm, JobStatus::AwaitingConfig),
+            (Screen::Configuration, JobStatus::AwaitingConfig),
+            (Screen::Home, JobStatus::Done),
+            (
+                Screen::FileExplorer {
+                    select_folder: false,
+                },
+                JobStatus::Done,
+            ),
+        ] {
+            let mut app = App::new();
+            let mut job = EncodingJob::new(PathBuf::from("a.mkv"));
+            job.status = next.clone();
+            app.queue.jobs = vec![job];
+            app.current_screen = screen;
+            let (_tx, rx) = mpsc::channel();
+            app.analysis_receiver = Some(rx);
+
+            app.finish_analysis_round();
+
+            assert_eq!(app.current_screen, screen, "{next:?}");
+        }
+
+        // The queue still moves on to Track Config and Finish.
+        for (next, expected) in [
+            (JobStatus::AwaitingConfig, Screen::TrackConfig),
+            (JobStatus::Done, Screen::Finish),
+        ] {
+            let mut app = App::new();
+            let mut job = EncodingJob::new(PathBuf::from("a.mkv"));
+            job.status = next;
+            app.queue.jobs = vec![job];
+            app.current_screen = Screen::Queue;
+            let (_tx, rx) = mpsc::channel();
+            app.analysis_receiver = Some(rx);
+
+            app.finish_analysis_round();
+
+            assert_eq!(app.current_screen, expected);
+        }
+    }
+
+    #[test]
+    fn a_finished_rip_run_leaves_other_screens_alone() {
+        for (screen, expected) in [
+            (Screen::Configuration, Screen::Configuration),
+            (Screen::FileConfirm, Screen::FileConfirm),
+            (Screen::Finish, Screen::Queue),
+        ] {
+            let mut app = App::new();
+            app.current_screen = screen;
+            let (tx, rx) = mpsc::channel();
+            tx.send(DiscEvent::Finished).unwrap();
+            app.disc_receiver = Some(rx);
+
+            app.process_disc_events();
+
+            assert_eq!(app.current_screen, expected);
+        }
     }
 
     #[test]
