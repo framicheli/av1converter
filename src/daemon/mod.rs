@@ -633,6 +633,7 @@ fn claim_probe(state: &mut DaemonState, id: u64) -> Option<Arc<AtomicBool>> {
 /// Returns `(added, duplicates, filtered)` where `filtered` covers paths
 /// rejected for reasons other than already being queued (e.g. outside the
 /// live browse root).
+#[allow(clippy::too_many_lines)]
 fn add_paths(
     shared: &SharedState,
     probe_tx: &Sender<(u64, String)>,
@@ -965,6 +966,7 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
 
 /// Apply one worker message: mirrors the TUI's `process_progress_messages`,
 /// but translates the session-local index to a stable job id first.
+#[allow(clippy::too_many_lines)]
 fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
     let mut state = lock(shared);
     let Some(session_ids) = state.session.as_ref().map(|s| s.job_ids.clone()) else {

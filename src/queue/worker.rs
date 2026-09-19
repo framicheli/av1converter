@@ -55,6 +55,7 @@ pub struct WorkerJob {
 }
 
 /// Run the encoding worker in a separate thread
+#[allow(clippy::too_many_lines)]
 pub fn run_worker(
     jobs: Vec<WorkerJob>,
     config: &AppConfig,

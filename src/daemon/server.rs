@@ -174,6 +174,7 @@ fn blocks_on_shutdown(method: &Method, path: &str) -> bool {
     method == &Method::Post
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_request(
     mut request: Request,
     shared: &SharedState,

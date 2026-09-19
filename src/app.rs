@@ -199,7 +199,7 @@ pub struct App {
     pub vmaf_deps: bool,
     /// Whether this `FFmpeg` build can encode Opus
     pub opus_deps: bool,
-    /// Whether the configured encoder exists in this FFmpeg build
+    /// Whether the configured encoder exists in this `FFmpeg` build
     pub encoder_deps: bool,
 
     // UI state
@@ -230,6 +230,7 @@ impl Default for App {
 }
 
 impl App {
+    #[allow(clippy::too_many_lines)]
     pub fn new() -> Self {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| {
             std::env::var_os("HOME")
@@ -1192,6 +1193,7 @@ impl App {
 
     // Encoding
 
+    #[allow(clippy::too_many_lines)]
     pub fn start_encoding(&mut self) {
         info!("Starting encoding process");
         let follow_active = self.current_screen != Screen::Queue
