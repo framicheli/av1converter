@@ -596,25 +596,25 @@ function createRow(job) {
 }
 
 function updateRow(row, job) {
-  row.name.textContent = job.filename;
-  row.sub.textContent = [
+  setText(row.name, job.filename);
+  setText(row.sub, [
     job.remux_only ? tr("tag_remux") : "",
     job.source_deleted ? tr("tag_source_deleted") : "",
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).join(" · "));
   // Resolution and HDR are null until the probe has run.
-  row.source.textContent = [job.resolution, job.hdr].filter(Boolean).join(" ") || "—";
+  setText(row.source, [job.resolution, job.hdr].filter(Boolean).join(" ") || "—");
 
   row.badge.className = `badge ${BADGE_CLASS[job.status.kind] || ""}`;
-  row.badge.textContent = badgeText(job.status);
+  setText(row.badge, badgeText(job.status));
   const awaitingTracks = job.status.kind === "awaiting_config";
   row.badge.classList.toggle("hidden", awaitingTracks);
   row.confirm.classList.toggle("hidden", !awaitingTracks);
-  row.confirm.textContent = tr("confirm_tracks");
+  setText(row.confirm, tr("confirm_tracks"));
   row.confirm.setAttribute("aria-label", `${tr("confirm_tracks")}: ${job.filename}`);
   const detail = job.status.kind === "error" ? job.status.message
     : job.status.kind === "done_vmaf_failed" ? trReason(job.status.reason)
     : "";
-  row.detail.textContent = detail;
+  setText(row.detail, detail);
   row.detail.classList.toggle("hidden", !detail);
   if (detail) row.badge.setAttribute("aria-describedby", row.detail.id);
   else row.badge.removeAttribute("aria-describedby");
@@ -630,18 +630,18 @@ function updateRow(row, job) {
     );
   }
 
-  row.size.textContent = job.output_size != null
+  setText(row.size, job.output_size != null
     ? `${fmtBytes(job.source_size)} → ${fmtBytes(job.output_size)}`
-    : fmtBytes(job.source_size);
+    : fmtBytes(job.source_size));
 
   if (job.saved_percent == null) {
-    row.saved.textContent = "";
+    setText(row.saved, "");
     row.saved.className = "";
   } else {
     const percent = Math.round(Math.abs(job.saved_percent));
-    row.saved.textContent = percent === 0
+    setText(row.saved, percent === 0
       ? "0%"
-      : `${job.saved_percent < 0 ? "+" : "−"}${percent}%`;
+      : `${job.saved_percent < 0 ? "+" : "−"}${percent}%`);
     row.saved.className = job.saved_percent < 0 ? "grew" : "";
   }
 
@@ -654,7 +654,7 @@ function updateRow(row, job) {
   row.moveUp.setAttribute("aria-label", `${tr("move_up")}: ${job.filename}`);
   row.remove.title = tr("remove_from_queue");
   row.remove.setAttribute("aria-label", `${tr("remove_from_queue")}: ${job.filename}`);
-  row.tracks.textContent = tr("tracks_title");
+  setText(row.tracks, tr("tracks_title"));
   row.tracks.title = tr("tracks_hint");
   row.tracks.setAttribute("aria-label", `${tr("tracks_hint")}: ${job.filename}`);
   // The Tracks button is the accented action on a row that awaits config.
