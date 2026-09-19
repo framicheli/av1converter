@@ -472,14 +472,15 @@ function trReason(reason) {
 }
 
 function badgeText(st) {
-  const pct = (value) => (Number.isFinite(Number(value)) ? Number(value).toFixed(1) : "?");
+  const num = (value) => (value == null ? NaN : Number(value));
+  const pct = (value) => (Number.isFinite(num(value)) ? num(value).toFixed(1) : "?");
   switch (st.kind) {
     case "encoding": return `${tr("status_encoding")} ${pct(st.progress)}%`;
     case "ripping": return `${tr("status_ripping")} ${pct(st.progress)}%`;
     case "done_vmaf": return `${tr("badge_done")} · VMAF ${pct(st.vmaf)}`;
     case "done_vmaf_failed": return `${tr("badge_done")} · ${tr("badge_vmaf_failed")}`;
     case "quality_warning": {
-      const min = Number.isFinite(Number(st.min_score))
+      const min = Number.isFinite(num(st.min_score))
         ? ` (min ${pct(st.min_score)})`
         : "";
       return `${tr("badge_low_vmaf")} ${pct(st.vmaf)}${min}`;

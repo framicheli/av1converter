@@ -120,6 +120,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - TUI: a long file name no longer pushes the question out of the Dolby Vision dialog.
 - Web: toasts use the full screen width on phones instead of at most half of it.
 - Web: queue text can be selected during an encode, and screen readers no longer re-read every row once a second.
+- Web: a missing VMAF score or progress value shows "?" instead of 0.0.
 
 ### Known limitations
 
