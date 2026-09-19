@@ -1152,10 +1152,10 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
         KeyCode::Esc if app.disc_operation_active() => {
             app.confirm_dialog = Some((ConfirmAction::CancelDisc, false));
         }
-        KeyCode::Esc if app.analysis_receiver.is_some() => {
+        KeyCode::Esc | KeyCode::Char('A') if app.analysis_receiver.is_some() => {
             app.confirm_dialog = Some((ConfirmAction::CancelAnalysis, false));
         }
-        KeyCode::Esc if app.encoding_active => {
+        KeyCode::Esc | KeyCode::Char('E') if app.encoding_active => {
             app.confirm_dialog = Some((ConfirmAction::CancelEncoding, false));
         }
         KeyCode::Esc | KeyCode::Char('a') => app.navigate_to_home(),
@@ -2042,6 +2042,49 @@ mod tests {
         assert_eq!(
             app.queue.jobs[0].dv_mode,
             Some(crate::analyzer::DvMode::KeepDolbyVision)
+        );
+    }
+
+    #[test]
+    fn each_kind_of_running_work_has_its_own_cancel_key_on_the_queue() {
+        let mut app = App::new();
+        app.current_screen = Screen::Queue;
+        let (_disc_tx, disc_rx) = std::sync::mpsc::channel();
+        app.disc_receiver = Some(disc_rx);
+        let (_analysis_tx, analysis_rx) = std::sync::mpsc::channel();
+        app.analysis_receiver = Some(analysis_rx);
+        app.encoding_active = true;
+
+        handle_queue_key(&mut app, KeyCode::Esc);
+        assert!(matches!(
+            app.confirm_dialog.take(),
+            Some((ConfirmAction::CancelDisc, false))
+        ));
+        handle_queue_key(&mut app, KeyCode::Char('A'));
+        assert!(matches!(
+            app.confirm_dialog.take(),
+            Some((ConfirmAction::CancelAnalysis, false))
+        ));
+        handle_queue_key(&mut app, KeyCode::Char('E'));
+        assert!(matches!(
+            app.confirm_dialog.take(),
+            Some((ConfirmAction::CancelEncoding, false))
+        ));
+    }
+
+    #[test]
+    fn cancelling_the_encode_leaves_a_running_rip_alone() {
+        let mut app = App::new();
+        let (_disc_tx, disc_rx) = std::sync::mpsc::channel();
+        app.disc_receiver = Some(disc_rx);
+        app.encoding_active = true;
+
+        execute_confirm_action(&mut app, ConfirmAction::CancelEncoding);
+
+        assert!(app.cancel_flag.load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            !app.disc_cancel_flag
+                .load(std::sync::atomic::Ordering::Acquire)
         );
     }
 }

@@ -348,6 +348,20 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
         help_spans.push(Span::styled("Esc", Style::default().fg(Color::Yellow)));
         help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))));
     }
+    if app.analysis_receiver.is_some() && app.disc_operation_active() {
+        help_spans.push(Span::styled("A", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::CancelAnalysisTitle)
+        )));
+    }
+    if app.encoding_active && (app.disc_operation_active() || app.analysis_receiver.is_some()) {
+        help_spans.push(Span::styled("E", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::CancelEncodingTitle)
+        )));
+    }
     help_spans.push(Span::styled(
         "PgUp/PgDn",
         Style::default().fg(Color::Yellow),

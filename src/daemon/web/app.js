@@ -340,6 +340,8 @@ function updateWorkButtons() {
       : analyzing ? tr("cancel_analysis")
       : tr("cancel_encoding"),
   );
+  $("btn-cancel-analysis").hidden = !(encoding && analyzing);
+  $("btn-cancel-analysis").disabled = offline;
   // A rip runs alongside an encode and is cancelled on its own.
   $("btn-cancel-disc").hidden = !ripping;
   $("btn-cancel-disc").disabled = offline;
@@ -803,6 +805,16 @@ $("btn-cancel").addEventListener("click", async () => {
   try {
     if (encoding) await post("/api/queue/cancel");
     else await post("/api/queue/cancel_analysis");
+    toast(tr("cancelling"));
+    forceRefreshQueue();
+  } catch (e) { toast(e.message, true); }
+});
+
+$("btn-cancel-analysis").addEventListener("click", async () => {
+  if (!lastWork.analyzing) return;
+  if (!await askConfirm(tr("cancel_analysis_prompt")) || !lastWork.analyzing) return;
+  try {
+    await post("/api/queue/cancel_analysis");
     toast(tr("cancelling"));
     forceRefreshQueue();
   } catch (e) { toast(e.message, true); }

@@ -190,7 +190,7 @@ Legacy aliases: --daemon is --start; --daemon-foreground is --start-foreground
 3. **File review** — Confirm the list of files found (multiple files or a folder only; a single file skips this step)
 4. **Analysis** — Each file is probed for its streams, resolution and HDR format
 5. **Track configuration** — Select audio and subtitle tracks to include, and switch the per-file mode (encode or demux/remux) with `r`. Encoding starts as soon as the first file is confirmed; the others can be configured while it runs, or all at once with `A`
-6. **Encoding and VMAF verification** — Monitor per-file and overall progress; `a` adds more files, folders or a disc while work runs, and `Esc` asks before cancelling. When analysis or encoding finishes, the TUI moves on to Track configuration or Finish only from the Queue, Track configuration or Finish screens; any other screen stays open. Cancelling during analysis stops only the analysis; files already analysed stay queued. Mean and minimum sampled-frame VMAF scores are computed after each file; the source is deleted only if `delete_source_on_success` is on and both meet the threshold (encode mode only, never when audio was transcoded, Dolby Vision set to be kept was converted to HDR10 by a hardware encoder, a selected subtitle was converted or left out, cover art or attachments are not carried over, the source has extra video or data streams, is Dolby Vision profile 7 or is not 4:2:0 at 10 bits or fewer, or the job was cancelled)
+6. **Encoding and VMAF verification** — Monitor per-file and overall progress; `a` adds more files, folders or a disc while work runs, and `Esc` asks before cancelling; when a rip, analysis and encode run together, `Esc` cancels the rip, `A` the analysis and `E` the encode. When analysis or encoding finishes, the TUI moves on to Track configuration or Finish only from the Queue, Track configuration or Finish screens; any other screen stays open. Cancelling during analysis stops only the analysis; files already analysed stay queued. Mean and minimum sampled-frame VMAF scores are computed after each file; the source is deleted only if `delete_source_on_success` is on and both meet the threshold (encode mode only, never when audio was transcoded, Dolby Vision set to be kept was converted to HDR10 by a hardware encoder, a selected subtitle was converted or left out, cover art or attachments are not carried over, the source has extra video or data streams, is Dolby Vision profile 7 or is not 4:2:0 at 10 bits or fewer, or the job was cancelled)
 7. **Finish** — View a summary of conversions, skipped files, and space saved; `Enter` starts a new conversion after a confirmation, `Esc` returns to the queue
 
 ## Modes
@@ -250,13 +250,14 @@ Two things worth knowing:
 | `Enter` | Everywhere | Select / Confirm; on the queue, configure the next job waiting for tracks, or open the summary once nothing is running |
 | `a` | Disc titles | Select every title, or clear them |
 | `Space` | Selection, disc titles, track config | Select the highlighted or open folder, toggle a disc title, toggle the highlighted track |
-| `Esc` | Everywhere | Go back; on the queue, cancel the disc rip, analysis or encode (asks first) |
+| `Esc` | Everywhere | Go back; on the queue, cancel the disc rip, or else the analysis, or else the encode (asks first) |
 | `PgUp` / `PgDn` | Queue, finish, disc titles | Scroll the detail pane |
 | `K` | Queue | Move the highlighted waiting job up |
 | `a` | Queue | Add files, folders or a disc (opens Home; `Esc` on Home returns to the queue) |
 | `t` | Queue | Open the tracks of the highlighted job, if it is not being encoded |
 | `x` / `Delete` | Queue | Remove the highlighted waiting or finished job (a ripped title asks first) |
 | `C` | Queue | Clear finished jobs while nothing runs |
+| `A` / `E` | Queue | Cancel the analysis / the encode while other work also runs (asks first) |
 | `Tab` / `Shift+Tab` | Track config | Cycle focus forward / backward: audio → subtitles → Continue |
 | `←` / `h`, `→` / `l` | Track config | Previous / next file |
 | `r` | Track config | Switch mode: encode ↔ demux/remux |
@@ -295,7 +296,7 @@ DVD decryption is free permanently. Blu-ray needs a purchased MakeMKV licence or
 
 ## Daemon Mode and Web UI
 
-The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, import titles from a disc in the machine's own drive, cancel, remove, clear finished jobs), and a settings page. The queue is persisted, so jobs still waiting when the daemon stops are restored on the next start. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder. After analysis finishes, a centered dialog opens for the per-file choices; **Apply to remaining files** copies them to the other waiting jobs by track order, while extra tracks keep their automatic defaults and the Dolby Vision choice goes only to files of the same Dolby Vision profile. Closing the dialog without saving stops the automatic prompts until new files are added. Removing a ripped job, or clearing finished jobs that include one, asks first, because its rip file is deleted.
+The daemon runs headless with an embedded web UI for managing conversions from a browser: a dashboard with live progress, the queue (add files or whole folders through a server-side file browser, import titles from a disc in the machine's own drive, cancel the encode, the analysis or a rip separately, remove, clear finished jobs), and a settings page. The queue is persisted, so jobs still waiting when the daemon stops are restored on the next start. Track selection and Dolby Vision handling are resolved automatically, using your configured language preferences and encoder. After analysis finishes, a centered dialog opens for the per-file choices; **Apply to remaining files** copies them to the other waiting jobs by track order, while extra tracks keep their automatic defaults and the Dolby Vision choice goes only to files of the same Dolby Vision profile. Closing the dialog without saving stops the automatic prompts until new files are added. Removing a ripped job, or clearing finished jobs that include one, asks first, because its rip file is deleted.
 
 Enable it in Settings (or set `enabled = true` under `[daemon]`), then:
 

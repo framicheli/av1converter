@@ -1430,8 +1430,6 @@ impl App {
                 self.queue.encoding_progress_done += 1;
             }
         }
-        // A queue can hold a rip as well as an encode.
-        self.disc_cancel_flag.store(true, Ordering::Release);
     }
 
     // Disc ripping

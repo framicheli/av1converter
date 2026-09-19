@@ -192,6 +192,20 @@ mod tests {
     }
 
     #[test]
+    fn the_queue_help_offers_cancelling_the_encode_during_a_rip() {
+        let mut app = App::new();
+        app.queue.jobs = vec![EncodingJob::new("a.mkv".into())];
+        let (_disc_tx, disc_rx) = std::sync::mpsc::channel();
+        app.disc_receiver = Some(disc_rx);
+        app.encoding_active = true;
+
+        let screen = rendered(160, 24, |frame| render_queue(frame, &mut app));
+
+        assert!(screen.contains("Cancel Disc Operation"));
+        assert!(screen.contains("Cancel Encoding"));
+    }
+
+    #[test]
     fn a_message_reaches_the_queue_screen() {
         let mut app = App::new();
         app.queue.jobs = vec![EncodingJob::new("a.mkv".into())];
