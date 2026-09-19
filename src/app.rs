@@ -262,7 +262,7 @@ impl App {
         let mut disc_list_state = ListState::default();
         disc_list_state.select(Some(0));
 
-        let config = AppConfig::load();
+        let (config, load_error) = AppConfig::load_reporting();
         let deps = DependencyStatus::check();
         let vmaf_deps = DependencyStatus::vmaf_available();
         let opus_deps = DependencyStatus::libopus_available();
@@ -271,7 +271,16 @@ impl App {
 
         info!("Using encoder: {}", config.encoder);
 
-        let (message, message_kind) = if !encoder_deps {
+        let (message, message_kind) = if let Some(error) = load_error {
+            (
+                Some(format!(
+                    "{} ({})",
+                    crate::i18n::t(config.language, crate::i18n::Msg::ConfigLoadFailed),
+                    error.lines().next().unwrap_or_default()
+                )),
+                MessageKind::Warning,
+            )
+        } else if !encoder_deps {
             (
                 Some(
                     crate::i18n::t(config.language, crate::i18n::Msg::EncoderUnavailable)

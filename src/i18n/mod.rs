@@ -312,6 +312,7 @@ pub enum Msg {
     DaemonPublicHttpRefused,
     DaemonTokenGenerated,
     EncoderUnavailable,
+    ConfigLoadFailed,
     DaemonShuttingDown,
     DaemonStarted,
     DaemonStartFailed,
@@ -2263,6 +2264,24 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Web-UI lauscht auf",
             Zh => "Web 界面监听于",
         },
+        Msg::ConfigLoadFailed => match lang {
+            En => {
+                "config.toml could not be read; using defaults. Saving settings keeps the old file as config.toml.bak"
+            }
+            It => {
+                "Impossibile leggere config.toml; uso i valori predefiniti. Salvando le impostazioni il vecchio file resta come config.toml.bak"
+            }
+            Es => {
+                "No se pudo leer config.toml; se usan los valores predeterminados. Al guardar los ajustes, el archivo anterior se conserva como config.toml.bak"
+            }
+            Fr => {
+                "Impossible de lire config.toml ; valeurs par défaut utilisées. L'enregistrement des paramètres conserve l'ancien fichier sous config.toml.bak"
+            }
+            De => {
+                "config.toml konnte nicht gelesen werden; es gelten die Standardwerte. Beim Speichern bleibt die alte Datei als config.toml.bak erhalten"
+            }
+            Zh => "无法读取 config.toml；正在使用默认值。保存设置时旧文件会保留为 config.toml.bak",
+        },
         Msg::EncoderUnavailable => match lang {
             En => {
                 "Warning: the selected encoder is missing from this FFmpeg build; every encode will fail."
@@ -3305,7 +3324,10 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("cfg_audio_mode_opus", Msg::WebCfgAudioModeOpus),
     ("cfg_delete_source", Msg::CfgDeleteSource),
     ("cfg_daemon_auth_token", Msg::CfgDaemonAuthToken),
-    ("cfg_daemon_allow_insecure_lan", Msg::CfgDaemonAllowInsecureLan),
+    (
+        "cfg_daemon_allow_insecure_lan",
+        Msg::CfgDaemonAllowInsecureLan,
+    ),
     ("cfg_daemon_autostart", Msg::CfgDaemonAutostart),
     ("cfg_daemon_bind_address", Msg::CfgDaemonBindAddress),
     ("cfg_daemon_browse_root", Msg::CfgDaemonBrowseRoot),

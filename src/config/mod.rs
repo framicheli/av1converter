@@ -14,6 +14,7 @@ use tracing::{info, warn};
 
 /// Main application configuration
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     /// UI language
     #[serde(default)]
@@ -107,6 +108,12 @@ fn strip_path_separators(value: &mut String) {
 impl AppConfig {
     /// Load configuration from TOML file, or create default if not found.
     pub fn load() -> Self {
+        Self::load_reporting().0
+    }
+
+    /// [`AppConfig::load`], plus the parse error when the file exists but
+    /// could not be read.
+    pub fn load_reporting() -> (Self, Option<String>) {
         let config_path = Self::config_path();
 
         if config_path.exists() {
@@ -114,7 +121,7 @@ impl AppConfig {
                 Ok(mut config) => {
                     config.sanitize();
                     info!("Loaded config from {}", config_path.display());
-                    return config;
+                    return (config, None);
                 }
                 Err(e) => {
                     // A file that failed to parse is left untouched, not
@@ -124,7 +131,7 @@ impl AppConfig {
                         "Could not parse {}: {e}\nUsing defaults; the file was left untouched.",
                         config_path.display()
                     );
-                    return Self::default();
+                    return (Self::default(), Some(e.to_string()));
                 }
             }
         }
@@ -136,7 +143,7 @@ impl AppConfig {
         if let Err(e) = config.save() {
             warn!("Failed to save default config: {e:?}");
         }
-        config
+        (config, None)
     }
 
     /// Save configuration to TOML file
@@ -508,6 +515,15 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A section with only some keys keeps the rest at their defaults.
+    #[test]
+    fn a_partial_section_keeps_the_other_defaults() {
+        let loaded: AppConfig = toml::from_str("[daemon]\nenabled = true\n").unwrap();
+        assert!(loaded.daemon.enabled);
+        assert_eq!(loaded.daemon.port, DaemonConfig::default().port);
+        assert_eq!(loaded.quality, QualityConfig::default());
     }
 
     /// A config file written before the `[daemon]` section existed must still
