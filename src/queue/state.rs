@@ -309,8 +309,8 @@ pub fn load(path: &Path) -> PersistedQueue {
 /// - `Encoding` — the `.part` scratch file is deleted and the job re-queued to
 ///   encode from the start. The destination is untouched: `FFmpeg` only renames
 ///   onto it once finished.
-/// - `Verifying` — the output is complete and only the VMAF check was cut
-///   short, so it is recorded as encoded-but-unverified.
+/// - `Verifying` with its output on disk — recorded as encoded-but-unverified.
+///   Without its output, it is handled like `Encoding`.
 /// - `Analyzing`, and anything else unfinished — `Ready` when analyzed,
 ///   `Pending` otherwise, for the caller to hand back to the prober.
 /// - `AwaitingConfig` and terminal states are left alone.
@@ -352,12 +352,13 @@ pub fn resume(queue: &mut PersistedQueue) {
                     message: "the rip was interrupted by a restart".to_string(),
                 };
             }
-            JobStatus::Verifying => {
+            JobStatus::Verifying if job.output_path.as_deref().is_some_and(Path::exists) => {
                 job.status = JobStatus::DoneVmafFailed {
                     reason: "interrupted by a daemon restart".to_string(),
                 };
             }
             JobStatus::Encoding { .. }
+            | JobStatus::Verifying
             | JobStatus::Analyzing
             | JobStatus::Pending
             | JobStatus::Ready => {
@@ -624,7 +625,12 @@ mod tests {
         state.jobs.push(analyzed(JobStatus::Analyzing));
         state.jobs.push(analyzed(JobStatus::Ready));
         state.jobs.push(analyzed(JobStatus::AwaitingConfig));
-        state.jobs.push(analyzed(JobStatus::Verifying));
+        let finished_output =
+            std::env::temp_dir().join(format!("av1c-stranded-out-{}.mkv", std::process::id()));
+        std::fs::write(&finished_output, b"encoded").unwrap();
+        let mut verifying = analyzed(JobStatus::Verifying);
+        verifying.output_path = Some(finished_output.clone());
+        state.jobs.push(verifying);
         state.jobs.push(unanalyzed(JobStatus::Pending));
         state.jobs.push(unanalyzed(JobStatus::Analyzing));
         // Legacy queues carry metadata but no identity, and go back through
@@ -669,6 +675,7 @@ mod tests {
             !kinds.contains(&"analyzing"),
             "a reloaded `Analyzing` job would never be probed again"
         );
+        let _ = std::fs::remove_file(&finished_output);
         // Only the never-analyzed ones go back to the prober.
         assert_eq!(
             needs_analysis(&queue),
@@ -678,6 +685,26 @@ mod tests {
                 (7, "/tmp/av1c-missing-legacy.mkv".to_string())
             ]
         );
+    }
+
+    /// A job stopped during VMAF whose output is gone is encoded again, not
+    /// recorded as finished.
+    #[test]
+    fn a_verifying_job_without_its_output_is_encoded_again() {
+        let mut job = EncodingJob::new(PathBuf::from("/staging/rip-a1/DISC_t00.mkv"));
+        job.metadata = Some(meta());
+        job.source_identity = Some(source_identity());
+        job.temporary = true;
+        job.status = JobStatus::Verifying;
+        job.output_path = Some(PathBuf::from("/av1c/does/not/exist/DISC_t00_av1.mkv"));
+        let mut state = QueueState::new();
+        state.jobs.push(job);
+        let mut queue = persisted(state, vec![1], 2);
+
+        resume(&mut queue);
+
+        assert!(matches!(queue.state.jobs[0].status, JobStatus::Ready));
+        assert!(queue.state.jobs[0].temporary);
     }
 
     /// A rip cut short by a restart has no file worth keeping: the job records

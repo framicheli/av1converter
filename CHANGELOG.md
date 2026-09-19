@@ -25,7 +25,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - **Disc ripping.** Import titles straight from a DVD or Blu-ray through MakeMKV, from the TUI (`Rip DVD / Blu-ray` on the home menu) or the web UI (`+ Disc`). Titles are extracted to a staging directory and then analyzed, track-configured and encoded exactly like a file opened by hand.
   - Ripping and encoding overlap: the next title reads from the disc while the previous one encodes, so peak disk use stays at one rip plus one encode input.
   - A rip appears in the queue as a job of its own, with progress and cancellation in the same place as everything else.
-  - Staging files are deleted once their encode succeeds, kept when it fails or comes in under the VMAF threshold, and swept at startup when a rip was cut short.
+  - Staging files are deleted once their encode succeeds, kept when it fails, comes in under the VMAF threshold or cannot be VMAF-checked, and swept at startup when a rip was cut short.
   - Output files are named after the disc label (`<label>_t<NN>_av1.mkv`) rather than MakeMKV's `title_t00.mkv`.
 - `--scan-discs`, a diagnostic that prints the drives and the titles MakeMKV reports.
 - `--purge`, which deletes configuration and daemon state after confirmation. Refuses while the daemon is running.
@@ -58,6 +58,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Output publish never clobbers an existing file (exclusive create instead of checked rename).
 - Cancelling after a successful encode or during VMAF removes the finished output so a retry is not blocked.
 - VMAF auto-delete and quality warnings require both mean and minimum sampled-frame scores; UIs and logs report the min as well as the mean.
+- Stopping the daemon during a VMAF check no longer marks the job done with no output file; it is encoded again on the next start, and a ripped title stays staged.
 - The staging sweep removes only the folders AV1Converter created for a rip. A folder of your own in the staging directory whose name starts with `rip-` is no longer deleted.
 - Portrait 4K uses the 4K VMAF models (long side ≥ 3840).
 - Dolby Vision without a readable `dv_profile` fails analysis instead of encoding IPT as bare PQ.

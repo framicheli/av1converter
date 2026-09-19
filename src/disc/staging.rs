@@ -224,8 +224,8 @@ fn sanitize_label(label: Option<&str>) -> String {
 ///
 /// | Status | Staging file |
 /// |---|---|
-/// | `Done`, `DoneWithVmaf`, `DoneVmafFailed` | deleted with its directory |
-/// | `QualityWarning`, `Error`, `Skipped` | kept, its path still on the job |
+/// | `Done`, `DoneWithVmaf` | deleted with its directory |
+/// | `DoneVmafFailed`, `QualityWarning`, `Error`, `Skipped` | kept, its path still on the job |
 pub fn cleanup_finished(root: &Path, jobs: &mut [EncodingJob]) {
     for path in release_finished(jobs) {
         discard_staged(root, &path);
@@ -238,10 +238,7 @@ pub fn cleanup_finished(root: &Path, jobs: &mut [EncodingJob]) {
 pub fn release_finished(jobs: &mut [EncodingJob]) -> Vec<PathBuf> {
     let mut released = Vec::new();
     for job in jobs.iter_mut().filter(|job| job.temporary) {
-        if !matches!(
-            job.status,
-            JobStatus::Done | JobStatus::DoneWithVmaf { .. } | JobStatus::DoneVmafFailed { .. }
-        ) {
+        if !matches!(job.status, JobStatus::Done | JobStatus::DoneWithVmaf { .. }) {
             continue;
         }
         released.push(job.path.clone());
@@ -532,7 +529,7 @@ mod tests {
                 JobStatus::DoneVmafFailed {
                     reason: "no libvmaf".to_string(),
                 },
-                false,
+                true,
             ),
             (
                 JobStatus::QualityWarning {
@@ -585,6 +582,29 @@ mod tests {
             assert_eq!(job.path.parent().unwrap().is_dir(), *kept);
         }
         assert!(own.exists(), "a job of the user's own is not staging");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rip whose encode could not be verified stays staged across a restart
+    /// and the cleanup that follows it.
+    #[test]
+    fn an_unverified_encode_keeps_its_rip_after_a_restart() {
+        let root = scratch("unverified");
+        let output = root.join("DISC_t00_av1.mkv");
+        std::fs::write(&output, b"encoded").unwrap();
+        let mut job = temporary_job(staged_rip(&root, DEAD_PID), JobStatus::Verifying);
+        job.output_path = Some(output);
+        let mut queue = crate::queue::state::PersistedQueue::default();
+        queue.state.jobs.push(job);
+
+        crate::queue::state::resume(&mut queue);
+        cleanup_finished(&root, &mut queue.state.jobs);
+
+        let job = &queue.state.jobs[0];
+        assert!(matches!(job.status, JobStatus::DoneVmafFailed { .. }));
+        assert!(job.temporary);
+        assert!(job.path.exists());
 
         let _ = std::fs::remove_dir_all(&root);
     }
