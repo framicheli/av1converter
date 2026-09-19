@@ -169,7 +169,7 @@ pub fn run_encoding_pipeline(
                 {
                     if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
                         warn!("Keeping source file {input}: cancellation was requested");
-                    } else if let Some(reason) = keep_source_reason(&params, cancel_flag) {
+                    } else if let Some(reason) = keep_source_reason(&params, dv_mode, cancel_flag) {
                         info!("Keeping source file {input}: {reason}");
                     } else if !expected_source.matches_path(input) {
                         warn!("Keeping source file {input}: it changed while the job was running");
@@ -228,9 +228,20 @@ fn flush_to_disk(path: &str) -> std::io::Result<()> {
 }
 
 /// What the output loses that VMAF does not measure, which keeps the source
-/// whatever the score: transcoded audio, subtitles converted or left out, and
-/// cover art or attachments the output container does not carry.
-fn keep_source_reason(params: &EncodingParams, cancel: &AtomicBool) -> Option<&'static str> {
+/// whatever the score: Dolby Vision that was asked to be kept but is not,
+/// transcoded audio, subtitles converted or left out, and cover art or
+/// attachments the output container does not carry.
+fn keep_source_reason(
+    params: &EncodingParams,
+    requested_dv_mode: DvMode,
+    cancel: &AtomicBool,
+) -> Option<&'static str> {
+    if params.hdr_type == HdrType::DolbyVision
+        && requested_dv_mode == DvMode::KeepDolbyVision
+        && params.dv_mode != DvMode::KeepDolbyVision
+    {
+        return Some("Dolby Vision was to be kept but this encoder converted it to HDR10");
+    }
     if params.tracks.transcodes_audio() {
         return Some("audio was transcoded and VMAF does not verify it");
     }
@@ -330,7 +341,8 @@ fn skips_vmaf(params: &EncodingParams) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DvMode, EncodingParams, HdrType, SourceIdentity, VideoMetadata, flush_to_disk, skips_vmaf,
+        DvMode, EncodingParams, HdrType, SourceIdentity, VideoMetadata, flush_to_disk,
+        keep_source_reason, skips_vmaf,
     };
     use crate::config::{AppConfig, Encoder};
     use crate::tracks::OutputTracks;
@@ -365,6 +377,44 @@ mod tests {
         );
         assert_eq!(params.dv_mode, DvMode::ToHdr10);
         assert!(skips_vmaf(&params));
+    }
+
+    #[test]
+    fn a_keep_dv_request_a_hardware_encoder_cannot_honour_keeps_the_source() {
+        let metadata = VideoMetadata {
+            width: 3840,
+            height: 2160,
+            hdr_type: HdrType::DolbyVision,
+            dv_profile: Some(8),
+            dv_bl_compat: Some(1),
+            hdr10_static: None,
+            codec_name: "hevc".to_string(),
+            frame_rate_num: 24000,
+            frame_rate_den: 1001,
+            duration_secs: 60.0,
+        };
+        let config = AppConfig {
+            encoder: Encoder::Nvenc,
+            ..AppConfig::default()
+        };
+        let params = EncodingParams::from_metadata(
+            "/nonexistent/in.mkv",
+            "/nonexistent/out.mkv",
+            &metadata,
+            &config,
+            OutputTracks::default(),
+            DvMode::KeepDolbyVision,
+            false,
+            Vec::new(),
+        );
+        assert_eq!(
+            keep_source_reason(
+                &params,
+                DvMode::KeepDolbyVision,
+                &std::sync::atomic::AtomicBool::new(false)
+            ),
+            Some("Dolby Vision was to be kept but this encoder converted it to HDR10")
+        );
     }
 
     #[test]

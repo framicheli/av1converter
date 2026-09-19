@@ -434,7 +434,7 @@ fn lost_cover_art_or_subtitles_keep_the_source() {
             false,
             subtitles,
         );
-        super::keep_source_reason(&params, &AtomicBool::new(false))
+        super::keep_source_reason(&params, DvMode::ToHdr10, &AtomicBool::new(false))
     };
 
     assert_eq!(reason(&clip, vec![Some("copy")]), None);
