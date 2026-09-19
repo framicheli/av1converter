@@ -1362,9 +1362,6 @@ fn merged_settings(
         config.disc = live.disc.clone();
     }
     config.validate_settings()?;
-    if let Some(presets) = config.quality_preset.presets() {
-        config.presets = presets;
-    }
     config.sanitize();
     let directory = config
         .output

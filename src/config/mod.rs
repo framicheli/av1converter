@@ -252,7 +252,8 @@ impl AppConfig {
         base.join("av1converter").join("config.toml")
     }
 
-    /// Clamp all numeric fields to their valid ranges and repair output naming.
+    /// Apply the quality preset, clamp all numeric fields to their valid ranges
+    /// and repair output naming.
     pub fn sanitize(&mut self) {
         // `clamp` passes NaN through; a non-finite threshold takes the default.
         if !self.quality.vmaf_threshold.is_finite() {
@@ -262,6 +263,9 @@ impl AppConfig {
         self.performance.svt_preset = self.performance.svt_preset.min(13);
         if !PerformanceConfig::valid_nvenc_preset(&self.performance.nvenc_preset) {
             self.performance.nvenc_preset = PerformanceConfig::default().nvenc_preset;
+        }
+        if let Some(presets) = self.quality_preset.presets() {
+            self.presets = presets;
         }
         for preset in self.presets.all_mut() {
             preset.crf = preset.crf.min(Encoder::SvtAv1.max_quality());
@@ -695,6 +699,23 @@ mod tests {
         assert_eq!(cfg.daemon.port, 8399);
         assert_eq!(cfg.daemon.bind_address, "127.0.0.1");
         assert!(!cfg.daemon.binds_publicly());
+    }
+
+    /// A named quality preset rewrites every tier; `custom` keeps them.
+    #[test]
+    fn a_named_quality_preset_overrides_the_per_tier_values() {
+        let mut cfg = AppConfig {
+            quality_preset: QualityPreset::High,
+            ..AppConfig::default()
+        };
+        cfg.presets.sd.crf = 1;
+        cfg.sanitize();
+        assert_eq!(cfg.presets, EncodingPresetsConfig::high());
+
+        cfg.quality_preset = QualityPreset::Custom;
+        cfg.presets.sd.crf = 1;
+        cfg.sanitize();
+        assert_eq!(cfg.presets.sd.crf, 1);
     }
 
     #[test]

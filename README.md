@@ -427,7 +427,7 @@ If `config.toml` cannot be parsed it is left untouched and defaults are used for
 
 Each resolution preset exposes per-encoder quality values (`crf`, `nvenc_cq`, `qsv_quality`, `amf_quality`). `film_grain` synthesis strength is SVT-AV1 only and is hidden in the settings UI when a hardware encoder is selected.
 
-`quality_preset` controls how those per-resolution values are managed: `low`, `medium`, and `high` apply built-in values across every tier at once (overwriting the `presets` table), while `custom` leaves the complete preset matrix editable in either settings interface or the configuration file.
+`quality_preset` controls how those per-resolution values are managed: `low`, `medium`, and `high` apply built-in values across every tier at once (the `[presets.*]` tables are rewritten whenever the configuration is loaded or saved), while `custom` leaves the complete preset matrix editable in either settings interface or the configuration file.
 
 When `same_directory` is disabled, `output_directory` is required and must be an existing directory; a leading `~` is expanded. A saved directory that has since disappeared does not block saving other settings: the save goes through with a warning. It can be entered in the TUI configuration screen or edited directly in the file; the web settings page also exposes it within `browse_root`. In the web UI, a new or changed `output_directory` must exist and lie inside `browse_root` even while `same_directory` is on, since disc rips always write there; it cannot be cleared while ripped titles are waiting to encode.
 
