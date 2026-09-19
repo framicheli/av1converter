@@ -1831,26 +1831,28 @@ mod tests {
     }
 
     #[test]
-    fn enabling_autostart_with_an_invalid_browse_root_saves_nothing() {
-        if !daemon::service::supported() {
-            return;
-        }
+    fn enabling_the_daemon_with_an_invalid_browse_root_saves_nothing() {
         let on_disk = || std::fs::read(config::AppConfig::config_path()).ok();
-        let mut app = App::new();
-        app.config.daemon.enabled = false;
+        let mut config = config::AppConfig::load();
+        config.daemon.enabled = false;
+        let previous = config.clone();
         let before = on_disk();
-        app.navigate_to_configuration();
-        app.config.daemon.browse_root = std::env::temp_dir()
+        assert!(before.is_some());
+        let missing = std::env::temp_dir()
             .join(format!("av1c_no_such_root_{}", std::process::id()))
             .to_string_lossy()
             .into_owned();
-        assert!(app.config_is_dirty());
+        config.daemon.browse_root.clone_from(&missing);
 
-        apply_autostart(&mut app, true);
+        let result = enable_daemon_config(&mut config, &previous);
 
+        assert_eq!(
+            result,
+            Err(t(config.language, Msg::BrowseRootInvalid).to_string())
+        );
         assert_eq!(on_disk(), before);
-        assert!(app.config_is_dirty());
-        assert!(!app.config.daemon.enabled);
+        assert!(!config.daemon.enabled);
+        assert_eq!(config.daemon.browse_root, missing);
     }
 
     #[test]
