@@ -1123,12 +1123,14 @@ impl App {
                 self.queue.cancelled_count += 1;
             }
         }
-        // A batch left with nothing to configure, encode or show goes home.
+        // A batch left with nothing to configure, encode or show, and no
+        // ripped title, goes home.
         let nothing_left = self.queue.jobs.iter().all(|job| {
-            matches!(
-                job.status,
-                JobStatus::Skipped { .. } | JobStatus::Error { .. }
-            )
+            !job.temporary
+                && matches!(
+                    job.status,
+                    JobStatus::Skipped { .. } | JobStatus::Error { .. }
+                )
         });
         if nothing_left && !self.work_active() {
             self.clear_queue();
@@ -1412,13 +1414,6 @@ impl App {
                 self.queue.skipped_count += 1;
                 self.queue.cancelled_count += 1;
                 self.queue.encoding_progress_done += 1;
-                if job.temporary {
-                    crate::disc::staging::discard_staged(
-                        &crate::disc::staging::staging_root(&self.config),
-                        &job.path,
-                    );
-                    job.temporary = false;
-                }
             }
         }
         // A queue can hold a rip as well as an encode.
@@ -2352,6 +2347,55 @@ mod tests {
         ));
         assert_eq!(app.queue.skipped_count, 1);
         assert_eq!(app.queue.cancelled_count, 1);
+    }
+
+    #[test]
+    fn cancelling_an_encode_keeps_a_queued_rip() {
+        let root = std::env::temp_dir().join(format!("av1c-cancel-encode-{}", std::process::id()));
+        let file = crate::disc::staging::staged_rip(&root, u32::MAX);
+        let mut app = App::new();
+        app.config.disc.staging_directory = Some(root.to_string_lossy().into_owned());
+        let mut active = EncodingJob::new(PathBuf::from("active.mkv"));
+        active.status = JobStatus::Encoding { progress: 10.0 };
+        let mut rip = EncodingJob::new(file.clone());
+        rip.status = JobStatus::Ready;
+        rip.temporary = true;
+        app.queue.jobs = vec![active, rip];
+        app.encoding_active = true;
+
+        app.cancel_encoding();
+
+        assert!(matches!(
+            app.queue.jobs[1].status,
+            JobStatus::Skipped { .. }
+        ));
+        assert!(app.queue.jobs[1].temporary);
+        assert!(file.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cancelling_the_analysis_of_a_lone_rip_keeps_it() {
+        let root =
+            std::env::temp_dir().join(format!("av1c-cancel-analysis-{}", std::process::id()));
+        let file = crate::disc::staging::staged_rip(&root, u32::MAX);
+        let mut app = App::new();
+        app.config.disc.staging_directory = Some(root.to_string_lossy().into_owned());
+        let mut rip = EncodingJob::new(file.clone());
+        rip.status = JobStatus::Analyzing;
+        rip.temporary = true;
+        app.queue.jobs = vec![rip];
+        app.current_screen = Screen::Queue;
+        let (_tx, rx) = mpsc::channel();
+        app.analysis_receiver = Some(rx);
+
+        app.cancel_analysis();
+
+        assert_eq!(app.queue.jobs.len(), 1);
+        assert!(app.queue.jobs[0].temporary);
+        assert!(file.exists());
+        assert_eq!(app.current_screen, Screen::Finish);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

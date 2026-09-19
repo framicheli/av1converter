@@ -59,6 +59,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Cancelling after a successful encode or during VMAF removes the finished output so a retry is not blocked.
 - VMAF auto-delete and quality warnings require both mean and minimum sampled-frame scores; UIs and logs report the min as well as the mean.
 - Stopping the daemon during a VMAF check no longer marks the job done with no output file; it is encoded again on the next start, and a ripped title stays staged.
+- Cancelling an encode or an analysis in the TUI keeps queued ripped titles, as the web UI does, instead of deleting them.
 - The staging sweep removes only the folders AV1Converter created for a rip. A folder of your own in the staging directory whose name starts with `rip-` is no longer deleted.
 - Portrait 4K uses the 4K VMAF models (long side ≥ 3840).
 - Dolby Vision without a readable `dv_profile` fails analysis instead of encoding IPT as bare PQ.
