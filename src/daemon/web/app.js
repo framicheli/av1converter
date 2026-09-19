@@ -947,6 +947,7 @@ function renderTracks() {
 
   // Toggles, not select-all buttons: when everything is already selected the
   // second press clears it, matching the TUI's 'a' and 's' keys.
+  const selectedAudio = audio.filter((t) => t.mode !== "off");
   const opusMissing = lastStatus?.deps && !lastStatus.deps.opus
     && audio.some((t) => t.mode === "opus");
   const audioHeading = opusMissing
@@ -963,6 +964,13 @@ function renderTracks() {
         else if (track.mode === "off") track.mode = "copy";
       }
     },
+  ), selectedAudio.length > 0 && toggleAllButton(
+    "toggle-all-opus",
+    selectedAudio.every((t) => t.mode === "opus"),
+    (toOpus) => {
+      for (const track of selectedAudio) track.mode = toOpus ? "opus" : "copy";
+    },
+    { labels: [tr("all_opus"), tr("track_copy")] },
   )));
   if (audio.length === 0) body.appendChild(emptyNote(tr("no_audio_tracks")));
   for (const track of audio) {
@@ -1061,23 +1069,29 @@ function setTarget(node, track) {
   }
 }
 
-function groupHeading(text, toggle) {
+function groupHeading(text, ...controls) {
   const node = document.createElement("h3");
   node.className = "track-group";
   const label = document.createElement("span");
   label.textContent = text;
   node.appendChild(label);
-  if (toggle) node.appendChild(toggle);
+  for (const control of controls) {
+    if (control) node.appendChild(control);
+  }
   return node;
 }
 
 function toggleAllButton(id, allSelected, apply, options = {}) {
-  const { enabled = trackEditor?.editable ?? true, rerender = renderTracks } = options;
+  const {
+    enabled = trackEditor?.editable ?? true,
+    rerender = renderTracks,
+    labels = [tr("select_all"), tr("clear_all")],
+  } = options;
   const button = document.createElement("button");
   button.id = id;
   button.type = "button";
   button.className = "iconbtn";
-  button.textContent = allSelected ? tr("clear_all") : tr("select_all");
+  button.textContent = allSelected ? labels[1] : labels[0];
   button.disabled = !enabled;
   button.addEventListener("click", () => {
     apply(!allSelected);

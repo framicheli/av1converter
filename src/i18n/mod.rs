@@ -3614,6 +3614,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("subtitle_not_included", Msg::SubtitleNotIncluded),
     ("tag_remux", Msg::WebTagRemux),
     ("tag_source_deleted", Msg::SourceDeletedTag),
+    ("all_opus", Msg::AllOpus),
     ("track_copy", Msg::CopyTracks),
     ("track_exclude", Msg::WebTrackExclude),
     ("track_opus", Msg::ToOpus),
