@@ -189,8 +189,8 @@ Legacy aliases: --daemon is --start; --daemon-foreground is --start-foreground
 2. **Selection** — Navigate with arrow keys. For a file, `Enter` picks it; for a folder, `Enter` opens it and `Space` selects the highlighted subfolder, or the open folder when the cursor is on `..` or a file. For a disc, pick the drive (skipped when there is only one), or open a disc folder or `.iso` image, then toggle titles with `Space`; extraction feeds the same steps below
 3. **File review** — Confirm the list of files found (multiple files or a folder only; a single file skips this step)
 4. **Analysis** — Each file is probed for its streams, resolution and HDR format
-5. **Track configuration** — Select audio and subtitle tracks to include, and switch the per-file mode (encode or demux/remux) with `r`
-6. **Encoding and VMAF verification** — Monitor per-file and overall progress; `Esc` asks before cancelling. Cancelling during analysis stops only the analysis; files already analysed stay queued. Mean and minimum sampled-frame VMAF scores are computed after each file; the source is deleted only if `delete_source_on_success` is on and both meet the threshold (encode mode only, never when audio was transcoded, a selected subtitle was converted or left out, cover art or attachments are not carried over, or the job was cancelled)
+5. **Track configuration** — Select audio and subtitle tracks to include, and switch the per-file mode (encode or demux/remux) with `r`. Encoding starts as soon as the first file is confirmed; the others can be configured while it runs, or all at once with `A`
+6. **Encoding and VMAF verification** — Monitor per-file and overall progress; `a` adds more files, folders or a disc while work runs, and `Esc` asks before cancelling. Cancelling during analysis stops only the analysis; files already analysed stay queued. Mean and minimum sampled-frame VMAF scores are computed after each file; the source is deleted only if `delete_source_on_success` is on and both meet the threshold (encode mode only, never when audio was transcoded, a selected subtitle was converted or left out, cover art or attachments are not carried over, or the job was cancelled)
 7. **Finish** — View a summary of conversions, skipped files, and space saved; `Enter` starts a new conversion after a confirmation, `Esc` returns to the queue
 
 ## Modes
@@ -248,10 +248,15 @@ Two things worth knowing:
 |-----|-------|--------|
 | `↑` / `k`, `↓` / `j` | Everywhere | Navigate |
 | `Enter` | Everywhere | Select / Confirm; on the queue, configure the next job waiting for tracks, or open the summary once nothing is running |
+| `a` | Disc titles | Select every title, or clear them |
 | `Space` | Selection, disc titles, track config | Select the highlighted or open folder, toggle a disc title, toggle the highlighted track |
 | `Esc` | Everywhere | Go back; on the queue, cancel the disc rip, analysis or encode (asks first) |
 | `PgUp` / `PgDn` | Queue, finish, disc titles | Scroll the detail pane |
 | `K` | Queue | Move the highlighted waiting job up |
+| `a` | Queue | Add files, folders or a disc (opens Home; `Esc` on Home returns to the queue) |
+| `t` | Queue | Open the tracks of the highlighted job, if it is not being encoded |
+| `x` / `Delete` | Queue | Remove the highlighted waiting or finished job (a ripped title asks first) |
+| `C` | Queue | Clear finished jobs while nothing runs |
 | `Tab` / `Shift+Tab` | Track config | Cycle focus forward / backward: audio → subtitles → Continue |
 | `←` / `h`, `→` / `l` | Track config | Previous / next file |
 | `r` | Track config | Switch mode: encode ↔ demux/remux |
@@ -259,6 +264,7 @@ Two things worth knowing:
 | `a` / `s` | Track config | Toggle all audio / subtitle tracks |
 | `o` | Track config, audio focused | Toggle Opus for the highlighted audio track |
 | `O` | Track config | Convert all selected audio tracks to Opus; press again to undo |
+| `A` | Track config | Apply these choices to every file still waiting, matching tracks by order |
 | `←` / `h`, `→` / `l` | Configuration | Decrease / increase the value |
 | `Enter` | Configuration | Edit a text field (`Enter` commits, `Esc` aborts) |
 | `s` | Configuration | Save configuration |
