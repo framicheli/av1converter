@@ -101,6 +101,8 @@ pub enum ConfirmAction {
     DiscardConfigChanges,
     CancelAnalysis,
     NewConversion,
+    /// Remove the ripped title at this queue index, deleting its staging files.
+    RemoveRip(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2079,6 +2081,61 @@ impl App {
         }
     }
 
+    /// Whether the job at `index` can leave the queue: waiting or finished,
+    /// with no analysis or disc run in flight, and after the job being encoded.
+    pub fn can_remove_job(&self, index: usize) -> bool {
+        let Some(job) = self.queue.jobs.get(index) else {
+            return false;
+        };
+        let waiting_or_done = matches!(job.status, JobStatus::Ready | JobStatus::AwaitingConfig)
+            || job.status.is_terminal();
+        waiting_or_done
+            && self.analysis_receiver.is_none()
+            && !self.disc_operation_active()
+            && (!self.encoding_active || index > self.queue.current_job_index)
+    }
+
+    /// Remove the job at `index`, deleting a ripped title's staging files.
+    pub fn remove_job(&mut self, index: usize) {
+        if !self.can_remove_job(index) {
+            return;
+        }
+        let job = self.queue.jobs.remove(index);
+        if let Some(change) = job.size_change() {
+            self.queue.cleared_saved_bytes = self.queue.cleared_saved_bytes.saturating_add(change);
+        }
+        if matches!(job.status, JobStatus::Ready) {
+            let remaining_ready = self
+                .queue
+                .jobs
+                .iter()
+                .filter(|job| matches!(job.status, JobStatus::Ready))
+                .count();
+            self.queue.total_jobs_to_encode = self.queue.encoding_progress_done
+                + usize::from(self.encoding_active)
+                + remaining_ready;
+        }
+        if job.temporary {
+            crate::disc::staging::discard_staged(
+                &crate::disc::staging::staging_root(&self.config),
+                &job.path,
+            );
+        }
+        if self.queue.config_job_index > index {
+            self.queue.config_job_index -= 1;
+        }
+        if self.queue.current_job_index > index {
+            self.queue.current_job_index -= 1;
+        }
+        if self.batch_start > index {
+            self.batch_start -= 1;
+        }
+        self.queue_cursor = self
+            .queue_cursor
+            .min(self.queue.jobs.len().saturating_sub(1));
+        self.queue_list_state.select(Some(self.queue_cursor));
+    }
+
     /// Delete the staging directory of every ripped title in the queue, then
     /// empty the queue.
     fn clear_queue(&mut self) {
@@ -2616,6 +2673,30 @@ mod tests {
             assert_eq!(job.track_selection.audio_indices, vec![1]);
             assert_eq!(job.track_selection.audio_to_opus, vec![1]);
         }
+    }
+
+    #[test]
+    fn removing_a_waiting_job_behind_the_encode_keeps_the_encode_index() {
+        let mut app = App::new();
+        app.queue.jobs = ["a.mkv", "b.mkv", "c.mkv"]
+            .iter()
+            .map(|name| {
+                let mut job = EncodingJob::new(PathBuf::from(name));
+                job.status = JobStatus::Ready;
+                job
+            })
+            .collect();
+        app.queue.jobs[0].status = JobStatus::Encoding { progress: 10.0 };
+        app.queue.current_job_index = 0;
+        app.encoding_active = true;
+        app.queue.total_jobs_to_encode = 3;
+
+        assert!(!app.can_remove_job(0));
+        app.remove_job(2);
+
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert_eq!(app.queue.current_job_index, 0);
+        assert_eq!(app.queue.total_jobs_to_encode, 2);
     }
 
     #[test]

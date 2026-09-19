@@ -835,6 +835,7 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
             app.cancel_analysis();
         }
         ConfirmAction::NewConversion => app.reset(),
+        ConfirmAction::RemoveRip(index) => app.remove_job(index),
     }
 }
 
@@ -1109,6 +1110,13 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
         KeyCode::Up | KeyCode::Char('k') => app.queue_move_cursor(false),
         KeyCode::Down | KeyCode::Char('j') => app.queue_move_cursor(true),
         KeyCode::Char('K') => app.queue_move_selected_up(),
+        KeyCode::Char('x') | KeyCode::Delete if app.can_remove_job(app.queue_cursor) => {
+            if app.queue.jobs[app.queue_cursor].temporary {
+                app.confirm_dialog = Some((ConfirmAction::RemoveRip(app.queue_cursor), false));
+            } else {
+                app.remove_job(app.queue_cursor);
+            }
+        }
         KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(1),
         KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
         // A title that finished ripping while an encode ran is waiting for its

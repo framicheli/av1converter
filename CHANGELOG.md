@@ -43,6 +43,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - TUI: encoding starts as soon as the first job's tracks are confirmed, and `t` reopens the tracks of any job not being encoded, as in the web UI.
 - TUI: `A` in track selection applies the choices to every file still waiting, matching tracks by order, as the web UI's "Apply to remaining files".
 - TUI: files, folders and discs can be added while an encode, analysis or rip runs (`a` in the queue, `Esc` on Home returns to it); new files join the queue instead of replacing it, and files already queued are skipped. Abandoning track selection drops only the files not yet finished.
+- TUI: `x` removes a waiting or finished job from the queue; a ripped title asks first and its staging files are deleted.
 
 ### Fixed
 

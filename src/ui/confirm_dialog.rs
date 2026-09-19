@@ -56,6 +56,10 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
             format!(" {} ", t(lang, Msg::NewConversion)),
             t(lang, Msg::FinishResetPrompt),
         ),
+        ConfirmAction::RemoveRip(_) => (
+            format!(" {} ", t(lang, Msg::WebRemoveFromQueue)),
+            t(lang, Msg::WebRemoveRipPrompt),
+        ),
     };
 
     // Calculate dialog area (wide/tall enough for longer, wrapped prompts)
