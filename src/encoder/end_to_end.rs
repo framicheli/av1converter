@@ -424,12 +424,16 @@ fn lost_cover_art_or_subtitles_keep_the_source() {
 
     let output = dir.join("out.mkv");
     let reason = |input: &Path, subtitles: Vec<Option<&'static str>>| {
+        let tracks = crate::tracks::OutputTracks {
+            subtitle_indices: (0..subtitles.len()).collect(),
+            ..crate::tracks::OutputTracks::default()
+        };
         let params = EncodingParams::from_metadata(
             input.to_str().unwrap(),
             output.to_str().unwrap(),
             &metadata_for(input),
             &AppConfig::default(),
-            crate::tracks::OutputTracks::default(),
+            tracks,
             DvMode::ToHdr10,
             false,
             subtitles,

@@ -130,9 +130,10 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     for plan in &params.tracks.audio {
         args.extend(["-map".to_string(), format!("0:a:{}", plan.source_index)]);
     }
-    // A track the container cannot hold is left unmapped.
+    // A track the container cannot hold, or one without a codec entry, is
+    // left unmapped.
     for (n, idx) in params.tracks.subtitle_indices.iter().enumerate() {
-        if !matches!(params.subtitle_codecs.get(n), Some(None)) {
+        if matches!(params.subtitle_codecs.get(n), Some(Some(_))) {
             args.extend(["-map".to_string(), format!("0:s:{idx}")]);
         }
     }
@@ -660,6 +661,7 @@ mod tests {
             audio: vec![audio(1, None), audio(3, Some(384)), audio(4, None)],
             subtitle_indices: vec![0],
         };
+        params.subtitle_codecs = vec![Some("copy")];
         let args = build_ffmpeg_args(&params);
 
         // Mapping still uses the source's audio-relative indices...
@@ -781,6 +783,7 @@ mod tests {
     fn attachments_are_kept_in_matroska_output() {
         let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
         params.tracks.subtitle_indices = vec![0];
+        params.subtitle_codecs = vec![Some("copy")];
         let args = build_ffmpeg_args(&params);
         let maps: Vec<&String> = args
             .iter()
@@ -829,6 +832,17 @@ mod tests {
 
         params.output = "out.mkv".to_string();
         assert!(!build_ffmpeg_args(&params).contains(&"-strict".to_string()));
+    }
+
+    /// A subtitle index with no matching codec entry is not mapped.
+    #[test]
+    fn a_subtitle_without_a_codec_entry_is_not_mapped() {
+        let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
+        params.tracks.subtitle_indices = vec![0, 3];
+        params.subtitle_codecs = vec![Some("copy")];
+        let args = build_ffmpeg_args(&params);
+        assert!(args.contains(&"0:s:0".to_string()));
+        assert!(!args.contains(&"0:s:3".to_string()));
     }
 
     #[test]

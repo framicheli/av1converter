@@ -247,10 +247,11 @@ fn keep_source_reason(
     if params.tracks.transcodes_audio() {
         return Some("audio was transcoded and VMAF does not verify it");
     }
-    if params
-        .subtitle_codecs
-        .iter()
-        .any(|codec| *codec != Some("copy"))
+    if params.subtitle_codecs.len() != params.tracks.subtitle_indices.len()
+        || params
+            .subtitle_codecs
+            .iter()
+            .any(|codec| *codec != Some("copy"))
     {
         return Some("a selected subtitle track was converted or left out");
     }
@@ -483,6 +484,46 @@ mod tests {
                 &std::sync::atomic::AtomicBool::new(false)
             ),
             Some("its Dolby Vision profile 7 enhancement layer is not carried into the output")
+        );
+    }
+
+    /// Subtitle indices and codecs out of step, as after a hand-edited queue
+    /// file, keep the source.
+    #[test]
+    fn subtitle_indices_without_matching_codecs_keep_the_source() {
+        let metadata = VideoMetadata {
+            width: 1920,
+            height: 1080,
+            hdr_type: HdrType::Sdr,
+            dv_profile: None,
+            dv_bl_compat: None,
+            hdr10_static: None,
+            codec_name: "h264".to_string(),
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            duration_secs: 60.0,
+        };
+        let tracks = OutputTracks {
+            subtitle_indices: vec![0, 1],
+            ..OutputTracks::default()
+        };
+        let params = EncodingParams::from_metadata(
+            "/nonexistent/in.mkv",
+            "/nonexistent/out.mkv",
+            &metadata,
+            &AppConfig::default(),
+            tracks,
+            DvMode::ToHdr10,
+            false,
+            vec![Some("copy")],
+        );
+        assert_eq!(
+            keep_source_reason(
+                &params,
+                DvMode::ToHdr10,
+                &std::sync::atomic::AtomicBool::new(false)
+            ),
+            Some("a selected subtitle track was converted or left out")
         );
     }
 
