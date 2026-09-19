@@ -11,7 +11,7 @@ A tool to batch convert video files to the AV1 codec using FFmpeg. It auto-detec
 - **Smart preset selection** — Automatically picks encoding parameters based on resolution and HDR type
 - **Dolby Vision support** — Keep Dolby Vision in the AV1 output (profile 10) or convert to HDR10; profile 5 sources are tone-mapped on the GPU when converting to HDR10. True HDR10 static metadata (mastering display, MaxCLL/MaxFALL) is written for SVT-AV1 encodes; hardware encoders get PQ color tags only
 - **Quality presets** — Low, Medium, or High shifts CRF/CQ values across every resolution tier at once; Custom leaves each tier's values manually editable
-- **VMAF quality verification** — Scores output quality after encoding (mean and minimum sampled frame, every 10th frame); deletes the source only when both meet the threshold (never for remuxes, disabled VMAF, tone-mapped DV profile 5, or when audio was transcoded to Opus)
+- **VMAF quality verification** — Scores output quality after encoding (mean and minimum sampled frame, every 10th frame); deletes the source only when both meet the threshold (never for remuxes, disabled VMAF, tone-mapped DV profile 5, or when audio was transcoded to Opus, a selected subtitle was converted or left out, or cover art or attachments are not carried into the output)
 - **Track selection** — Auto-selects audio and subtitle tracks by preferred language (ISO 639-1/639-2 and BCP-47 tags like `en-US` are treated as aliases, e.g. `en`/`eng`); when nothing matches, audio falls back to the first track and subtitles to none unless "select all" fallback is enabled (the default)
 - **Audio transcoding** — Copy audio tracks untouched (the default) or convert any of them to Opus at the source's own channel layout; per-track in both the TUI and the web UI
 - **Disc ripping** — Import titles straight from a DVD or Blu-ray through MakeMKV, ripping one title while the previous one encodes (see [Disc Ripping](#disc-ripping))
@@ -190,7 +190,7 @@ Legacy aliases: --daemon is --start; --daemon-foreground is --start-foreground
 3. **File review** — Confirm the list of files found (multiple files or a folder only; a single file skips this step)
 4. **Analysis** — Each file is probed for its streams, resolution and HDR format
 5. **Track configuration** — Select audio and subtitle tracks to include, and switch the per-file mode (encode or demux/remux) with `r`
-6. **Encoding and VMAF verification** — Monitor per-file and overall progress; `Esc` asks before cancelling. Cancelling during analysis stops only the analysis; files already analysed stay queued. Mean and minimum sampled-frame VMAF scores are computed after each file; the source is deleted only if `delete_source_on_success` is on and both meet the threshold (encode mode only, never when audio was transcoded or the job was cancelled)
+6. **Encoding and VMAF verification** — Monitor per-file and overall progress; `Esc` asks before cancelling. Cancelling during analysis stops only the analysis; files already analysed stay queued. Mean and minimum sampled-frame VMAF scores are computed after each file; the source is deleted only if `delete_source_on_success` is on and both meet the threshold (encode mode only, never when audio was transcoded, a selected subtitle was converted or left out, cover art or attachments are not carried over, or the job was cancelled)
 7. **Finish** — View a summary of conversions, skipped files, and space saved; `Enter` starts a new conversion after a confirmation, `Esc` returns to the queue
 
 ## Modes
@@ -239,7 +239,7 @@ In the TUI, press `o` on a track in the track configuration screen (`O` applies 
 
 Two things worth knowing:
 
-- **Sources are never auto-deleted when audio was transcoded.** `delete_source_on_success` relies on a VMAF score, and VMAF compares video only — it is no evidence that a lossy Opus track is an acceptable replacement for the lossless TrueHD or DTS-HD original. Those jobs keep the source and log why.
+- **Sources are never auto-deleted when something besides the video changes.** `delete_source_on_success` relies on a VMAF score, and VMAF compares video only. Jobs that transcode audio, convert or leave out a selected subtitle (bitmap subtitles in MP4/WebM, ASS styling turned into `mov_text` or WebVTT), or drop cover art or attachments (every container except MKV drops attachments; cover art is dropped everywhere) keep the source and log why.
 - **Object-based audio does not survive.** Converting a TrueHD Atmos or DTS:X track to Opus keeps the channel bed and discards the object metadata. Copy those tracks if you want them intact.
 
 ### Keyboard Controls

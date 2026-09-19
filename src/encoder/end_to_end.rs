@@ -246,7 +246,7 @@ fn a_failed_encode_leaves_the_destination_alone() {
 }
 
 /// Move `moov/udta`, which holds the cover of an `+faststart` MP4, ahead of
-/// the tracks. Offsets into `mdat` stay valid because `moov` keeps its size.
+/// the tracks.
 fn move_cover_first(path: &Path) {
     let data = std::fs::read(path).unwrap();
     let size = |at: usize| u32::from_be_bytes(data[at..at + 4].try_into().unwrap()) as usize;
@@ -363,6 +363,84 @@ fn the_movie_is_encoded_not_its_cover_art() {
         "encode failed: {result:?}"
     );
     assert_eq!(probe(&output, "stream=codec_name,width"), vec!["av1,320"]);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Subtitles that are converted or left out, and cover art the output does
+/// not carry, keep the source whatever the VMAF score.
+#[test]
+fn lost_cover_art_or_subtitles_keep_the_source() {
+    if !DependencyStatus::check() {
+        eprintln!("skipping: ffmpeg is not on PATH");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_keep_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(clip) = make_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    let cover = dir.join("cover.jpg");
+    let covered = dir.join("covered.mkv");
+    let ffmpeg = |args: &[&str]| {
+        Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args(args)
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    let built = ffmpeg(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=red:s=64x64",
+        "-frames:v",
+        "1",
+        cover.to_str().unwrap(),
+    ]) && ffmpeg(&[
+        "-i",
+        clip.to_str().unwrap(),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-attach",
+        cover.to_str().unwrap(),
+        "-metadata:s:t:0",
+        "mimetype=image/jpeg",
+        "-metadata:s:t:0",
+        "filename=cover.jpg",
+        covered.to_str().unwrap(),
+    ]);
+    if !built {
+        eprintln!("skipping: could not build the fixture clips");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+
+    let output = dir.join("out.mkv");
+    let reason = |input: &Path, subtitles: Vec<Option<&'static str>>| {
+        let params = EncodingParams::from_metadata(
+            input.to_str().unwrap(),
+            output.to_str().unwrap(),
+            &metadata_for(input),
+            &AppConfig::default(),
+            crate::tracks::OutputTracks::default(),
+            DvMode::ToHdr10,
+            false,
+            subtitles,
+        );
+        super::keep_source_reason(&params, &AtomicBool::new(false))
+    };
+
+    assert_eq!(reason(&clip, vec![Some("copy")]), None);
+    assert!(reason(&clip, vec![Some("mov_text")]).is_some());
+    assert!(reason(&clip, vec![None]).is_some());
+    assert!(reason(&covered, Vec::new()).is_some());
 
     let _ = std::fs::remove_dir_all(&dir);
 }

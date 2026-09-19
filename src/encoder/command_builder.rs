@@ -141,8 +141,9 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         .and_then(|ext| ext.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    // Matroska output keeps the source's attachments, such as fonts and cover art.
-    if extension == "mkv" {
+    // Matroska output keeps the source's attachment streams, such as fonts.
+    // Attached pictures are not carried.
+    if keeps_attachments(&params.output) {
         args.extend(["-map".to_string(), "0:t?".to_string()]);
     }
     // The MP4 muxer refuses copied TrueHD and Vorbis audio without `-strict -2`.
@@ -226,6 +227,13 @@ fn build_audio_args(plan: &[AudioStreamPlan]) -> Vec<String> {
         }
     }
     args
+}
+
+/// Whether the output container carries the source's attachment streams.
+pub(crate) fn keeps_attachments(output: &str) -> bool {
+    std::path::Path::new(output)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"))
 }
 
 /// Per-stream subtitle codec options for the mapped tracks, in output order.

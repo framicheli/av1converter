@@ -158,23 +158,10 @@ pub fn run_encoding_pipeline(
                 cancel_flag,
             );
 
-            // VMAF compares video and nothing else, so a passing score says
-            // nothing about audio that was re-encoded to a lossy codec. The
-            // original is the only remaining copy of a lossless TrueHD or
-            // DTS-HD track, and no automated check here can vouch for what
-            // replaced it.
-            let audio_transcoded = params.tracks.transcodes_audio();
-            if audio_transcoded && config.quality.delete_source_on_success {
-                info!(
-                    "Keeping source file {input}: audio was transcoded and VMAF does not verify it"
-                );
-            }
-
             // The source is only ever deleted against a VMAF score that met the
             // threshold. A plain `Success` means no comparison ran at all (VMAF
-            // disabled, a remux, or a tone-mapped DV profile 5 output), which is
-            // no evidence that the encode is good enough to discard the original.
-            if config.quality.delete_source_on_success && !audio_transcoded {
+            // disabled, a remux, or a tone-mapped DV profile 5 output).
+            if config.quality.delete_source_on_success {
                 if let FullEncodeResult::SuccessWithVmaf {
                     ref mut source_deleted,
                     ..
@@ -182,6 +169,8 @@ pub fn run_encoding_pipeline(
                 {
                     if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
                         warn!("Keeping source file {input}: cancellation was requested");
+                    } else if let Some(reason) = keep_source_reason(&params, cancel_flag) {
+                        info!("Keeping source file {input}: {reason}");
                     } else if !expected_source.matches_path(input) {
                         warn!("Keeping source file {input}: it changed while the job was running");
                     } else if !output_identity
@@ -209,6 +198,24 @@ pub fn run_encoding_pipeline(
         }
         EncodeResult::Cancelled => FullEncodeResult::Cancelled,
         EncodeResult::Error(e) => FullEncodeResult::Error(e),
+    }
+}
+
+/// What the output loses that VMAF does not measure, which keeps the source
+/// whatever the score: transcoded audio, subtitles converted or left out, and
+/// cover art or attachments the output container does not carry.
+fn keep_source_reason(params: &EncodingParams, cancel: &AtomicBool) -> Option<&'static str> {
+    if params.tracks.transcodes_audio() {
+        return Some("audio was transcoded and VMAF does not verify it");
+    }
+    if params.subtitle_codecs.iter().any(|codec| *codec != Some("copy")) {
+        return Some("a selected subtitle track was converted or left out");
+    }
+    match crate::analyzer::ffprobe::probe_attachments(&params.input, cancel) {
+        Some((0, 0)) => None,
+        Some((0, _)) if command_builder::keeps_attachments(&params.output) => None,
+        Some(_) => Some("its cover art or attachments are not carried into the output"),
+        None => Some("its attachments could not be checked"),
     }
 }
 

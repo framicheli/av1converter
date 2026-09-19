@@ -384,6 +384,29 @@ fn analyze_tracks(
     Ok((audio_tracks, subtitle_tracks))
 }
 
+/// Attached pictures and attachment streams in the file, as
+/// `(pictures, attachments)`. `None` when ffprobe cannot say.
+pub fn probe_attachments(path: &str, cancel: &AtomicBool) -> Option<(usize, usize)> {
+    let args = [
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_type:stream_disposition=attached_pic",
+        "-of",
+        "csv=p=0",
+        path,
+    ];
+    let output = run_ffprobe(&args, cancel).ok()?;
+    let lines: Vec<&str> = output.lines().map(str::trim).collect();
+    Some((
+        lines.iter().filter(|line| line.ends_with(",1")).count(),
+        lines
+            .iter()
+            .filter(|line| line.starts_with("attachment"))
+            .count(),
+    ))
+}
+
 /// Run ffprobe with arguments
 fn run_ffprobe(args: &[&str], cancel: &AtomicBool) -> Result<String, AppError> {
     let mut command = Command::new("ffprobe");
