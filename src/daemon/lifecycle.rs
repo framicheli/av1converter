@@ -117,9 +117,23 @@ fn listen_in(path: &std::path::Path) -> Option<std::net::SocketAddr> {
 
 /// PID recorded in the locked PID file, if that process is still alive.
 /// An unlocked file is stale even if its old PID has since been reused.
+/// Without file locks, a file with no readable PID is removed once it is more
+/// than 5 seconds old.
 pub fn running_pid() -> Option<u32> {
     let path = pid_file();
-    let pid = locked_pid(&path)?;
+    let Some(pid) = locked_pid(&path) else {
+        #[cfg(not(unix))]
+        if std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| {
+                t.elapsed()
+                    .is_ok_and(|age| age > std::time::Duration::from_secs(5))
+            })
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+        return None;
+    };
     if alive(pid) {
         Some(pid)
     } else {
@@ -218,6 +232,7 @@ pub(crate) fn alive(pid: u32) -> bool {
 }
 
 /// Whether `pid` is a running process with this executable's image name.
+/// A `tasklist` that cannot run counts as alive.
 #[cfg(windows)]
 pub(crate) fn alive(pid: u32) -> bool {
     let expected_image = std::env::current_exe()
@@ -227,20 +242,21 @@ pub(crate) fn alive(pid: u32) -> bool {
                 .map(|name| name.to_string_lossy().into_owned())
         })
         .unwrap_or_default();
-    std::process::Command::new("tasklist")
+    let Some(output) = std::process::Command::new("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .output()
         .ok()
         .filter(|output| output.status.success())
-        .is_some_and(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|line| {
-                    let mut fields = line.trim_matches('"').split("\",\"");
-                    Some((fields.next()?, fields.next()?.parse::<u32>().ok()?))
-                })
-                .any(|(image, found)| image_matches(image, &expected_image) && found == pid)
+    else {
+        return true;
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.trim_matches('"').split("\",\"");
+            Some((fields.next()?, fields.next()?.parse::<u32>().ok()?))
         })
+        .any(|(image, found)| image_matches(image, &expected_image) && found == pid)
 }
 
 /// Whether an image name reported by `tasklist` names `expected`, ignoring
