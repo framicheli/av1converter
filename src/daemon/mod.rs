@@ -1548,6 +1548,10 @@ mod tests {
                 browse_root: root.to_string_lossy().into_owned(),
                 ..crate::config::DaemonConfig::default()
             },
+            disc: crate::config::DiscConfig {
+                staging_directory: Some(base.join("staging").to_string_lossy().into_owned()),
+                ..crate::config::DiscConfig::default()
+            },
             ..AppConfig::default()
         };
 
@@ -1598,6 +1602,10 @@ mod tests {
             daemon: crate::config::DaemonConfig {
                 browse_root: browse_root.to_string_lossy().into_owned(),
                 ..crate::config::DaemonConfig::default()
+            },
+            disc: crate::config::DiscConfig {
+                staging_directory: Some(base.join("staging").to_string_lossy().into_owned()),
+                ..crate::config::DiscConfig::default()
             },
             ..AppConfig::default()
         };

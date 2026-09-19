@@ -266,8 +266,18 @@ pub fn discard_staged(root: &Path, file: &Path) {
 /// a directory whose owner has exited is removed whatever its age. Only
 /// subdirectories of the staging root are ever removed, never the root itself.
 pub fn sweep_orphans(config: &AppConfig, jobs: &[EncodingJob], min_age: Duration) {
-    let root = staging_root(config);
-    let Ok(entries) = std::fs::read_dir(&root) else {
+    sweep_root(
+        &staging_root(config),
+        configured_root(config).is_none(),
+        jobs,
+        min_age,
+    );
+}
+
+/// [`sweep_orphans`] over `root`, which is the default staging root when
+/// `default_root` is set.
+fn sweep_root(root: &Path, default_root: bool, jobs: &[EncodingJob], min_age: Duration) {
+    let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
 
@@ -289,7 +299,7 @@ pub fn sweep_orphans(config: &AppConfig, jobs: &[EncodingJob], min_age: Duration
             );
             continue;
         }
-        if configured_root(config).is_none() && owner_pid(&path).is_some() {
+        if default_root && owner_pid(&path).is_some() {
             info!(
                 "Removing staging directory {} of a process that has exited",
                 path.display()
@@ -772,12 +782,11 @@ mod tests {
         assert!(kept.exists(), "a configured root keeps a fresh directory");
         let _ = std::fs::remove_dir_all(&configured);
 
-        let config = AppConfig::default();
-        let root = staging_root(&config);
-        prepare_private_root(&root).unwrap();
-        let swept = dead_owners_rip(&root);
-        sweep_orphans(&config, &[], ACTIVE_RIP_WINDOW);
+        let default_root = scratch("dead_owner_default");
+        let swept = dead_owners_rip(&default_root);
+        sweep_root(&default_root, true, &[], ACTIVE_RIP_WINDOW);
         assert!(!swept.exists());
+        let _ = std::fs::remove_dir_all(&default_root);
     }
 
     #[cfg(unix)]
