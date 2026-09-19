@@ -1678,9 +1678,7 @@ mod tests {
     fn a_settled_disc_run_sweeps_orphaned_staging_directories() {
         let root = std::env::temp_dir().join(format!("av1c_settle_sweep_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let orphan = root.join("rip-4294967295-a");
-        std::fs::create_dir_all(&orphan).unwrap();
-        std::fs::write(orphan.join("title_t00.mkv"), b"partial").unwrap();
+        let orphan = crate::disc::staging::staged_rip(&root, u32::MAX);
 
         let mut config = AppConfig::default();
         config.disc.staging_directory = Some(root.to_string_lossy().into_owned());

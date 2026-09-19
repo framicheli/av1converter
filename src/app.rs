@@ -2605,10 +2605,8 @@ mod tests {
     #[test]
     fn reset_discards_staged_rips() {
         let root = std::env::temp_dir().join(format!("av1c-reset-staging-{}", std::process::id()));
-        let dir = root.join("rip-abc");
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("DISC_t00.mkv");
-        std::fs::write(&file, b"rip").unwrap();
+        let file = crate::disc::staging::staged_rip(&root, u32::MAX);
+        let dir = file.parent().unwrap().to_path_buf();
 
         let mut app = App::new();
         app.config.disc.staging_directory = Some(root.to_string_lossy().into_owned());
@@ -2785,10 +2783,8 @@ mod tests {
     #[test]
     fn opening_files_appends_and_keeps_a_queued_rip() {
         let root = std::env::temp_dir().join(format!("av1c-choose-staging-{}", std::process::id()));
-        let dir = root.join("rip-abc");
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("DISC_t00.mkv");
-        std::fs::write(&file, b"rip").unwrap();
+        let file = crate::disc::staging::staged_rip(&root, u32::MAX);
+        let dir = file.parent().unwrap().to_path_buf();
         let videos =
             std::env::temp_dir().join(format!("av1c-choose-videos-{}", std::process::id()));
         std::fs::create_dir_all(&videos).unwrap();

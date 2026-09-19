@@ -58,6 +58,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Output publish never clobbers an existing file (exclusive create instead of checked rename).
 - Cancelling after a successful encode or during VMAF removes the finished output so a retry is not blocked.
 - VMAF auto-delete and quality warnings require both mean and minimum sampled-frame scores; UIs and logs report the min as well as the mean.
+- The staging sweep removes only the folders AV1Converter created for a rip. A folder of your own in the staging directory whose name starts with `rip-` is no longer deleted.
 - Portrait 4K uses the 4K VMAF models (long side ≥ 3840).
 - Dolby Vision without a readable `dv_profile` fails analysis instead of encoding IPT as bare PQ.
 - `film_grain` is SVT-AV1 only in settings; the web Settings tab no longer breaks when a hardware encoder is selected.

@@ -14,6 +14,12 @@ use tracing::{info, warn};
 /// Prefix of every staging subdirectory. The sweeps delete only these.
 const STAGING_PREFIX: &str = "rip-";
 
+/// File written into every staging subdirectory when it is created.
+const STAGING_MARKER: &str = ".av1converter-staging";
+
+/// Hex digits in the random part of a staging directory name.
+const STAGING_RANDOM_HEX: usize = 16;
+
 /// Free space required beyond the title's own size.
 const SPACE_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
@@ -310,10 +316,22 @@ pub fn sweep_orphans(config: &AppConfig, jobs: &[EncodingJob], min_age: Duration
     }
 }
 
+/// A directory named `rip-<pid>-<16 hex digits>` that holds the staging marker.
 fn is_staging_dir(dir: &Path) -> bool {
-    dir.file_name()
+    let named = dir
+        .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with(STAGING_PREFIX))
+        .and_then(|name| name.strip_prefix(STAGING_PREFIX))
+        .and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(pid, random)| {
+            !pid.is_empty()
+                && pid.bytes().all(|b| b.is_ascii_digit())
+                && random.len() == STAGING_RANDOM_HEX
+                && random
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        });
+    named && dir.join(STAGING_MARKER).is_file()
 }
 
 /// The process id in a `rip-<pid>-<random>` directory name.
@@ -345,12 +363,20 @@ fn last_written(dir: &Path) -> Option<Duration> {
 }
 
 /// A directory under `root` that no other process can already hold, named
-/// `rip-<pid>-<random>` after the process that owns it.
+/// `rip-<pid>-<random>` after the process that owns it and holding the staging
+/// marker.
 fn create_staging_dir(root: &Path) -> Result<PathBuf, DiscError> {
     for _ in 0..8 {
-        let random = crate::utils::random_hex(8).map_err(DiscError::Failed)?;
+        let random = crate::utils::random_hex(STAGING_RANDOM_HEX / 2).map_err(DiscError::Failed)?;
         let candidate = root.join(format!("{STAGING_PREFIX}{}-{random}", std::process::id()));
         if crate::utils::create_private_dir(&candidate).is_ok() {
+            if let Err(e) = std::fs::write(candidate.join(STAGING_MARKER), b"") {
+                discard_dir(&candidate);
+                return Err(DiscError::Failed(format!(
+                    "could not write to the staging directory {}: {e}",
+                    candidate.display()
+                )));
+            }
             return Ok(candidate);
         }
     }
@@ -384,6 +410,19 @@ fn available_bytes(path: &Path) -> Option<u64> {
 #[cfg(not(unix))]
 fn available_bytes(_path: &Path) -> Option<u64> {
     None
+}
+
+/// A staging directory of process `pid` under `root` with one file in it, as
+/// a finished rip leaves it. Returns the file.
+#[cfg(test)]
+pub(crate) fn staged_rip(root: &Path, pid: u32) -> PathBuf {
+    let random = crate::utils::random_hex(STAGING_RANDOM_HEX / 2).unwrap();
+    let dir = root.join(format!("{STAGING_PREFIX}{pid}-{random}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(STAGING_MARKER), b"").unwrap();
+    let file = dir.join("DISC_t00.mkv");
+    std::fs::write(&file, b"rip").unwrap();
+    file
 }
 
 #[cfg(test)]
@@ -432,14 +471,10 @@ mod tests {
         )
     }
 
-    /// A staging directory with one file in it, as a finished rip leaves it.
-    fn staged_rip(root: &Path, name: &str) -> PathBuf {
-        let dir = root.join(format!("{STAGING_PREFIX}{name}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("DISC_t00.mkv");
-        std::fs::write(&file, b"rip").unwrap();
-        file
-    }
+    use super::staged_rip;
+
+    /// Process id no running process has.
+    const DEAD_PID: u32 = u32::MAX;
 
     fn temporary_job(path: PathBuf, status: JobStatus) -> EncodingJob {
         let mut job = EncodingJob::new(path);
@@ -524,10 +559,7 @@ mod tests {
 
         let mut jobs: Vec<EncodingJob> = cases
             .iter()
-            .enumerate()
-            .map(|(i, (status, _))| {
-                temporary_job(staged_rip(&root, &i.to_string()), status.clone())
-            })
+            .map(|(status, _)| temporary_job(staged_rip(&root, DEAD_PID), status.clone()))
             .collect();
         // A user's own file is never touched, whatever its status.
         let own = root.join("mine.mkv");
@@ -561,7 +593,7 @@ mod tests {
     #[test]
     fn cleanup_is_repeatable() {
         let root = scratch("repeat");
-        let mut jobs = vec![temporary_job(staged_rip(&root, "a"), JobStatus::Done)];
+        let mut jobs = vec![temporary_job(staged_rip(&root, DEAD_PID), JobStatus::Done)];
         cleanup_finished(&root, &mut jobs);
         cleanup_finished(&root, &mut jobs);
         assert!(!jobs[0].path.exists());
@@ -573,11 +605,11 @@ mod tests {
     fn only_staging_directories_under_the_root_are_discarded() {
         let root = scratch("confine");
         let other = scratch("confine_outside");
-        let victim = staged_rip(&other, "victim");
+        let victim = staged_rip(&other, DEAD_PID);
         discard_staged(&root, &victim);
         assert!(victim.exists());
         discard_staged(&root, Path::new("rip-victim/x.mkv"));
-        let ours = staged_rip(&root, "ours");
+        let ours = staged_rip(&root, DEAD_PID);
         discard_staged(&root, &ours);
         assert!(!ours.parent().unwrap().exists());
         let _ = std::fs::remove_dir_all(&root);
@@ -587,9 +619,9 @@ mod tests {
     #[test]
     fn the_sweep_removes_only_unreferenced_staging_directories() {
         let root = scratch("sweep");
-        let referenced = staged_rip(&root, "referenced");
-        let orphan = staged_rip(&root, "orphan");
-        let finished = staged_rip(&root, "finished");
+        let referenced = staged_rip(&root, DEAD_PID);
+        let orphan = staged_rip(&root, DEAD_PID);
+        let finished = staged_rip(&root, DEAD_PID);
         let stranger = root.join("not-a-rip");
         std::fs::create_dir_all(&stranger).unwrap();
         let loose = root.join("loose.mkv");
@@ -613,11 +645,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// User directories that only look like staging directories survive a sweep
+    /// that removes a real one next to them.
+    #[test]
+    fn the_sweep_leaves_look_alike_directories_alone() {
+        let root = scratch("look_alike");
+        let user_dir = |name: &str| {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("holiday.mkv"), b"mine").unwrap();
+            dir
+        };
+        let concert = user_dir("rip-concert");
+        let summer = user_dir("rip-123-summer");
+        let unmarked = user_dir(&format!("rip-{DEAD_PID}-0123456789abcdef"));
+        let ours = staged_rip(&root, DEAD_PID);
+
+        sweep_orphans(&config_with_root(&root), &[], Duration::ZERO);
+
+        assert!(concert.join("holiday.mkv").exists());
+        assert!(summer.join("holiday.mkv").exists());
+        assert!(unmarked.join("holiday.mkv").exists());
+        assert!(!ours.exists());
+
+        discard_staged(&root, &unmarked.join("holiday.mkv"));
+        assert!(unmarked.join("holiday.mkv").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A new staging directory carries the name and marker the sweep requires.
+    #[test]
+    fn a_new_staging_directory_is_recognised_as_one() {
+        let root = scratch("create");
+        let dir = create_staging_dir(&root).unwrap();
+        assert!(dir.join(STAGING_MARKER).is_file());
+        assert!(is_staging_dir(&dir));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Another process's rip in progress is left alone.
     #[test]
     fn the_sweep_leaves_an_active_rip_alone() {
         let root = scratch("active");
-        let active = staged_rip(&root, "active");
+        let active = staged_rip(&root, DEAD_PID);
         sweep_orphans(&config_with_root(&root), &[], ACTIVE_RIP_WINDOW);
         assert!(active.exists());
         let _ = std::fs::remove_dir_all(&root);
@@ -629,8 +700,8 @@ mod tests {
     #[test]
     fn the_sweep_leaves_a_running_owners_rip_alone() {
         let root = scratch("owner");
-        let running = staged_rip(&root, &format!("{}-a", std::process::id()));
-        let gone = staged_rip(&root, "4294967295-b");
+        let running = staged_rip(&root, std::process::id());
+        let gone = staged_rip(&root, DEAD_PID);
         sweep_orphans(&config_with_root(&root), &[], Duration::ZERO);
         assert!(running.exists());
         assert!(!gone.exists());
@@ -673,12 +744,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_dead_owners_fresh_rip_in_the_default_root_is_swept() {
-        let dead_owners_rip = |root: &Path| {
-            let dir = root.join(format!("rip-4294967295-t{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("title_t00.mkv"), b"partial").unwrap();
-            dir
-        };
+        let dead_owners_rip = |root: &Path| staged_rip(root, DEAD_PID);
 
         let configured = scratch("dead_owner_configured");
         let kept = dead_owners_rip(&configured);
@@ -876,7 +942,7 @@ mod tests {
     #[test]
     fn a_staged_job_encodes_outside_its_staging_directory() {
         let root = scratch("output");
-        let file = staged_rip(&root, "out");
+        let file = staged_rip(&root, DEAD_PID);
         let mut job = temporary_job(file.clone(), JobStatus::Ready);
         let config = OutputConfig {
             same_directory: true,
