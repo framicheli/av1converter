@@ -171,8 +171,6 @@ pub fn run_encoding_pipeline(
                         warn!("Keeping source file {input}: cancellation was requested");
                     } else if let Some(reason) = keep_source_reason(&params, dv_mode, cancel_flag) {
                         info!("Keeping source file {input}: {reason}");
-                    } else if !expected_source.matches_path(input) {
-                        warn!("Keeping source file {input}: it changed while the job was running");
                     } else if !output_identity
                         .as_ref()
                         .is_some_and(|identity| identity.matches_path(output))
@@ -188,6 +186,8 @@ pub fn run_encoding_pipeline(
                         .is_ok_and(|m| m.file_type().is_symlink())
                     {
                         warn!("Keeping source file {input}: it is a symbolic link");
+                    } else if !expected_source.matches_path(input) {
+                        warn!("Keeping source file {input}: it changed while the job was running");
                     } else {
                         match std::fs::remove_file(input) {
                             Ok(()) => {
