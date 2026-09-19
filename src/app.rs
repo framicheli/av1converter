@@ -1154,7 +1154,11 @@ impl App {
         self.queue.jobs.get(self.queue.config_job_index)
     }
 
+    /// The job at `config_job_index`, while it still accepts track changes.
     pub fn current_config_job_mut(&mut self) -> Option<&mut EncodingJob> {
+        if !self.is_track_configurable(self.queue.config_job_index) {
+            return None;
+        }
         self.queue.jobs.get_mut(self.queue.config_job_index)
     }
 

@@ -114,7 +114,14 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         )
     };
 
-    let notice_rows = app.message.as_deref().map_or(0, |msg| {
+    let notice = if app.is_track_configurable(app.queue.config_job_index) {
+        app.message
+            .clone()
+            .map(|msg| (msg, message_color(app.message_kind)))
+    } else {
+        Some((t(lang, Msg::WebTracksLocked).to_string(), Color::Yellow))
+    };
+    let notice_rows = notice.as_ref().map_or(0, |(msg, _)| {
         crate::ui::common::wrapped_rows(msg, f.area().width.saturating_sub(4))
             .saturating_add(2)
             .min(6)
@@ -130,14 +137,14 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         .margin(1)
         .split(f.area());
 
-    if let Some(ref msg) = app.message {
-        let notice = Paragraph::new(msg.as_str())
-            .style(Style::default().fg(message_color(app.message_kind)))
+    if let Some((msg, color)) = notice {
+        let notice = Paragraph::new(msg)
+            .style(Style::default().fg(color))
             .wrap(Wrap { trim: true })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(message_color(app.message_kind))),
+                    .border_style(Style::default().fg(color)),
             );
         f.render_widget(notice, chunks[0]);
     }

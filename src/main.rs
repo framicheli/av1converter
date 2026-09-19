@@ -1012,6 +1012,16 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
     let audio_count = job.audio_tracks.len();
     let subtitle_count = job.subtitle_tracks.len();
 
+    if !app.is_track_configurable(app.queue.config_job_index) {
+        match key {
+            KeyCode::Esc => app.navigate_to_queue(),
+            KeyCode::Left | KeyCode::Char('h') => app.step_track_config_job(false),
+            KeyCode::Right | KeyCode::Char('l') => app.step_track_config_job(true),
+            _ => {}
+        }
+        return;
+    }
+
     match key {
         KeyCode::Char('A') => app.apply_track_config_to_remaining(),
         KeyCode::Esc => {
@@ -1975,5 +1985,63 @@ mod tests {
         handle_confirm_dialog_key(&mut app, KeyCode::Char('y'));
         assert!(app.confirm_dialog.is_none());
         assert!(app.cancel_flag.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    fn app_on_track_config_of_an_encoding_dv_job() -> App {
+        let mut app = App::new();
+        app.saved_config.encoder = crate::config::Encoder::SvtAv1;
+        let mut job = crate::queue::EncodingJob::new(PathBuf::from("dv.mkv"));
+        job.metadata = Some(crate::analyzer::VideoMetadata {
+            width: 3840,
+            height: 2160,
+            hdr_type: crate::analyzer::HdrType::DolbyVision,
+            dv_profile: Some(8),
+            dv_bl_compat: Some(1),
+            hdr10_static: None,
+            codec_name: "hevc".into(),
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            duration_secs: 1.0,
+        });
+        job.dv_mode = Some(crate::analyzer::DvMode::KeepDolbyVision);
+        job.output_path = Some(PathBuf::from("dv_av1.mkv"));
+        job.status = crate::queue::JobStatus::Encoding { progress: 0.0 };
+        app.queue.jobs.push(job);
+        app.queue.config_job_index = 0;
+        app.encoding_active = true;
+        app.current_screen = Screen::TrackConfig;
+        app
+    }
+
+    #[test]
+    fn track_keys_do_nothing_once_the_job_is_encoding() {
+        let mut app = app_on_track_config_of_an_encoding_dv_job();
+
+        handle_track_config_key(&mut app, KeyCode::Char('r'));
+        handle_track_config_key(&mut app, KeyCode::Char('d'));
+
+        assert!(!app.queue.jobs[0].remux_only);
+        assert_eq!(
+            app.queue.jobs[0].output_path,
+            Some(PathBuf::from("dv_av1.mkv"))
+        );
+        assert_eq!(app.dv_dialog, None);
+
+        handle_track_config_key(&mut app, KeyCode::Esc);
+        assert_eq!(app.current_screen, Screen::Queue);
+    }
+
+    #[test]
+    fn an_open_dv_dialog_cannot_change_a_job_that_started_encoding() {
+        let mut app = app_on_track_config_of_an_encoding_dv_job();
+        app.dv_dialog = Some(1);
+
+        handle_key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.dv_dialog, None);
+        assert_eq!(
+            app.queue.jobs[0].dv_mode,
+            Some(crate::analyzer::DvMode::KeepDolbyVision)
+        );
     }
 }
