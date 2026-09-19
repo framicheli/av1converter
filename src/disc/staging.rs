@@ -673,17 +673,25 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_dead_owners_fresh_rip_in_the_default_root_is_swept() {
+        let dead_owners_rip = |root: &Path| {
+            let dir = root.join(format!("rip-4294967295-t{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("title_t00.mkv"), b"partial").unwrap();
+            dir
+        };
+
+        let configured = scratch("dead_owner_configured");
+        let kept = dead_owners_rip(&configured);
+        sweep_orphans(&config_with_root(&configured), &[], ACTIVE_RIP_WINDOW);
+        assert!(kept.exists(), "a configured root keeps a fresh directory");
+        let _ = std::fs::remove_dir_all(&configured);
+
         let config = AppConfig::default();
         let root = staging_root(&config);
         prepare_private_root(&root).unwrap();
-        let dir = root.join(format!("rip-4294967295-t{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("title_t00.mkv"), b"partial").unwrap();
-
-        sweep_orphans(&config_with_root(&root), &[], ACTIVE_RIP_WINDOW);
-        assert!(dir.exists(), "a configured root keeps a fresh directory");
+        let swept = dead_owners_rip(&root);
         sweep_orphans(&config, &[], ACTIVE_RIP_WINDOW);
-        assert!(!dir.exists());
+        assert!(!swept.exists());
     }
 
     #[cfg(unix)]
