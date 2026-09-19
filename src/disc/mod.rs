@@ -45,7 +45,7 @@ const MIN_TITLE_LENGTH_SECS: u32 = 60;
 /// How often the output loop checks the cancel flag while `MakeMKV` is quiet.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Upper bound on retained `MSG` lines; a healthy run prints a handful.
+/// Upper bound on retained `MSG` lines; the newest are kept.
 const MAX_MESSAGES: usize = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -476,9 +476,11 @@ fn run_robot(
             Ok(line) => {
                 if let Some((prefix, fields)) = robot::split_fields(&line) {
                     if prefix == "MSG"
-                        && messages.len() < MAX_MESSAGES
                         && let Some(text) = fields.get(3)
                     {
+                        if messages.len() == MAX_MESSAGES {
+                            messages.remove(0);
+                        }
                         messages.push(text.clone());
                     }
                     on_line(prefix, &fields);
