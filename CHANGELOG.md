@@ -83,6 +83,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - The source is kept when a selected subtitle track is converted or left out, or when cover art or other attachments are not carried into the output.
 - The encoded output is flushed to disk before the source is deleted; if the flush fails, the source is kept.
 - Removing or clearing a ripped job only deletes a staging directory under the staging root, never a directory named after a disc title elsewhere.
+- Restarting the daemon no longer marks jobs as outside `browse_root` because their source was deleted or the share is not mounted yet. Finished jobs keep their history, and a staged rip is no longer swept while its job still exists.
 
 ### Known limitations
 

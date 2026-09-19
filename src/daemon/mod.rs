@@ -384,34 +384,51 @@ fn restore_state(
 ) -> (DaemonState, Vec<(u64, String)>) {
     let mut restored = crate::queue::state::load(queue_file);
     let browse_root = config.daemon.browse_root.clone();
-    for job in &mut restored.state.jobs {
-        // Staged rips live in the staging directory, outside any browse root.
-        let source = if job.temporary {
-            Some(job.path.clone())
-        } else {
-            api::confined_path(&job.path, &browse_root)
-        };
-        let output = job.output_path.as_ref().and_then(|output| {
-            let parent = api::confined_path(output.parent()?, &browse_root)?;
-            Some(parent.join(output.file_name()?))
-        });
-        if source.is_none() || (job.output_path.is_some() && output.is_none()) {
-            // The queue API includes paths, so completed history is dropped
-            // too when a newly tightened root excludes it.
-            job.path = std::path::PathBuf::from("<outside browse_root>");
-            job.output_path = None;
-            if !is_terminal(&job.status) {
-                job.status = JobStatus::Error {
-                    message: "Saved job is outside the configured browse root".to_string(),
-                };
+    let root = if browse_root.is_empty() {
+        None
+    } else {
+        match std::path::PathBuf::from(&browse_root).canonicalize() {
+            Ok(root) => Some(root),
+            Err(e) => {
+                warn!(
+                    "browse_root {browse_root} cannot be resolved ({e}); saved jobs are kept as they are"
+                );
+                None
             }
-        } else if let Some(source) = source
-            && !browse_root.is_empty()
-        {
-            // The resolved paths that passed confinement, not the spellings.
-            job.path = source;
-            if job.output_path.is_some() {
-                job.output_path = output;
+        }
+    };
+    if let Some(root) = root {
+        // Missing files resolve through their deepest existing folder.
+        let confine = |path: &std::path::Path| {
+            api::resolve_through_existing(path).filter(|resolved| resolved.starts_with(&root))
+        };
+        for job in &mut restored.state.jobs {
+            // Staged rips live in the staging directory, outside any browse root.
+            let source = if job.temporary {
+                Some(job.path.clone())
+            } else {
+                confine(&job.path)
+            };
+            let output = job
+                .output_path
+                .as_ref()
+                .and_then(|output| Some(confine(output.parent()?)?.join(output.file_name()?)));
+            if source.is_none() || (job.output_path.is_some() && output.is_none()) {
+                // The queue API includes paths, so completed history is dropped
+                // too when a newly tightened root excludes it.
+                job.path = std::path::PathBuf::from("<outside browse_root>");
+                job.output_path = None;
+                if !is_terminal(&job.status) {
+                    job.status = JobStatus::Error {
+                        message: "Saved job is outside the configured browse root".to_string(),
+                    };
+                }
+            } else if let Some(source) = source {
+                // The resolved paths that passed confinement, not the spellings.
+                job.path = source;
+                if job.output_path.is_some() {
+                    job.output_path = output;
+                }
             }
         }
     }
@@ -1485,6 +1502,57 @@ mod tests {
         assert!(matches!(state.queue.state.jobs[1].status, JobStatus::Ready));
         assert_eq!(state.queue.state.jobs[1].path, staged);
         assert!(staged.exists());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn restored_jobs_whose_files_are_gone_keep_their_paths() {
+        let base = std::env::temp_dir().join(format!("av1c_restore_gone_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let output = root.join("movie_av1.mkv");
+        std::fs::write(&output, b"encoded").unwrap();
+
+        let mut queue = crate::queue::QueueState::new();
+        let mut done = EncodingJob::new(root.join("movie.mkv"));
+        done.output_path = Some(output);
+        done.status = JobStatus::Done;
+        queue.jobs.push(done);
+        let mut pending = EncodingJob::new(root.join("gone").join("other.mkv"));
+        pending.status = JobStatus::Pending;
+        queue.jobs.push(pending);
+        let queue_file = base.join("queue.json");
+        crate::queue::state::save(
+            &queue_file,
+            &crate::queue::QueueRef {
+                state: &queue,
+                ids: &[1, 2],
+                next_id: 3,
+            },
+        )
+        .unwrap();
+        let config_with_root = |browse_root: &std::path::Path| AppConfig {
+            daemon: crate::config::DaemonConfig {
+                browse_root: browse_root.to_string_lossy().into_owned(),
+                ..crate::config::DaemonConfig::default()
+            },
+            ..AppConfig::default()
+        };
+
+        let (state, reprobe) = restore_state(config_with_root(&root), &queue_file);
+        let jobs = &state.queue.state.jobs;
+        assert!(matches!(jobs[0].status, JobStatus::Done));
+        assert_eq!(jobs[0].path, root.canonicalize().unwrap().join("movie.mkv"));
+        assert!(jobs[0].output_path.is_some());
+        assert!(!matches!(jobs[1].status, JobStatus::Error { .. }));
+        assert!(reprobe.iter().any(|(id, _)| *id == 2));
+
+        // A root that is not mounted leaves every saved job as it was.
+        let (state, _) = restore_state(config_with_root(&base.join("unmounted")), &queue_file);
+        let jobs = &state.queue.state.jobs;
+        assert!(matches!(jobs[0].status, JobStatus::Done));
+        assert_eq!(jobs[0].path, root.join("movie.mkv"));
         let _ = std::fs::remove_dir_all(base);
     }
 

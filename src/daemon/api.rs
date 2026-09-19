@@ -625,6 +625,22 @@ pub(crate) fn confined_path(path: &Path, root: &str) -> Option<PathBuf> {
     path.starts_with(root).then_some(path)
 }
 
+/// `path` resolved through its deepest existing ancestor, with the missing
+/// components appended as written. `None` when a missing component is not a
+/// plain name, or when no ancestor exists.
+pub(crate) fn resolve_through_existing(path: &Path) -> Option<PathBuf> {
+    for ancestor in path.ancestors() {
+        if let Ok(resolved) = ancestor.canonicalize() {
+            let rest = path.strip_prefix(ancestor).ok()?;
+            return rest
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_)))
+                .then(|| resolved.join(rest));
+        }
+    }
+    None
+}
+
 /// Expand an add request into concrete video files and queue them.
 pub fn queue_add(
     shared: &SharedState,
