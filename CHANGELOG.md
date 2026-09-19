@@ -125,6 +125,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Web: going back to the drive picker in the disc dialog no longer shows the previous scan's error.
 - Web: a status poll that hangs, for example after the computer sleeps, times out after 10 seconds and shows the offline banner.
 - Web: dragging a text selection out of a dialog no longer closes it, or cancels a running disc scan.
+- Web: Windows paths in the file browser show backslash separators, including after the drive.
 
 ### Known limitations
 

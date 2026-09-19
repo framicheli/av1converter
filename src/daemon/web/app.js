@@ -1332,6 +1332,7 @@ function renderCrumbs(path) {
   const crumbs = $("browser-path");
   crumbs.textContent = "";
   const sep = pathSep(path);
+  crumbs.dataset.sep = sep;
   const unc = path.startsWith("\\\\");
   const drive = /^[A-Za-z]:/.exec(path);
   let root;

@@ -381,6 +381,8 @@ fieldset.field-group > legend {
 }
 /* The root crumb is itself "/" and takes no separator. */
 .crumbs .crumb:not(:first-child):not(:last-child)::after { content: "/"; margin-left: 6px; color: var(--border); }
+/* Windows paths use backslashes, and the drive crumb takes one too. */
+.crumbs[data-sep="\\"] .crumb:not(:last-child)::after { content: "\\"; margin-left: 6px; color: var(--border); }
 .crumbs .crumb[aria-current] { color: var(--ink); opacity: 1; }
 @media (hover: hover) {
   .crumbs .crumb:not(:disabled):hover { background: var(--track); color: var(--ink); border-color: transparent; }
