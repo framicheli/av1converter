@@ -8,7 +8,8 @@ use ratatui::{
 };
 
 /// Rows `text` fills when word-wrapped to `width` cells. Words break at
-/// spaces only; a word wider than the row spills onto further rows.
+/// spaces; a word wider than the row breaks between characters, as ratatui
+/// wraps it.
 pub fn wrapped_rows(text: &str, width: u16) -> u16 {
     let width = usize::from(width.max(1));
     let rows: usize = text
@@ -18,17 +19,26 @@ pub fn wrapped_rows(text: &str, width: u16) -> u16 {
             let mut used = 0;
             for word in line.split(' ').filter(|word| !word.is_empty()) {
                 let word_width = Line::raw(word).width();
-                if used == 0 {
-                    used = word_width;
-                } else if used + 1 + word_width <= width {
+                if used > 0 && used + 1 + word_width <= width {
                     used += 1 + word_width;
-                } else {
-                    rows += 1;
-                    used = word_width;
+                    continue;
                 }
-                if used > width {
-                    rows += (used - 1) / width;
-                    used = (used - 1) % width + 1;
+                if used > 0 {
+                    rows += 1;
+                    used = 0;
+                }
+                if word_width <= width {
+                    used = word_width;
+                    continue;
+                }
+                let mut buf = [0u8; 4];
+                for ch in word.chars() {
+                    let ch_width = Line::raw(&*ch.encode_utf8(&mut buf)).width();
+                    if used + ch_width > width {
+                        rows += 1;
+                        used = 0;
+                    }
+                    used += ch_width;
                 }
             }
             rows
@@ -126,4 +136,17 @@ pub fn get_quality_description(lang: Language, score: f64) -> &'static str {
         Msg::QualBad
     };
     t(lang, msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrapped_rows;
+
+    #[test]
+    fn a_long_cjk_word_fills_rows_by_whole_characters() {
+        assert_eq!(wrapped_rows(&"字".repeat(41), 41), 3);
+        assert_eq!(wrapped_rows(&"字".repeat(20), 41), 1);
+        assert_eq!(wrapped_rows(&"a".repeat(82), 41), 2);
+        assert_eq!(wrapped_rows("word word", 4), 2);
+    }
 }
