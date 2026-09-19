@@ -94,6 +94,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - The output directory disc rips need can be set in the web UI and TUI while "same directory" is on; the add-to-queue toast reports skipped and already-queued files separately and is translated.
 - Web UI: closing a track dialog without saving no longer opens the next job's dialog a second later, and an automatic track dialog no longer opens over another dialog.
 - An infinite `DURATION` tag no longer makes the saved queue unreadable.
+- A recursive add skips an unreadable subfolder instead of stopping at it.
 
 ### Known limitations
 

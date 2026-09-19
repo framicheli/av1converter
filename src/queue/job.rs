@@ -338,10 +338,14 @@ fn collect_video_files_inner(
         if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return Ok(());
         }
-        let entry = entry?;
+        let Ok(entry) = entry else { continue };
         let path = entry.path();
         if path.is_dir() {
-            collect_video_files_inner(&path, paths, seen_dirs, seen_files, root, cancel)?;
+            if let Err(e) =
+                collect_video_files_inner(&path, paths, seen_dirs, seen_files, root, cancel)
+            {
+                warn!("Skipping {}: {e}", path.display());
+            }
         } else if is_video_file(&path) {
             let real = path.canonicalize().unwrap_or_else(|_| path.clone());
             if root.is_none_or(|root| real.starts_with(root)) && seen_files.insert(real.clone()) {
@@ -755,6 +759,27 @@ mod tests {
 
         assert!(found.is_empty());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_subfolder_does_not_end_the_walk() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("av1c_unreadable_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::create_dir_all(root.join("b")).unwrap();
+        std::fs::write(root.join("b/clip.mkv"), b"x").unwrap();
+        std::fs::set_permissions(root.join("a"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut found = Vec::new();
+
+        let result = collect_video_files_cancellable_result(&root, &mut found, &cancel);
+
+        std::fs::set_permissions(root.join("a"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(result.is_ok());
+        assert!(found.iter().any(|path| path.ends_with("b/clip.mkv")));
     }
 
     #[test]
