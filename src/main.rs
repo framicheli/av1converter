@@ -555,16 +555,17 @@ fn main() -> io::Result<()> {
 
     let _log_guard = utils::init_logging();
 
-    // Restore the terminal on a panic. The hook acts only for the main
-    // thread; worker-thread panics leave the running event loop's terminal
-    // untouched.
+    // Restore the terminal on a panic of the main thread. Worker-thread panics
+    // go to the log and leave the running event loop's terminal untouched.
     let main_thread = std::thread::current().id();
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if std::thread::current().id() == main_thread {
             let _ = restore_terminal();
+            original_hook(info);
+        } else {
+            tracing::error!("{info}");
         }
-        original_hook(info);
     }));
 
     // Setup terminal

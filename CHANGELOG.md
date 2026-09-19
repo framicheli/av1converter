@@ -115,6 +115,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - TUI: Ctrl+C while shutting down no longer opens a dialog that cannot be answered, and `q` on the "terminal too small" screen asks to quit even while a settings field is being edited, instead of typing into it.
 - TUI: notices in Chinese no longer lose their last line, because rows for text without spaces are counted the way the terminal wraps them.
 - TUI: in the disc folder picker, Space on `..` scans the open folder, as the help bar says, instead of going up a level.
+- TUI: a panic in a background thread goes to the log instead of being printed over the screen.
 
 ### Known limitations
 
