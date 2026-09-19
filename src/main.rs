@@ -826,9 +826,7 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
             app.cancel_track_config();
         }
         ConfirmAction::DiscardConfigChanges => {
-            if let Some(snapshot) = app.config_snapshot.take() {
-                app.config = snapshot;
-            }
+            app.config = app.saved_config.clone();
             app.navigate_to_home();
         }
         ConfirmAction::CancelAnalysis => {
@@ -1261,14 +1259,11 @@ fn validate_and_save_config(
 /// Validate and persist the configuration screen values.
 fn save_config(app: &mut App) {
     let lang = app.config.language;
-    let previous = app
-        .config_snapshot
-        .clone()
-        .unwrap_or_else(|| app.config.clone());
+    let previous = app.saved_config.clone();
     if let Err(error) = validate_and_save_config(&mut app.config, &previous) {
         app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
     } else {
-        app.config_snapshot = Some(app.config.clone());
+        app.saved_config = app.config.clone();
         app.encoder_deps =
             utils::DependencyStatus::encoder_available(app.config.encoder.ffmpeg_name());
         let output_directory_missing = app
@@ -1442,15 +1437,12 @@ fn apply_autostart(app: &mut App, enable: bool) {
         return;
     }
     if enable {
-        let previous = app
-            .config_snapshot
-            .clone()
-            .unwrap_or_else(|| app.config.clone());
+        let previous = app.saved_config.clone();
         if let Err(e) = enable_daemon_config(&mut app.config, &previous) {
             app.set_timed_error(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 5);
             return;
         }
-        app.config_snapshot = Some(app.config.clone());
+        app.saved_config = app.config.clone();
         match daemon::service::install() {
             Ok(outcome) => {
                 let mut msg = t(lang, Msg::DaemonServiceInstalled).to_string();

@@ -64,6 +64,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Applying track choices to remaining files copies the Dolby Vision choice only to files of the same Dolby Vision profile. A profile 5 file no longer inherits "keep Dolby Vision" from a profile 8 file, and a profile 8 file no longer loses its Dolby Vision because a profile 5 file was set to HDR10.
 - A job set to keep Dolby Vision that runs on a hardware encoder, which converts it to HDR10, now keeps its source instead of deleting it after VMAF passes. The log says why.
 - Sources with streams the output does not carry, such as a second video stream, a data stream (timecode, GPS) or a Dolby Vision profile 7 enhancement layer, are no longer deleted after a passing VMAF check. Sources whose streams cannot be probed are kept too.
+- The TUI encodes and analyses with the saved configuration. Unsaved edits on the Configuration screen, such as a lower VMAF threshold or turning on source deletion, no longer apply to the next job.
 - Portrait 4K uses the 4K VMAF models (long side ≥ 3840).
 - Dolby Vision without a readable `dv_profile` fails analysis instead of encoding IPT as bare PQ.
 - `film_grain` is SVT-AV1 only in settings; the web Settings tab no longer breaks when a hardware encoder is selected.

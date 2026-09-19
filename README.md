@@ -185,7 +185,7 @@ Legacy aliases: --daemon is --start; --daemon-foreground is --start-foreground
 
 ### Workflow
 
-1. **Home menu** — Open a single file, a folder, or a folder recursively; rip a DVD or Blu-ray; or go to Configuration
+1. **Home menu** — Open a single file, a folder, or a folder recursively; rip a DVD or Blu-ray; or go to Configuration. Encodes and analysis use the saved configuration; edits on the Configuration screen take effect once saved
 2. **Selection** — Navigate with arrow keys. For a file, `Enter` picks it; for a folder, `Enter` opens it and `Space` selects the highlighted subfolder, or the open folder when the cursor is on `..` or a file. For a disc, pick the drive (skipped when there is only one), or open a disc folder or `.iso` image, then toggle titles with `Space`; extraction feeds the same steps below
 3. **File review** — Confirm the list of files found (multiple files or a folder only; a single file skips this step)
 4. **Analysis** — Each file is probed for its streams, resolution and HDR format

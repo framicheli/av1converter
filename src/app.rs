@@ -222,7 +222,9 @@ pub struct App {
     pub config_selected: usize,
     pub config_edit_buffer: Option<String>,
     pub config_edit_cursor: usize,
-    pub config_snapshot: Option<AppConfig>,
+    /// The configuration as last loaded or saved. Encodes, analysis and track
+    /// choices read it; the Settings screen edits `config`.
+    pub saved_config: AppConfig,
 
     // Finish screen
     pub finish_cursor: usize,
@@ -344,7 +346,6 @@ impl App {
             analysis_cancel_flag: Arc::new(AtomicBool::new(false)),
             folder_scan_receiver: None,
             folder_scan_cancel_flag: Arc::new(AtomicBool::new(false)),
-            config,
             deps,
             vmaf_deps,
             opus_deps,
@@ -359,7 +360,8 @@ impl App {
             config_selected: 0,
             config_edit_buffer: None,
             config_edit_cursor: 0,
-            config_snapshot: None,
+            saved_config: config.clone(),
+            config,
             finish_cursor: 0,
             finish_list_state,
         }
@@ -451,7 +453,7 @@ impl App {
             return;
         }
 
-        if self.config.encoder == Encoder::SvtAv1 {
+        if self.saved_config.encoder == Encoder::SvtAv1 {
             let recommended = DvMode::recommended_for(meta.dv_profile);
             self.dv_dialog = Some(dv_mode_index(recommended));
         } else if let Some(job) = self.current_config_job_mut() {
@@ -473,7 +475,7 @@ impl App {
         if meta.hdr_type != HdrType::DolbyVision {
             return;
         }
-        if self.config.encoder != Encoder::SvtAv1 {
+        if self.saved_config.encoder != Encoder::SvtAv1 {
             let msg = crate::i18n::t(self.config.language, crate::i18n::Msg::DvRequiresSvt);
             self.set_timed_message(msg, 3);
             return;
@@ -578,16 +580,12 @@ impl App {
 
     pub fn navigate_to_configuration(&mut self) {
         self.config_selected = 0;
-        self.config_snapshot = Some(self.config.clone());
         self.current_screen = Screen::Configuration;
     }
 
-    /// Whether the live config has diverged from the snapshot taken on entry
-    /// to the Configuration screen
+    /// Whether the live config has diverged from the saved one.
     pub fn config_is_dirty(&self) -> bool {
-        self.config_snapshot
-            .as_ref()
-            .is_some_and(|s| *s != self.config)
+        self.saved_config != self.config
     }
 
     pub fn navigate_to_file_confirm(&mut self) {
@@ -999,9 +997,9 @@ impl App {
 
     /// Apply one completed probe to its job.
     fn apply_analysis_result(&mut self, index: usize, result: Result<AnalysisResult, AppError>) {
-        let output_config = self.config.output.clone();
-        let track_config = self.config.tracks.clone();
-        let audio_config = self.config.audio.clone();
+        let output_config = self.saved_config.output.clone();
+        let track_config = self.saved_config.tracks.clone();
+        let audio_config = self.saved_config.audio.clone();
         let lang = self.config.language;
         let Some(job) = self.queue.jobs.get_mut(index) else {
             return;
@@ -1205,8 +1203,8 @@ impl App {
             &subtitle_selected,
             dv_mode,
             source_dv_profile,
-            &self.config.output,
-            self.config.encoder,
+            &self.saved_config.output,
+            self.saved_config.encoder,
         );
         make_output_paths_unique(&mut self.queue.jobs);
         let configured = applied - usize::from(current_awaiting) + 1;
@@ -1278,8 +1276,8 @@ impl App {
         let follow_active = self.current_screen != Screen::Queue
             || self.queue_cursor == self.queue.current_job_index;
 
-        let output_config = self.config.output.clone();
-        let audio_config = self.config.audio.clone();
+        let output_config = self.saved_config.output.clone();
+        let audio_config = self.saved_config.audio.clone();
 
         // Collect jobs to encode
         let worker_jobs: Vec<WorkerJob> = self
@@ -1390,7 +1388,7 @@ impl App {
         }
 
         let cancel_flag = self.cancel_flag.clone();
-        let config = self.config.clone();
+        let config = self.saved_config.clone();
 
         thread::spawn(move || {
             run_worker(worker_jobs, &config, &cancel_flag, &tx);
@@ -3028,5 +3026,45 @@ mod tests {
             JobStatus::Error { message } if message == "probe failed"
         ));
         assert_eq!(app.queue.error_count, 1);
+    }
+
+    #[test]
+    fn an_analysis_names_the_output_with_the_saved_suffix() {
+        let mut app = App::new();
+        app.saved_config.output.suffix = "_saved".to_string();
+        app.saved_config.output.same_directory = true;
+        app.saved_config.output.container = "mkv".to_string();
+        app.config = app.saved_config.clone();
+        app.config.output.suffix = "_unsaved".to_string();
+        let mut job = EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
+        job.status = JobStatus::Analyzing;
+        app.queue.jobs.push(job);
+        let exe = std::env::current_exe().unwrap();
+
+        app.apply_analysis_result(
+            0,
+            Ok(AnalysisResult {
+                metadata: crate::analyzer::VideoMetadata {
+                    width: 1920,
+                    height: 1080,
+                    hdr_type: HdrType::Sdr,
+                    dv_profile: None,
+                    dv_bl_compat: None,
+                    hdr10_static: None,
+                    codec_name: "h264".into(),
+                    frame_rate_num: 24,
+                    frame_rate_den: 1,
+                    duration_secs: 1.0,
+                },
+                audio_tracks: Vec::new(),
+                subtitle_tracks: Vec::new(),
+                source_identity: crate::queue::SourceIdentity::from_path(exe).unwrap(),
+            }),
+        );
+
+        assert_eq!(
+            app.queue.jobs[0].output_path,
+            Some(PathBuf::from("/tmp/movie_saved.mkv"))
+        );
     }
 }

@@ -723,3 +723,59 @@ fn extra_video_or_data_streams_keep_the_source() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The TUI encodes with the saved settings: an unsaved "delete source" and
+/// threshold left on the Settings screen do not delete the source.
+#[test]
+fn unsaved_tui_settings_do_not_reach_the_encode() {
+    if !(DependencyStatus::check()
+        && DependencyStatus::encoder_available("libsvtav1")
+        && DependencyStatus::vmaf_available())
+    {
+        eprintln!("skipping: this FFmpeg cannot encode AV1 and score VMAF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_unsaved_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(input) = make_video_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+
+    let mut app = crate::app::App::new();
+    app.saved_config.encoder = Encoder::SvtAv1;
+    app.saved_config.quality.vmaf_enabled = true;
+    app.saved_config.quality.vmaf_threshold = 1.0;
+    app.saved_config.quality.delete_source_on_success = false;
+    app.saved_config.disc.staging_directory = Some(dir.to_string_lossy().into_owned());
+    app.config = app.saved_config.clone();
+    app.config.quality.delete_source_on_success = true;
+
+    let mut job = crate::queue::EncodingJob::new(input.clone());
+    job.metadata = Some(metadata_for(&input));
+    job.source_identity = Some(crate::queue::SourceIdentity::from_path(&input).unwrap());
+    job.output_path = Some(dir.join("out.mkv"));
+    job.status = crate::queue::JobStatus::Ready;
+    app.queue.jobs.push(job);
+
+    app.start_encoding();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while app.encoding_active && std::time::Instant::now() < deadline {
+        app.process_progress_messages();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    assert!(!app.encoding_active, "the encode did not finish");
+    assert!(
+        matches!(
+            app.queue.jobs[0].status,
+            crate::queue::JobStatus::DoneWithVmaf { .. }
+        ),
+        "{:?}",
+        app.queue.jobs[0].status
+    );
+    assert!(input.exists(), "an unsaved setting deleted the source");
+    let _ = std::fs::remove_dir_all(&dir);
+}
