@@ -107,6 +107,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - The default staging folder is private to the user (`av1converter-staging-<uid>`, mode 0700 on Unix), so another user on the machine can no longer claim it or tamper with a rip.
 - A rip cut short by a crash is cleaned up when the TUI or the daemon next starts, instead of lingering for 30 minutes or, after a TUI crash, until the daemon runs.
 - Rips from a `BDMV` or `VIDEO_TS` folder are named after the folder above it, and rips from an image drop the `.iso` extension from the name.
+- When a rip run stops on an error, the titles it never reached are skipped with that error instead of being shown and counted as cancelled.
 
 ### Known limitations
 

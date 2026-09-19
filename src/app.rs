@@ -1745,7 +1745,7 @@ impl App {
                 self.queue.error_count += 1;
             } else {
                 job.status = JobStatus::Skipped {
-                    reason: "Cancelled".to_string(),
+                    reason: message.to_string(),
                 };
                 self.queue.skipped_count += 1;
             }

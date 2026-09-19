@@ -530,13 +530,13 @@ fn apply_disc_event(
                         }
                     } else {
                         JobStatus::Skipped {
-                            reason: "Cancelled".to_string(),
+                            reason: message.clone(),
                         }
                     };
                     if failed {
                         state.queue.state.error_count += 1;
                     } else {
-                        state.queue.state.count_cancelled(1);
+                        state.queue.state.skipped_count += 1;
                     }
                 }
                 state.disc.error = Some(message);
@@ -1283,6 +1283,54 @@ mod tests {
 
     /// An extracted title is repointed at its file and handed to the prober
     /// right away, while the drive carries on with the next one.
+    #[test]
+    fn a_run_stopped_by_an_error_does_not_count_its_titles_as_cancelled() {
+        use crate::disc::DiscError;
+        use crate::disc::worker::DiscEvent;
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (probe_tx, _probe_rx) = mpsc::channel();
+        let ids: Vec<u64> = {
+            let mut state = lock(&shared);
+            let ids = ["Title 0", "Title 1", "Title 2"]
+                .iter()
+                .map(|name| {
+                    let mut job = EncodingJob::new(std::path::PathBuf::from(*name));
+                    job.status = JobStatus::Ripping { progress: 0.0 };
+                    job.temporary = true;
+                    state.queue.push(job)
+                })
+                .collect();
+            state.disc.job_ids = ids;
+            state.disc.active = true;
+            state.disc.job_ids.clone()
+        };
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::Error {
+                index: 0,
+                error: DiscError::DiscChanged,
+            },
+        );
+
+        let state = lock(&shared);
+        let message = DiscError::DiscChanged.message(state.config.language);
+        assert!(matches!(
+            state.queue.job_by_id(ids[0]).unwrap().status,
+            JobStatus::Error { .. }
+        ));
+        for id in &ids[1..] {
+            assert!(matches!(
+                &state.queue.job_by_id(*id).unwrap().status,
+                JobStatus::Skipped { reason } if *reason == message
+            ));
+        }
+        assert_eq!(state.queue.state.cancelled_count, 0);
+        assert_eq!(state.queue.state.skipped_count, 2);
+    }
+
     #[test]
     fn a_ripped_title_goes_straight_to_the_prober() {
         use crate::disc::worker::DiscEvent;
