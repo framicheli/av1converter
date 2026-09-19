@@ -350,6 +350,11 @@ impl AppConfig {
         if self.daemon.port == 0 {
             return Err("daemon port must be between 1 and 65535".to_string());
         }
+        if !self.daemon.auth_token.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(
+                crate::i18n::t(self.language, crate::i18n::Msg::InvalidAuthToken).to_string(),
+            );
+        }
         if self
             .daemon
             .bind_address
@@ -750,6 +755,19 @@ mod tests {
         cfg.daemon.browse_root.clear();
         assert!(cfg.validate_settings().is_err());
         cfg.daemon.browse_root = "/tmp".to_string();
+        assert!(cfg.validate_settings().is_ok());
+    }
+
+    #[test]
+    fn an_access_token_must_be_printable_ascii() {
+        let mut cfg = AppConfig::default();
+        cfg.daemon.auth_token = "é".repeat(32);
+        assert!(cfg.validate_settings().is_err());
+        cfg.daemon.auth_token = "a b".repeat(11);
+        assert!(cfg.validate_settings().is_err());
+        cfg.daemon.auth_token = "a".repeat(32);
+        assert!(cfg.validate_settings().is_ok());
+        cfg.daemon.auth_token.clear();
         assert!(cfg.validate_settings().is_ok());
     }
 

@@ -264,6 +264,7 @@ pub enum Msg {
     InvalidAddress,
     InvalidPort,
     InvalidContainer,
+    InvalidAuthToken,
     OutputDirectoryMissing,
     CfgGroupTracks,
     CfgGroupDisc,
@@ -1954,6 +1955,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Le conteneur doit être mkv, mp4 ou webm",
             De => "Der Container muss mkv, mp4 oder webm sein",
             Zh => "容器必须是 mkv、mp4 或 webm",
+        },
+        Msg::InvalidAuthToken => match lang {
+            En => "Access token must use printable ASCII characters and no spaces",
+            It => "Il token di accesso deve usare caratteri ASCII stampabili, senza spazi",
+            Es => "El token de acceso debe usar caracteres ASCII imprimibles, sin espacios",
+            Fr => "Le jeton d'accès doit utiliser des caractères ASCII imprimables, sans espaces",
+            De => "Das Zugriffstoken darf nur druckbare ASCII-Zeichen ohne Leerzeichen enthalten",
+            Zh => "访问令牌只能使用可打印的 ASCII 字符，且不能包含空格",
         },
         Msg::OutputDirectoryMissing => match lang {
             En => {

@@ -95,6 +95,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Web UI: closing a track dialog without saving no longer opens the next job's dialog a second later, and an automatic track dialog no longer opens over another dialog.
 - An infinite `DURATION` tag no longer makes the saved queue unreadable.
 - A recursive add skips an unreadable subfolder instead of stopping at it.
+- The access token must be printable ASCII without spaces, so the web UI can always send it.
 
 ### Known limitations
 
