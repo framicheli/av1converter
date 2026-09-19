@@ -96,11 +96,9 @@ fn encodes_a_frame(name: &str) -> bool {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    crate::utils::child::configure(&mut command);
-    let Ok(mut child) = command.spawn() else {
+    let Ok((mut child, _child)) = crate::utils::child::spawn(&mut command) else {
         return false;
     };
-    let _child = crate::utils::child::ChildGuard::register(child.id());
     let deadline = Instant::now() + PROBE_TIMEOUT;
     loop {
         match child.try_wait() {

@@ -479,11 +479,8 @@ fn run_command(
         return Err(AppError::Cancelled);
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    crate::utils::child::configure(command);
-    let mut child = command
-        .spawn()
+    let (mut child, _child) = crate::utils::child::spawn(command)
         .map_err(|e| AppError::Analysis(format!("Failed to execute ffprobe: {e}")))?;
-    let _child = crate::utils::child::ChildGuard::register(child.id());
     let mut stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");
     let stdout_reader = std::thread::spawn(move || read_capped(&mut stdout, FFPROBE_STDOUT_LIMIT));

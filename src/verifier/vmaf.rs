@@ -196,12 +196,10 @@ pub fn calculate_vmaf(
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr_file));
-    crate::utils::child::configure(&mut ffmpeg);
-    let mut child = ffmpeg.spawn().map_err(|e| {
+    let (mut child, _child) = crate::utils::child::spawn(&mut ffmpeg).map_err(|e| {
         let _ = std::fs::remove_file(&stderr_path);
         AppError::CommandExecution(format!("Failed to run ffmpeg for VMAF: {e}"))
     })?;
-    let _child = crate::utils::child::ChildGuard::register(child.id());
 
     let waited = wait_or_cancel(&mut child, cancel_flag);
     let status = match waited {

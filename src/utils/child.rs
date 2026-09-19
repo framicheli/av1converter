@@ -17,15 +17,19 @@ fn lock() -> std::sync::MutexGuard<'static, HashMap<u32, Option<u64>>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Put the child in its own process group so [`kill_all`] can reach helpers.
-pub fn configure(command: &mut Command) {
+/// Spawn `command` in its own process group and register it for
+/// [`kill_all`]. The registry stays locked from spawn to registration.
+pub fn spawn(command: &mut Command) -> std::io::Result<(Child, ChildGuard)> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    #[cfg(not(unix))]
-    let _ = command;
+    let mut live = lock();
+    let child = command.spawn()?;
+    let pid = child.id();
+    live.insert(pid, process_starttime(pid));
+    Ok((child, ChildGuard { pid }))
 }
 
 /// Unregisters `pid` when dropped, including on panic after spawn.
@@ -34,11 +38,6 @@ pub struct ChildGuard {
 }
 
 impl ChildGuard {
-    pub fn register(pid: u32) -> Self {
-        lock().insert(pid, process_starttime(pid));
-        Self { pid }
-    }
-
     /// Drop the pid from the live set without waiting for `Drop`, so a
     /// reaped child cannot be mistaken for a reused pid by [`kill_all`].
     pub fn unregister(pid: u32) {
@@ -162,5 +161,19 @@ fn process_starttime(pid: u32) -> Option<u64> {
     {
         let _ = pid;
         None
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    #[test]
+    fn a_spawned_child_is_registered_when_spawn_returns() {
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        let (mut child, guard) = super::spawn(&mut command).unwrap();
+        let registered = super::lock().contains_key(&child.id());
+        super::kill_and_wait(&mut child);
+        drop(guard);
+        assert!(registered);
     }
 }

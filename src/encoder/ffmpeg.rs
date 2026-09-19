@@ -186,9 +186,8 @@ pub fn encode_video(
         .args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr_file));
-    crate::utils::child::configure(&mut ffmpeg);
-    let mut child = match ffmpeg.spawn() {
-        Ok(c) => c,
+    let (mut child, _child) = match crate::utils::child::spawn(&mut ffmpeg) {
+        Ok(spawned) => spawned,
         Err(e) => {
             let _ = std::fs::remove_file(&progress_file);
             let _ = std::fs::remove_file(&stderr_path);
@@ -196,7 +195,6 @@ pub fn encode_video(
             return EncodeResult::Error(format!("Failed to start ffmpeg: {e}"));
         }
     };
-    let _child = crate::utils::child::ChildGuard::register(child.id());
 
     // A panic in the loop still kills ffmpeg and removes the scratch file.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
