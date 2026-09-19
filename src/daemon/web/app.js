@@ -130,7 +130,12 @@ async function api(path, options) {
     error.unauthorized = true;
     throw error;
   }
-  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(body.error || `HTTP ${response.status}`);
+    error.status = response.status;
+    error.needsConfirm = body.needs_confirm === true;
+    throw error;
+  }
   return body;
 }
 
@@ -833,13 +838,22 @@ $("btn-cancel-disc").addEventListener("click", async () => {
 
 $("btn-clear").addEventListener("click", async () => {
   if (clearingFinished) return;
-  if (hasTemporaryFinished && !await askConfirm(tr("clear_finished_rip_prompt"))) return;
+  let confirm = hasTemporaryFinished;
+  if (confirm && !await askConfirm(tr("clear_finished_rip_prompt"))) return;
   const button = $("btn-clear");
   clearingFinished = true;
   button.setAttribute("aria-busy", "true");
   updateClearFinished();
   try {
-    const r = await post("/api/queue/clear_finished");
+    let r;
+    try {
+      r = await post("/api/queue/clear_finished", { confirm });
+    } catch (e) {
+      // The server found a finished rip this page had not seen yet.
+      if (!e.needsConfirm) throw e;
+      if (!await askConfirm(tr("clear_finished_rip_prompt"))) return;
+      r = await post("/api/queue/clear_finished", { confirm: true });
+    }
     toast(trf("removed_finished", { n: r.removed }));
     forceRefreshQueue();
   } catch (e) { toast(e.message, true); }

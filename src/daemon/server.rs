@@ -273,7 +273,10 @@ fn handle_request(
         (Method::Post, "/api/discs/cancel") => api::discs_cancel(shared),
         (Method::Post, "/api/queue/cancel") => api::queue_cancel(shared),
         (Method::Post, "/api/queue/cancel_analysis") => api::queue_cancel_analysis(shared),
-        (Method::Post, "/api/queue/clear_finished") => api::queue_clear_finished(shared),
+        (Method::Post, "/api/queue/clear_finished") => match read_json_body(&mut request) {
+            Ok(body) => api::queue_clear_finished(shared, &body),
+            Err(resp) => resp,
+        },
         (Method::Post, "/api/settings") => match read_json_body(&mut request) {
             Ok(body) => api::settings_post(shared, &body, local_request),
             Err(resp) => resp,

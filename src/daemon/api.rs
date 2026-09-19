@@ -845,8 +845,10 @@ pub fn queue_cancel_analysis(shared: &SharedState) -> (u16, Value) {
     (200, json!({"ok": true, "skipped": skipped}))
 }
 
-/// Drop all jobs in terminal states.
-pub fn queue_clear_finished(shared: &SharedState) -> (u16, Value) {
+/// Drop all jobs in terminal states. When one of them is a ripped title, its
+/// rip is deleted too, and the request must carry `"confirm": true`; without
+/// it the answer is 409 with `needs_confirm` and nothing is removed.
+pub fn queue_clear_finished(shared: &SharedState, body: &Value) -> (u16, Value) {
     let mut state = lock(shared);
     let finished: Vec<(u64, Option<PathBuf>)> = state
         .queue
@@ -854,6 +856,17 @@ pub fn queue_clear_finished(shared: &SharedState) -> (u16, Value) {
         .filter(|(_, job)| is_terminal(&job.status))
         .map(|(id, job)| (id, job.temporary.then(|| job.path.clone())))
         .collect();
+    let confirmed = body.get("confirm").and_then(Value::as_bool) == Some(true);
+    if !confirmed && finished.iter().any(|(_, path)| path.is_some()) {
+        let lang = state.config.language;
+        return (
+            409,
+            json!({
+                "error": crate::i18n::t(lang, crate::i18n::Msg::WebClearFinishedRipPrompt),
+                "needs_confirm": true,
+            }),
+        );
+    }
     let removed = finished.len();
     let mut staged = Vec::new();
     for (id, path) in finished {
@@ -1622,7 +1635,8 @@ mod tests {
     #[cfg(unix)]
     use super::queue_add;
     use super::{
-        RecursiveScanGuard, queue, queue_cancel, queue_move_up, queue_remove, status, within_root,
+        RecursiveScanGuard, queue, queue_cancel, queue_clear_finished, queue_move_up, queue_remove,
+        status, within_root,
     };
     use crate::config::AppConfig;
     #[cfg(unix)]
@@ -1632,6 +1646,39 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn clearing_a_finished_rip_needs_confirmation() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut job = EncodingJob::new(PathBuf::from("/nonexistent/rip-1-ab/title_t00.mkv"));
+        job.status = JobStatus::DoneWithVmaf { score: 96.0 };
+        job.temporary = true;
+        state.queue.push(job);
+        let shared = Arc::new(Mutex::new(state));
+
+        let (code, body) = queue_clear_finished(&shared, &serde_json::json!({}));
+        assert_eq!(code, 409);
+        assert_eq!(body["needs_confirm"], true);
+        assert_eq!(lock(&shared).queue.state.jobs.len(), 1);
+
+        let (code, body) = queue_clear_finished(&shared, &serde_json::json!({"confirm": true}));
+        assert_eq!(code, 200);
+        assert_eq!(body["removed"], 1);
+        assert!(lock(&shared).queue.state.jobs.is_empty());
+    }
+
+    #[test]
+    fn clearing_finished_files_needs_no_confirmation() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut job = EncodingJob::new(PathBuf::from("/x/in.mkv"));
+        job.status = JobStatus::DoneWithVmaf { score: 96.0 };
+        state.queue.push(job);
+        let shared = Arc::new(Mutex::new(state));
+
+        let (code, body) = queue_clear_finished(&shared, &serde_json::json!({}));
+        assert_eq!(code, 200);
+        assert_eq!(body["removed"], 1);
+    }
 
     #[test]
     fn queue_rows_carry_crf_output_name_and_source_kept() {
