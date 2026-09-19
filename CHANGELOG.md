@@ -88,6 +88,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Ripping no longer fails with "disc changed" when the drive list was read before the disc finished loading; staged files carry the disc label.
 - First-run encoder detection encodes one test frame with each hardware AV1 encoder instead of matching GPU names, so Turing Quadros, AV1-decode-only GPUs and AMD cards are no longer given an encoder they cannot use; Windows no longer calls the deprecated wmic.
 - A config section with only some keys keeps the defaults for the rest instead of discarding the whole file; a config.toml that cannot be read is reported in the TUI status line.
+- Web settings cannot clear browse_root while the running daemon listens outside loopback, even when the saved bind address is loopback.
 
 ### Known limitations
 

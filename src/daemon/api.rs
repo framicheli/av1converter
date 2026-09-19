@@ -1449,7 +1449,7 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
     // Merging, the browse-root check and the config write all touch the
     // filesystem and run with no lock held, against a snapshot of the live
     // config and the queued paths.
-    let (live, job_paths) = {
+    let (live, job_paths, bound_publicly) = {
         let state = lock(shared);
         let paths: Vec<(PathBuf, Option<PathBuf>, bool)> = state
             .queue
@@ -1460,12 +1460,18 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
             .filter(|job| !is_terminal(&job.status))
             .map(|job| (job.path.clone(), job.output_path.clone(), job.temporary))
             .collect();
-        (state.config.clone(), paths)
+        (state.config.clone(), paths, state.bound_publicly)
     };
     let config = match merged_settings(body, &live, local_request) {
         Ok(config) => config,
         Err(e) => return (400, json!({"error": e})),
     };
+    if bound_publicly && config.daemon.browse_root.is_empty() {
+        return (
+            400,
+            json!({"error": "browse_root is required while the daemon listens outside loopback"}),
+        );
+    }
     if let Some(error) = queue_conflict(&live, &config, &job_paths, within_root) {
         return (409, json!({"error": error}));
     }
@@ -2129,6 +2135,8 @@ mod tests {
     mod settings {
         use super::super::*;
         use crate::config::{DaemonConfig, DiscConfig};
+        use crate::daemon::state::DaemonState;
+        use std::sync::Mutex;
 
         fn guarded() -> DaemonConfig {
             DaemonConfig {
@@ -2176,6 +2184,35 @@ mod tests {
             let merged = merged_settings(&hostile, &live(), false).unwrap();
             assert_eq!(merged.daemon, guarded());
             assert_eq!(merged.disc, live().disc);
+        }
+
+        /// A save that moves the bind address back to loopback cannot clear
+        /// `browse_root` while the running server still listens publicly.
+        #[test]
+        fn browse_root_cannot_be_cleared_while_bound_publicly() {
+            let root =
+                std::env::temp_dir().join(format!("av1c_bound_root_{}", std::process::id()));
+            std::fs::create_dir_all(&root).unwrap();
+            let live = AppConfig {
+                daemon: DaemonConfig {
+                    bind_address: "0.0.0.0".to_string(),
+                    allow_insecure_lan: true,
+                    browse_root: root.to_string_lossy().into_owned(),
+                    ..DaemonConfig::default()
+                },
+                ..AppConfig::default()
+            };
+            let shared = Arc::new(Mutex::new(DaemonState::new(live.clone())));
+            let mut body = serde_json::to_value(&live).unwrap();
+            body["daemon"]["bind_address"] = json!("127.0.0.1");
+            body["daemon"]["browse_root"] = json!("");
+
+            assert_eq!(settings_post(&shared, &body, true).0, 400);
+            assert_eq!(
+                lock(&shared).config.daemon.browse_root,
+                live.daemon.browse_root
+            );
+            let _ = std::fs::remove_dir_all(root);
         }
 
         /// Ordinary settings still apply, and are still sanitized on the way in.

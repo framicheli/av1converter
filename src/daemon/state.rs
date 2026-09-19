@@ -193,11 +193,14 @@ pub struct DaemonState {
     /// Cancel flag of the running probe. The prober installs a fresh one for
     /// each file it starts.
     pub analysis_cancel: Arc<AtomicBool>,
+    /// Whether the web server listens outside loopback; fixed at startup.
+    pub bound_publicly: bool,
 }
 
 impl DaemonState {
     pub fn new(config: AppConfig) -> Self {
         Self {
+            bound_publicly: config.daemon.binds_publicly(),
             queue: DaemonQueue::new(),
             config,
             encoding_active: false,
