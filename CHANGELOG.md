@@ -100,6 +100,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - `--stop`, systemd and launchd wait long enough for the daemon's final queue save.
 - Windows: an empty PID file left by a crash no longer blocks every start, and a failed `tasklist` no longer removes a running daemon's PID file.
 - Delete-on-success keeps a symlinked source rather than removing the link and reporting it deleted.
+- Adding files reads their identities without holding the daemon lock.
 
 ### Known limitations
 

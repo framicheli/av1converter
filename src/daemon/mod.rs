@@ -645,35 +645,34 @@ fn add_paths(
     let mut to_analyze: Vec<(u64, String)> = Vec::new();
     let requested = paths.len();
 
-    // Canonicalization touches the filesystem and runs with no lock held.
-    // Under the lock we also compare filesystem identities so two spellings
-    // of the same inode cannot both queue.
-    let (queued_paths, queued_identities): (
-        Vec<std::path::PathBuf>,
-        Vec<crate::queue::SourceIdentity>,
-    ) = {
-        let state = lock(shared);
-        let jobs: Vec<_> = state
-            .queue
-            .jobs_with_ids()
-            .filter(|(_, job)| !is_terminal(&job.status))
-            .map(|(_, job)| job.path.clone())
-            .collect();
-        let identities = jobs
-            .iter()
-            .filter_map(|path| crate::queue::SourceIdentity::from_path(path).ok())
-            .collect();
-        (jobs, identities)
-    };
+    // Canonicalization and identity reads touch the filesystem and run with
+    // no lock held. Under the lock we also compare filesystem identities so
+    // two spellings of the same inode cannot both queue.
+    let queued_paths: Vec<std::path::PathBuf> = lock(shared)
+        .queue
+        .jobs_with_ids()
+        .filter(|(_, job)| !is_terminal(&job.status))
+        .map(|(_, job)| job.path.clone())
+        .collect();
     let mut existing: std::collections::HashSet<std::path::PathBuf> = queued_paths
         .iter()
         .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
         .collect();
-    let mut existing_ids: std::collections::HashSet<crate::queue::SourceIdentity> =
-        queued_identities.into_iter().collect();
-    let canonical_paths: Vec<(std::path::PathBuf, std::path::PathBuf)> = paths
+    let mut existing_ids: std::collections::HashSet<crate::queue::SourceIdentity> = queued_paths
+        .iter()
+        .filter_map(|path| crate::queue::SourceIdentity::from_path(path).ok())
+        .collect();
+    let canonical_paths: Vec<(
+        std::path::PathBuf,
+        std::path::PathBuf,
+        Option<crate::queue::SourceIdentity>,
+    )> = paths
         .into_iter()
-        .map(|path| (path.canonicalize().unwrap_or_else(|_| path.clone()), path))
+        .map(|path| {
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            let identity = crate::queue::SourceIdentity::from_path(&canonical).ok();
+            (canonical, path, identity)
+        })
         .collect();
 
     {
@@ -703,7 +702,7 @@ fn add_paths(
         let live_root = std::path::PathBuf::from(&state.config.daemon.browse_root);
         let root_changed = state.config.daemon.browse_root != browse_root;
 
-        for (canonical, path) in canonical_paths {
+        for (canonical, path, identity) in canonical_paths {
             if root_changed
                 && !live_root.as_os_str().is_empty()
                 && !canonical.starts_with(&live_root)
@@ -711,7 +710,6 @@ fn add_paths(
                 filtered += 1;
                 continue;
             }
-            let identity = crate::queue::SourceIdentity::from_path(&canonical).ok();
             let path_dup = !existing.insert(canonical);
             let id_dup = identity
                 .as_ref()
