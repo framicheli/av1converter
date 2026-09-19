@@ -963,6 +963,7 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
     let subtitle_count = job.subtitle_tracks.len();
 
     match key {
+        KeyCode::Char('A') => app.apply_track_config_to_remaining(),
         KeyCode::Esc => {
             if app.encoding_active || app.disc_operation_active() {
                 app.navigate_to_queue();

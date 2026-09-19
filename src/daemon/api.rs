@@ -3,6 +3,8 @@ use crate::analyzer::{DvMode, HdrType};
 use crate::config::{AppConfig, Encoder};
 use crate::disc::worker::DiscEvent;
 use crate::i18n::Msg;
+pub use crate::queue::job::resolved_dv_mode;
+use crate::queue::job::{apply_to_remaining, apply_track_config};
 use crate::queue::{
     EncodingJob, JobStatus, collect_video_files_cancellable_result, collect_video_files_within,
     is_video_file, make_output_paths_unique,
@@ -181,16 +183,6 @@ fn tracks_editable(state: &super::state::DaemonState, id: u64) -> bool {
             .is_some_and(|job| matches!(job.status, JobStatus::Ready | JobStatus::AwaitingConfig))
 }
 
-/// The DV mode a job falls back to when nobody has chosen one: the profile's
-/// own recommendation on SVT-AV1, HDR10 on every other encoder.
-pub fn resolved_dv_mode(encoder: Encoder, dv_profile: Option<u8>) -> DvMode {
-    if encoder == Encoder::SvtAv1 {
-        DvMode::recommended_for(dv_profile)
-    } else {
-        DvMode::ToHdr10
-    }
-}
-
 const DV_KEEP: &str = "keep";
 const DV_HDR10: &str = "hdr10";
 
@@ -357,83 +349,6 @@ fn valid_indices(
     Ok(out)
 }
 
-/// Map one file's choices onto another file by track order. Extra target
-/// tracks keep their automatic selection instead of being silently dropped.
-// Order mapping targets same-layout batches; matching language/title is the
-// upgrade for mixed-layout ones.
-fn mapped_selection(
-    job: &EncodingJob,
-    audio_modes: &[Option<bool>],
-    subtitle_selected: &[bool],
-) -> TrackSelection {
-    let audio_indices = job
-        .audio_tracks
-        .iter()
-        .enumerate()
-        .filter(|(position, track)| {
-            audio_modes.get(*position).map_or_else(
-                || job.track_selection.audio_indices.contains(&track.index),
-                Option::is_some,
-            )
-        })
-        .map(|(_, track)| track.index)
-        .collect();
-    let audio_to_opus = job
-        .audio_tracks
-        .iter()
-        .enumerate()
-        .filter(|(position, track)| {
-            audio_modes.get(*position).map_or_else(
-                || job.track_selection.is_opus(track.index),
-                |mode| *mode == Some(true),
-            )
-        })
-        .map(|(_, track)| track.index)
-        .collect();
-    let subtitle_indices = job
-        .subtitle_tracks
-        .iter()
-        .enumerate()
-        .filter(|(position, track)| {
-            subtitle_selected
-                .get(*position)
-                .copied()
-                .unwrap_or_else(|| job.track_selection.subtitle_indices.contains(&track.index))
-        })
-        .map(|(_, track)| track.index)
-        .collect();
-    TrackSelection {
-        audio_indices,
-        subtitle_indices,
-        audio_to_opus,
-    }
-}
-
-fn apply_track_config(
-    job: &mut EncodingJob,
-    selection: TrackSelection,
-    remux_only: bool,
-    dv_mode: Option<DvMode>,
-    output: &crate::config::OutputConfig,
-    encoder: Encoder,
-) {
-    job.track_selection = selection;
-    job.remux_only = remux_only;
-    job.dv_mode = dv_mode;
-    if !remux_only
-        && job.dv_mode.is_none()
-        && let Some(profile) = job
-            .metadata
-            .as_ref()
-            .filter(|meta| meta.hdr_type == HdrType::DolbyVision)
-            .map(|meta| meta.dv_profile)
-    {
-        job.dv_mode = Some(resolved_dv_mode(encoder, profile));
-    }
-    job.generate_output_path(output);
-    job.status = JobStatus::Ready;
-}
-
 /// Replace one job's track selection and per-job options.
 #[allow(clippy::too_many_lines)]
 pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
@@ -571,29 +486,14 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        for job in &mut state.queue.state.jobs {
-            if !matches!(job.status, JobStatus::AwaitingConfig) {
-                continue;
-            }
-            let selection = mapped_selection(job, &audio_modes, &subtitle_selected);
-            let target_dv = job
-                .metadata
-                .as_ref()
-                .is_some_and(|meta| meta.hdr_type == HdrType::DolbyVision)
-                .then(|| dv_mode.or(job.dv_mode))
-                .flatten();
-            // Remux is decided per file at analysis time from its own codec.
-            let target_remux = job.remux_only;
-            apply_track_config(
-                job,
-                selection,
-                target_remux,
-                target_dv,
-                &output_config,
-                encoder,
-            );
-            applied_count += 1;
-        }
+        applied_count += apply_to_remaining(
+            &mut state.queue.state.jobs,
+            &audio_modes,
+            &subtitle_selected,
+            dv_mode,
+            &output_config,
+            encoder,
+        );
     }
     make_output_paths_unique(&mut state.queue.state.jobs);
     applied["applied"] = json!(applied_count);

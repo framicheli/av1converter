@@ -41,6 +41,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - TUI: with a single drive, the disc flow scans it straight away, as the web UI does.
 - TUI: the queue title shows overall progress and space saved, and the summary counts cancelled jobs apart from skipped ones.
 - TUI: encoding starts as soon as the first job's tracks are confirmed, and `t` reopens the tracks of any job not being encoded, as in the web UI.
+- TUI: `A` in track selection applies the choices to every file still waiting, matching tracks by order, as the web UI's "Apply to remaining files".
 
 ### Fixed
 

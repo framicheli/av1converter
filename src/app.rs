@@ -1149,6 +1149,33 @@ impl App {
         }
     }
 
+    /// Apply the current job's track choices to every job still awaiting its
+    /// tracks, matching tracks by position, then confirm the current job.
+    pub fn apply_track_config_to_remaining(&mut self) {
+        let index = self.queue.config_job_index;
+        if !self.is_track_configurable(index) {
+            return;
+        }
+        let job = &self.queue.jobs[index];
+        let current_awaiting = matches!(job.status, JobStatus::AwaitingConfig);
+        let (audio_modes, subtitle_selected) = crate::queue::job::track_choices(job);
+        let dv_mode = job.dv_mode;
+        let applied = crate::queue::job::apply_to_remaining(
+            &mut self.queue.jobs,
+            &audio_modes,
+            &subtitle_selected,
+            dv_mode,
+            &self.config.output,
+            self.config.encoder,
+        );
+        make_output_paths_unique(&mut self.queue.jobs);
+        let configured = applied - usize::from(current_awaiting) + 1;
+        self.confirm_track_config();
+        let message = crate::i18n::t(self.config.language, crate::i18n::Msg::WebTracksApplied)
+            .replace("{n}", &configured.to_string());
+        self.set_timed_success(&message, 4);
+    }
+
     /// Abandon the whole batch and return to Home, discarding the queue.
     pub fn cancel_track_config(&mut self) {
         if self.encoding_active || self.disc_operation_active() {
@@ -2504,6 +2531,42 @@ mod tests {
         assert_eq!(app.current_screen, Screen::TrackConfig);
         app.cancel_flag.store(true, Ordering::Release);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn applying_to_remaining_configures_every_awaiting_job() {
+        let mut app = App::new();
+        let track = |index| crate::tracks::AudioTrack {
+            index,
+            language: None,
+            codec: "ac3".to_string(),
+            channels: Some(2),
+            channel_layout: None,
+            title: None,
+            bitrate: None,
+            sample_rate: None,
+        };
+        app.queue.jobs = ["a.mkv", "b.mkv", "c.mkv"]
+            .iter()
+            .map(|name| {
+                let mut job = EncodingJob::new(PathBuf::from(name));
+                job.status = JobStatus::AwaitingConfig;
+                job.audio_tracks = vec![track(0), track(1)];
+                job.track_selection.audio_indices = vec![0];
+                job
+            })
+            .collect();
+        app.queue.jobs[0].track_selection.audio_indices = vec![1];
+        app.queue.jobs[0].track_selection.audio_to_opus = vec![1];
+        app.current_screen = Screen::TrackConfig;
+
+        app.apply_track_config_to_remaining();
+
+        for job in &app.queue.jobs {
+            assert!(matches!(job.status, JobStatus::Ready));
+            assert_eq!(job.track_selection.audio_indices, vec![1]);
+            assert_eq!(job.track_selection.audio_to_opus, vec![1]);
+        }
     }
 
     #[test]

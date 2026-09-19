@@ -369,6 +369,17 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         help_spans.push(Span::styled("←→", Style::default().fg(Color::Yellow)));
         help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::SwitchFile))));
     }
+    let others_awaiting = app.queue.jobs.iter().enumerate().any(|(index, job)| {
+        index != app.queue.config_job_index
+            && matches!(job.status, crate::queue::JobStatus::AwaitingConfig)
+    });
+    if others_awaiting {
+        help_spans.push(Span::styled("A", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::WebApplyRemaining)
+        )));
+    }
     help_spans.push(Span::styled(" [", Style::default().fg(Color::DarkGray)));
     help_spans.push(Span::styled(
         format!(" {} ", t(lang, Msg::Continue)),
