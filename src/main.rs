@@ -224,7 +224,7 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
 
 /// `--stop`: signal the background daemon and wait for it to exit.
 fn stop_daemon_entry() {
-    let lang = config::AppConfig::load().language;
+    let lang = config::AppConfig::load_existing().language;
     let Some(pid) = daemon::lifecycle::running_pid() else {
         println!("{}", t(lang, Msg::DaemonNotRunning));
         return;
@@ -266,7 +266,7 @@ fn restart_daemon_entry() -> io::Result<()> {
 
 /// `--status`: report whether the background daemon is running.
 fn daemon_status_entry() {
-    let mut config = config::AppConfig::load();
+    let mut config = config::AppConfig::load_existing();
     let lang = config.language;
     match daemon::lifecycle::running_pid() {
         Some(pid) => {
@@ -349,7 +349,7 @@ fn install_service_entry() -> io::Result<()> {
 
 /// `--uninstall-service`: remove the user unit/plist and stop the daemon.
 fn uninstall_service_entry() {
-    let lang = config::AppConfig::load().language;
+    let lang = config::AppConfig::load_existing().language;
     if !daemon::service::supported() {
         eprintln!("{}", t(lang, Msg::DaemonServiceUnsupported));
         std::process::exit(1);
@@ -366,7 +366,7 @@ fn uninstall_service_entry() {
 /// `--scan-discs`: print every drive and the titles of each loaded disc, as
 /// parsed from `MakeMKV`'s output. English, like `--help`.
 fn scan_discs_entry() {
-    let config = config::AppConfig::load();
+    let config = config::AppConfig::load_existing();
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let bin = match disc::find_makemkvcon(&config) {
         Ok(bin) => bin,

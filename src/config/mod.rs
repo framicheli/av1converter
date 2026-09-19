@@ -126,26 +126,8 @@ impl AppConfig {
     /// [`AppConfig::load`], plus the parse error when the file exists but
     /// could not be read.
     pub fn load_reporting() -> (Self, Option<String>) {
-        let config_path = Self::config_path();
-
-        if config_path.exists() {
-            match Self::load_from_file(&config_path) {
-                Ok(mut config) => {
-                    config.sanitize();
-                    info!("Loaded config from {}", config_path.display());
-                    return (config, None);
-                }
-                Err(e) => {
-                    // A file that failed to parse is left untouched, not
-                    // overwritten with defaults.
-                    warn!("Failed to load config: {e:?}. Using defaults.");
-                    eprintln!(
-                        "Could not parse {}: {e}\nUsing defaults; the file was left untouched.",
-                        config_path.display()
-                    );
-                    return (Self::default(), Some(e.to_string()));
-                }
-            }
+        if let Some(loaded) = Self::read_existing() {
+            return loaded;
         }
 
         let config = Self {
@@ -156,6 +138,40 @@ impl AppConfig {
             warn!("Failed to save default config: {e:?}");
         }
         (config, None)
+    }
+
+    /// Load the configuration file without creating it; defaults when there is
+    /// none.
+    pub fn load_existing() -> Self {
+        Self::read_existing()
+            .map(|(config, _)| config)
+            .unwrap_or_default()
+    }
+
+    /// The configuration file as loaded, with the parse error when it could
+    /// not be read; `None` when there is no file.
+    fn read_existing() -> Option<(Self, Option<String>)> {
+        let config_path = Self::config_path();
+        if !config_path.exists() {
+            return None;
+        }
+        Some(match Self::load_from_file(&config_path) {
+            Ok(mut config) => {
+                config.sanitize();
+                info!("Loaded config from {}", config_path.display());
+                (config, None)
+            }
+            Err(e) => {
+                // A file that failed to parse is left untouched, not
+                // overwritten with defaults.
+                warn!("Failed to load config: {e:?}. Using defaults.");
+                eprintln!(
+                    "Could not parse {}: {e}\nUsing defaults; the file was left untouched.",
+                    config_path.display()
+                );
+                (Self::default(), Some(e.to_string()))
+            }
+        })
     }
 
     /// Save configuration to TOML file
@@ -558,6 +574,15 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Reading without creating leaves no file behind.
+    #[test]
+    fn load_existing_does_not_create_a_config() {
+        let path = AppConfig::config_path();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(AppConfig::load_existing(), AppConfig::default());
+        assert!(!path.exists());
     }
 
     /// A section with only some keys keeps the rest at their defaults.

@@ -127,6 +127,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Web: dragging a text selection out of a dialog no longer closes it, or cancels a running disc scan.
 - Web: Windows paths in the file browser show backslash separators, including after the drive.
 - A blank `output_directory` in config.toml counts as unset instead of writing encodes to the working directory.
+- `--stop`, `--status`, `--uninstall-service` and `--scan-discs` no longer create config.toml or probe the GPU when there is no configuration yet.
 
 ### Known limitations
 
