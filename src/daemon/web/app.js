@@ -203,6 +203,8 @@ function setText(el, text) {
 
 // Offline mode keeps cached values visible and disables server mutations.
 let offline = false;
+// A status or queue read that takes longer than this counts as offline.
+const POLL_TIMEOUT_MS = 10000;
 function setOffline(next) {
   if (offline === next) return;
   offline = next;
@@ -244,7 +246,7 @@ async function poll() {
   pollInFlight = true;
   const seq = ++pollSeq;
   try {
-    const s = await api("/api/status");
+    const s = await api("/api/status", { signal: AbortSignal.timeout(POLL_TIMEOUT_MS) });
     setOffline(false);
     if (Object.keys(strings).length === 0) loadStrings().catch(() => {});
 
@@ -689,7 +691,7 @@ function forceRefreshQueue() {
 async function refreshQueueNow() {
   let data;
   try {
-    data = await api("/api/queue");
+    data = await api("/api/queue", { signal: AbortSignal.timeout(POLL_TIMEOUT_MS) });
   } catch {
     return; // the status poll owns the offline banner
   }
