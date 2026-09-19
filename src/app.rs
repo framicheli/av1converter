@@ -1524,6 +1524,16 @@ impl App {
         }
     }
 
+    /// Select every title, or clear the selection when all are selected.
+    pub fn toggle_all_disc_titles(&mut self) {
+        self.clear_message();
+        if self.disc_selected.len() == self.disc_titles.len() {
+            self.disc_selected.clear();
+        } else {
+            self.disc_selected = self.disc_titles.iter().map(|title| title.id).collect();
+        }
+    }
+
     /// Queue every marked title and start extracting them.
     pub fn start_disc_rip(&mut self) {
         let lang = self.config.language;
@@ -2443,6 +2453,26 @@ mod tests {
         assert!(!app.is_track_configurable(&ready));
         app.encoding_active = false;
         assert!(app.is_track_configurable(&ready));
+    }
+
+    #[test]
+    fn a_selects_every_title_then_clears_them() {
+        let mut app = App::new();
+        app.disc_titles = (0..3)
+            .map(|id| crate::disc::DiscTitle {
+                id,
+                name: format!("Title {id}"),
+                duration: std::time::Duration::from_mins(20),
+                size_bytes: 0,
+                chapters: 0,
+                tracks: Vec::new(),
+            })
+            .collect();
+        app.disc_selected = vec![1];
+        app.toggle_all_disc_titles();
+        assert_eq!(app.disc_selected, vec![0, 1, 2]);
+        app.toggle_all_disc_titles();
+        assert!(app.disc_selected.is_empty());
     }
 
     #[test]

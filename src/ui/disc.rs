@@ -228,6 +228,17 @@ pub fn render_disc_titles(f: &mut Frame, app: &mut App) {
         vec![
             ("↑↓", t(lang, Msg::Navigate)),
             ("Space", t(lang, Msg::Toggle)),
+            (
+                "a",
+                t(
+                    lang,
+                    if app.disc_selected.len() == app.disc_titles.len() {
+                        Msg::WebClearAll
+                    } else {
+                        Msg::WebSelectAll
+                    },
+                ),
+            ),
             ("Enter", t(lang, Msg::DiscRipAction)),
             ("PgUp/PgDn", t(lang, Msg::VideoInfo)),
             ("Esc", t(lang, Msg::Back)),

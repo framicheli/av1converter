@@ -880,6 +880,9 @@ fn handle_disc_key(app: &mut App, key: KeyCode) {
         KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
         KeyCode::Esc => app.leave_disc_screen(),
         KeyCode::Char(' ') if app.current_screen == Screen::DiscTitles => app.toggle_disc_title(),
+        KeyCode::Char('a') if app.current_screen == Screen::DiscTitles => {
+            app.toggle_all_disc_titles();
+        }
         KeyCode::Enter => match app.current_screen {
             Screen::DiscDrives => app.scan_disc(app.disc_drive_cursor),
             _ => app.start_disc_rip(),
