@@ -1373,9 +1373,7 @@ async function addToQueue(path, mode) {
     const skipped = skippedParts.length ? `, ${skippedParts.join(", ")}` : "";
     toast(r.added > 0
       ? `${trf("added_files", { n: r.added })}${skipped}`
-      : (r.already_queued || r.skipped)
-        ? trf("nothing_added", { n: (r.already_queued || 0) + (r.skipped || 0) })
-        : tr("nothing_added_generic", "Nothing was added"));
+      : `${tr("nothing_added")}${skipped}`);
     forceRefreshQueue();
   } catch (e) { toast(e.message, true); }
   finally {
@@ -1815,7 +1813,7 @@ function settingsFields(cfg) {
     { path: "output.suffix", label: tr("cfg_output_suffix"), type: "text" },
     { path: "output.container", label: tr("cfg_output_container"), type: "select", options: CONTAINERS },
     { path: "output.same_directory", label: tr("cfg_same_directory"), type: "checkbox", rebuild: true },
-    { path: "output.output_directory", label: tr("cfg_output_directory"), type: "text", nullable: true, disabled: cfg.output.same_directory, required: !cfg.output.same_directory, browse: true },
+    { path: "output.output_directory", label: tr("cfg_output_directory"), type: "text", nullable: true, required: !cfg.output.same_directory, browse: true },
     { group: tr("group_tracks") },
     { path: "tracks.preferred_audio_languages", label: tr("cfg_audio_languages"), type: "list" },
     { path: "tracks.preferred_subtitle_languages", label: tr("cfg_subtitle_languages"), type: "list" },

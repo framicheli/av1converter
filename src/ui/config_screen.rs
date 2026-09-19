@@ -515,7 +515,6 @@ pub fn visible_config_items(config: &AppConfig) -> Vec<&'static ConfigItem> {
                     ConfigField::VmafThreshold | ConfigField::DeleteSource
                 )
         })
-        .filter(|item| !config.output.same_directory || item.field != ConfigField::OutputDirectory)
         .filter(|item| {
             item.field != ConfigField::DaemonAutostart || crate::daemon::service::supported()
         })
@@ -975,6 +974,17 @@ mod tests {
         let display = edit_display(ConfigField::OutputDirectory, "/a/very/long/path", 17, 8);
         assert!(display.contains('|'));
         assert!(Line::raw(display).width() <= 8);
+    }
+
+    #[test]
+    fn output_directory_row_is_shown_while_writing_next_to_the_source() {
+        let config = AppConfig::default();
+        assert!(config.output.same_directory);
+        assert!(
+            visible_config_items(&config)
+                .iter()
+                .any(|item| item.field == ConfigField::OutputDirectory)
+        );
     }
 
     #[test]

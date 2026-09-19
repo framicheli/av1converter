@@ -91,6 +91,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - A config section with only some keys keeps the defaults for the rest instead of discarding the whole file; a config.toml that cannot be read is reported in the TUI status line.
 - Web settings cannot clear browse_root while the running daemon listens outside loopback, even when the saved bind address is loopback.
 - A web request from `::ffff:127.0.0.1` counts as loopback, and `makemkvcon_path` only accepts a file named `makemkvcon` or `makemkvcon64`.
+- The output directory disc rips need can be set in the web UI and TUI while "same directory" is on; the add-to-queue toast reports skipped and already-queued files separately and is translated.
 
 ### Known limitations
 
