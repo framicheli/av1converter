@@ -192,6 +192,18 @@ mod tests {
     }
 
     #[test]
+    fn a_message_reaches_the_queue_screen() {
+        let mut app = App::new();
+        app.queue.jobs = vec![EncodingJob::new("a.mkv".into())];
+        app.set_timed_success("Removed 2 finished", 4);
+
+        let screen = rendered(80, 24, |frame| render_queue(frame, &mut app));
+
+        assert!(screen.contains("Removed 2 finished"));
+        assert!(screen.contains("a.mkv"));
+    }
+
+    #[test]
     fn shutdown_replaces_the_previous_screen() {
         let screen = rendered(40, 10, |frame| {
             render_shutting_down(frame, crate::i18n::Language::English);

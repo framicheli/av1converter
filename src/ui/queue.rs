@@ -36,10 +36,16 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
         7
     };
 
+    let notice_rows = app.message.as_deref().map_or(0, |msg| {
+        crate::ui::common::wrapped_rows(msg, f.area().width.saturating_sub(4))
+            .saturating_add(2)
+            .min(6)
+    });
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
+            Constraint::Length(notice_rows),
             Constraint::Min(5),
             Constraint::Length(detail_height),
             Constraint::Length(3),
@@ -133,6 +139,19 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
         );
     f.render_widget(title, chunks[0]);
 
+    if let Some(ref msg) = app.message {
+        let color = crate::ui::common::message_color(app.message_kind);
+        let notice = Paragraph::new(msg.as_str())
+            .style(Style::default().fg(color))
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(color)),
+            );
+        f.render_widget(notice, chunks[1]);
+    }
+
     // File list
     let items: Vec<ListItem> = app
         .queue
@@ -160,7 +179,7 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
             .title(format!(" {} ", t(lang, Msg::Files))),
     );
     app.queue_list_state.select(Some(app.queue_cursor));
-    f.render_stateful_widget(list, chunks[1], &mut app.queue_list_state);
+    f.render_stateful_widget(list, chunks[2], &mut app.queue_list_state);
 
     // Detail panel for the job at the cursor
     if let Some(job) = detail_job {
@@ -193,7 +212,7 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
                 .ratio(progress.clamp(0.0, 100.0) / 100.0)
                 .label(label);
-            f.render_widget(gauge, chunks[2]);
+            f.render_widget(gauge, chunks[3]);
         } else if let JobStatus::Ripping { progress } = &job.status {
             let label = if app.disc_state == DiscState::Cancelling {
                 t(lang, Msg::Cancelling)
@@ -210,7 +229,7 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 .gauge_style(Style::default().fg(Color::Magenta).bg(Color::DarkGray))
                 .ratio(progress.clamp(0.0, 100.0) / 100.0)
                 .label(format!("{progress:.1}%  |  {label}"));
-            f.render_widget(gauge, chunks[2]);
+            f.render_widget(gauge, chunks[3]);
         } else {
             let status_text = match &job.status {
                 JobStatus::Analyzing => t(lang, Msg::StatusAnalyzing).to_string(),
@@ -263,7 +282,7 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                         .border_style(Style::default().fg(Color::DarkGray))
                         .title(format!(" {} ", t(lang, Msg::Status))),
                 );
-            f.render_widget(status, chunks[2]);
+            f.render_widget(status, chunks[3]);
         }
     }
 
@@ -342,7 +361,7 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE))
         .wrap(Wrap { trim: true });
-    f.render_widget(help, chunks[3]);
+    f.render_widget(help, chunks[4]);
 }
 
 fn create_queue_item(
