@@ -61,7 +61,7 @@ pub fn probe_duration_secs(path: &str, cancel: &AtomicBool) -> Option<f64> {
         .ok()?
         .lines()
         .filter_map(|line| line.trim().parse::<f64>().ok())
-        .filter(|secs| *secs > 0.0)
+        .filter(|secs| secs.is_finite() && *secs > 0.0)
         .max_by(f64::total_cmp)
 }
 
@@ -259,7 +259,7 @@ fn probe_frame_hdr10_static(input_path: &str, cancel: &AtomicBool) -> Option<Hdr
 /// Duration of the primary video stream: its own duration or Matroska
 /// `DURATION` tag, else the container duration, which spans every stream.
 fn video_duration_secs(stream: &VideoStream, format: Option<&FormatInfo>) -> f64 {
-    let positive = |secs: f64| (secs > 0.0).then_some(secs);
+    let positive = |secs: f64| (secs.is_finite() && secs > 0.0).then_some(secs);
     stream
         .duration
         .as_deref()
@@ -627,6 +627,11 @@ mod tests {
         let untagged = r#"{"streams": [{"width": 320, "height": 240}],
             "format": {"duration": "104.0"}}"#;
         assert!((parse(untagged) - 104.0).abs() < 1e-9);
+
+        let infinite = r#"{"streams": [{"width": 320, "height": 240,
+            "tags": {"DURATION": "inf:00:00"}}],
+            "format": {"duration": "104.0"}}"#;
+        assert!((parse(infinite) - 104.0).abs() < 1e-9);
     }
 
     #[test]
