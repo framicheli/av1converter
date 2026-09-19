@@ -157,6 +157,11 @@ pub fn queue(shared: &SharedState) -> Value {
         .map(|(index, (id, job))| {
             let saved_percent = job.size_reduction().map(|(_, percent)| percent);
             let can_move_up = state.queue.state.can_move_ready_up(index);
+            let vmaf = match job.status {
+                JobStatus::DoneWithVmaf { score } => Some(score),
+                JobStatus::QualityWarning { vmaf, .. } => Some(vmaf),
+                _ => None,
+            };
             json!({
                 "id": id,
                 "filename": job.filename(),
@@ -175,6 +180,16 @@ pub fn queue(shared: &SharedState) -> Value {
                 "temporary": job.temporary,
                 "tracks_editable": tracks_editable(&state, id),
                 "can_move_up": can_move_up,
+                "crf": job.crf,
+                "source_kept_vmaf": job.source_kept_vmaf,
+                "output_name": job
+                    .output_path
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy()),
+                "quality": vmaf
+                    .filter(|score| score.is_finite())
+                    .map(|score| crate::i18n::quality_description(state.config.language, score)),
             })
         })
         .collect();
@@ -322,6 +337,10 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
             "audio": audio,
             "subtitles": subtitles,
             "remux_only": job.remux_only,
+            "output_names": outputs
+                .iter()
+                .map(|path| path.file_name().map(|name| name.to_string_lossy()))
+                .collect::<Vec<_>>(),
             "dv": dv,
             "remaining": remaining,
         }),
@@ -1563,6 +1582,23 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn queue_rows_carry_crf_output_name_and_source_kept() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut job = EncodingJob::new(PathBuf::from("/x/in.mkv"));
+        job.status = JobStatus::DoneWithVmaf { score: 96.0 };
+        job.crf = Some(30);
+        job.source_kept_vmaf = Some(91.0);
+        job.output_path = Some(PathBuf::from("/x/out.mkv"));
+        state.queue.push(job);
+        let shared = Arc::new(Mutex::new(state));
+        let row = &queue(&shared)["jobs"][0];
+        assert_eq!(row["crf"], 30);
+        assert_eq!(row["source_kept_vmaf"], 91.0);
+        assert_eq!(row["output_name"], "out.mkv");
+        assert!(row["quality"].is_string());
+    }
 
     #[test]
     fn status_reports_dependencies_and_vmaf() {

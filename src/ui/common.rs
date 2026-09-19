@@ -120,23 +120,7 @@ pub fn create_menu_item(text: &str, index: usize, selected: usize) -> ListItem<'
     ListItem::new(format!("{prefix}{text}")).style(style)
 }
 
-/// Get quality description for VMAF score
-pub fn get_quality_description(lang: Language, score: f64) -> &'static str {
-    let msg = if score >= 95.0 {
-        Msg::QualExcellent
-    } else if score >= 90.0 {
-        Msg::QualVeryGood
-    } else if score >= 85.0 {
-        Msg::QualGood
-    } else if score >= 80.0 {
-        Msg::QualFair
-    } else if score >= 70.0 {
-        Msg::QualPoor
-    } else {
-        Msg::QualBad
-    };
-    t(lang, msg)
-}
+pub use crate::i18n::quality_description as get_quality_description;
 
 #[cfg(test)]
 mod tests {

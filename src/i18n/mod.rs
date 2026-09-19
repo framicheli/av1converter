@@ -3529,6 +3529,9 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("dv_requires_svt", Msg::DvRequiresSvt),
     ("dv_source_hint", Msg::WebDvSourceHint),
     ("eta", Msg::Eta),
+    ("elapsed", Msg::Elapsed),
+    ("threshold_label", Msg::ThresholdLabel),
+    ("tag_source_kept", Msg::SourceKeptTag),
     ("group_audio", Msg::WebGroupAudio),
     ("group_daemon", Msg::WebGroupDaemon),
     ("group_disc", Msg::WebGroupDisc),
@@ -3631,6 +3634,24 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("summary_stopped", Msg::WebConversionStopped),
     ("verifying_vmaf", Msg::StatusVerifying),
 ];
+
+/// Get quality description for VMAF score
+pub fn quality_description(lang: Language, score: f64) -> &'static str {
+    let msg = if score >= 95.0 {
+        Msg::QualExcellent
+    } else if score >= 90.0 {
+        Msg::QualVeryGood
+    } else if score >= 85.0 {
+        Msg::QualGood
+    } else if score >= 80.0 {
+        Msg::QualFair
+    } else if score >= 70.0 {
+        Msg::QualPoor
+    } else {
+        Msg::QualBad
+    };
+    t(lang, msg)
+}
 
 #[cfg(test)]
 mod tests {

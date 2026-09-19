@@ -289,7 +289,12 @@ async function poll() {
     const overall = Number(s.overall_progress);
     setProgress("overall", Number.isFinite(overall) ? overall : 0);
     setText($("overall-pct"), Number.isFinite(overall) ? `${overall.toFixed(1)}%` : "");
-    setText($("eta"), s.eta_secs != null ? `${tr("eta")} ${fmtDuration(s.eta_secs)}` : "");
+    setText($("eta"), [
+      s.counts.active > 0 && s.elapsed_secs != null
+        ? `${tr("elapsed")} ${fmtDuration(s.elapsed_secs)}`
+        : "",
+      s.eta_secs != null ? `${tr("eta")} ${fmtDuration(s.eta_secs)}` : "",
+    ].filter(Boolean).join(" · "));
 
     setText($("stat-total"), String(s.counts.total));
     setText($("stat-saved"), s.total_space_saved.human);
@@ -488,7 +493,10 @@ function badgeText(st) {
       const min = Number.isFinite(num(st.min_score))
         ? ` (min ${pct(st.min_score)})`
         : "";
-      return `${tr("badge_low_vmaf")} ${pct(st.vmaf)}${min}`;
+      const threshold = Number.isFinite(num(st.threshold))
+        ? ` < ${Math.round(st.threshold)} ${tr("threshold_label")}`
+        : "";
+      return `${tr("badge_low_vmaf")} ${pct(st.vmaf)}${min}${threshold}`;
     }
     case "skipped": return `${tr("badge_skipped")} · ${trReason(st.reason)}`;
     default: return tr(BADGE_KEY[st.kind] ?? "", st.kind);
@@ -603,15 +611,20 @@ function createRow(job) {
 
 function updateRow(row, job) {
   setText(row.name, job.filename);
+  row.name.title = job.output_name ? `→ ${job.output_name}` : "";
   setText(row.sub, [
+    job.crf != null ? `CRF ${job.crf}` : "",
     job.remux_only ? tr("tag_remux") : "",
     job.source_deleted ? tr("tag_source_deleted") : "",
+    job.source_kept_vmaf != null ? tr("tag_source_kept") : "",
   ].filter(Boolean).join(" · "));
   // Resolution and HDR are null until the probe has run.
   setText(row.source, [job.resolution, job.hdr].filter(Boolean).join(" ") || "—");
 
   row.badge.className = `badge ${BADGE_CLASS[job.status.kind] || ""}`;
-  setText(row.badge, badgeText(job.status));
+  setText(row.badge, job.quality
+    ? `${badgeText(job.status)} (${job.quality})`
+    : badgeText(job.status));
   const awaitingTracks = job.status.kind === "awaiting_config";
   row.badge.classList.toggle("hidden", awaitingTracks);
   row.confirm.classList.toggle("hidden", !awaitingTracks);
@@ -868,7 +881,8 @@ async function openTracks(id) {
       dvMode: data.dv ? data.dv.mode : null,
     };
     editor.snapshot = tracksSnapshot(editor);
-    $("tracks-filename").textContent = ` — ${data.filename}`;
+    editor.filename = data.filename;
+    editor.outputNames = data.output_names ?? [];
     $("tracks-save").disabled = offline || !data.editable;
     $("tracks-save").removeAttribute("aria-busy");
     $("tracks-note").textContent = data.editable
@@ -922,6 +936,10 @@ function renderTracks() {
   const body = $("tracks-body");
   body.textContent = "";
   const { audio, subtitles, editable } = trackEditor;
+  const outputName = trackEditor.outputNames?.[trackEditor.remuxOnly ? 1 : 0];
+  $("tracks-filename").textContent = outputName
+    ? ` — ${trackEditor.filename} → ${outputName}`
+    : ` — ${trackEditor.filename}`;
 
   body.appendChild(groupHeading(tr("options")));
   body.appendChild(remuxRow());
