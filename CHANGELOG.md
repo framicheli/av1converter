@@ -117,6 +117,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - TUI: in the disc folder picker, Space on `..` scans the open folder, as the help bar says, instead of going up a level.
 - TUI: a panic in a background thread goes to the log instead of being printed over the screen.
 - TUI: during an encode, the track configuration "(n/m)" counter and the switch-file hint count only the files that can still be configured.
+- TUI: a long file name no longer pushes the question out of the Dolby Vision dialog.
 
 ### Known limitations
 

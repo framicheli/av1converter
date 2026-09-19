@@ -44,20 +44,28 @@ pub fn render_dv_dialog(f: &mut Frame, app: &App) {
         );
     f.render_widget(block, area);
 
+    let profile_str = dv_profile.map_or_else(String::new, |p| format!("  [P{p}]"));
+    let text_width = area.width.saturating_sub(4);
+    let header_rows = super::common::wrapped_rows(&format!("{filename}{profile_str}"), text_width)
+        .saturating_add(1)
+        .saturating_add(super::common::wrapped_rows(
+            t(lang, Msg::DvDialogPrompt),
+            text_width,
+        ));
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // file + prompt
-            Constraint::Length(3), // option 1
-            Constraint::Length(3), // option 2
-            Constraint::Min(0),    // profile 5 warning
-            Constraint::Length(1), // help
+            Constraint::Length(header_rows), // file + prompt
+            Constraint::Length(3),           // option 1
+            Constraint::Length(3),           // option 2
+            Constraint::Min(0),              // profile 5 warning
+            Constraint::Length(1),           // help
         ])
         .margin(2)
         .split(area);
 
     // File name + prompt
-    let profile_str = dv_profile.map_or_else(String::new, |p| format!("  [P{p}]"));
     let header = Paragraph::new(vec![
         Line::from(vec![
             Span::styled(filename, Style::default().fg(Color::Cyan)),
