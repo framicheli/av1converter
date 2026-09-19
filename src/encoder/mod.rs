@@ -184,6 +184,10 @@ pub fn run_encoding_pipeline(
                         warn!(
                             "Keeping source file {input}: the encoded output could not be flushed to disk: {e}"
                         );
+                    } else if std::fs::symlink_metadata(input)
+                        .is_ok_and(|m| m.file_type().is_symlink())
+                    {
+                        warn!("Keeping source file {input}: it is a symbolic link");
                     } else {
                         match std::fs::remove_file(input) {
                             Ok(()) => {
