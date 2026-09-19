@@ -17,10 +17,10 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long `stop` waits for the daemon to exit. Covers the daemon's
-/// `HTTP_JOIN_GRACE`, then its `SHUTDOWN_GRACE` for a rip followed by the same
-/// grace for an encode.
+/// `HTTP_JOIN_GRACE`, then its `SHUTDOWN_GRACE` for a rip, an encode and the
+/// worker join, and the final queue save.
 #[cfg(unix)]
-const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+const STOP_TIMEOUT: Duration = Duration::from_secs(45);
 /// How long `lock_pid_file` waits out a lock held for a moment by a
 /// `locked_pid` probe.
 #[cfg(unix)]

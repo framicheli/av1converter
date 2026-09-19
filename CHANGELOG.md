@@ -97,6 +97,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - A recursive add skips an unreadable subfolder instead of stopping at it.
 - The access token must be printable ASCII without spaces, so the web UI can always send it.
 - A daemon starting while `--status`, `--start` or service install checks on it no longer exits at once.
+- `--stop`, systemd and launchd wait long enough for the daemon's final queue save.
 
 ### Known limitations
 

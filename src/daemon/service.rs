@@ -314,7 +314,7 @@ pub(crate) fn systemd_unit(exe: &Path, path: &str) -> String {
          ExecStart={exe} --start-foreground\n\
          Restart=on-abnormal\n\
          KillMode=mixed\n\
-         TimeoutStopSec=35\n\
+         TimeoutStopSec=45\n\
          Nice=10\n"
     );
     if !path.is_empty() {
@@ -504,6 +504,8 @@ pub(crate) fn launchd_plist(exe: &Path, path: &str) -> String {
          \t<integer>10</integer>\n\
          \t<key>ProcessType</key>\n\
          \t<string>Standard</string>\n\
+         \t<key>ExitTimeOut</key>\n\
+         \t<integer>45</integer>\n\
          {environment}\
          </dict>\n\
          </plist>\n"
@@ -528,7 +530,7 @@ mod tests {
         assert!(unit.contains("ExecStart=/usr/bin/av1converter --start-foreground"));
         assert!(unit.contains("Restart=on-abnormal"));
         assert!(unit.contains("KillMode=mixed"));
-        assert!(unit.contains("TimeoutStopSec=35"));
+        assert!(unit.contains("TimeoutStopSec=45"));
         assert!(unit.contains("Nice=10"));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(unit.contains("Environment=\"PATH=/usr/bin\""));
@@ -620,6 +622,7 @@ mod tests {
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<key>Crashed</key>"));
         assert!(!plist.contains("SuccessfulExit"));
+        assert!(plist.contains("<key>ExitTimeOut</key>\n\t<integer>45</integer>"));
     }
 
     #[test]
