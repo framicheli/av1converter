@@ -183,6 +183,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - An unreadable `queue.json` is moved to `queue.json.unreadable-<time>` instead of being replaced by an empty queue, `queue.json.bak` is refreshed only from a queue that reads back, and both UIs say where the file was kept.
 - `--install-service`, and the access token `--start` generates, refuse to run on a `config.toml` that cannot be read instead of saving defaults over it.
 - TUI: finishing an analysis, encode or rip no longer switches away from Home, file selection, file review or Settings; files added on the review screen are analysed once confirmed, and a Settings field being edited stays open.
+- `--stop` and `--restart` signal the daemon only while it still holds its PID file lock, and wait for that lock to be released, instead of signalling whatever process has since reused its PID.
 
 ### Known limitations
 

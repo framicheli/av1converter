@@ -352,12 +352,23 @@ pub fn spawn_background() -> io::Result<u32> {
 /// shutdown grace period cancelling a running encode).
 #[cfg(unix)]
 pub fn stop(pid: u32) -> io::Result<()> {
+    stop_at(&pid_file(), pid)
+}
+
+/// Send SIGTERM to `pid` while it holds the lock on the PID file at `path`,
+/// and wait until it no longer holds it. A PID that no longer holds the lock
+/// is not signalled.
+#[cfg(unix)]
+fn stop_at(path: &std::path::Path, pid: u32) -> io::Result<()> {
+    if locked_pid(path) != Some(pid) {
+        return Ok(());
+    }
     if unsafe { libc::kill(pid.cast_signed(), libc::SIGTERM) } != 0 {
         return Err(io::Error::last_os_error());
     }
     let deadline = Instant::now() + STOP_TIMEOUT;
     while Instant::now() < deadline {
-        if !alive(pid) {
+        if locked_pid(path) != Some(pid) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -410,6 +421,25 @@ mod tests {
         }
         assert_eq!(locked_pid(&path), None);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_does_not_signal_a_pid_that_no_longer_holds_the_lock() {
+        let path = std::env::temp_dir().join(format!("av1c_pid_stop_{}", std::process::id()));
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        std::fs::write(&path, child.id().to_string()).unwrap();
+
+        stop_at(&path, child.id()).unwrap();
+
+        let still_running = child.try_wait().unwrap().is_none();
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(path);
+        assert!(still_running);
     }
 
     #[cfg(unix)]
