@@ -47,6 +47,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - TUI: `C` clears finished jobs from the queue while nothing runs, keeping the space-saved total; ripped titles ask first.
 - Web UI: the queue page shows the encoder and VMAF status, and warns when this FFmpeg build lacks the encoder, libvmaf or libopus, as the TUI does.
 - Web UI: queue rows show the CRF, the VMAF rating and threshold, "source kept" and the output file name (on hover), the track dialog names the output file, and the overall panel shows elapsed time, as the TUI does.
+- Web UI: the Dolby Vision choice explains each option, marks the recommended one and warns about Profile 5, as the TUI dialog does.
 
 ### Fixed
 

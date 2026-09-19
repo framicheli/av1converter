@@ -324,6 +324,7 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
             json!({
                 "profile": meta.dv_profile,
                 "mode": dv_mode_name(effective),
+                "recommended": dv_mode_name(resolved_dv_mode(encoder, meta.dv_profile)),
                 "can_keep": encoder == Encoder::SvtAv1,
             })
         });
@@ -2854,6 +2855,12 @@ mod tests {
 
             let offered = job_tracks(&shared, &id.to_string()).1;
             assert_eq!(offered["dv"]["can_keep"], json!(true));
+            assert_eq!(offered["dv"]["recommended"], json!("keep"));
+            let (profile5, profile5_id) = shared_with_dv_job(Encoder::SvtAv1, Some(5));
+            assert_eq!(
+                job_tracks(&profile5, &profile5_id.to_string()).1["dv"]["recommended"],
+                json!("hdr10")
+            );
 
             let (code, body) = job_tracks_set(&shared, &json!({"id": id, "dv_mode": "keep"}));
             assert_eq!(code, 200);

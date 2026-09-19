@@ -1130,19 +1130,25 @@ function dvRow() {
   for (const [value, text] of [["keep", tr("dv_keep")], ["hdr10", tr("dv_hdr10")]]) {
     const option = document.createElement("option");
     option.value = value;
-    option.textContent = text;
+    option.textContent = value === dv.recommended ? `${text} (${tr("dv_recommended")})` : text;
     option.disabled = value === "keep" && !dv.can_keep;
     select.appendChild(option);
   }
   select.value = trackEditor.dvMode;
   select.disabled = !editable || remuxOnly;
-  select.addEventListener("change", () => { trackEditor.dvMode = select.value; });
+  select.addEventListener("change", () => {
+    trackEditor.dvMode = select.value;
+    renderTracks();
+    $("opt-dolby-vision")?.focus();
+  });
 
   const profile = dv.profile == null ? "" : trf("dv_profile", { n: dv.profile });
   const source = trf("dv_source_hint", { profile });
+  const choice = tr(select.value === "keep" ? "dv_keep_desc" : "dv_hdr10_desc");
+  const warning = dv.profile === 5 ? ` ⚠ ${tr("dv_p5_warning")}` : "";
   const hint = remuxOnly
     ? tr("dv_remux_hint")
-    : dv.can_keep ? source : `${source} ${tr("dv_requires_svt")}`;
+    : dv.can_keep ? `${source} ${choice}.${warning}` : `${source} ${tr("dv_requires_svt")}${warning}`;
   return optionRow("dolby-vision", tr("dolby_vision"), hint, select);
 }
 
