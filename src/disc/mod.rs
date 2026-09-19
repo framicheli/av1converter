@@ -284,7 +284,7 @@ pub fn list_drives(bin: &Path, cancel: &AtomicBool) -> Result<Vec<DiscDrive>, Di
     // `disc:9999` lists drives and always exits non-zero; the drives parsed
     // out of it are the success signal.
     if drives.is_empty() {
-        return Err(failure(&run.messages, DiscError::NoDrive));
+        return Err(classify(&run.messages).unwrap_or(DiscError::NoDrive));
     }
     Ok(drives)
 }
@@ -316,7 +316,7 @@ pub fn scan_titles(
     let disc_type = scan.disc_type();
     let titles = scan.finish();
     if titles.is_empty() {
-        return Err(failure(&run.messages, DiscError::DriveEmpty));
+        return Err(classify(&run.messages).unwrap_or(DiscError::DriveEmpty));
     }
     if !run.success {
         return Err(failure(&run.messages, DiscError::UnreadableDisc));
@@ -521,8 +521,8 @@ fn run_robot(
     })
 }
 
-/// Turn `MakeMKV`'s messages into an error, falling back to `default` when it
-/// said nothing at all.
+/// Turn a failed run's messages into an error, quoting `MakeMKV`'s last
+/// message when none is recognised, or `default` when it said nothing at all.
 fn failure(messages: &[String], default: DiscError) -> DiscError {
     classify(messages).unwrap_or_else(|| {
         messages

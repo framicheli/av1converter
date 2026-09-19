@@ -102,6 +102,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Delete-on-success keeps a symlinked source rather than removing the link and reporting it deleted.
 - Adding files reads their identities without holding the daemon lock.
 - Stopping or restarting the daemon keeps the running and queued jobs for the next start instead of marking them cancelled; the file that was encoding starts over, and files being analysed are analysed again.
+- A machine with no drive, or a disc with no usable titles, is reported as "no drive" or "drive empty" instead of quoting MakeMKV's startup banner or "Operation successfully completed".
 
 ### Known limitations
 
