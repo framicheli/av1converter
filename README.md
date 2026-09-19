@@ -296,7 +296,7 @@ Enable it in Settings (or set `enabled = true` under `[daemon]`), then:
 av1converter --start       # start in the background
 av1converter --restart     # stop cleanly, then start again
 av1converter --status      # is it running, and where
-av1converter --stop        # stop it, cancelling any encode cleanly
+av1converter --stop        # stop it; an active encode starts over on the next start
 ```
 
 To start it at login, turn on **Run at Startup** in Settings, or:
@@ -312,7 +312,7 @@ av1converter --uninstall-service  # remove it
 
 Turning **Run at Startup** off from the web settings page leaves the current daemon session running and prevents it from starting at the next login. On macOS the launchd job is also disabled, so a crash does not relaunch it.
 
-Both `--stop` and `--restart` cancel an active encode cleanly; `--stop` waits up to 45 seconds. `--start` returns once the daemon is listening, and reports a failure (a port already in use, for example) instead of claiming success. `--start`, `--stop` and `--restart` are Unix-only; on Windows run `--start-foreground` and stop it with `Ctrl+C`. The old `--daemon` and `--daemon-foreground` spellings remain available as compatibility aliases. `--start` logs to `$XDG_DATA_HOME/av1converter/daemon.log` (default `~/.local/share/av1converter/daemon.log`); `--start-foreground` and the systemd unit log to stdout (the journal).
+Both `--stop` and `--restart` stop an active encode cleanly and keep the queue: the file that was encoding starts over, and the jobs behind it stay queued for the next start. `--stop` waits up to 45 seconds. `--start` returns once the daemon is listening, and reports a failure (a port already in use, for example) instead of claiming success. `--start`, `--stop` and `--restart` are Unix-only; on Windows run `--start-foreground` and stop it with `Ctrl+C`. The old `--daemon` and `--daemon-foreground` spellings remain available as compatibility aliases. `--start` logs to `$XDG_DATA_HOME/av1converter/daemon.log` (default `~/.local/share/av1converter/daemon.log`); `--start-foreground` and the systemd unit log to stdout (the journal).
 
 The queue is saved to `queue.json` in the same directory, with the previous save kept as `queue.json.bak`. The TUI does not persist its queue.
 

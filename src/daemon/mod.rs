@@ -271,7 +271,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         }
     }
 
-    if lock(&shared).encoding_active || lock(&shared).disc.active {
+    if lock(&shared).disc.active {
         warn!("shutdown grace elapsed; killing leftover child processes");
     }
     // Always reap child process groups: analysis-only ffprobe may still be
@@ -293,8 +293,8 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     }
     drain_shutdown_channels(&shared, &worker_rx, &disc_rx, &probe_tx);
 
-    // Cancellation moves every unfinished job to a terminal state, and is
-    // saved so the next launch does not resume them as interrupted work.
+    // The queue is saved as it stands; the next start settles unfinished jobs
+    // with `queue::state::resume`.
     persist_queue(
         &shared,
         &queue_file,
@@ -353,8 +353,8 @@ fn sweep_after_disc_run(shared: &SharedState, was_active: &mut bool, min_age: Du
     }
 }
 
-/// Apply leftover worker/disc messages after join, then skip anything still
-/// in flight so the saved queue does not come back as Ready/Encoding.
+/// Apply leftover worker/disc messages after join, then settle anything still
+/// in flight.
 fn drain_shutdown_channels(
     shared: &SharedState,
     worker_rx: &Receiver<WorkerMessage>,
@@ -779,6 +779,7 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
     let audio_config = state.config.audio.clone();
     let encoder = state.config.encoder;
     let lang = state.config.language;
+    let shutting_down = state.shutting_down.load(Ordering::SeqCst);
 
     // The job may have been removed while analysis was running
     let Some(job) = state.queue.job_by_id_mut(id) else {
@@ -816,6 +817,9 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
             info!("Analyzed {}", job.path.display());
             make_output_paths_unique(&mut state.queue.state.jobs);
         }
+        // A daemon stop leaves the job analysing; `queue::state::resume`
+        // probes it again on the next start.
+        Err(AppError::Cancelled) if shutting_down => {}
         Err(AppError::Cancelled) => {
             job.status = JobStatus::Skipped {
                 reason: "Cancelled".to_string(),
@@ -1028,6 +1032,9 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
                 job.source_kept_vmaf = Some(vmaf);
             }
         }
+        // A daemon stop leaves session jobs as they are; `queue::state::resume`
+        // settles them on the next start.
+        WorkerMessage::Cancelled if state.shutting_down.load(Ordering::SeqCst) => {}
         WorkerMessage::Cancelled => {
             for &id in &session_ids {
                 if let Some(job) = state.queue.job_by_id_mut(id)
@@ -1555,7 +1562,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_cancellation_is_saved_as_terminal() {
+    fn a_stopped_daemon_saves_the_session_for_the_next_start() {
         let dir =
             std::env::temp_dir().join(format!("av1c_shutdown_persist_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1574,6 +1581,7 @@ mod tests {
                 cancel_flag: Arc::new(AtomicBool::new(true)),
             });
             state.encoding_active = true;
+            state.shutting_down.store(true, Ordering::SeqCst);
         }
 
         apply_worker_message(&shared, WorkerMessage::Cancelled);
@@ -1581,11 +1589,10 @@ mod tests {
         let mut last_warning = None;
         persist_queue(&shared, &queue_file, &mut last_saved, &mut last_warning);
 
-        let saved = crate::queue::state::load(&queue_file);
-        assert!(matches!(
-            saved.state.jobs[0].status,
-            JobStatus::Skipped { .. }
-        ));
+        let mut saved = crate::queue::state::load(&queue_file);
+        assert!(matches!(saved.state.jobs[0].status, JobStatus::Pending));
+        crate::queue::state::resume(&mut saved);
+        assert!(!is_terminal(&saved.state.jobs[0].status));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1645,6 +1652,53 @@ mod tests {
         assert!(join_within(
             vec![thread::spawn(|| {})],
             Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn draining_a_daemon_stop_leaves_an_encoding_job_for_resume() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("movie.mkv"));
+            job.status = JobStatus::Encoding { progress: 40.0 };
+            let id = state.queue.push(job);
+            state.session = Some(EncodeSession {
+                job_ids: vec![id],
+                cancel_flag: Arc::new(AtomicBool::new(true)),
+            });
+            state.encoding_active = true;
+            state.shutting_down.store(true, Ordering::SeqCst);
+            id
+        };
+        let (worker_tx, worker_rx) = mpsc::channel();
+        drop(worker_tx);
+        let (disc_tx, disc_rx) = mpsc::channel();
+        drop(disc_tx);
+        let (probe_tx, _probe_rx) = mpsc::channel();
+
+        drain_shutdown_channels(&shared, &worker_rx, &disc_rx, &probe_tx);
+
+        assert!(matches!(
+            lock(&shared).queue.job_by_id(id).unwrap().status,
+            JobStatus::Encoding { .. }
+        ));
+    }
+
+    #[test]
+    fn a_stop_during_analysis_leaves_the_job_for_resume() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("movie.mkv"));
+            job.status = JobStatus::Analyzing;
+            state.shutting_down.store(true, Ordering::SeqCst);
+            state.queue.push(job)
+        };
+        apply_analysis_result(&shared, id, Err(AppError::Cancelled));
+        assert!(matches!(
+            lock(&shared).queue.job_by_id(id).unwrap().status,
+            JobStatus::Analyzing
         ));
     }
 
