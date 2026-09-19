@@ -1315,7 +1315,10 @@ impl App {
                 self.queue.skipped_count += 1;
                 self.queue.encoding_progress_done += 1;
                 if job.temporary {
-                    crate::disc::staging::discard_staged(&job.path);
+                    crate::disc::staging::discard_staged(
+                        &crate::disc::staging::staging_root(&self.config),
+                        &job.path,
+                    );
                     job.temporary = false;
                 }
             }
@@ -1921,7 +1924,10 @@ impl App {
             session_finished = true;
         }
 
-        crate::disc::staging::cleanup_finished(&mut self.queue.jobs);
+        crate::disc::staging::cleanup_finished(
+            &crate::disc::staging::staging_root(&self.config),
+            &mut self.queue.jobs,
+        );
 
         if session_finished {
             self.progress_receiver = None;
@@ -1956,8 +1962,9 @@ impl App {
 
     /// Delete the staging directory of every ripped title in the queue.
     pub fn discard_staged_jobs(&self) {
+        let root = crate::disc::staging::staging_root(&self.config);
         for job in self.queue.jobs.iter().filter(|job| job.temporary) {
-            crate::disc::staging::discard_staged(&job.path);
+            crate::disc::staging::discard_staged(&root, &job.path);
         }
     }
 
@@ -2387,6 +2394,7 @@ mod tests {
         std::fs::write(&file, b"rip").unwrap();
 
         let mut app = App::new();
+        app.config.disc.staging_directory = Some(root.to_string_lossy().into_owned());
         let mut job = EncodingJob::new(file);
         job.status = JobStatus::Ready;
         job.temporary = true;

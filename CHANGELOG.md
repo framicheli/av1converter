@@ -82,6 +82,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Cover art that comes before the video in an MP4/MOV is no longer analysed, encoded and VMAF-checked in place of the film, which could delete the source after a one-frame encode.
 - The source is kept when a selected subtitle track is converted or left out, or when cover art or other attachments are not carried into the output.
 - The encoded output is flushed to disk before the source is deleted; if the flush fails, the source is kept.
+- Removing or clearing a ripped job only deletes a staging directory under the staging root, never a directory named after a disc title elsewhere.
 
 ### Known limitations
 

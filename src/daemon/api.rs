@@ -806,10 +806,11 @@ pub fn queue_remove(shared: &SharedState, body: &Value) -> (u16, Value) {
             + usize::from(state.encoding_active)
             + remaining_ready;
     }
+    let root = crate::disc::staging::staging_root(&state.config);
     drop(state);
     // Deletion runs with the lock released.
     if let Some(path) = staged {
-        crate::disc::staging::discard_staged(&path);
+        crate::disc::staging::discard_staged(&root, &path);
     }
     (200, json!({"ok": true}))
 }
@@ -896,10 +897,11 @@ pub fn queue_clear_finished(shared: &SharedState) -> (u16, Value) {
         state.queue.remove(id);
         staged.extend(path);
     }
+    let root = crate::disc::staging::staging_root(&state.config);
     drop(state);
     // Deletion runs with the lock released.
     for path in staged {
-        crate::disc::staging::discard_staged(&path);
+        crate::disc::staging::discard_staged(&root, &path);
     }
     (200, json!({"removed": removed}))
 }

@@ -186,9 +186,15 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         }
 
         // Deletion runs with the lock released.
-        let released = crate::disc::staging::release_finished(&mut lock(&shared).queue.state.jobs);
+        let (released, root) = {
+            let mut state = lock(&shared);
+            (
+                crate::disc::staging::release_finished(&mut state.queue.state.jobs),
+                crate::disc::staging::staging_root(&state.config),
+            )
+        };
         for path in released {
-            crate::disc::staging::discard_staged(&path);
+            crate::disc::staging::discard_staged(&root, &path);
         }
         sweep_after_disc_run(
             &shared,

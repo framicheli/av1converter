@@ -184,9 +184,9 @@ fn sanitize_label(label: Option<&str>) -> String {
 /// |---|---|
 /// | `Done`, `DoneWithVmaf`, `DoneVmafFailed` | deleted with its directory |
 /// | `QualityWarning`, `Error`, `Skipped` | kept, its path still on the job |
-pub fn cleanup_finished(jobs: &mut [EncodingJob]) {
+pub fn cleanup_finished(root: &Path, jobs: &mut [EncodingJob]) {
     for path in release_finished(jobs) {
-        discard_staged(&path);
+        discard_staged(root, &path);
     }
 }
 
@@ -208,9 +208,13 @@ pub fn release_finished(jobs: &mut [EncodingJob]) -> Vec<PathBuf> {
     released
 }
 
-/// Delete the staging directory holding `file`.
-pub fn discard_staged(file: &Path) {
-    if let Some(dir) = file.parent().filter(|dir| is_staging_dir(dir)) {
+/// Delete the staging directory holding `file`, when that directory is a
+/// staging directory directly under `root`.
+pub fn discard_staged(root: &Path, file: &Path) {
+    if let Some(dir) = file
+        .parent()
+        .filter(|dir| dir.parent() == Some(root) && is_staging_dir(dir))
+    {
         discard_dir(dir);
     }
 }
@@ -486,7 +490,7 @@ mod tests {
         jobs.push(EncodingJob::new(own.clone()));
         jobs.last_mut().unwrap().status = JobStatus::Done;
 
-        cleanup_finished(&mut jobs);
+        cleanup_finished(&root, &mut jobs);
 
         for (job, (status, kept)) in jobs.iter().zip(cases.iter()) {
             assert_eq!(
@@ -513,10 +517,26 @@ mod tests {
     fn cleanup_is_repeatable() {
         let root = scratch("repeat");
         let mut jobs = vec![temporary_job(staged_rip(&root, "a"), JobStatus::Done)];
-        cleanup_finished(&mut jobs);
-        cleanup_finished(&mut jobs);
+        cleanup_finished(&root, &mut jobs);
+        cleanup_finished(&root, &mut jobs);
         assert!(!jobs[0].path.exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Only a staging directory directly under the root is deleted.
+    #[test]
+    fn only_staging_directories_under_the_root_are_discarded() {
+        let root = scratch("confine");
+        let other = scratch("confine_outside");
+        let victim = staged_rip(&other, "victim");
+        discard_staged(&root, &victim);
+        assert!(victim.exists());
+        discard_staged(&root, Path::new("rip-victim/x.mkv"));
+        let ours = staged_rip(&root, "ours");
+        discard_staged(&root, &ours);
+        assert!(!ours.parent().unwrap().exists());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&other);
     }
 
     #[test]
