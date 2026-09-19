@@ -1187,8 +1187,13 @@ $("browser").addEventListener("close", () => {
 
 for (const dialog of document.querySelectorAll("dialog")) {
   if (dialog.id === "tracks-modal" || dialog.id === "confirm-modal") continue;
+  // Closes on a click that both starts and ends on the backdrop.
+  let pressedBackdrop = false;
+  dialog.addEventListener("pointerdown", (event) => {
+    pressedBackdrop = event.target === dialog;
+  });
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) dialog.close();
+    if (event.target === dialog && pressedBackdrop) dialog.close();
   });
 }
 
