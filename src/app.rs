@@ -1109,15 +1109,18 @@ impl App {
         self.queue.jobs.get_mut(self.queue.config_job_index)
     }
 
+    /// Whether `job` takes a track configuration step now.
+    pub fn is_track_configurable(&self, job: &EncodingJob) -> bool {
+        matches!(job.status, JobStatus::AwaitingConfig)
+            || (!self.encoding_active && matches!(job.status, JobStatus::Ready))
+    }
+
     pub fn confirm_track_config(&mut self) {
         let editable = self
             .queue
             .jobs
             .get(self.queue.config_job_index)
-            .is_some_and(|job| {
-                matches!(job.status, JobStatus::AwaitingConfig)
-                    || (!self.encoding_active && matches!(job.status, JobStatus::Ready))
-            });
+            .is_some_and(|job| self.is_track_configurable(job));
         if !editable {
             return;
         }
@@ -1174,10 +1177,11 @@ impl App {
             };
             idx = next;
 
-            let configurable = self.queue.jobs.get(idx).is_some_and(|job| {
-                matches!(job.status, JobStatus::AwaitingConfig)
-                    || (!self.encoding_active && matches!(job.status, JobStatus::Ready))
-            });
+            let configurable = self
+                .queue
+                .jobs
+                .get(idx)
+                .is_some_and(|job| self.is_track_configurable(job));
             if configurable {
                 self.queue.config_job_index = idx;
                 self.reset_track_config_cursor();
@@ -2423,6 +2427,20 @@ mod tests {
 
         assert!(!dir.exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ready_jobs_are_not_counted_for_track_config_while_encoding() {
+        let mut app = App::new();
+        let mut awaiting = EncodingJob::new(PathBuf::from("a.mkv"));
+        awaiting.status = JobStatus::AwaitingConfig;
+        let mut ready = EncodingJob::new(PathBuf::from("b.mkv"));
+        ready.status = JobStatus::Ready;
+        app.encoding_active = true;
+        assert!(app.is_track_configurable(&awaiting));
+        assert!(!app.is_track_configurable(&ready));
+        app.encoding_active = false;
+        assert!(app.is_track_configurable(&ready));
     }
 
     #[test]

@@ -212,12 +212,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         .queue
         .jobs
         .iter()
-        .filter(|job| {
-            matches!(
-                job.status,
-                crate::queue::JobStatus::AwaitingConfig | crate::queue::JobStatus::Ready
-            )
-        })
+        .filter(|job| app.is_track_configurable(job))
         .count()
         .max(1);
     let current_number = app
@@ -225,12 +220,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         .jobs
         .iter()
         .take(app.queue.config_job_index + 1)
-        .filter(|job| {
-            matches!(
-                job.status,
-                crate::queue::JobStatus::AwaitingConfig | crate::queue::JobStatus::Ready
-            )
-        })
+        .filter(|job| app.is_track_configurable(job))
         .count()
         .max(1);
     let info_title = if configurable > 1 {
