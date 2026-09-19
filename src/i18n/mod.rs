@@ -362,7 +362,6 @@ pub enum Msg {
     WebVmafFailed,
     WebLowVmaf,
     WebReasonRestartInterrupted,
-    WebReasonVerificationCancelled,
     WebSelectFolderRecursive,
     WebHiddenFiles,
     WebParentDirectory,
@@ -2788,14 +2787,6 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "durch einen Daemon-Neustart unterbrochen",
             Zh => "被守护进程重启中断",
         },
-        Msg::WebReasonVerificationCancelled => match lang {
-            En => "verification was cancelled",
-            It => "la verifica è stata annullata",
-            Es => "la verificación fue cancelada",
-            Fr => "la vérification a été annulée",
-            De => "die Überprüfung wurde abgebrochen",
-            Zh => "验证已取消",
-        },
         Msg::WebSelectFolderRecursive => match lang {
             En => "Select a folder (recursive)",
             It => "Seleziona una cartella (ricorsiva)",
@@ -3561,10 +3552,6 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     (
         "reason_restart_interrupted",
         Msg::WebReasonRestartInterrupted,
-    ),
-    (
-        "reason_verification_cancelled",
-        Msg::WebReasonVerificationCancelled,
     ),
     ("remove_from_queue", Msg::WebRemoveFromQueue),
     ("remove_rip_prompt", Msg::WebRemoveRipPrompt),

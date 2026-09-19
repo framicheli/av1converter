@@ -465,7 +465,6 @@ const BADGE_KEY = {
 const REASON_KEY = {
   "Cancelled": "reason_cancelled",
   "interrupted by a daemon restart": "reason_restart_interrupted",
-  "Verification was cancelled": "reason_verification_cancelled",
 };
 
 function trReason(reason) {
