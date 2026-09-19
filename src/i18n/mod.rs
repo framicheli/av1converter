@@ -313,6 +313,7 @@ pub enum Msg {
     DaemonPublicHttp,
     DaemonPublicHttpRefused,
     DaemonTokenGenerated,
+    DaemonTokenGeneratedSeeStatus,
     EncoderUnavailable,
     ConfigLoadFailed,
     DaemonShuttingDown,
@@ -2337,6 +2338,26 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             }
             Zh => {
                 "未设置安全的访问令牌，已生成一个并保存到配置中。请打开下方的网址以授权您的浏览器。"
+            }
+        },
+        Msg::DaemonTokenGeneratedSeeStatus => match lang {
+            En => {
+                "No strong access token was set, so one has been generated and saved to the config. Run av1converter --status to see the URL that authorises your browser."
+            }
+            It => {
+                "Non era impostato un token di accesso sicuro: ne è stato generato uno e salvato nella configurazione. Esegui av1converter --status per vedere l'URL che autorizza il browser."
+            }
+            Es => {
+                "No había un token de acceso seguro, así que se ha generado uno y guardado en la configuración. Ejecuta av1converter --status para ver la URL que autoriza tu navegador."
+            }
+            Fr => {
+                "Aucun jeton d'accès robuste n'était défini : un jeton a été généré et enregistré dans la configuration. Lancez av1converter --status pour afficher l'URL qui autorise votre navigateur."
+            }
+            De => {
+                "Es war kein starkes Zugriffstoken gesetzt, daher wurde eines erzeugt und in der Konfiguration gespeichert. Führen Sie av1converter --status aus, um die URL zu sehen, die Ihren Browser autorisiert."
+            }
+            Zh => {
+                "未设置安全的访问令牌，已生成一个并保存到配置中。运行 av1converter --status 查看用于授权浏览器的网址。"
             }
         },
         Msg::DaemonPublicHttp => match lang {

@@ -212,7 +212,7 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
                 eprintln!("{} ({e})", t(lang, Msg::SaveFailed));
                 std::process::exit(1);
             }
-            println!("{}", t(lang, Msg::DaemonTokenGenerated));
+            println!("{}", t(lang, Msg::DaemonTokenGeneratedSeeStatus));
         }
         config
             .daemon
