@@ -204,7 +204,13 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
     // carries it, so one click authorises the browser. Done after the PID
     // lock so two concurrent --start processes cannot each mint a token.
     if config.daemon.auth_token.len() < 32 {
-        let mut fresh = config::AppConfig::load();
+        let mut fresh = match load_config_for_save() {
+            Ok(fresh) => fresh,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        };
         if fresh.daemon.auth_token.len() < 32 {
             fresh.daemon.auth_token =
                 config::DaemonConfig::generate_token().map_err(io::Error::other)?;
@@ -315,16 +321,43 @@ fn enable_daemon_config(
     Ok(generated)
 }
 
+/// Load `config.toml` for a command that saves it: an error naming the parse
+/// failure when the file exists but cannot be read.
+fn load_config_for_save() -> Result<config::AppConfig, String> {
+    match config::AppConfig::load_reporting() {
+        (config, None) => Ok(config),
+        (config, Some(error)) => Err(format!(
+            "{} ({})",
+            t(config.language, Msg::ConfigUnreadableRefused),
+            error.lines().next().unwrap_or_default()
+        )),
+    }
+}
+
+/// Load `config.toml`, enable the daemon in it and save it. Returns the saved
+/// configuration and whether a token was generated.
+fn enable_daemon_on_disk() -> Result<(config::AppConfig, bool), String> {
+    let mut config = load_config_for_save()?;
+    let previous = config.clone();
+    let generated = enable_daemon_config(&mut config, &previous)?;
+    Ok((config, generated))
+}
+
 /// `--install-service`: write a user unit/plist and start the daemon now.
-fn install_service_entry() -> io::Result<()> {
-    let mut config = config::AppConfig::load();
-    let lang = config.language;
+fn install_service_entry() {
     if !daemon::service::supported() {
+        let lang = config::AppConfig::load_existing().language;
         eprintln!("{}", t(lang, Msg::DaemonServiceUnsupported));
         std::process::exit(1);
     }
-    let previous = config.clone();
-    let generated = enable_daemon_config(&mut config, &previous).map_err(io::Error::other)?;
+    let (config, generated) = match enable_daemon_on_disk() {
+        Ok(enabled) => enabled,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    let lang = config.language;
     if generated {
         println!("{}", t(lang, Msg::DaemonTokenGenerated));
     }
@@ -338,7 +371,6 @@ fn install_service_entry() -> io::Result<()> {
             if outcome.linger_hint {
                 println!("{}", t(lang, Msg::DaemonServiceLingerHint));
             }
-            Ok(())
         }
         Err(e) => {
             eprintln!("{} {e}", t(lang, Msg::DaemonServiceFailed));
@@ -526,7 +558,10 @@ fn main() -> io::Result<()> {
             daemon_status_entry();
             return Ok(());
         }
-        Ok(Cli::InstallService) => return install_service_entry(),
+        Ok(Cli::InstallService) => {
+            install_service_entry();
+            return Ok(());
+        }
         Ok(Cli::UninstallService) => {
             uninstall_service_entry();
             return Ok(());
@@ -1766,6 +1801,33 @@ mod tests {
         let previous = config.clone();
         assert!(validate_and_save_config(&mut config.clone(), &previous).is_ok());
         assert!(validate_and_save_config(&mut config, &config::AppConfig::default()).is_err());
+    }
+
+    #[test]
+    fn enabling_the_daemon_refuses_an_unreadable_config_and_leaves_it_alone() {
+        let path = config::AppConfig::config_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let corrupt = b"[daemon\nenabled = tru\n";
+        std::fs::write(&path, corrupt).unwrap();
+
+        let error = enable_daemon_on_disk().unwrap_err();
+
+        assert!(
+            error.starts_with(t(
+                config::AppConfig::default().language,
+                Msg::ConfigUnreadableRefused
+            )),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+        assert!(!path.with_extension("toml.bak").exists());
+
+        // A readable file is enabled and saved.
+        std::fs::remove_file(&path).unwrap();
+        let (saved, generated) = enable_daemon_on_disk().unwrap();
+        assert!(saved.daemon.enabled);
+        assert!(generated);
+        assert!(config::AppConfig::load_existing().daemon.enabled);
     }
 
     #[test]

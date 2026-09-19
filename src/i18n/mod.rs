@@ -327,6 +327,7 @@ pub enum Msg {
     DaemonTokenGeneratedSeeStatus,
     EncoderUnavailable,
     ConfigLoadFailed,
+    ConfigUnreadableRefused,
     DaemonShuttingDown,
     DaemonStarted,
     DaemonStartFailed,
@@ -2403,6 +2404,16 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Interface web à l'écoute sur",
             De => "Web-UI lauscht auf",
             Zh => "Web 界面监听于",
+        },
+        Msg::ConfigUnreadableRefused => match lang {
+            En => "config.toml could not be read; fix or remove it and try again",
+            It => "Impossibile leggere config.toml; correggilo o rimuovilo e riprova",
+            Es => "No se pudo leer config.toml; corríjalo o elimínelo y vuelva a intentarlo",
+            Fr => "Impossible de lire config.toml ; corrigez-le ou supprimez-le, puis réessayez",
+            De => {
+                "config.toml konnte nicht gelesen werden; korrigieren oder entfernen Sie die Datei und versuchen Sie es erneut"
+            }
+            Zh => "无法读取 config.toml；请修复或删除该文件后重试",
         },
         Msg::ConfigLoadFailed => match lang {
             En => {

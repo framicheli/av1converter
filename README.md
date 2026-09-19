@@ -430,7 +430,7 @@ behind_proxy = false       # Treat every web request as remote; set when a rever
 # staging_directory = ""    # Where ripped titles wait to be encoded (unset = a private per-user folder under the system temp directory)
 ```
 
-If `config.toml` cannot be parsed it is left untouched and defaults are used for that run. Saving settings afterwards first copies the broken file to `config.toml.bak`.
+If `config.toml` cannot be parsed it is left untouched and defaults are used for that run. Saving settings afterwards first copies the broken file to `config.toml.bak`. `--install-service`, and `--start` when it has to generate an access token, refuse to run until the file is fixed or removed.
 
 Each resolution preset exposes per-encoder quality values (`crf`, `nvenc_cq`, `qsv_quality`, `amf_quality`). `film_grain` synthesis strength is SVT-AV1 only and is hidden in the settings UI when a hardware encoder is selected.
 

@@ -166,6 +166,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Settings errors from the TUI and the web UI (output folder, browse root, staging and MakeMKV paths, bind address, port, token length) and the web "no video files" error follow the interface language, and the TUI names the output-folder problem instead of showing a field label.
 - Translation fixes: one term for disc ripping in Chinese, German, Italian and Spanish; "source", "encoder", "settings" and "folder" are used consistently; the Spanish autostart notice says "at login"; German daemon notices use "Sie"; the Chinese Dolby Vision profile label and track dialog are corrected.
 - An unreadable `queue.json` is moved to `queue.json.unreadable-<time>` instead of being replaced by an empty queue, `queue.json.bak` is refreshed only from a queue that reads back, and both UIs say where the file was kept.
+- `--install-service`, and the access token `--start` generates, refuse to run on a `config.toml` that cannot be read instead of saving defaults over it.
 
 ### Known limitations
 
