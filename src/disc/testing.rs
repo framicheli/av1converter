@@ -25,6 +25,8 @@ pub enum Fake {
     RipFails,
     /// Reports progress and then hangs until it is killed.
     RipHangs,
+    /// Writes a file and exits 0, but reports the title as failed.
+    RipReportsFailure,
     /// A Blu-ray whose key has expired.
     ExpiredKey,
     /// A drive the daemon user cannot open.
@@ -58,6 +60,12 @@ impl Fake {
                  echo 'MSG:5003,16,2,\"Scsi error - MEDIUM ERROR\",\"x\"'\n  exit 1",
             ),
             Fake::RipHangs => (BLURAY_SCAN, "  echo 'PRGV:0,1,65536'\n  exec sleep 300"),
+            Fake::RipReportsFailure => (
+                BLURAY_SCAN,
+                "  : > \"$dest/title_t00.mkv\"\n  \
+                 echo 'MSG:5037,516,2,\"Copy complete. 0 titles saved, 1 failed.\",\"Copy complete. %1 titles saved, %2 failed.\",\"0\",\"1\"'\n  \
+                 exit 0",
+            ),
             Fake::ExpiredKey => (EXPIRED_KEY, "  exit 1"),
             Fake::PermissionDenied => (PERMISSION_DENIED, "  exit 1"),
         }

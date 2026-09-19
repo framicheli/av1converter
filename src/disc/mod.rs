@@ -357,6 +357,7 @@ pub fn rip_title(
 
     let mut message = String::new();
     let mut output_name = None;
+    let mut title_failed = false;
     let run = run_robot(
         bin,
         &[
@@ -389,11 +390,21 @@ pub fn rip_title(
                     output_name = Some(name);
                 }
             }
+            // "Copy complete. %1 titles saved, %2 failed."
+            "MSG"
+                if fields.first().is_some_and(|code| code == "5037")
+                    && fields
+                        .get(6)
+                        .and_then(|failed| failed.trim().parse::<u32>().ok())
+                        .is_some_and(|failed| failed > 0) =>
+            {
+                title_failed = true;
+            }
             _ => {}
         },
     )?;
 
-    if !run.success {
+    if !run.success || title_failed {
         return Err(failure(&run.messages, DiscError::UnreadableDisc));
     }
     ripped_file(dest, output_name.as_deref())
@@ -791,6 +802,26 @@ mod tests {
                 &AtomicBool::new(false)
             ),
             Err(DiscError::UnreadableDisc)
+        );
+    }
+
+    /// A rip that exits cleanly but reports a failed title is refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_rip_that_reports_a_failed_title_is_refused() {
+        let dest = scratch("rip_reports_failure");
+        let bin = fake_makemkvcon(&dest, &Fake::RipReportsFailure);
+        let result = rip_title(
+            &bin,
+            &drive_source(),
+            0,
+            &dest,
+            |_| {},
+            &AtomicBool::new(false),
+        );
+        assert!(
+            matches!(&result, Err(DiscError::Failed(message)) if message.contains("1 failed")),
+            "{result:?}"
         );
     }
 
