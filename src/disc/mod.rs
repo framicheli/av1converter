@@ -509,9 +509,7 @@ fn run_robot(
     if reader.is_finished() {
         let _ = reader.join();
     } else {
-        tracing::warn!(
-            "makemkvcon stdout reader did not exit after cancel/wait; abandoning join"
-        );
+        tracing::warn!("makemkvcon stdout reader did not exit after cancel/wait; abandoning join");
     }
 
     if cancelled {

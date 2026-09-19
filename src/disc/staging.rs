@@ -127,18 +127,19 @@ pub fn rip_to_staging(
     Ok(named)
 }
 
-/// Re-scan a drive before the first title is extracted. Title ids are only
-/// meaningful for the disc that was scanned; a same-label swap is caught when
-/// an expected id or name is missing.
+/// Re-scan a drive before the first title is extracted, and return the source
+/// with the drive as it is listed now. Title ids are only meaningful for the
+/// disc that was scanned; a same-label swap is caught when an expected id or
+/// name is missing.
 pub fn confirm_titles(
     bin: &Path,
     source: &DiscSource,
     titles: &[DiscTitle],
     cancel: &AtomicBool,
-) -> Result<(), DiscError> {
-    if !matches!(source, DiscSource::Drive(_)) {
-        return Ok(());
-    }
+) -> Result<DiscSource, DiscError> {
+    let DiscSource::Drive(drive) = source else {
+        return Ok(source.clone());
+    };
     let scan = super::scan_titles(bin, source, cancel)?;
     if titles.iter().any(|want| {
         !scan
@@ -148,7 +149,11 @@ pub fn confirm_titles(
     }) {
         return Err(DiscError::DiscChanged);
     }
-    Ok(())
+    super::list_drives(bin, cancel)?
+        .into_iter()
+        .find(|current| current.id == drive.id && current.name == drive.name)
+        .map(DiscSource::Drive)
+        .ok_or(DiscError::DiscChanged)
 }
 
 /// `<disc label>_t<NN>.mkv`, in place of `MakeMKV`'s `title_t00.mkv`.
@@ -725,6 +730,28 @@ mod tests {
     }
 
     /// A rip that fails takes its half-written file with it.
+    /// The drive a rip starts from is the one listed now, not the one listed
+    /// before the disc loaded.
+    #[cfg(unix)]
+    #[test]
+    fn confirm_titles_returns_the_drive_as_listed_now() {
+        let base = scratch("confirm_now");
+        let bin = fake_makemkvcon(&base, &Fake::Rip);
+        let (source, title) = disc("THE_DISC");
+        let DiscSource::Drive(drive) = &source else {
+            unreachable!()
+        };
+        let stale = DiscSource::Drive(super::super::DiscDrive {
+            disc_label: None,
+            ..drive.clone()
+        });
+        assert_eq!(
+            confirm_titles(&bin, &stale, &[title], &AtomicBool::new(false)),
+            Ok(source)
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_failed_rip_leaves_no_partial_behind() {

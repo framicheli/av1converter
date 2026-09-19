@@ -75,8 +75,8 @@ pub fn spawn_rips(
         let confirmed = std::panic::catch_unwind(AssertUnwindSafe(|| {
             staging::confirm_titles(&bin, &source, &titles, &cancel)
         }));
-        match confirmed {
-            Ok(Ok(())) => {}
+        let source = match confirmed {
+            Ok(Ok(source)) => source,
             Ok(Err(DiscError::Cancelled)) => {
                 let _ = tx.send(DiscEvent::Cancelled);
                 return;
@@ -92,7 +92,7 @@ pub fn spawn_rips(
                 });
                 return;
             }
-        }
+        };
         for (index, title) in titles.iter().enumerate() {
             let progress_tx = tx.clone();
             // A panic here ends the run with an error rather than leaving the
