@@ -112,6 +112,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - On Windows, MakeMKV is also found under `C:\Program Files\MakeMKV`.
 - Teletext and CEA-608 subtitle tracks, common in DVB `.ts` recordings, are left out of MKV output instead of failing the encode; the source is kept.
 - TUI: saving a different encoder re-checks that FFmpeg has it, updating the Home warning and saying so when it is missing; the startup warning about a missing encoder no longer stays on screen for good.
+- TUI: Ctrl+C while shutting down no longer opens a dialog that cannot be answered, and `q` on the "terminal too small" screen asks to quit even while a settings field is being edited, instead of typing into it.
 
 ### Known limitations
 

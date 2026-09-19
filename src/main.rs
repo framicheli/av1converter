@@ -661,8 +661,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 || control_c
                 || allow_esc_cancel
             {
-                if control_c {
-                    app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+                let quit_request = control_c
+                    || (compact && key.code == KeyCode::Char('q') && app.confirm_dialog.is_none());
+                if quit_request {
+                    if !app.should_quit {
+                        app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+                    }
                 } else if !(app.config_edit_buffer.is_some() && is_shortcut_char(key)) {
                     handle_key(app, key.code);
                 }
