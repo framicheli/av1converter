@@ -244,3 +244,125 @@ fn a_failed_encode_leaves_the_destination_alone() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Move `moov/udta`, which holds the cover of an `+faststart` MP4, ahead of
+/// the tracks. Offsets into `mdat` stay valid because `moov` keeps its size.
+fn move_cover_first(path: &Path) {
+    let data = std::fs::read(path).unwrap();
+    let size = |at: usize| u32::from_be_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+    let kind = |at: usize| &data[at + 4..at + 8];
+    let mut moov = 0;
+    while kind(moov) != b"moov" {
+        moov += size(moov);
+    }
+    let (start, end) = (moov + 8, moov + size(moov));
+    let mut children = Vec::new();
+    let mut at = start;
+    while at < end {
+        children.push(at..at + size(at));
+        at += size(at);
+    }
+    children.sort_by_key(|child| match kind(child.start) {
+        b"mvhd" => 0,
+        b"udta" => 1,
+        _ => 2,
+    });
+    let mut out = data[..start].to_vec();
+    for child in children {
+        out.extend_from_slice(&data[child]);
+    }
+    out.extend_from_slice(&data[end..]);
+    std::fs::write(path, out).unwrap();
+}
+
+/// Cover art stored before the film is neither analyzed nor encoded in its
+/// place.
+#[test]
+fn the_movie_is_encoded_not_its_cover_art() {
+    if !(DependencyStatus::check() && DependencyStatus::encoder_available("libsvtav1")) {
+        eprintln!("skipping: this FFmpeg cannot encode AV1");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_cover_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("cover.mp4");
+    let built = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=24:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=64x64:d=0.04",
+            "-map",
+            "0",
+            "-map",
+            "1",
+            "-c:v:0",
+            "libx264",
+            "-c:v:1",
+            "mjpeg",
+            "-disposition:v:1",
+            "attached_pic",
+            "-movflags",
+            "+faststart",
+        ])
+        .arg(&input)
+        .status()
+        .is_ok_and(|status| status.success());
+    if !built {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    move_cover_first(&input);
+    if probe(&input, "stream=codec_name")
+        .first()
+        .map(String::as_str)
+        != Some("mjpeg")
+    {
+        eprintln!("skipping: this FFmpeg does not list the moved cover first");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+
+    let analysis =
+        crate::analyzer::ffprobe::analyze(input.to_str().unwrap(), &AtomicBool::new(false))
+            .expect("the fixture analyzes");
+    assert_eq!(
+        analysis.metadata.width, 320,
+        "the film, not the 64x64 cover"
+    );
+
+    let output = dir.join("out.mkv");
+    let config = AppConfig {
+        encoder: Encoder::SvtAv1,
+        ..AppConfig::default()
+    };
+    let params = EncodingParams::from_metadata(
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        &metadata_for(&input),
+        &config,
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        false,
+        Vec::new(),
+    );
+    let result = encode_video(&params, None, &AtomicBool::new(false), 1.0, 24.0);
+    assert!(
+        matches!(result, EncodeResult::Success),
+        "encode failed: {result:?}"
+    );
+    assert_eq!(probe(&output, "stream=codec_name,width"), vec!["av1,320"]);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

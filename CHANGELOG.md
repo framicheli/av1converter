@@ -79,6 +79,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - The web page no longer scrolls sideways on phones, and queue sizes stay on one line.
 - The cancel prompt says that jobs waiting to encode are cancelled with the current encode.
 - The Nix flake is pinned with `flake.lock`, and rebuilding it produces identical output.
+- Cover art that comes before the video in an MP4/MOV is no longer analysed, encoded and VMAF-checked in place of the film, which could delete the source after a one-frame encode.
 
 ### Known limitations
 

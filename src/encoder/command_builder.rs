@@ -122,7 +122,7 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         "-i".to_string(),
         params.input.clone(),
         "-map".to_string(),
-        "0:v:0".to_string(),
+        "0:V:0".to_string(),
     ]);
 
     // Track mapping. An empty selection maps nothing: defaults are already
@@ -663,7 +663,7 @@ mod tests {
             .collect();
         assert_eq!(
             maps,
-            vec!["0:v:0", "0:a:1", "0:a:3", "0:a:4", "0:s:0", "0:t?"]
+            vec!["0:V:0", "0:a:1", "0:a:3", "0:a:4", "0:s:0", "0:t?"]
         );
 
         // ...while the codec options are indexed by output position.
@@ -780,7 +780,7 @@ mod tests {
             .filter(|(i, _)| i > &0 && args[i - 1] == "-map")
             .map(|(_, a)| a)
             .collect();
-        assert_eq!(maps, vec!["0:v:0", "0:s:0", "0:t?"]);
+        assert_eq!(maps, vec!["0:V:0", "0:s:0", "0:t?"]);
 
         params.output = "out.MKV".to_string();
         assert!(build_ffmpeg_args(&params).contains(&"0:t?".to_string()));
@@ -814,7 +814,7 @@ mod tests {
             .filter(|(i, _)| i > &0 && args[i - 1] == "-map")
             .map(|(_, a)| a)
             .collect();
-        assert_eq!(maps, vec!["0:v:0", "0:s:1"]);
+        assert_eq!(maps, vec!["0:V:0", "0:s:1"]);
         assert_eq!(arg_after(&args, "-c:s:0").as_deref(), Some("mov_text"));
         assert!(!args.contains(&"-c:s:1".to_string()));
         assert_eq!(arg_after(&args, "-strict").as_deref(), Some("-2"));
