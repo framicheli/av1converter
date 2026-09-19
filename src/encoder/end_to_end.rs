@@ -444,3 +444,201 @@ fn lost_cover_art_or_subtitles_keep_the_source() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A one-second video-only clip in `dir`.
+fn make_video_fixture(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join("video.mkv");
+    Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=24:duration=1",
+            "-c:v",
+            "libx264",
+        ])
+        .arg(&path)
+        .status()
+        .is_ok_and(|status| status.success())
+        .then_some(path)
+}
+
+/// Runs the full pipeline with source deletion on, against a fresh
+/// video-only clip in its own directory. `None` when this machine cannot
+/// encode AV1 and score VMAF.
+fn run_deleting_pipeline(
+    name: &str,
+    threshold: f64,
+    cancel: &std::sync::Arc<AtomicBool>,
+    on_before_vmaf: impl FnOnce(&Path, &Path) + Send + 'static,
+) -> Option<(super::FullEncodeResult, PathBuf, PathBuf)> {
+    if !(DependencyStatus::check()
+        && DependencyStatus::encoder_available("libsvtav1")
+        && DependencyStatus::vmaf_available())
+    {
+        eprintln!("skipping: this FFmpeg cannot encode AV1 and score VMAF");
+        return None;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_gate_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(input) = make_video_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return None;
+    };
+    let output = dir.join("out.mkv");
+    let mut config = AppConfig {
+        encoder: Encoder::SvtAv1,
+        ..AppConfig::default()
+    };
+    config.quality.vmaf_enabled = true;
+    config.quality.vmaf_threshold = threshold;
+    config.quality.delete_source_on_success = true;
+
+    let identity = crate::queue::SourceIdentity::from_path(&input).unwrap();
+    let (hook_input, hook_output) = (input.clone(), output.clone());
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        &identity,
+        &metadata_for(&input),
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        false,
+        Vec::new(),
+        &config,
+        None,
+        cancel,
+        Some(Box::new(move || on_before_vmaf(&hook_input, &hook_output))),
+    );
+    Some((result, input, output))
+}
+
+/// Replaces the file at `path` with a byte-identical copy that is a
+/// different file.
+#[cfg(unix)]
+fn replace_with_copy(path: &Path) {
+    let copy = path.with_extension("copy");
+    std::fs::copy(path, &copy).unwrap();
+    std::fs::rename(&copy, path).unwrap();
+}
+
+#[test]
+fn a_passing_vmaf_score_deletes_the_source() {
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let Some((result, input, output)) = run_deleting_pipeline("pass", 1.0, &cancel, |_, _| {})
+    else {
+        return;
+    };
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: true,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(!input.exists());
+    assert!(output.exists());
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+#[test]
+fn a_score_below_the_threshold_keeps_the_source() {
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let Some((result, input, _)) = run_deleting_pipeline("low", 101.0, &cancel, |_, _| {}) else {
+        return;
+    };
+    assert!(
+        matches!(result, super::FullEncodeResult::QualityWarning { .. }),
+        "{result:?}"
+    );
+    assert!(input.exists());
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+#[test]
+fn a_vmaf_run_that_fails_keeps_the_source() {
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let Some((result, input, _)) = run_deleting_pipeline("fail", 1.0, &cancel, |_, output| {
+        std::fs::write(output, b"not a video").unwrap();
+    }) else {
+        return;
+    };
+    assert!(
+        matches!(result, super::FullEncodeResult::VmafFailed { .. }),
+        "{result:?}"
+    );
+    assert!(input.exists());
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+#[test]
+fn a_cancel_during_vmaf_keeps_the_source() {
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let flag = std::sync::Arc::clone(&cancel);
+    let Some((result, input, _)) = run_deleting_pipeline("cancel", 1.0, &cancel, move |_, _| {
+        flag.store(true, std::sync::atomic::Ordering::Release);
+    }) else {
+        return;
+    };
+    assert!(
+        matches!(result, super::FullEncodeResult::Cancelled),
+        "{result:?}"
+    );
+    assert!(input.exists());
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_replaced_during_the_job_is_kept() {
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let Some((result, input, _)) =
+        run_deleting_pipeline("source", 1.0, &cancel, |input, _| replace_with_copy(input))
+    else {
+        return;
+    };
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: false,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(input.exists());
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_output_replaced_before_deletion_keeps_the_source() {
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let Some((result, input, _)) = run_deleting_pipeline("output", 1.0, &cancel, |_, output| {
+        replace_with_copy(output);
+    }) else {
+        return;
+    };
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: false,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(input.exists());
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}

@@ -518,9 +518,34 @@ fn parse_out_time_secs(line: &str) -> Option<f64> {
 mod tests {
     use super::{
         encoded_seconds, is_same_file, latest_progress_frame, latest_progress_time_secs,
-        partial_output_path, read_file_tail, shortfall,
+        partial_output_path, publish_partial, read_file_tail, shortfall,
     };
     use std::path::Path;
+
+    #[test]
+    fn publishing_never_overwrites_an_existing_output() {
+        let dir = std::env::temp_dir().join(format!("av1c_publish_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let partial = dir.join("out.part.mkv");
+        let output = dir.join("out.mkv");
+        std::fs::write(&partial, b"encoded").unwrap();
+        std::fs::write(&output, b"someone else's file").unwrap();
+
+        let result = publish_partial(partial.to_str().unwrap(), output.to_str().unwrap());
+        assert_eq!(
+            result,
+            Err("Output appeared while encoding; refusing to overwrite it".to_string())
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"someone else's file");
+
+        std::fs::remove_file(&output).unwrap();
+        publish_partial(partial.to_str().unwrap(), output.to_str().unwrap()).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"encoded");
+        assert!(!partial.exists());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     /// The scratch file sits next to the real output, keeps its extension, and
     /// is never the destination path itself.

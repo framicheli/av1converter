@@ -259,7 +259,35 @@ pub fn calculate_vmaf(
 
 #[cfg(test)]
 mod tests {
-    use super::escape_filter_value;
+    use super::{VmafResult, escape_filter_value};
+
+    fn scores(score: f64, min_score: f64) -> VmafResult {
+        VmafResult {
+            score,
+            min_score,
+            max_score: 100.0,
+        }
+    }
+
+    #[test]
+    fn a_mean_below_the_threshold_fails_even_with_a_passing_minimum() {
+        assert!(!scores(89.99, 95.0).meets_threshold(90.0));
+    }
+
+    #[test]
+    fn a_minimum_below_the_threshold_fails_even_with_a_passing_mean() {
+        assert!(!scores(95.0, 89.99).meets_threshold(90.0));
+    }
+
+    #[test]
+    fn scores_equal_to_the_threshold_pass() {
+        assert!(scores(90.0, 90.0).meets_threshold(90.0));
+    }
+
+    #[test]
+    fn both_scores_below_the_threshold_fail() {
+        assert!(!scores(80.0, 70.0).meets_threshold(90.0));
+    }
 
     /// Option-level escapes are escaped again for the graph parser.
     #[test]
