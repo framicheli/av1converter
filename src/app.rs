@@ -103,6 +103,8 @@ pub enum ConfirmAction {
     NewConversion,
     /// Remove the ripped title at this queue index, deleting its staging files.
     RemoveRip(usize),
+    /// Clear finished jobs, some of them ripped titles.
+    ClearFinishedRips,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2136,6 +2138,49 @@ impl App {
         self.queue_list_state.select(Some(self.queue_cursor));
     }
 
+    /// Whether finished jobs can be cleared: nothing runs and one is listed.
+    pub fn can_clear_finished(&self) -> bool {
+        !self.work_active() && self.queue.jobs.iter().any(|job| job.status.is_terminal())
+    }
+
+    /// Remove every finished job while nothing runs, keeping its space saved in
+    /// the total and deleting ripped titles' staging files. Returns how many
+    /// were removed.
+    pub fn clear_finished(&mut self) -> usize {
+        if self.work_active() {
+            return 0;
+        }
+        let root = crate::disc::staging::staging_root(&self.config);
+        let before = self.queue.jobs.len();
+        let mut cleared_bytes = 0i128;
+        for job in self
+            .queue
+            .jobs
+            .iter()
+            .filter(|job| job.status.is_terminal())
+        {
+            cleared_bytes = cleared_bytes.saturating_add(job.size_change().unwrap_or(0));
+            if job.temporary {
+                crate::disc::staging::discard_staged(&root, &job.path);
+            }
+        }
+        self.queue.cleared_saved_bytes =
+            self.queue.cleared_saved_bytes.saturating_add(cleared_bytes);
+        self.queue.jobs.retain(|job| !job.status.is_terminal());
+        self.queue.config_job_index = 0;
+        self.queue.current_job_index = 0;
+        self.batch_start = 0;
+        self.queue_cursor = self
+            .queue_cursor
+            .min(self.queue.jobs.len().saturating_sub(1));
+        self.queue_list_state.select(Some(self.queue_cursor));
+        let removed = before - self.queue.jobs.len();
+        let message = crate::i18n::t(self.config.language, crate::i18n::Msg::WebRemovedFinished)
+            .replace("{n}", &removed.to_string());
+        self.set_timed_success(&message, 3);
+        removed
+    }
+
     /// Delete the staging directory of every ripped title in the queue, then
     /// empty the queue.
     fn clear_queue(&mut self) {
@@ -2697,6 +2742,24 @@ mod tests {
         assert_eq!(app.queue.jobs.len(), 2);
         assert_eq!(app.queue.current_job_index, 0);
         assert_eq!(app.queue.total_jobs_to_encode, 2);
+    }
+
+    #[test]
+    fn clearing_finished_keeps_waiting_jobs_and_the_saved_total() {
+        let mut app = App::new();
+        let mut done = EncodingJob::new(PathBuf::from("done.mkv"));
+        done.status = JobStatus::Done;
+        done.source_size = Some(1000);
+        done.output_size = Some(400);
+        let mut waiting = EncodingJob::new(PathBuf::from("waiting.mkv"));
+        waiting.status = JobStatus::AwaitingConfig;
+        app.queue.jobs = vec![done, waiting];
+        let saved = app.queue.total_space_saved().0;
+
+        assert_eq!(app.clear_finished(), 1);
+
+        assert_eq!(app.queue.jobs.len(), 1);
+        assert_eq!(app.queue.total_space_saved().0, saved);
     }
 
     #[test]

@@ -56,6 +56,10 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
             format!(" {} ", t(lang, Msg::NewConversion)),
             t(lang, Msg::FinishResetPrompt),
         ),
+        ConfirmAction::ClearFinishedRips => (
+            format!(" {} ", t(lang, Msg::WebClearFinished)),
+            t(lang, Msg::WebClearFinishedRipPrompt),
+        ),
         ConfirmAction::RemoveRip(_) => (
             format!(" {} ", t(lang, Msg::WebRemoveFromQueue)),
             t(lang, Msg::WebRemoveRipPrompt),

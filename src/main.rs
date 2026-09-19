@@ -836,6 +836,9 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
         }
         ConfirmAction::NewConversion => app.reset(),
         ConfirmAction::RemoveRip(index) => app.remove_job(index),
+        ConfirmAction::ClearFinishedRips => {
+            app.clear_finished();
+        }
     }
 }
 
@@ -1110,6 +1113,18 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
         KeyCode::Up | KeyCode::Char('k') => app.queue_move_cursor(false),
         KeyCode::Down | KeyCode::Char('j') => app.queue_move_cursor(true),
         KeyCode::Char('K') => app.queue_move_selected_up(),
+        KeyCode::Char('C') if app.can_clear_finished() => {
+            if app
+                .queue
+                .jobs
+                .iter()
+                .any(|job| job.temporary && job.status.is_terminal())
+            {
+                app.confirm_dialog = Some((ConfirmAction::ClearFinishedRips, false));
+            } else {
+                app.clear_finished();
+            }
+        }
         KeyCode::Char('x') | KeyCode::Delete if app.can_remove_job(app.queue_cursor) => {
             if app.queue.jobs[app.queue_cursor].temporary {
                 app.confirm_dialog = Some((ConfirmAction::RemoveRip(app.queue_cursor), false));

@@ -291,6 +291,13 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
     }
     help_spans.push(Span::styled("a", Style::default().fg(Color::Yellow)));
     help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::AddToQueue))));
+    if app.can_clear_finished() {
+        help_spans.push(Span::styled("C", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::WebClearFinished)
+        )));
+    }
     if app.can_remove_job(app.queue_cursor) {
         help_spans.push(Span::styled("x", Style::default().fg(Color::Yellow)));
         help_spans.push(Span::raw(format!(
