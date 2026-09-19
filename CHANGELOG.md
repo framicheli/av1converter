@@ -86,6 +86,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Restarting the daemon no longer marks jobs as outside `browse_root` because their source was deleted or the share is not mounted yet. Finished jobs keep their history, and a staged rip is no longer swept while its job still exists.
 - Opening a file or folder in the TUI while ripped titles wait in the queue deletes their staging files instead of leaving them behind.
 - Ripping no longer fails with "disc changed" when the drive list was read before the disc finished loading; staged files carry the disc label.
+- First-run encoder detection encodes one test frame with each hardware AV1 encoder instead of matching GPU names, so Turing Quadros, AV1-decode-only GPUs and AMD cards are no longer given an encoder they cannot use; Windows no longer calls the deprecated wmic.
 
 ### Known limitations
 

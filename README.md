@@ -368,12 +368,12 @@ Files already encoded in AV1 default to demux/remux mode instead of being re-enc
 
 ## Encoder Detection
 
-On first run (when no `config.toml` exists yet) the tool picks an encoder with the following priority. It only looks at the GPU, not at what your FFmpeg build supports; change it in Settings afterwards:
+On first run (when no `config.toml` exists yet) the tool encodes one test frame with each hardware AV1 encoder, in this order, and picks the first that succeeds. A test encode that takes longer than 10 seconds counts as a failure. Change the encoder in Settings afterwards:
 
-1. **NVIDIA NVENC** (`av1_nvenc`) — RTX 40/50 series and compatible Ada/L-series GPUs
-2. **Intel Quick Sync** (`av1_qsv`) — Intel Arc GPUs (Linux/Windows only)
-3. **AMD AMF** (`av1_amf`) — RDNA3 architecture, RX 7000 series (Linux/Windows only)
-4. **SVT-AV1** (`libsvtav1`) — Software fallback; always detected on macOS
+1. **NVIDIA NVENC** (`av1_nvenc`), e.g. RTX 40/50 series
+2. **Intel Quick Sync** (`av1_qsv`), e.g. Arc GPUs
+3. **AMD AMF** (`av1_amf`), e.g. RX 7000 series
+4. **SVT-AV1** (`libsvtav1`), the software fallback when no hardware encoder works (always on macOS)
 
 ## Configuration
 
