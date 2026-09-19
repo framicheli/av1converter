@@ -105,85 +105,85 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
         ])
     } else {
         match app.selection_mode {
-        SelectionMode::File => {
-            let mut spans = vec![
-                Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
-                Span::styled("Space", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Toggle))),
-                Span::styled("Enter", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Proceed))),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
-                Span::styled("q", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
-            ];
-            if !app.selected_files.is_empty() {
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    format!(
-                        "[{} {}]",
-                        app.selected_files.len(),
-                        t(lang, Msg::SelectedWord)
-                    ),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ));
+            SelectionMode::File => {
+                let mut spans = vec![
+                    Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+                    Span::styled("Space", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Toggle))),
+                    Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Proceed))),
+                    Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
+                    Span::styled("q", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
+                ];
+                if !app.selected_files.is_empty() {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        format!(
+                            "[{} {}]",
+                            app.selected_files.len(),
+                            t(lang, Msg::SelectedWord)
+                        ),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                Line::from(spans)
             }
-            Line::from(spans)
-        }
-        SelectionMode::Folder | SelectionMode::FolderRecursive => {
-            let subfolder_selected = app
-                .dir_entries
-                .get(app.explorer_index)
-                .is_some_and(|entry| entry.is_dir && !entry.is_parent());
-            let space_action = if subfolder_selected {
-                Msg::SelectThisFolder
-            } else {
-                Msg::SelectCurrentFolder
-            };
-            Line::from(vec![
-                Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
-                Span::styled("Enter", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::OpenFolderAction))),
-                Span::styled("Space", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}  ", t(lang, space_action))),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
-                Span::styled("q", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
-            ])
-        }
-        SelectionMode::DiscFolder => {
-            let image_selected = app
-                .dir_entries
-                .get(app.explorer_index)
-                .is_some_and(|entry| is_iso(&entry.path));
-            let enter_action = if image_selected {
-                Msg::DiscScanThisImage
-            } else {
-                Msg::OpenFolderAction
-            };
-            let scan_action = if image_selected {
-                Msg::DiscScanThisImage
-            } else {
-                Msg::DiscScanThisFolder
-            };
-            Line::from(vec![
-                Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
-                Span::styled("Enter", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}  ", t(lang, enter_action))),
-                Span::styled("Space", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}  ", t(lang, scan_action))),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
-                Span::styled("q", Style::default().fg(Color::Yellow)),
-                Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
-            ])
-        }
+            SelectionMode::Folder | SelectionMode::FolderRecursive => {
+                let subfolder_selected = app
+                    .dir_entries
+                    .get(app.explorer_index)
+                    .is_some_and(|entry| entry.is_dir && !entry.is_parent());
+                let space_action = if subfolder_selected {
+                    Msg::SelectThisFolder
+                } else {
+                    Msg::SelectCurrentFolder
+                };
+                Line::from(vec![
+                    Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+                    Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}  ", t(lang, Msg::OpenFolderAction))),
+                    Span::styled("Space", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}  ", t(lang, space_action))),
+                    Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
+                    Span::styled("q", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
+                ])
+            }
+            SelectionMode::DiscFolder => {
+                let image_selected = app
+                    .dir_entries
+                    .get(app.explorer_index)
+                    .is_some_and(|entry| is_iso(&entry.path));
+                let enter_action = if image_selected {
+                    Msg::DiscScanThisImage
+                } else {
+                    Msg::OpenFolderAction
+                };
+                let scan_action = if image_selected {
+                    Msg::DiscScanThisImage
+                } else {
+                    Msg::DiscScanThisFolder
+                };
+                Line::from(vec![
+                    Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+                    Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}  ", t(lang, enter_action))),
+                    Span::styled("Space", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}  ", t(lang, scan_action))),
+                    Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
+                    Span::styled("q", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
+                ])
+            }
         }
     };
 

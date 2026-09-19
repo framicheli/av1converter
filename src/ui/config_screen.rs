@@ -503,10 +503,7 @@ pub fn visible_config_items(config: &AppConfig) -> Vec<&'static ConfigItem> {
         .filter(|item| show_rf || !is_rf_field(item.field))
         .filter(|item| {
             show_film_grain
-                || !matches!(
-                    item.field,
-                    ConfigField::Preset(_, PresetMetric::FilmGrain)
-                )
+                || !matches!(item.field, ConfigField::Preset(_, PresetMetric::FilmGrain))
         })
         .filter(|item| {
             config.quality.vmaf_enabled

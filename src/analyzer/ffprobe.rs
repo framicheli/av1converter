@@ -169,9 +169,7 @@ fn dovi_u8(entry: &Value, key: &str) -> Option<u8> {
     if let Some(n) = value.as_u64() {
         return u8::try_from(n).ok();
     }
-    value
-        .as_str()
-        .and_then(|s| s.trim().parse::<u8>().ok())
+    value.as_str().and_then(|s| s.trim().parse::<u8>().ok())
 }
 
 /// Parse an ffprobe rational like `"35400/50000"` (or a plain number) to f64.

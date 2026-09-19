@@ -125,7 +125,10 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
                     Style::default().fg(vmaf_color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" (min {min_score:.1}, {}: {threshold:.0})", t(lang, Msg::ThresholdLabel)),
+                    format!(
+                        " (min {min_score:.1}, {}: {threshold:.0})",
+                        t(lang, Msg::ThresholdLabel)
+                    ),
                     Style::default().fg(Color::Red),
                 ),
             ]));

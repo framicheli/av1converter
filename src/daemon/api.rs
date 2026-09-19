@@ -456,29 +456,21 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
         let subtitle_known: Vec<usize> = job.subtitle_tracks.iter().map(|t| t.index).collect();
 
         let current = &job.track_selection;
-        let audio_indices = match valid_indices(
-            body,
-            "audio_indices",
-            &audio_known,
-            &current.audio_indices,
-        ) {
-            Ok(indices) => indices,
-            Err(error) => return (400, json!({"error": error})),
-        };
+        let audio_indices =
+            match valid_indices(body, "audio_indices", &audio_known, &current.audio_indices) {
+                Ok(indices) => indices,
+                Err(error) => return (400, json!({"error": error})),
+            };
         // Kept a subset of the selection: the plan indexes per-stream codec
         // options by output position.
-        let audio_to_opus = match valid_indices(
-            body,
-            "audio_to_opus",
-            &audio_known,
-            &current.audio_to_opus,
-        ) {
-            Ok(indices) => indices
-                .into_iter()
-                .filter(|i| audio_indices.contains(i))
-                .collect(),
-            Err(error) => return (400, json!({"error": error})),
-        };
+        let audio_to_opus =
+            match valid_indices(body, "audio_to_opus", &audio_known, &current.audio_to_opus) {
+                Ok(indices) => indices
+                    .into_iter()
+                    .filter(|i| audio_indices.contains(i))
+                    .collect(),
+                Err(error) => return (400, json!({"error": error})),
+            };
 
         let subtitle_indices = match valid_indices(
             body,
@@ -746,8 +738,7 @@ pub fn queue_add(
     }
     files.sort();
 
-    let (added, already_queued, skipped) =
-        super::add_paths(shared, probe_tx, files, &browse_root);
+    let (added, already_queued, skipped) = super::add_paths(shared, probe_tx, files, &browse_root);
     (
         200,
         json!({
@@ -2190,8 +2181,7 @@ mod tests {
         /// `browse_root` while the running server still listens publicly.
         #[test]
         fn browse_root_cannot_be_cleared_while_bound_publicly() {
-            let root =
-                std::env::temp_dir().join(format!("av1c_bound_root_{}", std::process::id()));
+            let root = std::env::temp_dir().join(format!("av1c_bound_root_{}", std::process::id()));
             std::fs::create_dir_all(&root).unwrap();
             let live = AppConfig {
                 daemon: DaemonConfig {

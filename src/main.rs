@@ -1836,10 +1836,7 @@ mod tests {
             .store(false, std::sync::atomic::Ordering::Release);
         // Dialog was already taken (as handle_confirm_dialog_key does).
         execute_confirm_action(&mut app, ConfirmAction::CancelEncoding);
-        assert!(
-            app.cancel_flag
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
+        assert!(app.cancel_flag.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
@@ -1849,10 +1846,7 @@ mod tests {
         app.cancel_flag
             .store(false, std::sync::atomic::Ordering::Release);
         execute_confirm_action(&mut app, ConfirmAction::CancelEncoding);
-        assert!(
-            !app.cancel_flag
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
+        assert!(!app.cancel_flag.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
@@ -1864,9 +1858,6 @@ mod tests {
         app.confirm_dialog = Some((ConfirmAction::CancelEncoding, true));
         handle_confirm_dialog_key(&mut app, KeyCode::Char('y'));
         assert!(app.confirm_dialog.is_none());
-        assert!(
-            app.cancel_flag
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
+        assert!(app.cancel_flag.load(std::sync::atomic::Ordering::Acquire));
     }
 }

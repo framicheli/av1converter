@@ -89,11 +89,7 @@ mod tests {
             ((720, 1280), ResolutionTier::HD),
         ];
         for ((w, h), expected) in cases {
-            assert_eq!(
-                ResolutionTier::from_dimensions(w, h),
-                expected,
-                "{w}x{h}"
-            );
+            assert_eq!(ResolutionTier::from_dimensions(w, h), expected, "{w}x{h}");
         }
     }
 }

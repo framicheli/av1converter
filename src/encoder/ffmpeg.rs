@@ -224,9 +224,7 @@ pub fn encode_video(
 
     // Cancel can win the race against a successful ffmpeg exit: treat that as
     // Cancelled and leave no finished output behind.
-    let result = if matches!(result, EncodeResult::Success)
-        && cancel_flag.load(Ordering::Acquire)
-    {
+    let result = if matches!(result, EncodeResult::Success) && cancel_flag.load(Ordering::Acquire) {
         let _ = std::fs::remove_file(&partial);
         EncodeResult::Cancelled
     } else {
@@ -255,20 +253,15 @@ fn publish_partial(partial: &str, output: &str) -> Result<(), String> {
             let _ = std::fs::remove_file(partial);
             Ok(())
         }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(
-            "Output appeared while encoding; refusing to overwrite it".to_string(),
-        ),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err("Output appeared while encoding; refusing to overwrite it".to_string())
+        }
         Err(_) => {
             // Exclusive create: fails atomically if the destination exists.
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(output)
-            {
+            match OpenOptions::new().write(true).create_new(true).open(output) {
                 Ok(mut dest) => {
-                    let copy = File::open(partial).and_then(|mut src| {
-                        std::io::copy(&mut src, &mut dest).map(|_| ())
-                    });
+                    let copy = File::open(partial)
+                        .and_then(|mut src| std::io::copy(&mut src, &mut dest).map(|_| ()));
                     match copy {
                         Ok(()) => {
                             let _ = std::fs::remove_file(partial);
@@ -276,18 +269,14 @@ fn publish_partial(partial: &str, output: &str) -> Result<(), String> {
                         }
                         Err(e) => {
                             let _ = std::fs::remove_file(output);
-                            Err(format!(
-                                "Failed to move the encoded file into place: {e}"
-                            ))
+                            Err(format!("Failed to move the encoded file into place: {e}"))
                         }
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(
-                    "Output appeared while encoding; refusing to overwrite it".to_string(),
-                ),
-                Err(e) => Err(format!(
-                    "Failed to move the encoded file into place: {e}"
-                )),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    Err("Output appeared while encoding; refusing to overwrite it".to_string())
+                }
+                Err(e) => Err(format!("Failed to move the encoded file into place: {e}")),
             }
         }
     }
