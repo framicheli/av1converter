@@ -36,17 +36,23 @@ const SERVER_THREADS: usize = 4;
 /// Blocks until SIGINT/SIGTERM.
 #[allow(clippy::too_many_lines)]
 pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
-    if !DependencyStatus::check() {
+    let encoder_name = config.encoder.ffmpeg_name();
+    let deps = state::Capabilities {
+        ffmpeg: DependencyStatus::check(),
+        vmaf: DependencyStatus::vmaf_available(),
+        opus: DependencyStatus::libopus_available(),
+        encoder: DependencyStatus::encoder_available(encoder_name),
+    };
+    if !deps.ffmpeg {
         warn!("ffmpeg or ffprobe was not found on PATH; encoding will fail");
     }
-    if config.quality.vmaf_enabled && !DependencyStatus::vmaf_available() {
+    if config.quality.vmaf_enabled && !deps.vmaf {
         warn!("VMAF is enabled but this FFmpeg build has no libvmaf; verification will fail");
     }
-    if config.audio.default_mode == AudioMode::Opus && !DependencyStatus::libopus_available() {
+    if config.audio.default_mode == AudioMode::Opus && !deps.opus {
         warn!("Audio is set to Opus but this FFmpeg build has no libopus; encoding will fail");
     }
-    let encoder_name = config.encoder.ffmpeg_name();
-    if !DependencyStatus::encoder_available(encoder_name) {
+    if !deps.encoder {
         println!(
             "{} ({encoder_name})",
             t(config.language, Msg::EncoderUnavailable)
@@ -73,7 +79,8 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     }
 
     let queue_file = lifecycle::queue_file();
-    let (state, reprobe) = restore_state(config, &queue_file);
+    let (mut state, reprobe) = restore_state(config, &queue_file);
+    state.deps = deps;
     let shared: SharedState = Arc::new(Mutex::new(state));
     let (analysis_tx, analysis_rx) = mpsc::channel::<(u64, Result<AnalysisResult, AppError>)>();
     let (probe_tx, probe_rx) = mpsc::channel::<(u64, String)>();

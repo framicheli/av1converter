@@ -77,6 +77,14 @@ pub fn status(shared: &SharedState) -> Value {
     json!({
         "version": env!("CARGO_PKG_VERSION"),
         "encoder": state.config.encoder.display_name(),
+        "deps": {
+            "ffmpeg": state.deps.ffmpeg,
+            "vmaf": state.deps.vmaf,
+            "opus": state.deps.opus,
+            "encoder": state.deps.encoder,
+        },
+        "vmaf_enabled": state.config.quality.vmaf_enabled,
+        "vmaf_threshold": state.config.quality.vmaf_threshold,
         "encoding_active": state.encoding_active,
         "uptime_secs": state.started_at.elapsed().as_secs(),
         "overall_progress": queue.overall_progress(),
@@ -1376,6 +1384,8 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
     if let Some(error) = queue_conflict(&live, &config, &job_paths, within_root) {
         return (409, json!({"error": error}));
     }
+    let encoder_available = (config.encoder != live.encoder)
+        .then(|| crate::utils::DependencyStatus::encoder_available(config.encoder.ffmpeg_name()));
     if let Err(e) = config.save() {
         return (500, json!({"error": format!("failed to save: {e}")}));
     }
@@ -1413,6 +1423,9 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
         ));
     }
     state.config = config;
+    if let Some(available) = encoder_available {
+        state.deps.encoder = available;
+    }
     if output_changed {
         let output = state.config.output.clone();
         for job in &mut state.queue.state.jobs {
@@ -1550,6 +1563,20 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn status_reports_dependencies_and_vmaf() {
+        let mut state = DaemonState::new(AppConfig::default());
+        state.deps.vmaf = false;
+        state.deps.encoder = false;
+        let threshold = state.config.quality.vmaf_threshold;
+        let shared = Arc::new(Mutex::new(state));
+        let value = status(&shared);
+        assert_eq!(value["deps"]["vmaf"], false);
+        assert_eq!(value["deps"]["encoder"], false);
+        assert_eq!(value["deps"]["opus"], true);
+        assert_eq!(value["vmaf_threshold"], threshold);
+    }
 
     /// Ripping, analyzing, verifying and encoding each report as the current job.
     #[test]

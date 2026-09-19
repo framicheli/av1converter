@@ -237,6 +237,8 @@ let pollSkipped = false;
 // Sequence number of the most recently started poll.
 let pollSeq = 0;
 let lastWork = { encoding: false, ripping: false, analyzing: false };
+// The last /api/status answer.
+let lastStatus = null;
 
 async function poll() {
   if (pollInFlight) {
@@ -291,6 +293,8 @@ async function poll() {
 
     setText($("stat-total"), String(s.counts.total));
     setText($("stat-saved"), s.total_space_saved.human);
+    lastStatus = s;
+    setText($("host-status"), hostStatusText(s));
 
     lastWork.encoding = Boolean(s.encoding_active);
     lastWork.ripping = Boolean(s.disc?.active);
@@ -904,6 +908,16 @@ function isAlreadyOpus(track) {
     && (track.codec || "").toLowerCase() === "opus";
 }
 
+// The encoder and VMAF lines of the TUI's Home screen.
+function hostStatusText(s) {
+  if (!s.deps) return "";
+  const encoder = `${tr("cfg_encoder")}: ${s.encoder}${s.deps.encoder ? "" : ` ⚠ ${tr("encoder_unavailable")}`}`;
+  const vmaf = !s.vmaf_enabled ? tr("vmaf_disabled")
+    : s.deps.ffmpeg && s.deps.vmaf ? `${tr("vmaf_enabled_open")}${Math.round(s.vmaf_threshold)})`
+    : `⚠ ${tr("deps_missing")}`;
+  return `${encoder} · ${vmaf}`;
+}
+
 function renderTracks() {
   const body = $("tracks-body");
   body.textContent = "";
@@ -915,7 +929,12 @@ function renderTracks() {
 
   // Toggles, not select-all buttons: when everything is already selected the
   // second press clears it, matching the TUI's 'a' and 's' keys.
-  body.appendChild(groupHeading(tr("heading_audio"), audio.length > 0 && toggleAllButton(
+  const opusMissing = lastStatus?.deps && !lastStatus.deps.opus
+    && audio.some((t) => t.mode === "opus");
+  const audioHeading = opusMissing
+    ? `${tr("heading_audio")} ⚠ ${tr("opus_unavailable")}`
+    : tr("heading_audio");
+  body.appendChild(groupHeading(audioHeading, audio.length > 0 && toggleAllButton(
     "toggle-all-audio",
     audio.every((t) => t.mode !== "off"),
     (selectAll) => {

@@ -195,12 +195,38 @@ pub struct DaemonState {
     pub analysis_cancel: Arc<AtomicBool>,
     /// Whether the web server listens outside loopback; fixed at startup.
     pub bound_publicly: bool,
+    /// What this `FFmpeg` build can do, as checked at startup.
+    pub deps: Capabilities,
+}
+
+/// `FFmpeg` capabilities the daemon depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct Capabilities {
+    /// `ffmpeg` and `ffprobe` are on `PATH`.
+    pub ffmpeg: bool,
+    pub vmaf: bool,
+    pub opus: bool,
+    /// The configured encoder is in this build.
+    pub encoder: bool,
+}
+
+impl Default for Capabilities {
+    fn default() -> Self {
+        Self {
+            ffmpeg: true,
+            vmaf: true,
+            opus: true,
+            encoder: true,
+        }
+    }
 }
 
 impl DaemonState {
     pub fn new(config: AppConfig) -> Self {
         Self {
             bound_publicly: config.daemon.binds_publicly(),
+            deps: Capabilities::default(),
             queue: DaemonQueue::new(),
             config,
             encoding_active: false,
