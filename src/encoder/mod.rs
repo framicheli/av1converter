@@ -180,6 +180,10 @@ pub fn run_encoding_pipeline(
                         warn!(
                             "Keeping source file {input}: the encoded output changed before deletion"
                         );
+                    } else if let Err(e) = flush_to_disk(output) {
+                        warn!(
+                            "Keeping source file {input}: the encoded output could not be flushed to disk: {e}"
+                        );
                     } else {
                         match std::fs::remove_file(input) {
                             Ok(()) => {
@@ -201,6 +205,24 @@ pub fn run_encoding_pipeline(
     }
 }
 
+/// Flush `path`'s contents, and on Unix its directory entry, to disk.
+fn flush_to_disk(path: &str) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .sync_all()?;
+    #[cfg(unix)]
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        let dir = if dir.as_os_str().is_empty() {
+            std::path::Path::new(".")
+        } else {
+            dir
+        };
+        File::open(dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
 /// What the output loses that VMAF does not measure, which keeps the source
 /// whatever the score: transcoded audio, subtitles converted or left out, and
 /// cover art or attachments the output container does not carry.
@@ -208,7 +230,11 @@ fn keep_source_reason(params: &EncodingParams, cancel: &AtomicBool) -> Option<&'
     if params.tracks.transcodes_audio() {
         return Some("audio was transcoded and VMAF does not verify it");
     }
-    if params.subtitle_codecs.iter().any(|codec| *codec != Some("copy")) {
+    if params
+        .subtitle_codecs
+        .iter()
+        .any(|codec| *codec != Some("copy"))
+    {
         return Some("a selected subtitle track was converted or left out");
     }
     match crate::analyzer::ffprobe::probe_attachments(&params.input, cancel) {
@@ -299,7 +325,9 @@ fn skips_vmaf(params: &EncodingParams) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{DvMode, EncodingParams, HdrType, SourceIdentity, VideoMetadata, skips_vmaf};
+    use super::{
+        DvMode, EncodingParams, HdrType, SourceIdentity, VideoMetadata, flush_to_disk, skips_vmaf,
+    };
     use crate::config::{AppConfig, Encoder};
     use crate::tracks::OutputTracks;
 
@@ -354,5 +382,14 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_output_that_cannot_be_flushed_is_reported() {
+        let path = std::env::temp_dir().join(format!("av1c_flush_{}", std::process::id()));
+        std::fs::write(&path, b"encoded").unwrap();
+        assert!(flush_to_disk(path.to_str().unwrap()).is_ok());
+        std::fs::remove_file(&path).unwrap();
+        assert!(flush_to_disk(path.to_str().unwrap()).is_err());
     }
 }

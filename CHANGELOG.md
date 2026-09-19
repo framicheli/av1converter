@@ -81,6 +81,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - The Nix flake is pinned with `flake.lock`, and rebuilding it produces identical output.
 - Cover art that comes before the video in an MP4/MOV is no longer analysed, encoded and VMAF-checked in place of the film, which could delete the source after a one-frame encode.
 - The source is kept when a selected subtitle track is converted or left out, or when cover art or other attachments are not carried into the output.
+- The encoded output is flushed to disk before the source is deleted; if the flush fails, the source is kept.
 
 ### Known limitations
 
