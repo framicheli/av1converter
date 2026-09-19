@@ -1516,7 +1516,7 @@ $("btn-add-disc").addEventListener("click", openDisc);
 $("disc-close").addEventListener("click", () => $("disc-modal").close());
 $("disc-back").addEventListener("click", () => {
   if (!disc || discState.active) return;
-  if (disc.scanPending || discState.scanning) post("/api/discs/cancel").catch(() => {});
+  if (disc.scanPending) post("/api/discs/cancel").catch(() => {});
   disc.drive = null;
   disc.folder = null;
   disc.selected.clear();
@@ -1527,13 +1527,14 @@ $("disc-back").addEventListener("click", () => {
   renderDisc();
 });
 // Esc closes without going through the button, so the state is dropped on the
-// close event: the one place every path passes through. A scan still running
-// is called off, since it holds the drive.
+// close event: the one place every path passes through. A scan this dialog
+// started and that is still running is called off.
 $("disc-modal").addEventListener("close", () => {
   if (discBrowsing) return;
   // A rip closes this dialog on its way to the queue, where Cancel stops it.
-  // An abandoned scan or a still-running drive listing is called off here.
-  if (disc && !disc.ripping && (disc.scanPending || disc.loading || discState.scanning)) {
+  // This dialog's abandoned scan or still-running drive listing is called off
+  // here; a scan another tab started is left running.
+  if (disc && !disc.ripping && (disc.scanPending || disc.loading)) {
     post("/api/discs/cancel").catch(() => {});
   }
   disc = null;
