@@ -2,6 +2,7 @@ use super::state::{SharedState, is_terminal, lock};
 use crate::analyzer::{DvMode, HdrType};
 use crate::config::{AppConfig, Encoder};
 use crate::disc::worker::DiscEvent;
+use crate::i18n::Msg;
 use crate::queue::{
     EncodingJob, JobStatus, collect_video_files_cancellable_result, collect_video_files_within,
     is_video_file, make_output_paths_unique,
@@ -634,6 +635,7 @@ pub(crate) fn resolve_through_existing(path: &Path) -> Option<PathBuf> {
 }
 
 /// Expand an add request into concrete video files and queue them.
+#[allow(clippy::too_many_lines)]
 pub fn queue_add(
     shared: &SharedState,
     probe_tx: &Sender<(u64, String)>,
@@ -663,7 +665,13 @@ pub fn queue_add(
     let path = PathBuf::from(path);
     // Confinement answers first; the existence check runs only on paths
     // already inside the browse root.
-    let browse_root = lock(shared).config.daemon.browse_root.clone();
+    let (browse_root, lang) = {
+        let state = lock(shared);
+        (
+            state.config.daemon.browse_root.clone(),
+            state.config.language,
+        )
+    };
     let Some(path) = confined_path(&path, &browse_root) else {
         return (
             403,
@@ -734,7 +742,10 @@ pub fn queue_add(
         .collect();
 
     if files.is_empty() {
-        return (400, json!({"error": "no video files found"}));
+        return (
+            400,
+            json!({"error": crate::i18n::t(lang, Msg::NoVideoFiles)}),
+        );
     }
     files.sort();
 
@@ -1344,7 +1355,7 @@ fn merged_settings(
         if config.daemon.auth_token.is_empty() {
             config.daemon.auth_token.clone_from(&live.daemon.auth_token);
         } else if config.daemon.auth_token.trim().len() < 32 {
-            return Err("daemon access token must contain at least 32 characters".to_string());
+            return Err(crate::i18n::t(config.language, Msg::TokenTooShort).to_string());
         }
         config.disc.makemkvcon_path = config
             .disc
@@ -1369,7 +1380,7 @@ fn merged_settings(
         .as_deref()
         .filter(|dir| !dir.is_empty());
     if directory.is_none() && !config.output.same_directory {
-        return Err("output directory is required".to_string());
+        return Err(crate::i18n::t(config.language, Msg::OutputDirectoryInvalid).to_string());
     }
     // Ripped files encode into the output directory whatever `same_directory` says.
     // A directory unchanged from the live config, under the same browse root, is
@@ -1380,10 +1391,12 @@ fn merged_settings(
     {
         let path = Path::new(directory);
         if !path.is_dir() {
-            return Err("output directory does not exist".to_string());
+            return Err(crate::i18n::t(config.language, Msg::OutputDirectoryInvalid).to_string());
         }
         let Some(path) = confined_path(path, &config.daemon.browse_root) else {
-            return Err("output directory must be inside browse_root".to_string());
+            return Err(
+                crate::i18n::t(config.language, Msg::OutputDirectoryOutsideBrowseRoot).to_string(),
+            );
         };
         config.output.output_directory = Some(path.to_string_lossy().into_owned());
     }
@@ -1413,7 +1426,7 @@ fn queue_conflict(
                     .is_some_and(|parent| !inside(parent, root))
         })
     {
-        return Some("browse root excludes one or more queued jobs");
+        return Some(crate::i18n::t(config.language, Msg::BrowseRootExcludesJobs));
     }
     let has_directory = |config: &AppConfig| {
         config
@@ -1425,7 +1438,7 @@ fn queue_conflict(
     (has_directory(live)
         && !has_directory(config)
         && jobs.iter().any(|(_, _, temporary)| *temporary))
-    .then_some("queued disc rips need an output directory")
+    .then(|| crate::i18n::t(config.language, Msg::QueuedRipsNeedOutputDirectory))
 }
 
 /// Replace the configuration: sanitize, persist to config.toml, and swap the
@@ -1457,7 +1470,7 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
     if bound_publicly && config.daemon.browse_root.is_empty() {
         return (
             400,
-            json!({"error": "browse_root is required while the daemon listens outside loopback"}),
+            json!({"error": crate::i18n::t(config.language, Msg::BrowseRootRequired)}),
         );
     }
     if let Some(error) = queue_conflict(&live, &config, &job_paths, within_root) {

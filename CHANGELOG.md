@@ -129,6 +129,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - A blank `output_directory` in config.toml counts as unset instead of writing encodes to the working directory.
 - `--stop`, `--status`, `--uninstall-service` and `--scan-discs` no longer create config.toml or probe the GPU when there is no configuration yet.
 - When `--start-foreground` generates an access token it points to `--status` for the link, instead of to a URL it does not print.
+- Settings errors from the TUI and the web UI (output folder, browse root, staging and MakeMKV paths, bind address, port, token length) and the web "no video files" error follow the interface language, and the TUI names the output-folder problem instead of showing a field label.
 
 ### Known limitations
 

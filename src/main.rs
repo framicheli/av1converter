@@ -169,7 +169,7 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
         std::process::exit(1);
     }
     if config.daemon.binds_publicly() && config.daemon.browse_root.trim().is_empty() {
-        eprintln!("browse_root is required when the daemon binds outside loopback");
+        eprintln!("{}", t(lang, Msg::BrowseRootRequired));
         std::process::exit(1);
     }
     if config.daemon.binds_publicly() {
@@ -1213,7 +1213,7 @@ fn validate_and_save_config(
             .as_deref()
             .is_some_and(|path| std::path::Path::new(path).is_dir())
     {
-        return Err(t(lang, Msg::WebCfgOutputDirectory).to_string());
+        return Err(t(lang, Msg::OutputDirectoryInvalid).to_string());
     }
     config.save().map_err(|error| {
         tracing::warn!("Failed to save config: {error:?}");

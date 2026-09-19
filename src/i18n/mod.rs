@@ -266,6 +266,15 @@ pub enum Msg {
     InvalidContainer,
     InvalidAuthToken,
     OutputDirectoryMissing,
+    OutputDirectoryInvalid,
+    BrowseRootRequired,
+    BrowseRootInvalid,
+    StagingDirectoryInvalid,
+    MakemkvconInvalid,
+    TokenTooShort,
+    OutputDirectoryOutsideBrowseRoot,
+    BrowseRootExcludesJobs,
+    QueuedRipsNeedOutputDirectory,
     CfgGroupTracks,
     CfgGroupDisc,
     CfgVmafThreshold,
@@ -1984,6 +1993,98 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Zh => {
                 "已保存，但输出目录不存在：在创建或更改该目录之前，写入该目录的编码和光盘翻录将会失败"
             }
+        },
+        Msg::OutputDirectoryInvalid => match lang {
+            En => "Output directory must be an existing directory",
+            It => "La cartella di output deve essere una cartella esistente",
+            Es => "La carpeta de salida debe ser una carpeta existente",
+            Fr => "Le dossier de sortie doit être un dossier existant",
+            De => "Der Ausgabeordner muss ein vorhandener Ordner sein",
+            Zh => "输出目录必须是已存在的目录",
+        },
+        Msg::BrowseRootRequired => match lang {
+            En => {
+                "A daemon browse root (daemon.browse_root) is required when binding outside loopback"
+            }
+            It => {
+                "Serve una cartella base daemon (daemon.browse_root) per un bind fuori dal loopback"
+            }
+            Es => {
+                "Se necesita una carpeta base del daemon (daemon.browse_root) para un bind fuera de loopback"
+            }
+            Fr => {
+                "Un dossier racine du daemon (daemon.browse_root) est requis pour écouter hors loopback"
+            }
+            De => {
+                "Für einen Bind außerhalb von Loopback ist ein Daemon-Basisordner (daemon.browse_root) erforderlich"
+            }
+            Zh => "绑定到非回环地址时必须设置守护进程浏览根目录（daemon.browse_root）",
+        },
+        Msg::BrowseRootInvalid => match lang {
+            En => "Daemon browse root must be an existing directory",
+            It => "La cartella base daemon deve essere una cartella esistente",
+            Es => "La carpeta base del daemon debe ser una carpeta existente",
+            Fr => "Le dossier racine du daemon doit être un dossier existant",
+            De => "Der Daemon-Basisordner muss ein vorhandener Ordner sein",
+            Zh => "守护进程浏览根目录必须是已存在的目录",
+        },
+        Msg::StagingDirectoryInvalid => match lang {
+            En => "Disc staging directory must be an existing directory",
+            It => "La cartella di staging dischi deve essere una cartella esistente",
+            Es => "La carpeta temporal de discos debe ser una carpeta existente",
+            Fr => "Le dossier temporaire des disques doit être un dossier existant",
+            De => "Der Zwischenordner für Discs muss ein vorhandener Ordner sein",
+            Zh => "光盘暂存目录必须是已存在的目录",
+        },
+        Msg::MakemkvconInvalid => match lang {
+            En => "MakeMKV path must be an existing file named makemkvcon or makemkvcon64",
+            It => {
+                "Il percorso di MakeMKV deve essere un file esistente chiamato makemkvcon o makemkvcon64"
+            }
+            Es => {
+                "La ruta de MakeMKV debe ser un archivo existente llamado makemkvcon o makemkvcon64"
+            }
+            Fr => {
+                "Le chemin de MakeMKV doit être un fichier existant nommé makemkvcon ou makemkvcon64"
+            }
+            De => {
+                "Der MakeMKV-Pfad muss eine vorhandene Datei namens makemkvcon oder makemkvcon64 sein"
+            }
+            Zh => "MakeMKV 路径必须是名为 makemkvcon 或 makemkvcon64 的已存在文件",
+        },
+        Msg::TokenTooShort => match lang {
+            En => "Access token must contain at least 32 characters",
+            It => "Il token di accesso deve contenere almeno 32 caratteri",
+            Es => "El token de acceso debe contener al menos 32 caracteres",
+            Fr => "Le jeton d'accès doit contenir au moins 32 caractères",
+            De => "Das Zugriffstoken muss mindestens 32 Zeichen enthalten",
+            Zh => "访问令牌必须至少包含 32 个字符",
+        },
+        Msg::OutputDirectoryOutsideBrowseRoot => match lang {
+            En => "Output directory must be inside the daemon browse root",
+            It => "La cartella di output deve trovarsi dentro la cartella base daemon",
+            Es => "La carpeta de salida debe estar dentro de la carpeta base del daemon",
+            Fr => "Le dossier de sortie doit se trouver dans le dossier racine du daemon",
+            De => "Der Ausgabeordner muss im Daemon-Basisordner liegen",
+            Zh => "输出目录必须位于守护进程浏览根目录内",
+        },
+        Msg::BrowseRootExcludesJobs => match lang {
+            En => "The new browse root leaves out one or more queued jobs",
+            It => "La nuova cartella base esclude uno o più lavori in coda",
+            Es => "La nueva carpeta base deja fuera uno o más trabajos en cola",
+            Fr => "Le nouveau dossier racine exclut une ou plusieurs tâches de la file",
+            De => {
+                "Der neue Basisordner schließt einen oder mehrere Aufträge in der Warteschlange aus"
+            }
+            Zh => "新的浏览根目录不包含一个或多个排队中的任务",
+        },
+        Msg::QueuedRipsNeedOutputDirectory => match lang {
+            En => "Queued disc rips need an output directory",
+            It => "Le estrazioni dei dischi in coda richiedono una cartella di output",
+            Es => "Las extracciones de discos en cola necesitan una carpeta de salida",
+            Fr => "Les extractions de disques en file ont besoin d'un dossier de sortie",
+            De => "Ausgelesene Discs in der Warteschlange benötigen einen Ausgabeordner",
+            Zh => "队列中的光盘翻录需要输出目录",
         },
         Msg::CfgGroupTracks | Msg::WebTracksTitle => match lang {
             En => "Tracks",

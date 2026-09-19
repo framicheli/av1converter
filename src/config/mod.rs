@@ -7,6 +7,7 @@ pub use types::*;
 
 use crate::error::AppError;
 pub use crate::i18n::Language;
+use crate::i18n::{Msg, t};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
@@ -345,9 +346,7 @@ impl AppConfig {
             return Err("NVENC preset must be between p1 and p7".to_string());
         }
         if OutputConfig::supported_container(&self.output.container).is_none() {
-            return Err(
-                crate::i18n::t(self.language, crate::i18n::Msg::InvalidContainer).to_string(),
-            );
+            return Err(t(self.language, Msg::InvalidContainer).to_string());
         }
         if !(AudioConfig::MIN_PER_CHANNEL..=AudioConfig::MAX_PER_CHANNEL)
             .contains(&self.audio.opus_bitrate_per_channel)
@@ -374,12 +373,10 @@ impl AppConfig {
             return Err("one or more quality or film-grain values are out of range".to_string());
         }
         if self.daemon.port == 0 {
-            return Err("daemon port must be between 1 and 65535".to_string());
+            return Err(t(self.language, Msg::InvalidPort).to_string());
         }
         if !self.daemon.auth_token.bytes().all(|b| b.is_ascii_graphic()) {
-            return Err(
-                crate::i18n::t(self.language, crate::i18n::Msg::InvalidAuthToken).to_string(),
-            );
+            return Err(t(self.language, Msg::InvalidAuthToken).to_string());
         }
         if self
             .daemon
@@ -387,12 +384,10 @@ impl AppConfig {
             .parse::<std::net::IpAddr>()
             .is_err()
         {
-            return Err("daemon bind address must be an IP address".to_string());
+            return Err(t(self.language, Msg::InvalidAddress).to_string());
         }
         if self.daemon.binds_publicly() && self.daemon.browse_root.trim().is_empty() {
-            return Err(
-                "browse_root is required when the daemon binds outside loopback".to_string(),
-            );
+            return Err(t(self.language, Msg::BrowseRootRequired).to_string());
         }
         Ok(())
     }
@@ -404,9 +399,9 @@ impl AppConfig {
         {
             let root = std::path::Path::new(&self.daemon.browse_root)
                 .canonicalize()
-                .map_err(|_| "daemon browse root must be an existing directory".to_string())?;
+                .map_err(|_| t(self.language, Msg::BrowseRootInvalid).to_string())?;
             if !root.is_dir() {
-                return Err("daemon browse root must be an existing directory".to_string());
+                return Err(t(self.language, Msg::BrowseRootInvalid).to_string());
             }
             self.daemon.browse_root = root.to_string_lossy().into_owned();
         }
@@ -415,9 +410,9 @@ impl AppConfig {
         {
             let directory = std::path::Path::new(directory)
                 .canonicalize()
-                .map_err(|_| "disc staging directory must exist".to_string())?;
+                .map_err(|_| t(self.language, Msg::StagingDirectoryInvalid).to_string())?;
             if !directory.is_dir() {
-                return Err("disc staging directory must be a directory".to_string());
+                return Err(t(self.language, Msg::StagingDirectoryInvalid).to_string());
             }
             self.disc.staging_directory = Some(directory.to_string_lossy().into_owned());
         }
@@ -426,12 +421,9 @@ impl AppConfig {
         {
             let executable = std::path::Path::new(executable)
                 .canonicalize()
-                .map_err(|_| "MakeMKV executable must exist".to_string())?;
-            if !executable.is_file() {
-                return Err("MakeMKV executable must be a file".to_string());
-            }
-            if !is_makemkvcon(&executable) {
-                return Err("MakeMKV executable must be named makemkvcon".to_string());
+                .map_err(|_| t(self.language, Msg::MakemkvconInvalid).to_string())?;
+            if !executable.is_file() || !is_makemkvcon(&executable) {
+                return Err(t(self.language, Msg::MakemkvconInvalid).to_string());
             }
             self.disc.makemkvcon_path = Some(executable.to_string_lossy().into_owned());
         }

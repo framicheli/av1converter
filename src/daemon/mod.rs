@@ -65,7 +65,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     }
     if config.daemon.binds_publicly() && config.daemon.browse_root.trim().is_empty() {
         return Err(AppError::CommandExecution(
-            "browse_root is required when the daemon binds outside loopback".to_string(),
+            t(config.language, Msg::BrowseRootRequired).to_string(),
         ));
     }
     if config.daemon.binds_publicly() {
