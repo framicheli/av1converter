@@ -978,7 +978,9 @@ function renderTracks() {
   // second press clears it, matching the TUI's 'a' and 's' keys.
   const selectedAudio = audio.filter((t) => t.mode !== "off");
   const opusMissing = lastStatus?.deps && !lastStatus.deps.opus
-    && audio.some((t) => t.mode === "opus");
+    && audio.some((t) => t.mode !== "off"
+      && (t.container_opus_kbps?.[outputMode()] != null
+        || (t.mode === "opus" && !isAlreadyOpus(t))));
   const audioHeading = opusMissing
     ? `${tr("heading_audio")} ⚠ ${tr("opus_unavailable")}`
     : tr("heading_audio");
