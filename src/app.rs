@@ -273,7 +273,10 @@ impl App {
 
         let (message, message_kind) = if !encoder_deps {
             (
-                Some(crate::i18n::t(config.language, crate::i18n::Msg::EncoderUnavailable).to_string()),
+                Some(
+                    crate::i18n::t(config.language, crate::i18n::Msg::EncoderUnavailable)
+                        .to_string(),
+                ),
                 MessageKind::Warning,
             )
         } else {
@@ -750,7 +753,7 @@ impl App {
                 } else if is_video_file(&selected) {
                     if self.selected_files.is_empty() {
                         // Single file
-                        self.queue.reset();
+                        self.clear_queue();
                         self.queue.jobs.push(EncodingJob::new(selected));
                         self.analyze_jobs();
                     } else {
@@ -758,7 +761,7 @@ impl App {
                         if !self.selected_files.contains(&selected) {
                             self.selected_files.push(selected);
                         }
-                        self.queue.reset();
+                        self.clear_queue();
                         for path in &self.selected_files {
                             self.queue.jobs.push(EncodingJob::new(path.clone()));
                         }
@@ -854,7 +857,7 @@ impl App {
         let Err(error) = &result else {
             let paths = result.unwrap_or_default();
             self.clear_message();
-            self.queue.reset();
+            self.clear_queue();
             for path in paths {
                 self.queue.jobs.push(EncodingJob::new(path));
             }
@@ -1074,8 +1077,7 @@ impl App {
             )
         });
         if nothing_left && !self.work_active() {
-            self.discard_staged_jobs();
-            self.queue.reset();
+            self.clear_queue();
             self.navigate_to_home();
         } else {
             self.finish_analysis_round();
@@ -1132,8 +1134,7 @@ impl App {
             return;
         }
         self.drop_analysis_round();
-        self.discard_staged_jobs();
-        self.queue.reset();
+        self.clear_queue();
         self.navigate_to_home();
     }
 
@@ -1968,9 +1969,15 @@ impl App {
         }
     }
 
-    pub fn reset(&mut self) {
+    /// Delete the staging directory of every ripped title in the queue, then
+    /// empty the queue.
+    fn clear_queue(&mut self) {
         self.discard_staged_jobs();
         self.queue.reset();
+    }
+
+    pub fn reset(&mut self) {
+        self.clear_queue();
         self.encoding_active = false;
         self.selected_files.clear();
         self.progress_receiver = None;
@@ -2075,10 +2082,7 @@ mod tests {
 
         assert!(!app.encoding_active);
         assert!(app.progress_receiver.is_none());
-        assert!(matches!(
-            app.queue.jobs[0].status,
-            JobStatus::Error { .. }
-        ));
+        assert!(matches!(app.queue.jobs[0].status, JobStatus::Error { .. }));
         assert_eq!(app.queue.error_count, 1);
     }
 
@@ -2404,6 +2408,40 @@ mod tests {
 
         assert!(!dir.exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn choosing_a_file_discards_staged_rips() {
+        let root = std::env::temp_dir().join(format!("av1c-choose-staging-{}", std::process::id()));
+        let dir = root.join("rip-abc");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("DISC_t00.mkv");
+        std::fs::write(&file, b"rip").unwrap();
+        let videos =
+            std::env::temp_dir().join(format!("av1c-choose-videos-{}", std::process::id()));
+        std::fs::create_dir_all(&videos).unwrap();
+        std::fs::write(videos.join("a.mkv"), b"video").unwrap();
+
+        let mut app = App::new();
+        app.config.disc.staging_directory = Some(root.to_string_lossy().into_owned());
+        let mut job = EncodingJob::new(file);
+        job.status = JobStatus::Ready;
+        job.temporary = true;
+        app.queue.jobs.push(job);
+        app.selection_mode = SelectionMode::File;
+        app.current_dir.clone_from(&videos);
+        app.refresh_dir_entries();
+        app.explorer_index = app
+            .dir_entries
+            .iter()
+            .position(|entry| entry.path.ends_with("a.mkv"))
+            .unwrap();
+
+        app.select_explorer_entry();
+
+        assert!(!dir.exists());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(videos);
     }
 
     #[test]

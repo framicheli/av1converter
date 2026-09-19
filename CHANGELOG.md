@@ -84,6 +84,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - The encoded output is flushed to disk before the source is deleted; if the flush fails, the source is kept.
 - Removing or clearing a ripped job only deletes a staging directory under the staging root, never a directory named after a disc title elsewhere.
 - Restarting the daemon no longer marks jobs as outside `browse_root` because their source was deleted or the share is not mounted yet. Finished jobs keep their history, and a staged rip is no longer swept while its job still exists.
+- Opening a file or folder in the TUI while ripped titles wait in the queue deletes their staging files instead of leaving them behind.
 
 ### Known limitations
 
