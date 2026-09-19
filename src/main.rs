@@ -1519,6 +1519,9 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         ConfigField::DaemonAllowInsecureLan => {
             app.config.daemon.allow_insecure_lan = !app.config.daemon.allow_insecure_lan;
         }
+        ConfigField::DaemonBehindProxy => {
+            app.config.daemon.behind_proxy = !app.config.daemon.behind_proxy;
+        }
         ConfigField::DaemonAutostart => {
             apply_autostart(app, !daemon::service::installed());
         }

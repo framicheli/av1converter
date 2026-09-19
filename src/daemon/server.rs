@@ -95,14 +95,14 @@ fn host_is_pinned(host: &str) -> bool {
 }
 
 /// Whether the connection and requested origin both identify this host.
-fn request_is_local(request: &Request) -> bool {
-    is_local(request.remote_addr(), request.headers())
+fn request_is_local(request: &Request, behind_proxy: bool) -> bool {
+    !behind_proxy && is_local(request.remote_addr(), request.headers())
 }
 
 /// A loopback peer with a loopback `Host` and no reverse-proxy forwarding
-/// header.
+/// header. IPv4-mapped IPv6 loopback counts as loopback.
 fn is_local(peer: Option<&std::net::SocketAddr>, headers: &[Header]) -> bool {
-    let peer_is_loopback = peer.is_some_and(|address| address.ip().is_loopback());
+    let peer_is_loopback = peer.is_some_and(|address| address.ip().to_canonical().is_loopback());
     let host_is_loopback = headers
         .iter()
         .find(|header| header.field.equiv("Host"))
@@ -129,7 +129,7 @@ fn host_is_loopback(host: &str) -> bool {
     name.eq_ignore_ascii_case("localhost")
         || name
             .parse::<std::net::IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
+            .is_ok_and(|address| address.to_canonical().is_loopback())
 }
 
 /// Whether this `Host` header can be trusted to actually mean *this* daemon.
@@ -183,7 +183,8 @@ fn handle_request(
 ) {
     let url = request.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
-    let local_request = request_is_local(&request);
+    let behind_proxy = super::state::lock(shared).config.daemon.behind_proxy;
+    let local_request = request_is_local(&request, behind_proxy);
 
     if path.starts_with("/api") {
         let token = super::state::lock(shared).config.daemon.auth_token.clone();
@@ -457,6 +458,14 @@ mod tests {
         }
         let remote: std::net::SocketAddr = "192.168.1.5:50000".parse().unwrap();
         assert!(!is_local(Some(&remote), &[host]));
+    }
+
+    #[test]
+    fn ipv4_mapped_loopback_is_local() {
+        let mapped: std::net::SocketAddr = "[::ffff:127.0.0.1]:50000".parse().unwrap();
+        let host = Header::from_bytes("Host", "[::ffff:127.0.0.1]:8399").unwrap();
+        assert!(is_local(Some(&mapped), std::slice::from_ref(&host)));
+        assert!(host_is_loopback("[::ffff:127.0.0.1]:8399"));
     }
 
     #[test]

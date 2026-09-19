@@ -52,6 +52,7 @@ pub enum ConfigField {
     DaemonBrowseRoot,
     DaemonAuthToken,
     DaemonAllowInsecureLan,
+    DaemonBehindProxy,
     DiscMakemkvconPath,
     DiscStagingDirectory,
 }
@@ -414,6 +415,11 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         field: ConfigField::DaemonAllowInsecureLan,
     },
     ConfigItem {
+        label: Msg::CfgDaemonBehindProxy,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::DaemonBehindProxy,
+    },
+    ConfigItem {
         label: Msg::CfgMakemkvconPath,
         kind: ConfigItemKind::Text,
         field: ConfigField::DiscMakemkvconPath,
@@ -457,6 +463,7 @@ fn config_field_path(field: ConfigField) -> Option<String> {
         ConfigField::DaemonBrowseRoot => "daemon.browse_root",
         ConfigField::DaemonAuthToken => "daemon.auth_token",
         ConfigField::DaemonAllowInsecureLan => "daemon.allow_insecure_lan",
+        ConfigField::DaemonBehindProxy => "daemon.behind_proxy",
         ConfigField::DiscMakemkvconPath => "disc.makemkvcon_path",
         ConfigField::DiscStagingDirectory => "disc.staging_directory",
         ConfigField::DaemonAutostart => return None,
@@ -606,6 +613,7 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::DaemonAllowInsecureLan => {
             bool_display(config.language, config.daemon.allow_insecure_lan)
         }
+        ConfigField::DaemonBehindProxy => bool_display(config.language, config.daemon.behind_proxy),
     }
 }
 

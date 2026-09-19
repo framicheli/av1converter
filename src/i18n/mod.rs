@@ -304,6 +304,7 @@ pub enum Msg {
     CfgStagingDirectory,
     CfgDaemonAuthToken,
     CfgDaemonAllowInsecureLan,
+    CfgDaemonBehindProxy,
 
     // ── Daemon mode ──────────────────────────────────────────────────────────
     DaemonDisabledError,
@@ -2236,6 +2237,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Unsicheren LAN-Bind erlauben (Klartext-HTTP)",
             Zh => "允许不安全的局域网绑定（明文 HTTP）",
         },
+        Msg::CfgDaemonBehindProxy => match lang {
+            En => "Behind a reverse proxy (treat every web request as remote)",
+            It => "Dietro un reverse proxy (tratta ogni richiesta web come remota)",
+            Es => "Detrás de un proxy inverso (tratar cada petición web como remota)",
+            Fr => "Derrière un reverse proxy (traiter chaque requête web comme distante)",
+            De => "Hinter einem Reverse-Proxy (jede Web-Anfrage als entfernt behandeln)",
+            Zh => "位于反向代理之后（将每个 Web 请求视为远程请求）",
+        },
         Msg::DaemonDisabledError => match lang {
             En => {
                 "Daemon mode is disabled. Enable it in Settings or set enabled = true under [daemon] in config.toml."
@@ -3328,6 +3337,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
         "cfg_daemon_allow_insecure_lan",
         Msg::CfgDaemonAllowInsecureLan,
     ),
+    ("cfg_daemon_behind_proxy", Msg::CfgDaemonBehindProxy),
     ("cfg_daemon_autostart", Msg::CfgDaemonAutostart),
     ("cfg_daemon_bind_address", Msg::CfgDaemonBindAddress),
     ("cfg_daemon_browse_root", Msg::CfgDaemonBrowseRoot),

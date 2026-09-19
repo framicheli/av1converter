@@ -1833,6 +1833,7 @@ function settingsFields(cfg) {
     { path: "daemon.browse_root", label: tr("cfg_daemon_browse_root"), type: "text", disabled: !local, browse: true, hint: localHint },
     { path: "daemon.auth_token", label: tr("cfg_daemon_auth_token"), type: "password", disabled: !local, minLength: 32, placeholder: settingsAccess?.auth_token_set ? "••••••••" : "", hint: [localHint, tr("token_hint")].filter(Boolean).join(" ") },
     { path: "daemon.allow_insecure_lan", label: tr("cfg_daemon_allow_insecure_lan"), type: "checkbox", disabled: !local, hint: [localHint, restartHint].filter(Boolean).join(" ") },
+    { path: "daemon.behind_proxy", label: tr("cfg_daemon_behind_proxy"), type: "checkbox", disabled: !local, hint: localHint },
     { group: tr("group_disc") },
     { path: "disc.makemkvcon_path", label: tr("cfg_makemkvcon_path"), type: "text", nullable: true, disabled: !local, hint: localHint },
     { path: "disc.staging_directory", label: tr("cfg_staging_directory"), type: "text", nullable: true, disabled: !local, browse: true, hint: localHint },

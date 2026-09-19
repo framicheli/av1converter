@@ -19,6 +19,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Complete settings parity between the TUI and web UI, including every per-tier encoder value, film-grain strength, track fallback, daemon/service controls, and disc paths. Host-sensitive values are writable from loopback web sessions and read-only to remote sessions.
 - Four token-guarded API endpoints — `GET /api/discs`, `POST /api/discs/{scan,rip,cancel}` — accepting only drive and title ids the server itself reported. Disc state rides in `/api/status`, so the page still has one poll loop.
 - Disc failures are reported in the user's language and told apart from one another: MakeMKV missing, no drive, empty drive, expired Blu-ray key, unreadable disc, permission denied, insufficient space, a swapped disc, and cancellation.
+- `daemon.behind_proxy` (TUI and web Settings): treats every web request as remote, for a reverse proxy on the daemon host that a loopback browser cannot be told apart from. Off by default, so a browser on the daemon host keeps full settings access.
 
 ### Fixed
 
@@ -89,6 +90,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - First-run encoder detection encodes one test frame with each hardware AV1 encoder instead of matching GPU names, so Turing Quadros, AV1-decode-only GPUs and AMD cards are no longer given an encoder they cannot use; Windows no longer calls the deprecated wmic.
 - A config section with only some keys keeps the defaults for the rest instead of discarding the whole file; a config.toml that cannot be read is reported in the TUI status line.
 - Web settings cannot clear browse_root while the running daemon listens outside loopback, even when the saved bind address is loopback.
+- A web request from `::ffff:127.0.0.1` counts as loopback, and `makemkvcon_path` only accepts a file named `makemkvcon` or `makemkvcon64`.
 
 ### Known limitations
 

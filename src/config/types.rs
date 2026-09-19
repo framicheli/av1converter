@@ -326,6 +326,10 @@ pub struct DaemonConfig {
     /// cleartext on the LAN by accident.
     #[serde(default)]
     pub allow_insecure_lan: bool,
+    /// Treats every web request as remote, which makes the `[daemon]` and
+    /// `[disc]` settings and autostart read-only in every browser.
+    #[serde(default)]
+    pub behind_proxy: bool,
 }
 
 impl DaemonConfig {
@@ -400,6 +404,7 @@ impl Default for DaemonConfig {
             browse_root: String::new(),
             auth_token: String::new(),
             allow_insecure_lan: false,
+            behind_proxy: false,
         }
     }
 }

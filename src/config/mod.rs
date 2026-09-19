@@ -47,6 +47,18 @@ pub struct AppConfig {
     pub disc: DiscConfig,
 }
 
+/// Whether `path` names `makemkvcon` or `makemkvcon64`, with or without `.exe`,
+/// in any case.
+fn is_makemkvcon(path: &std::path::Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let stem = name.strip_suffix(".exe").unwrap_or(&name);
+    matches!(stem, "makemkvcon" | "makemkvcon64")
+}
+
 /// Serde default for [`AppConfig::quality_preset`] on legacy config files.
 fn default_quality_preset() -> QualityPreset {
     QualityPreset::Custom
@@ -386,6 +398,9 @@ impl AppConfig {
                 .map_err(|_| "MakeMKV executable must exist".to_string())?;
             if !executable.is_file() {
                 return Err("MakeMKV executable must be a file".to_string());
+            }
+            if !is_makemkvcon(&executable) {
+                return Err("MakeMKV executable must be named makemkvcon".to_string());
             }
             self.disc.makemkvcon_path = Some(executable.to_string_lossy().into_owned());
         }
@@ -750,6 +765,31 @@ mod tests {
         let mut invalid = previous.clone();
         invalid.disc.makemkvcon_path = Some("/path/that/does/not/exist".to_string());
         assert!(invalid.normalize_changed_host_paths(&previous).is_err());
+    }
+
+    #[test]
+    fn the_makemkv_executable_must_be_makemkvcon() {
+        let dir = std::env::temp_dir().join(format!("av1c_makemkv_name_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let previous = AppConfig::default();
+        for (name, accepted) in [
+            ("makemkvcon", true),
+            ("makemkvcon64.exe", true),
+            ("MakeMKVcon.EXE", true),
+            ("evil.sh", false),
+            ("makemkvcon-evil", false),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, b"").unwrap();
+            let mut cfg = previous.clone();
+            cfg.disc.makemkvcon_path = Some(path.to_string_lossy().into_owned());
+            assert_eq!(
+                cfg.normalize_changed_host_paths(&previous).is_ok(),
+                accepted,
+                "{name}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
