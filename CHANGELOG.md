@@ -96,6 +96,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - An infinite `DURATION` tag no longer makes the saved queue unreadable.
 - A recursive add skips an unreadable subfolder instead of stopping at it.
 - The access token must be printable ASCII without spaces, so the web UI can always send it.
+- A daemon starting while `--status`, `--start` or service install checks on it no longer exits at once.
 
 ### Known limitations
 

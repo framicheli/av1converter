@@ -21,6 +21,10 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// grace for an encode.
 #[cfg(unix)]
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long `lock_pid_file` waits out a lock held for a moment by a
+/// `locked_pid` probe.
+#[cfg(unix)]
+const PID_LOCK_WAIT: Duration = Duration::from_secs(1);
 
 /// Data directory for the PID file, queue and background log
 /// (same location the debug logger uses).
@@ -126,11 +130,13 @@ pub fn running_pid() -> Option<u32> {
 }
 
 /// Lock the PID file at `path`. A lock won on an inode a departing daemon has
-/// already unlinked is dropped and the path opened again.
+/// already unlinked is dropped and the path opened again. A lock held briefly
+/// by a probe is waited out for up to [`PID_LOCK_WAIT`].
 #[cfg(unix)]
 fn lock_pid_file(path: &std::path::Path, pid: u32) -> io::Result<File> {
     use std::os::fd::AsRawFd;
 
+    let deadline = Instant::now() + PID_LOCK_WAIT;
     loop {
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -139,6 +145,13 @@ fn lock_pid_file(path: &std::path::Path, pid: u32) -> io::Result<File> {
             .write(true)
             .open(path)?;
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let busy = io::Error::last_os_error()
+                .raw_os_error()
+                .is_some_and(|code| code == libc::EAGAIN || code == libc::EWOULDBLOCK);
+            if busy && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 "another daemon owns the PID file",
@@ -380,6 +393,34 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(locked_pid(&path), None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_momentary_probe_lock_does_not_refuse_the_daemon() {
+        use std::os::fd::AsRawFd;
+
+        let path = std::env::temp_dir().join(format!("av1c_pid_probe_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, b"").unwrap();
+        let probe = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert_eq!(unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            drop(probe);
+        });
+
+        let guard = lock_pid_file(&path, std::process::id()).unwrap();
+        release.join().unwrap();
+        let refused = lock_pid_file(&path, std::process::id()).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists);
+
+        drop(guard);
         let _ = std::fs::remove_file(path);
     }
 
