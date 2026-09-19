@@ -1790,7 +1790,7 @@ function settingsFields(cfg) {
   const localHint = local ? "" : tr("local_only_note");
   const restartHint = tr("restart_required");
   const serviceHint = settingsAccess?.autostart_supported
-    ? localHint
+    ? [tr("autostart_hint"), localHint].filter(Boolean).join(" ")
     : tr("autostart_unsupported");
   const fields = [
     { group: tr("group_general") },

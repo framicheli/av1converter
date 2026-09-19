@@ -3608,6 +3608,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("confirm_tracks", Msg::WebConfirmTracks),
     ("session_totals", Msg::WebSessionTotals),
     ("apply_remaining_hint", Msg::WebApplyRemainingHint),
+    ("autostart_hint", Msg::CfgDaemonAutostartHint),
     ("autostart_unsupported", Msg::DaemonServiceUnsupported),
     ("saving", Msg::WebSaving),
     ("browse", Msg::WebBrowse),

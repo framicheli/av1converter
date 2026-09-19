@@ -36,6 +36,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Disc failures are reported in the user's language and told apart from one another: MakeMKV missing, no drive, empty drive, expired Blu-ray key, unreadable disc, permission denied, insufficient space, a swapped disc, and cancellation.
 - `daemon.behind_proxy` (TUI and web Settings): treats every web request as remote, for a reverse proxy on the daemon host that a loopback browser cannot be told apart from. Off by default, so a browser on the daemon host keeps full settings access.
 - TUI: daemon rows that need a restart say so, as in the web UI.
+- Web UI: the autostart setting explains what it does, as in the TUI.
 
 ### Fixed
 
