@@ -521,12 +521,11 @@ fieldset.field-group > legend {
 .toast {
   position: fixed;
   top: auto;
-  right: auto;
+  right: 12px;
   bottom: 20px;
-  left: 50%;
-  transform: translateX(-50%);
-  margin: 0;
-  max-width: calc(100% - 24px);
+  left: 12px;
+  margin: 0 auto;
+  width: fit-content;
   background: var(--panel);
   border: 1px solid var(--accent);
   border-radius: 6px;
