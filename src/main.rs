@@ -30,10 +30,10 @@ const USAGE: &str = "\
 Usage: av1converter [OPTION]
 
   (no option)          start the interactive TUI
-  --start              start the web-UI daemon in the background (must be enabled in Settings)
+  --start              start the web-UI daemon in the background (Unix; must be enabled in Settings)
   --start-foreground   start the daemon in the foreground, logging to stdout
-  --restart            stop the daemon gracefully, then start it again
-  --stop               stop the background daemon
+  --restart            stop the daemon gracefully, then start it again (Unix)
+  --stop               stop the background daemon (Unix)
   --status             show whether the daemon is running
   --install-service    start the daemon at login (Linux/macOS)
   --uninstall-service  stop starting the daemon at login
