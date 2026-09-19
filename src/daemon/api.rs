@@ -1318,14 +1318,15 @@ fn merged_settings(
         && (live.output.output_directory.as_deref() != Some(directory)
             || live.daemon.browse_root != config.daemon.browse_root)
     {
-        let path = Path::new(directory);
-        if !path.is_dir() {
-            return Err(crate::i18n::t(config.language, Msg::OutputDirectoryInvalid).to_string());
-        }
-        let Some(path) = confined_path(path, &config.daemon.browse_root) else {
-            return Err(
-                crate::i18n::t(config.language, Msg::OutputDirectoryOutsideBrowseRoot).to_string(),
-            );
+        let root = &config.daemon.browse_root;
+        let Some(path) = confined_path(Path::new(directory), root).filter(|path| path.is_dir())
+        else {
+            let msg = if root.is_empty() {
+                Msg::OutputDirectoryInvalid
+            } else {
+                Msg::OutputDirectoryOutsideBrowseRoot
+            };
+            return Err(crate::i18n::t(config.language, msg).to_string());
         };
         config.output.output_directory = Some(path.to_string_lossy().into_owned());
     }
@@ -2202,6 +2203,37 @@ mod tests {
             let mut body = serde_json::to_value(AppConfig::default()).unwrap();
             body["performance"]["nvenc_preset"] = json!("slowest");
             assert!(merged_settings(&body, &AppConfig::default(), false).is_err());
+        }
+
+        /// Under a browse root, a missing directory outside it and an existing
+        /// one outside it are refused with the same message.
+        #[test]
+        fn an_outside_output_directory_does_not_reveal_whether_it_exists() {
+            let base =
+                std::env::temp_dir().join(format!("av1c_settings_probe_{}", std::process::id()));
+            let root = base.join("root");
+            let outside = base.join("outside");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::create_dir_all(&outside).unwrap();
+            let live = AppConfig {
+                daemon: DaemonConfig {
+                    browse_root: root.to_string_lossy().into_owned(),
+                    ..DaemonConfig::default()
+                },
+                ..AppConfig::default()
+            };
+            let refusal = |directory: &Path| {
+                let mut body = serde_json::to_value(&live).unwrap();
+                body["output"]["same_directory"] = json!(false);
+                body["output"]["output_directory"] = json!(directory);
+                merged_settings(&body, &live, false).unwrap_err()
+            };
+            let expected =
+                crate::i18n::t(live.language, Msg::OutputDirectoryOutsideBrowseRoot).to_string();
+            assert_eq!(refusal(&outside), expected);
+            assert_eq!(refusal(&base.join("missing")), expected);
+            assert_eq!(refusal(&root.join("missing")), expected);
+            let _ = std::fs::remove_dir_all(base);
         }
 
         #[test]

@@ -2081,12 +2081,18 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Zh => "访问令牌必须至少包含 32 个字符",
         },
         Msg::OutputDirectoryOutsideBrowseRoot => match lang {
-            En => "Output directory must be inside the daemon browse root",
-            It => "La cartella di output deve trovarsi dentro la cartella base daemon",
-            Es => "La carpeta de salida debe estar dentro de la carpeta base del daemon",
-            Fr => "Le dossier de sortie doit se trouver dans le dossier racine du daemon",
-            De => "Der Ausgabeordner muss im Daemon-Basisordner liegen",
-            Zh => "输出目录必须位于守护进程浏览根目录内",
+            En => "Output directory must be an existing directory inside the daemon browse root",
+            It => {
+                "La cartella di output deve essere una cartella esistente dentro la cartella base daemon"
+            }
+            Es => {
+                "La carpeta de salida debe ser una carpeta existente dentro de la carpeta base del daemon"
+            }
+            Fr => {
+                "Le dossier de sortie doit être un dossier existant dans le dossier racine du daemon"
+            }
+            De => "Der Ausgabeordner muss ein vorhandener Ordner im Daemon-Basisordner sein",
+            Zh => "输出目录必须是守护进程浏览根目录内的现有目录",
         },
         Msg::BrowseRootExcludesJobs => match lang {
             En => "The new browse root leaves out one or more queued jobs",

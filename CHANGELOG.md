@@ -128,6 +128,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - First-run encoder detection encodes one test frame with each hardware AV1 encoder instead of matching GPU names, so Turing Quadros, AV1-decode-only GPUs and AMD cards are no longer given an encoder they cannot use; Windows no longer calls the deprecated wmic.
 - A config section with only some keys keeps the defaults for the rest instead of discarding the whole file; a config.toml that cannot be read is reported in the TUI status line.
 - A `[presets.<tier>]` table with only some values keeps that tier's defaults for the others instead of discarding the whole configuration.
+- Web settings under a browse root refuse an output directory that is outside it or missing with the same message, so a remote session cannot use the check to learn which directories exist on the host.
 - Web settings cannot clear browse_root while the running daemon listens outside loopback, even when the saved bind address is loopback.
 - A web request from `::ffff:127.0.0.1` counts as loopback.
 - The output directory disc rips need can be set in the web UI and TUI while "same directory" is on; the add-to-queue toast reports skipped and already-queued files separately and is translated.
