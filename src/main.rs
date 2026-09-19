@@ -1106,6 +1106,9 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
         // A title that finished ripping while an encode ran is waiting for its
         // tracks; Enter opens it.
         KeyCode::Enter if app.has_jobs_awaiting_config() => app.configure_next_job(),
+        KeyCode::Char('t') if app.is_track_configurable(app.queue_cursor) => {
+            app.configure_next_job();
+        }
         KeyCode::Enter if !app.work_active() => {
             app.navigate_to_finish();
         }

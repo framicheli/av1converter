@@ -1112,22 +1112,27 @@ impl App {
         self.queue.jobs.get_mut(self.queue.config_job_index)
     }
 
-    /// Whether `job` takes a track configuration step now.
-    pub fn is_track_configurable(&self, job: &EncodingJob) -> bool {
-        matches!(job.status, JobStatus::AwaitingConfig)
-            || (!self.encoding_active && matches!(job.status, JobStatus::Ready))
+    /// Whether the job at `index` accepts track changes: awaiting them, or
+    /// ready and not being encoded.
+    pub fn is_track_configurable(&self, index: usize) -> bool {
+        self.queue
+            .jobs
+            .get(index)
+            .is_some_and(|job| match job.status {
+                JobStatus::AwaitingConfig => true,
+                JobStatus::Ready => !self.encoding_session_indices.contains(&index),
+                _ => false,
+            })
     }
 
     pub fn confirm_track_config(&mut self) {
-        let editable = self
-            .queue
-            .jobs
-            .get(self.queue.config_job_index)
-            .is_some_and(|job| self.is_track_configurable(job));
-        if !editable {
+        if !self.is_track_configurable(self.queue.config_job_index) {
             return;
         }
         self.queue.jobs[self.queue.config_job_index].status = JobStatus::Ready;
+        if !self.encoding_active {
+            self.start_encoding();
+        }
 
         // Find the next job awaiting config, wrapping around to earlier jobs
         let len = self.queue.jobs.len();
@@ -1138,13 +1143,9 @@ impl App {
         if let Some(idx) = next_index {
             self.queue.config_job_index = idx;
             self.reset_track_config_cursor();
-        } else if self.encoding_active {
-            // Ready jobs added during an active session remain queued.
-            self.navigate_to_queue();
         } else {
-            self.start_encoding();
             self.detail_scroll = 0;
-            self.current_screen = Screen::Queue;
+            self.navigate_to_queue();
         }
     }
 
@@ -1180,11 +1181,7 @@ impl App {
             };
             idx = next;
 
-            let configurable = self
-                .queue
-                .jobs
-                .get(idx)
-                .is_some_and(|job| self.is_track_configurable(job));
+            let configurable = self.is_track_configurable(idx);
             if configurable {
                 self.queue.config_job_index = idx;
                 self.reset_track_config_cursor();
@@ -1793,10 +1790,7 @@ impl App {
     pub fn configure_next_job(&mut self) {
         let cursor = self.queue_cursor;
         let index = self
-            .queue
-            .jobs
-            .get(cursor)
-            .is_some_and(|job| matches!(job.status, JobStatus::AwaitingConfig))
+            .is_track_configurable(cursor)
             .then_some(cursor)
             .or_else(|| {
                 self.queue
@@ -2452,17 +2446,64 @@ mod tests {
     }
 
     #[test]
-    fn ready_jobs_are_not_counted_for_track_config_while_encoding() {
+    fn only_the_job_being_encoded_is_closed_to_track_changes() {
         let mut app = App::new();
         let mut awaiting = EncodingJob::new(PathBuf::from("a.mkv"));
         awaiting.status = JobStatus::AwaitingConfig;
         let mut ready = EncodingJob::new(PathBuf::from("b.mkv"));
         ready.status = JobStatus::Ready;
+        let mut encoding = EncodingJob::new(PathBuf::from("c.mkv"));
+        encoding.status = JobStatus::Ready;
+        app.queue.jobs = vec![awaiting, ready, encoding];
         app.encoding_active = true;
-        assert!(app.is_track_configurable(&awaiting));
-        assert!(!app.is_track_configurable(&ready));
-        app.encoding_active = false;
-        assert!(app.is_track_configurable(&ready));
+        app.encoding_session_indices = vec![2];
+        assert!(app.is_track_configurable(0));
+        assert!(app.is_track_configurable(1));
+        assert!(!app.is_track_configurable(2));
+    }
+
+    #[test]
+    fn confirming_the_first_job_starts_encoding_while_others_await() {
+        let mut app = App::new();
+        let metadata = crate::analyzer::VideoMetadata {
+            width: 1920,
+            height: 1080,
+            hdr_type: crate::analyzer::HdrType::Sdr,
+            dv_profile: None,
+            dv_bl_compat: None,
+            hdr10_static: None,
+            codec_name: "h264".to_string(),
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            duration_secs: 1.0,
+        };
+        let dir = std::env::temp_dir().join(format!("av1c-first-confirm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        app.queue.jobs = ["a.mkv", "b.mkv"]
+            .iter()
+            .map(|name| {
+                let path = dir.join(name);
+                std::fs::write(&path, b"video").unwrap();
+                let mut job = EncodingJob::new(path.clone());
+                job.status = JobStatus::AwaitingConfig;
+                job.metadata = Some(metadata.clone());
+                job.source_identity =
+                    crate::queue::SourceIdentity::from_path(path.to_str().unwrap()).ok();
+                job.output_path = Some(dir.join(format!("out-{name}")));
+                job
+            })
+            .collect();
+        app.current_screen = Screen::TrackConfig;
+        app.queue.config_job_index = 0;
+
+        app.confirm_track_config();
+
+        assert!(app.encoding_active);
+        assert_eq!(app.encoding_session_indices, vec![0]);
+        assert_eq!(app.queue.config_job_index, 1);
+        assert_eq!(app.current_screen, Screen::TrackConfig);
+        app.cancel_flag.store(true, Ordering::Release);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
