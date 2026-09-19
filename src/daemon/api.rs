@@ -349,16 +349,19 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
     )
 }
 
-/// Read a JSON array of track indices. An absent key yields `current`.
-/// Unknown indices are rejected rather than silently dropped.
+/// Read a JSON array of track indices. An absent key yields `current`; a
+/// value that is not an array, or an unknown index, is an error.
 fn valid_indices(
     body: &Value,
     key: &str,
     known: &[usize],
     current: &[usize],
 ) -> Result<Vec<usize>, String> {
-    let Some(array) = body.get(key).and_then(Value::as_array) else {
+    let Some(value) = body.get(key) else {
         return Ok(current.to_vec());
+    };
+    let Some(array) = value.as_array() else {
+        return Err(format!("{key} must be an array"));
     };
     let mut out = Vec::with_capacity(array.len());
     for value in array {
@@ -378,11 +381,26 @@ fn valid_indices(
     Ok(out)
 }
 
+/// Read an optional JSON boolean. `None` when the key is absent; an error
+/// when it holds anything but a boolean.
+fn optional_bool(body: &Value, key: &str) -> Result<Option<bool>, String> {
+    match body.get(key) {
+        None => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(format!("{key} must be true or false")),
+    }
+}
+
 /// Replace one job's track selection and per-job options.
 #[allow(clippy::too_many_lines)]
 pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
     let Some(id) = body.get("id").and_then(Value::as_u64) else {
         return (400, json!({"error": "missing 'id'"}));
+    };
+
+    let apply_remaining = match optional_bool(body, "apply_to_remaining") {
+        Ok(value) => value.unwrap_or(false),
+        Err(error) => return (400, json!({"error": error})),
     };
 
     let mut state = lock(shared);
@@ -435,10 +453,10 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
 
         // Both options are absent-means-unchanged, so a client that only knows
         // about tracks leaves them as they stand.
-        let remux_only = body
-            .get("remux_only")
-            .and_then(Value::as_bool)
-            .unwrap_or(job.remux_only);
+        let remux_only = match optional_bool(body, "remux_only") {
+            Ok(value) => value.unwrap_or(job.remux_only),
+            Err(error) => return (400, json!({"error": error})),
+        };
 
         let dv_mode = match body.get("dv_mode") {
             None | Some(Value::Null) => job.dv_mode,
@@ -511,11 +529,7 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
     });
 
     let mut applied_count = 1;
-    if body
-        .get("apply_to_remaining")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+    if apply_remaining {
         applied_count += apply_to_remaining(
             &mut state.queue.state.jobs,
             &audio_modes,
@@ -1272,14 +1286,30 @@ pub fn settings_access(shared: &SharedState, local_request: bool) -> Value {
     })
 }
 
-/// Merge client settings while preserving host-sensitive fields for remote requests.
+/// Overlay `patch` onto `base`: objects merge key by key, and any other value
+/// replaces what `base` holds.
+fn overlay_json(base: &mut Value, patch: &Value) {
+    match (base, patch) {
+        (Value::Object(base), Value::Object(patch)) => {
+            for (key, value) in patch {
+                overlay_json(base.entry(key.clone()).or_insert(Value::Null), value);
+            }
+        }
+        (base, patch) => *base = patch.clone(),
+    }
+}
+
+/// Merge client settings onto the live config, keeping live values for keys
+/// the client leaves out and host-sensitive fields for remote requests.
 fn merged_settings(
     body: &Value,
     live: &AppConfig,
     local_request: bool,
 ) -> Result<AppConfig, String> {
+    let mut merged = serde_json::to_value(live).map_err(|e| format!("invalid settings: {e}"))?;
+    overlay_json(&mut merged, body);
     let mut config: AppConfig =
-        serde_json::from_value(body.clone()).map_err(|e| format!("invalid settings: {e}"))?;
+        serde_json::from_value(merged).map_err(|e| format!("invalid settings: {e}"))?;
     if local_request {
         config.daemon.browse_root = config.daemon.browse_root.trim().to_string();
         config.daemon.auth_token = config.daemon.auth_token.trim().to_string();
@@ -2341,6 +2371,39 @@ mod tests {
             let _ = std::fs::remove_dir_all(base);
         }
 
+        /// A settings body naming only some keys keeps the live values for the
+        /// rest; a present key of the wrong type is refused.
+        #[test]
+        fn a_partial_settings_body_keeps_the_live_values() {
+            let mut current = live();
+            current.output.suffix = "_small".to_string();
+            current.quality.delete_source_on_success = true;
+            current.quality_preset = crate::config::QualityPreset::Custom;
+            current.presets.sd.crf = 30;
+
+            let merged = merged_settings(
+                &json!({"quality": {"vmaf_threshold": 95.0}}),
+                &current,
+                true,
+            )
+            .unwrap();
+            assert!((merged.quality.vmaf_threshold - 95.0).abs() < f64::EPSILON);
+            assert!(merged.quality.delete_source_on_success);
+            assert_eq!(merged.output.suffix, "_small");
+            assert_eq!(merged.presets.sd.crf, 30);
+            assert_eq!(merged.daemon.auth_token, current.daemon.auth_token);
+
+            assert!(
+                merged_settings(
+                    &json!({"quality": {"vmaf_threshold": "95"}}),
+                    &current,
+                    true
+                )
+                .is_err()
+            );
+            assert!(merged_settings(&json!({"output": {"suffix": 5}}), &current, true).is_err());
+        }
+
         #[test]
         fn output_directory_is_required_when_outputs_are_separate() {
             let mut body = serde_json::to_value(AppConfig::default()).unwrap();
@@ -2658,6 +2721,31 @@ mod tests {
             let after = &state.queue.job_by_id(id).unwrap().track_selection;
             assert_eq!(after.audio_indices, before.audio_indices);
             assert!(!after.audio_indices.contains(&99));
+        }
+
+        /// A present key with the wrong type is refused and leaves the job as
+        /// it was.
+        #[test]
+        fn a_track_field_of_the_wrong_type_is_refused() {
+            let (shared, id) = shared_with_job();
+            let before = lock(&shared).queue.job_by_id(id).unwrap().clone();
+
+            for bad in [
+                json!({"id": id, "audio_indices": "0"}),
+                json!({"id": id, "subtitle_indices": {"0": true}}),
+                json!({"id": id, "remux_only": "true"}),
+                json!({"id": id, "audio_indices": [], "apply_to_remaining": 1}),
+            ] {
+                let (code, body) = job_tracks_set(&shared, &bad);
+                assert_eq!(code, 400, "{bad} -> {body}");
+            }
+            let state = lock(&shared);
+            let after = state.queue.job_by_id(id).unwrap();
+            assert_eq!(
+                after.track_selection.audio_indices,
+                before.track_selection.audio_indices
+            );
+            assert_eq!(after.remux_only, before.remux_only);
         }
 
         #[test]
