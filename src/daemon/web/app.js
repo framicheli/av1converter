@@ -494,13 +494,26 @@ function badgeText(st) {
         ? ` (min ${pct(st.min_score)})`
         : "";
       const threshold = Number.isFinite(num(st.threshold))
-        ? ` < ${Math.round(st.threshold)} ${tr("threshold_label")}`
+        ? ` < ${num(st.threshold)} ${tr("threshold_label")}`
         : "";
       return `${tr("badge_low_vmaf")} ${pct(st.vmaf)}${min}${threshold}`;
     }
     case "skipped": return `${tr("badge_skipped")} · ${trReason(st.reason)}`;
     default: return tr(BADGE_KEY[st.kind] ?? "", st.kind);
   }
+}
+
+// The VMAF score that failed a quality_warning job's threshold: the mean, or
+// the minimum when only the minimum is below it.
+function failedVmafText(st) {
+  if (st.kind !== "quality_warning") return "";
+  const mean = Number(st.vmaf);
+  const threshold = Number(st.threshold);
+  if (!Number.isFinite(threshold)) return "";
+  const score = Number.isFinite(mean) && mean < threshold
+    ? `VMAF ${mean.toFixed(1)}`
+    : `VMAF min ${Number.isFinite(Number(st.min_score)) ? Number(st.min_score).toFixed(1) : "?"}`;
+  return `${score} < ${threshold}`;
 }
 
 // Rows are kept and updated in place, keyed by job id. Rebuilding the table on
@@ -618,6 +631,7 @@ function updateRow(row, job) {
     job.source_deleted ? tr("tag_source_deleted") : "",
     job.source_kept_vmaf != null ? tr("tag_source_kept") : "",
   ].filter(Boolean).join(" · "));
+  row.sub.title = job.source_kept_vmaf != null ? failedVmafText(job.status) : "";
   // Resolution and HDR are null until the probe has run.
   setText(row.source, [job.resolution, job.hdr].filter(Boolean).join(" ") || "—");
 

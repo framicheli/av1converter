@@ -137,41 +137,44 @@ pub fn run_worker(
                 let _ = tx.send(WorkerMessage::Error(job.index, e));
             }
             FullEncodeResult::QualityWarning { vmaf, threshold } => {
-                let mean = vmaf.score;
-                let min = vmaf.min_score;
-                if mean < threshold && min < threshold {
+                if config.quality.delete_source_on_success {
                     info!(
-                        "Source file kept: {} (VMAF mean {:.1} and min {:.1} < {:.0})",
+                        "Source file kept: {} (VMAF mean {:.1}, min {:.1}, threshold {})",
                         job.input.display(),
-                        mean,
-                        min,
+                        vmaf.score,
+                        vmaf.min_score,
                         threshold
                     );
-                } else if min < threshold {
-                    info!(
-                        "Source file kept: {} (VMAF min {:.1} < {:.0}, mean {:.1})",
-                        job.input.display(),
-                        min,
-                        threshold,
-                        mean
-                    );
-                } else {
-                    info!(
-                        "Source file kept: {} (VMAF mean {:.1} < {:.0}, min {:.1})",
-                        job.input.display(),
-                        mean,
-                        threshold,
-                        min
-                    );
                 }
-                let _ = tx.send(WorkerMessage::SourceKeptLowVmaf(job.index, mean, min));
-                let _ = tx.send(WorkerMessage::QualityWarning(
-                    job.index, mean, min, threshold,
-                ));
+                report_low_vmaf(
+                    tx,
+                    job.index,
+                    vmaf.score,
+                    vmaf.min_score,
+                    threshold,
+                    config.quality.delete_source_on_success,
+                );
             }
         }
     }
     let _ = tx.send(WorkerMessage::Finished);
+}
+
+/// Report a job whose VMAF mean or minimum is below `threshold`: a
+/// [`WorkerMessage::SourceKeptLowVmaf`] when source deletion is enabled, then
+/// a [`WorkerMessage::QualityWarning`].
+fn report_low_vmaf(
+    tx: &Sender<WorkerMessage>,
+    index: usize,
+    mean: f64,
+    min: f64,
+    threshold: f64,
+    deletion_enabled: bool,
+) {
+    if deletion_enabled {
+        let _ = tx.send(WorkerMessage::SourceKeptLowVmaf(index, mean, min));
+    }
+    let _ = tx.send(WorkerMessage::QualityWarning(index, mean, min, threshold));
 }
 
 #[cfg(test)]
@@ -189,5 +192,28 @@ mod tests {
         );
 
         assert!(matches!(rx.recv().unwrap(), WorkerMessage::Finished));
+    }
+
+    #[test]
+    fn a_low_vmaf_reports_the_kept_source_only_when_deletion_is_on() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        report_low_vmaf(&tx, 3, 96.0, 80.0, 95.0, true);
+        report_low_vmaf(&tx, 4, 96.0, 80.0, 95.0, false);
+        drop(tx);
+        let messages: Vec<WorkerMessage> = rx.iter().collect();
+
+        assert_eq!(messages.len(), 3);
+        assert!(matches!(
+            messages[0],
+            WorkerMessage::SourceKeptLowVmaf(3, 96.0, 80.0)
+        ));
+        assert!(matches!(
+            messages[1],
+            WorkerMessage::QualityWarning(3, 96.0, 80.0, 95.0)
+        ));
+        assert!(matches!(
+            messages[2],
+            WorkerMessage::QualityWarning(4, 96.0, 80.0, 95.0)
+        ));
     }
 }

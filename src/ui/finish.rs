@@ -234,14 +234,9 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
             t(lang, Msg::SourceFileDeleted),
             Style::default().fg(Color::Yellow),
         )]));
-    } else if let Some(vmaf) = job.source_kept_vmaf {
+    } else if job.source_kept_vmaf.is_some() {
         lines.push(Line::from(vec![Span::styled(
-            format!(
-                "{} (VMAF {:.1} < {:.0})",
-                t(lang, Msg::SourceKept),
-                vmaf,
-                app.config.quality.vmaf_threshold
-            ),
+            source_kept_text(&job.status, lang),
             Style::default().fg(Color::DarkGray),
         )]));
     }
@@ -463,6 +458,27 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
     f.render_widget(help, chunks[3]);
 }
 
+/// "Source kept" with the VMAF score that failed the job's threshold: the
+/// mean, or the minimum when only the minimum is below it.
+fn source_kept_text(status: &JobStatus, lang: Language) -> String {
+    let kept = t(lang, Msg::SourceKept);
+    match *status {
+        JobStatus::QualityWarning {
+            vmaf,
+            min_score,
+            threshold,
+        } => {
+            let score = if vmaf < threshold {
+                format!("VMAF {vmaf:.1}")
+            } else {
+                format!("VMAF min {min_score:.1}")
+            };
+            format!("{kept} ({score} < {threshold})")
+        }
+        _ => kept.to_string(),
+    }
+}
+
 fn result_detail(job: &crate::queue::EncodingJob, lang: Language) -> String {
     match &job.status {
         JobStatus::Done => t(lang, Msg::Success).to_string(),
@@ -605,5 +621,35 @@ fn create_result_item(
         }
         _ => ListItem::new(format!("{prefix}? {name}"))
             .style(Style::default().fg(Color::DarkGray).add_modifier(bold_mod)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_kept_text;
+    use crate::i18n::Language;
+    use crate::queue::JobStatus;
+
+    #[test]
+    fn a_kept_source_names_the_score_below_the_jobs_threshold() {
+        let min_failed = JobStatus::QualityWarning {
+            vmaf: 96.0,
+            min_score: 80.25,
+            threshold: 95.5,
+        };
+        let mean_failed = JobStatus::QualityWarning {
+            vmaf: 93.0,
+            min_score: 70.0,
+            threshold: 95.0,
+        };
+
+        assert_eq!(
+            source_kept_text(&min_failed, Language::English),
+            "Source kept (VMAF min 80.2 < 95.5)"
+        );
+        assert_eq!(
+            source_kept_text(&mean_failed, Language::English),
+            "Source kept (VMAF 93.0 < 95)"
+        );
     }
 }
