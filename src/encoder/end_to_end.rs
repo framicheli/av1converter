@@ -467,6 +467,53 @@ fn make_video_fixture(dir: &Path) -> Option<PathBuf> {
         .then_some(path)
 }
 
+/// A Matroska file whose video stops at two seconds while its audio runs to
+/// ten reports the video's length as the encoded duration.
+#[test]
+fn encoded_duration_is_the_video_stream_not_a_longer_audio_track() {
+    if !DependencyStatus::check() {
+        eprintln!("skipping: ffmpeg/ffprobe not available");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_short_video_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("short_video.mkv");
+    let built = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x120:rate=24:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=10",
+            "-c:v",
+            "ffv1",
+            "-c:a",
+            "flac",
+        ])
+        .arg(&path)
+        .status()
+        .is_ok_and(|status| status.success());
+    assert!(
+        built,
+        "ffmpeg builds the fixture with its native ffv1 and flac encoders"
+    );
+
+    let cancel = AtomicBool::new(false);
+    let secs = crate::analyzer::ffprobe::probe_duration_secs(&path.to_string_lossy(), &cancel)
+        .expect("ffprobe reports a duration");
+    assert!((secs - 2.0).abs() < 0.1, "video duration {secs}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Runs the full pipeline with source deletion on, against a fresh
 /// video-only clip in its own directory. `None` when this machine cannot
 /// encode AV1 and score VMAF.

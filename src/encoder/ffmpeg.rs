@@ -439,7 +439,7 @@ fn shortfall(duration: f64, encoded: f64) -> Option<f64> {
     if duration <= 0.0 {
         return None;
     }
-    let slack = (duration * 0.02).max(2.0);
+    let slack = (duration * 0.005).max(2.0);
     (duration - encoded > slack).then_some(duration - encoded)
 }
 
@@ -626,11 +626,17 @@ mod tests {
         assert_eq!(shortfall(3600.0, 240.0), Some(3360.0));
     }
 
+    /// Two minutes missing from a two-hour source is a truncated encode.
+    #[test]
+    fn two_minutes_short_of_two_hours_is_detected() {
+        assert_eq!(shortfall(7200.0, 7080.0), Some(120.0));
+    }
+
     /// A complete encode, and one a hair short of the container duration, pass.
     #[test]
     fn a_complete_encode_reports_nothing_missing() {
         assert_eq!(shortfall(3600.0, 3600.0), None);
-        assert_eq!(shortfall(3600.0, 3570.0), None);
+        assert_eq!(shortfall(3600.0, 3583.0), None);
         assert_eq!(shortfall(1.0, 0.958), None);
     }
 

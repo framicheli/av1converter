@@ -96,6 +96,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Dolby Vision profile 8.2 sources (SDR base layer) are tagged BT.709 instead of PQ/BT.2020.
 - QSV no longer passes the `-look_ahead` option, which `av1_qsv` does not have.
 - A deselected audio track that runs past the video no longer makes a finished encode count as stopped short.
+- An encode whose video stops short is caught even when an audio track still runs the full length, and a shortfall of more than 0.5% of the source (at least two seconds) now counts, down from 2%.
 - An analysis failure on a path containing "Cancelled" is reported as an error, not a cancellation.
 - Empty or relative `XDG_*`, `HOME`, `APPDATA` and `LOCALAPPDATA` values are ignored instead of placing configuration in the working directory. A non-UTF-8 command-line argument prints usage instead of panicking.
 - The private temporary directory is recreated when the system cleans it up under a long-running daemon.

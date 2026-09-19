@@ -41,8 +41,9 @@ pub fn analyze(input_path: &str, cancel: &AtomicBool) -> Result<AnalysisResult, 
     })
 }
 
-/// Duration of the file as it stands on disk, from the container or, when that
-/// carries none, from the video stream. `None` when ffprobe cannot say.
+/// Duration of the first video stream of the file as it stands on disk, from
+/// the stream, its `DURATION` tag, or the container. `None` when ffprobe
+/// cannot say.
 pub fn probe_duration_secs(path: &str, cancel: &AtomicBool) -> Option<f64> {
     let args = [
         "-v",
@@ -50,19 +51,17 @@ pub fn probe_duration_secs(path: &str, cancel: &AtomicBool) -> Option<f64> {
         "-select_streams",
         "V:0",
         "-show_entries",
-        "format=duration:stream=duration",
+        "stream=width,height,duration:stream_tags=DURATION:format=duration",
         "-of",
-        "default=noprint_wrappers=1:nokey=1",
+        "json",
         path,
     ];
 
-    // Either line can be `N/A`; the longest parseable value wins.
-    run_ffprobe(&args, cancel)
-        .ok()?
-        .lines()
-        .filter_map(|line| line.trim().parse::<f64>().ok())
-        .filter(|secs| secs.is_finite() && *secs > 0.0)
-        .max_by(f64::total_cmp)
+    let output = run_ffprobe(&args, cancel).ok()?;
+    let data: FfprobeOutput = serde_json::from_str(&output).ok()?;
+    let stream = data.streams.into_iter().next()?;
+    let secs = video_duration_secs(&stream, data.format.as_ref());
+    (secs > 0.0).then_some(secs)
 }
 
 /// Analyze the primary video stream
