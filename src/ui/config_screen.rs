@@ -796,6 +796,12 @@ fn selected_config_hint(app: &App) -> Option<Msg> {
     {
         Some(ConfigField::DeleteSource) => Some(Msg::WebDeleteSourceWarning),
         Some(ConfigField::DaemonAutostart) => Some(Msg::CfgDaemonAutostartHint),
+        Some(
+            ConfigField::DaemonEnabled
+            | ConfigField::DaemonBindAddress
+            | ConfigField::DaemonPort
+            | ConfigField::DaemonAllowInsecureLan,
+        ) => Some(Msg::WebRestartRequired),
         _ => None,
     }
 }
