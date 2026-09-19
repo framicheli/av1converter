@@ -760,6 +760,7 @@ async function refreshQueueNow() {
     }
   }
   if (focused?.isConnected && document.activeElement !== focused) focused.focus();
+  if (trackEditor?.editable && rows.get(trackEditor.id)?.tracksEditable === false) lockTracks();
 
   const next = !data.jobs.some((job) => job.status.kind === "analyzing")
     && data.jobs.find((job) =>
@@ -880,6 +881,14 @@ function tracksSnapshot(editor) {
     remuxOnly: editor.remuxOnly,
     dvMode: editor.dvMode,
   });
+}
+
+// The open track dialog's job has started encoding: its tracks turn read-only.
+function lockTracks() {
+  trackEditor.editable = false;
+  $("tracks-note").textContent = tr("tracks_locked");
+  updateModalActions();
+  renderTracks();
 }
 
 async function closeTracks() {

@@ -1711,6 +1711,37 @@ mod tests {
     }
 
     #[test]
+    fn queue_rows_close_tracks_of_a_job_in_the_running_session() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut started = EncodingJob::new(PathBuf::from("/tmp/started.mkv"));
+        started.status = JobStatus::Ready;
+        let started_id = state.queue.push(started);
+        let mut waiting = EncodingJob::new(PathBuf::from("/tmp/waiting.mkv"));
+        waiting.status = JobStatus::Ready;
+        let waiting_id = state.queue.push(waiting);
+        state.session = Some(EncodeSession {
+            job_ids: vec![started_id],
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        });
+        state.encoding_active = true;
+        let shared = Arc::new(Mutex::new(state));
+
+        let body = queue(&shared);
+        let editable = |id: u64| {
+            body["jobs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == id)
+                .unwrap()["tracks_editable"]
+                .clone()
+        };
+
+        assert_eq!(editable(started_id), serde_json::json!(false));
+        assert_eq!(editable(waiting_id), serde_json::json!(true));
+    }
+
+    #[test]
     fn a_waiting_session_job_can_be_removed() {
         let mut state = DaemonState::new(AppConfig::default());
         let mut active = EncodingJob::new(PathBuf::from("/tmp/active.mkv"));

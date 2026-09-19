@@ -138,6 +138,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - TUI: `b` in Settings picks the output directory, browse root or staging directory in the file explorer, as the web's Browse button does.
 - Web: the track dialog's "Opus unavailable" warning also appears when the output container forces Opus, and no longer appears for tracks that are already Opus and are copied, as in the TUI.
 - Web: settings can be saved when `config.toml` holds a VMAF threshold with more than one decimal, such as 93.25.
+- Web: an open track dialog turns read-only with the "already encoding" note once its file starts encoding, instead of offering a Save that fails.
 - Web settings cannot clear browse_root while the running daemon listens outside loopback, even when the saved bind address is loopback.
 - A web request from `::ffff:127.0.0.1` counts as loopback.
 - The output directory disc rips need can be set in the web UI and TUI while "same directory" is on; the add-to-queue toast reports skipped and already-queued files separately and is translated.
