@@ -186,6 +186,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - `--stop` and `--restart` signal the daemon only while it still holds its PID file lock, and wait for that lock to be released, instead of signalling whatever process has since reused its PID.
 - Web UI: closing the disc dialog, or going back in it, no longer cancels a disc scan another browser tab started.
 - Web UI: "Clear finished" asks before deleting a finished rip even when the rip finished after the page last refreshed; the daemon refuses to clear finished rips without that confirmation.
+- Web UI: the "daemon unreachable" banner appears on time while the track dialog is loading for a file that just finished analysis.
 
 ### Known limitations
 

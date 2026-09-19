@@ -774,7 +774,10 @@ async function refreshQueueNow() {
   const settingsOpen = activeTab === "settings" && settingsDirty();
   if (next && !openingTracks && !settingsOpen && !document.querySelector("dialog[open]")) {
     promptedTrackJobs.add(next.id);
-    if (!await openTracks(next.id)) promptedTrackJobs.delete(next.id);
+    // The status poll does not wait for the dialog's requests.
+    openTracks(next.id).then((opened) => {
+      if (!opened) promptedTrackJobs.delete(next.id);
+    });
   }
 }
 
