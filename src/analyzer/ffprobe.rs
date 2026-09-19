@@ -382,27 +382,59 @@ fn analyze_tracks(
     Ok((audio_tracks, subtitle_tracks))
 }
 
-/// Attached pictures and attachment streams in the file, as
-/// `(pictures, attachments)`. `None` when ffprobe cannot say.
-pub fn probe_attachments(path: &str, cancel: &AtomicBool) -> Option<(usize, usize)> {
+/// Streams of a file that an encode does not pick by track selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnselectableStreams {
+    /// Attached pictures such as cover art.
+    pub pictures: usize,
+    /// Attachment streams such as fonts.
+    pub attachments: usize,
+    /// Video streams after the first, data streams, and streams of any other
+    /// kind.
+    pub other: usize,
+}
+
+/// Count the streams of `path` that track selection does not cover. `None`
+/// when ffprobe cannot say.
+pub fn probe_unselectable_streams(path: &str, cancel: &AtomicBool) -> Option<UnselectableStreams> {
     let args = [
         "-v",
         "error",
         "-show_entries",
         "stream=codec_type:stream_disposition=attached_pic",
         "-of",
-        "csv=p=0",
+        "json",
         path,
     ];
     let output = run_ffprobe(&args, cancel).ok()?;
-    let lines: Vec<&str> = output.lines().map(str::trim).collect();
-    Some((
-        lines.iter().filter(|line| line.ends_with(",1")).count(),
-        lines
-            .iter()
-            .filter(|line| line.starts_with("attachment"))
-            .count(),
-    ))
+    let data: AllStreamsOutput = serde_json::from_str(&output).ok()?;
+    Some(unselectable_streams(&data.streams))
+}
+
+fn unselectable_streams(streams: &[RawStream]) -> UnselectableStreams {
+    let mut counts = UnselectableStreams {
+        pictures: 0,
+        attachments: 0,
+        other: 0,
+    };
+    let mut videos = 0usize;
+    for stream in streams {
+        let picture = stream
+            .disposition
+            .as_ref()
+            .and_then(|d| d.attached_pic)
+            .unwrap_or(0)
+            != 0;
+        match stream.codec_type.as_deref() {
+            _ if picture => counts.pictures += 1,
+            Some("video") => videos += 1,
+            Some("audio" | "subtitle") => {}
+            Some("attachment") => counts.attachments += 1,
+            _ => counts.other += 1,
+        }
+    }
+    counts.other += videos.saturating_sub(1);
+    counts
 }
 
 /// Run ffprobe with arguments
@@ -547,6 +579,7 @@ struct AllStreamsOutput {
 
 #[derive(Debug, Deserialize)]
 struct RawStream {
+    codec_type: Option<String>,
     codec_name: Option<String>,
     channels: Option<u16>,
     channel_layout: Option<String>,
@@ -562,15 +595,59 @@ struct StreamTags {
     title: Option<String>,
 }
 
-/// Stream disposition flags (only the forced flag is currently used)
+/// Stream disposition flags
 #[derive(Debug, Deserialize)]
 struct StreamDisposition {
     forced: Option<u8>,
+    attached_pic: Option<u8>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unselectable_streams_count_extra_video_data_pictures_and_attachments() {
+        let json = r#"{
+            "stream_groups": [{"streams": [{"codec_type": "video"}, {"codec_type": "data"}]}],
+            "streams": [
+                {"codec_type": "video", "disposition": {"attached_pic": 0}},
+                {"codec_type": "audio", "disposition": {"attached_pic": 0}},
+                {"codec_type": "subtitle", "disposition": {"attached_pic": 0}},
+                {"codec_type": "video", "disposition": {"attached_pic": 1}},
+                {"codec_type": "attachment"},
+                {"codec_type": "video", "disposition": {"attached_pic": 0}},
+                {"codec_type": "data", "disposition": {"attached_pic": 0}}
+            ]
+        }"#;
+        let data: AllStreamsOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            unselectable_streams(&data.streams),
+            UnselectableStreams {
+                pictures: 1,
+                attachments: 1,
+                other: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn a_single_video_stream_with_audio_and_subtitles_has_nothing_unselectable() {
+        let json = r#"{"streams": [
+            {"codec_type": "video", "disposition": {"attached_pic": 0}},
+            {"codec_type": "audio", "disposition": {"attached_pic": 0}},
+            {"codec_type": "subtitle", "disposition": {"attached_pic": 0}}
+        ]}"#;
+        let data: AllStreamsOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            unselectable_streams(&data.streams),
+            UnselectableStreams {
+                pictures: 0,
+                attachments: 0,
+                other: 0,
+            }
+        );
+    }
 
     #[test]
     fn parses_hdr10_static_from_real_ffprobe_json() {

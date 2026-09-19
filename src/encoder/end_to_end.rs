@@ -642,3 +642,84 @@ fn an_output_replaced_before_deletion_keeps_the_source() {
     assert!(input.exists());
     let _ = std::fs::remove_dir_all(input.parent().unwrap());
 }
+
+/// A second video stream or a data stream the output does not carry keeps
+/// the source whatever the VMAF score.
+#[test]
+fn extra_video_or_data_streams_keep_the_source() {
+    if !DependencyStatus::check() {
+        eprintln!("skipping: ffmpeg is not on PATH");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_extra_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(single) = make_video_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    let two_videos = dir.join("two_videos.mkv");
+    let timecode = dir.join("timecode.mov");
+    let ffmpeg = |args: &[&str]| {
+        Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args(args)
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    let source = single.to_str().unwrap();
+    let built = ffmpeg(&[
+        "-i",
+        source,
+        "-i",
+        source,
+        "-map",
+        "0:v",
+        "-map",
+        "1:v",
+        "-c",
+        "copy",
+        two_videos.to_str().unwrap(),
+    ]) && ffmpeg(&[
+        "-i",
+        source,
+        "-c",
+        "copy",
+        "-timecode",
+        "00:00:00:00",
+        timecode.to_str().unwrap(),
+    ]);
+    if !built {
+        eprintln!("skipping: could not build the fixture clips");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    if !probe(&timecode, "stream=codec_type").contains(&"data".to_string()) {
+        eprintln!("skipping: this FFmpeg did not write a timecode data stream");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+
+    let output = dir.join("out.mkv");
+    let reason = |input: &Path| {
+        let params = EncodingParams::from_metadata(
+            input.to_str().unwrap(),
+            output.to_str().unwrap(),
+            &metadata_for(input),
+            &AppConfig::default(),
+            crate::tracks::OutputTracks::default(),
+            DvMode::ToHdr10,
+            false,
+            Vec::new(),
+        );
+        super::keep_source_reason(&params, DvMode::ToHdr10, &AtomicBool::new(false))
+    };
+
+    let lost = Some("it has video or data streams the output does not carry");
+    assert_eq!(reason(&single), None);
+    assert_eq!(reason(&two_videos), lost);
+    assert_eq!(reason(&timecode), lost);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

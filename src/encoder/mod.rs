@@ -229,7 +229,8 @@ fn flush_to_disk(path: &str) -> std::io::Result<()> {
 
 /// What the output loses that VMAF does not measure, which keeps the source
 /// whatever the score: Dolby Vision that was asked to be kept but is not,
-/// transcoded audio, subtitles converted or left out, and cover art or
+/// transcoded audio, subtitles converted or left out, a Dolby Vision profile 7
+/// enhancement layer, extra video or data streams, and cover art or
 /// attachments the output container does not carry.
 fn keep_source_reason(
     params: &EncodingParams,
@@ -252,11 +253,22 @@ fn keep_source_reason(
     {
         return Some("a selected subtitle track was converted or left out");
     }
-    match crate::analyzer::ffprobe::probe_attachments(&params.input, cancel) {
-        Some((0, 0)) => None,
-        Some((0, _)) if command_builder::keeps_attachments(&params.output) => None,
+    if params.hdr_type == HdrType::DolbyVision && params.dv_profile == Some(7) {
+        return Some("its Dolby Vision profile 7 enhancement layer is not carried into the output");
+    }
+    match crate::analyzer::ffprobe::probe_unselectable_streams(&params.input, cancel) {
+        None => Some("its streams could not be checked"),
+        Some(streams) if streams.other > 0 => {
+            Some("it has video or data streams the output does not carry")
+        }
+        Some(streams)
+            if streams.pictures == 0
+                && (streams.attachments == 0
+                    || command_builder::keeps_attachments(&params.output)) =>
+        {
+            None
+        }
         Some(_) => Some("its cover art or attachments are not carried into the output"),
-        None => Some("its attachments could not be checked"),
     }
 }
 
@@ -414,6 +426,40 @@ mod tests {
                 &std::sync::atomic::AtomicBool::new(false)
             ),
             Some("Dolby Vision was to be kept but this encoder converted it to HDR10")
+        );
+    }
+
+    #[test]
+    fn a_dolby_vision_profile_7_source_is_kept() {
+        let metadata = VideoMetadata {
+            width: 3840,
+            height: 2160,
+            hdr_type: HdrType::DolbyVision,
+            dv_profile: Some(7),
+            dv_bl_compat: Some(6),
+            hdr10_static: None,
+            codec_name: "hevc".to_string(),
+            frame_rate_num: 24000,
+            frame_rate_den: 1001,
+            duration_secs: 60.0,
+        };
+        let params = EncodingParams::from_metadata(
+            "/nonexistent/in.mkv",
+            "/nonexistent/out.mkv",
+            &metadata,
+            &AppConfig::default(),
+            OutputTracks::default(),
+            DvMode::ToHdr10,
+            false,
+            Vec::new(),
+        );
+        assert_eq!(
+            keep_source_reason(
+                &params,
+                DvMode::ToHdr10,
+                &std::sync::atomic::AtomicBool::new(false)
+            ),
+            Some("its Dolby Vision profile 7 enhancement layer is not carried into the output")
         );
     }
 
