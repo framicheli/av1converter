@@ -1,7 +1,7 @@
 Package: av1converter
 Version: @VERSION@
 Architecture: amd64
-Maintainer: Francesco Micheli
+Maintainer: Francesco Micheli <mi.francesco@gmail.com>
 Depends: ffmpeg
 Section: video
 Priority: optional
