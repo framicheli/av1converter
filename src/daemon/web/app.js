@@ -781,7 +781,9 @@ async function refreshQueueNow() {
   }
 }
 
+// Answers no, without asking, while another confirmation is open.
 function askConfirm(message) {
+  if ($("confirm-modal").open) return Promise.resolve(false);
   return new Promise((resolve) => {
     $("confirm-body").textContent = message;
     const modal = $("confirm-modal");
