@@ -929,7 +929,10 @@ function hostStatusText(s) {
   const vmaf = !s.vmaf_enabled ? tr("vmaf_disabled")
     : s.deps.ffmpeg && s.deps.vmaf ? `${tr("vmaf_enabled_open")}${Math.round(s.vmaf_threshold)})`
     : `⚠ ${tr("deps_missing")}`;
-  return `${encoder} · ${vmaf}`;
+  const queue = s.unreadable_queue
+    ? ` · ⚠ ${trf("queue_unreadable", { path: s.unreadable_queue })}`
+    : "";
+  return `${encoder} · ${vmaf}${queue}`;
 }
 
 function renderTracks() {

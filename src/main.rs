@@ -587,7 +587,13 @@ fn main() -> io::Result<()> {
     // Create app and run
     let mut app = App::new();
     // Staged rips named by a stopped daemon's queue stay for its next start.
-    let daemon_queue = queue::state::load(&daemon::lifecycle::queue_file());
+    let (daemon_queue, unreadable_queue) = queue::state::load(&daemon::lifecycle::queue_file());
+    if let Some(kept) = unreadable_queue {
+        app.set_message(
+            &t(app.config.language, Msg::QueueUnreadable)
+                .replace("{path}", &kept.display().to_string()),
+        );
+    }
     disc::staging::sweep_orphans(
         &app.config,
         &daemon_queue.state.jobs,

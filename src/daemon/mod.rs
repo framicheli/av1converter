@@ -389,7 +389,7 @@ fn restore_state(
     config: AppConfig,
     queue_file: &std::path::Path,
 ) -> (DaemonState, Vec<(u64, String)>) {
-    let mut restored = crate::queue::state::load(queue_file);
+    let (mut restored, unreadable_queue) = crate::queue::state::load(queue_file);
     let browse_root = config.daemon.browse_root.clone();
     let root = if browse_root.is_empty() {
         None
@@ -449,6 +449,7 @@ fn restore_state(
 
     let mut state = DaemonState::new(config);
     state.queue = state::DaemonQueue::from_persisted(restored);
+    state.unreadable_queue = unreadable_queue;
     // A rip cut short by a kill has nothing left tracking its file.
     crate::disc::staging::sweep_orphans(
         &state.config,
@@ -1572,6 +1573,32 @@ mod tests {
     }
 
     #[test]
+    fn an_unreadable_queue_file_is_reported_in_the_status() {
+        let base = std::env::temp_dir().join(format!("av1c_restore_bad_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let queue_file = base.join("queue.json");
+        std::fs::write(&queue_file, b"{not json").unwrap();
+        let config = AppConfig {
+            disc: crate::config::DiscConfig {
+                staging_directory: Some(base.join("staging").to_string_lossy().into_owned()),
+                ..crate::config::DiscConfig::default()
+            },
+            ..AppConfig::default()
+        };
+
+        let (state, _) = restore_state(config, &queue_file);
+        let kept = state.unreadable_queue.clone().expect("the file is kept");
+        assert_eq!(std::fs::read(&kept).unwrap(), b"{not json");
+        let shared: SharedState = Arc::new(Mutex::new(state));
+        assert_eq!(
+            api::status(&shared)["unreadable_queue"],
+            serde_json::json!(kept.display().to_string())
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn restored_jobs_whose_files_are_gone_keep_their_paths() {
         let base = std::env::temp_dir().join(format!("av1c_restore_gone_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -1654,7 +1681,7 @@ mod tests {
         let mut last_warning = None;
         persist_queue(&shared, &queue_file, &mut last_saved, &mut last_warning);
 
-        let mut saved = crate::queue::state::load(&queue_file);
+        let (mut saved, _) = crate::queue::state::load(&queue_file);
         assert!(matches!(saved.state.jobs[0].status, JobStatus::Pending));
         crate::queue::state::resume(&mut saved);
         assert!(!is_terminal(&saved.state.jobs[0].status));

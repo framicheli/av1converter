@@ -197,6 +197,8 @@ pub struct DaemonState {
     pub bound_publicly: bool,
     /// What this `FFmpeg` build can do, as checked at startup.
     pub deps: Capabilities,
+    /// Where an unreadable `queue.json` found at startup was moved.
+    pub unreadable_queue: Option<std::path::PathBuf>,
 }
 
 /// `FFmpeg` capabilities the daemon depends on.
@@ -227,6 +229,7 @@ impl DaemonState {
         Self {
             bound_publicly: config.daemon.binds_publicly(),
             deps: Capabilities::default(),
+            unreadable_queue: None,
             queue: DaemonQueue::new(),
             config,
             encoding_active: false,

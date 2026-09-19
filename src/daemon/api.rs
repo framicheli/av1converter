@@ -83,6 +83,7 @@ pub fn status(shared: &SharedState) -> Value {
             "opus": state.deps.opus,
             "encoder": state.deps.encoder,
         },
+        "unreadable_queue": state.unreadable_queue.as_ref().map(|p| p.display().to_string()),
         "vmaf_enabled": state.config.quality.vmaf_enabled,
         "vmaf_threshold": state.config.quality.vmaf_threshold,
         "encoding_active": state.encoding_active,

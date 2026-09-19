@@ -269,6 +269,7 @@ pub enum Msg {
     OutputDirectoryMissing,
     OutputDirectoryInvalid,
     BrowseRootRequired,
+    QueueUnreadable,
     BrowseRootInvalid,
     StagingDirectoryInvalid,
     MakemkvconInvalid,
@@ -2010,6 +2011,16 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Der Ausgabeordner muss ein vorhandener Ordner sein",
             Zh => "输出目录必须是已存在的目录",
         },
+        Msg::QueueUnreadable => match lang {
+            En => "The saved queue could not be read; its contents were kept in {path}",
+            It => "Impossibile leggere la coda salvata; il contenuto è stato conservato in {path}",
+            Es => "No se pudo leer la cola guardada; su contenido se conservó en {path}",
+            Fr => "Impossible de lire la file enregistrée ; son contenu a été conservé dans {path}",
+            De => {
+                "Die gespeicherte Warteschlange war nicht lesbar; ihr Inhalt wurde in {path} aufbewahrt"
+            }
+            Zh => "无法读取已保存的队列；其内容已保留在 {path}",
+        },
         Msg::BrowseRootRequired => match lang {
             En => {
                 "A daemon browse root (daemon.browse_root) is required when binding outside loopback"
@@ -3569,6 +3580,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("qp_low", Msg::QpLow),
     ("qp_medium", Msg::QpMedium),
     ("queue_empty", Msg::WebQueueEmpty),
+    ("queue_unreadable", Msg::QueueUnreadable),
     ("reason_cancelled", Msg::Cancelled),
     (
         "reason_restart_interrupted",
@@ -3714,7 +3726,7 @@ mod tests {
     fn placeholders_survive_every_translation() {
         for (key, msg) in WEB_KEYS {
             let english = t(Language::English, *msg);
-            for name in ["{n}", "{profile}"] {
+            for name in ["{n}", "{profile}", "{path}"] {
                 if english.contains(name) {
                     for &lang in &Language::ALL {
                         assert!(

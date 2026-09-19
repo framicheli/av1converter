@@ -1,7 +1,7 @@
 use super::job::{EncodingJob, JobStatus};
 use crate::utils::format_file_size;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tracing::warn;
 
@@ -253,7 +253,7 @@ pub(crate) fn save_serialized(path: &Path, json: &[u8]) -> std::io::Result<()> {
         file.sync_all()?;
     }
     let bak = path.with_extension("json.bak");
-    if path.exists() {
+    if read_queue(path).is_some() {
         std::fs::copy(path, &bak)?;
     }
     std::fs::rename(&tmp, path)
@@ -284,20 +284,75 @@ fn read_queue(path: &Path) -> Option<PersistedQueue> {
     }
 }
 
-/// Read the persisted queue. A corrupt or inconsistent file falls back to
-/// `queue.json.bak` from the last successful save, then to empty.
-pub fn load(path: &Path) -> PersistedQueue {
+/// Read the persisted queue. A corrupt or inconsistent file is moved to
+/// `queue.json.unreadable-<secs>`, and the queue falls back to `queue.json.bak`
+/// from the last successful save, then to empty. Returns the queue and the
+/// path the unreadable file was moved to.
+pub fn load(path: &Path) -> (PersistedQueue, Option<PathBuf>) {
     if let Some(queue) = read_queue(path) {
-        return queue;
+        return (queue, None);
     }
+    let preserved = preserve_unreadable(path);
     let bak = path.with_extension("json.bak");
     if bak != *path
         && let Some(queue) = read_queue(&bak)
     {
         warn!("Recovered the queue from {}", bak.display());
-        return queue;
+        return (queue, preserved);
     }
-    PersistedQueue::default()
+    (PersistedQueue::default(), preserved)
+}
+
+/// Copy an existing, unreadable queue file to a new
+/// `<name>.unreadable-<secs>[-<n>]` next to it, then remove the original.
+/// Returns the copy's path, or `None` when there is no file or the copy fails.
+fn preserve_unreadable(path: &Path) -> Option<PathBuf> {
+    use std::io::Write;
+
+    let bytes = std::fs::read(path).ok()?;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    for n in 0u32.. {
+        let suffix = if n == 0 {
+            format!("{name}.unreadable-{secs}")
+        } else {
+            format!("{name}.unreadable-{secs}-{n}")
+        };
+        let target = path.with_file_name(suffix);
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                warn!(
+                    "Could not keep the unreadable queue at {}: {e}",
+                    target.display()
+                );
+                return None;
+            }
+        };
+        if let Err(e) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+            warn!(
+                "Could not keep the unreadable queue at {}: {e}",
+                target.display()
+            );
+            return None;
+        }
+        if let Err(e) = std::fs::remove_file(path) {
+            warn!(
+                "Could not remove the unreadable queue {}: {e}",
+                path.display()
+            );
+        }
+        warn!("Moved the unreadable queue to {}", target.display());
+        return Some(target);
+    }
+    None
 }
 
 /// Reconcile a queue reloaded from disk with a process that has just started.
@@ -526,7 +581,7 @@ mod tests {
             },
         )
         .unwrap();
-        let mut back = load(&path);
+        let (mut back, _) = load(&path);
 
         assert_eq!(back.ids, vec![7, 9]);
         assert_eq!(back.next_id, 10);
@@ -742,19 +797,19 @@ mod tests {
             b"{\"state\":{\"jobs\":[{\"path\":\"/tmp/a.mkv\"",
         )
         .unwrap();
-        assert!(load(&truncated).state.jobs.is_empty());
+        assert!(load(&truncated).0.state.jobs.is_empty());
 
         let garbage = dir.join("garbage.json");
         std::fs::write(&garbage, b"\x00\x01 not json at all").unwrap();
-        assert!(load(&garbage).state.jobs.is_empty());
+        assert!(load(&garbage).0.state.jobs.is_empty());
 
         // Well-formed JSON of the wrong shape.
         let wrong_shape = dir.join("wrong.json");
         std::fs::write(&wrong_shape, b"[1, 2, 3]").unwrap();
-        assert!(load(&wrong_shape).state.jobs.is_empty());
+        assert!(load(&wrong_shape).0.state.jobs.is_empty());
 
         // An absent file: the ordinary first-run case.
-        assert!(load(&dir.join("missing.json")).state.jobs.is_empty());
+        assert!(load(&dir.join("missing.json")).0.state.jobs.is_empty());
 
         // Ids that do not line up with the jobs.
         let misaligned = dir.join("misaligned.json");
@@ -771,7 +826,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(load(&misaligned).state.jobs.is_empty());
+        assert!(load(&misaligned).0.state.jobs.is_empty());
 
         // The empty queue is usable, not just empty.
         assert_eq!(PersistedQueue::default().next_id, 1);
@@ -794,7 +849,72 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(load(&duplicate_ids).state.jobs.is_empty());
+        assert!(load(&duplicate_ids).0.state.jobs.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An unreadable queue file keeps its bytes in a side file through the
+    /// saves that follow, and the backup keeps the last good queue.
+    #[test]
+    fn an_unreadable_queue_file_is_kept_through_later_saves() {
+        let dir = scratch("unreadable");
+        let path = dir.join("queue.json");
+        let bak = dir.join("queue.json.bak");
+        let mut state = QueueState::new();
+        state
+            .jobs
+            .push(EncodingJob::new(PathBuf::from("/tmp/keep.mkv")));
+        let good = QueueRef {
+            state: &state,
+            ids: &[1],
+            next_id: 2,
+        };
+        save(&path, &good).unwrap();
+        save(&path, &good).unwrap();
+        let good_bytes = std::fs::read(&bak).unwrap();
+
+        let corrupt = b"{\"state\":{\"jobs\":[{\"path\":\"/tmp/a.mkv\"";
+        std::fs::write(&path, corrupt).unwrap();
+
+        // A save over the unreadable file leaves the backup alone.
+        let empty = QueueState::new();
+        let empty_ref = QueueRef {
+            state: &empty,
+            ids: &[],
+            next_id: 1,
+        };
+        std::fs::write(&path, corrupt).unwrap();
+        save(&path, &empty_ref).unwrap();
+        assert_eq!(std::fs::read(&bak).unwrap(), good_bytes);
+
+        std::fs::write(&path, corrupt).unwrap();
+        let (queue, preserved) = load(&path);
+        let preserved = preserved.expect("the unreadable file is kept");
+        assert_eq!(queue.ids, vec![1]);
+        assert!(
+            preserved
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("queue.json.unreadable-")
+        );
+        save(&path, &empty_ref).unwrap();
+        save(&path, &empty_ref).unwrap();
+        assert_eq!(std::fs::read(&preserved).unwrap(), corrupt);
+
+        // A second unreadable file gets a name of its own.
+        std::fs::write(&path, b"garbage").unwrap();
+        let (_, second) = load(&path);
+        let second = second.expect("the second unreadable file is kept");
+        assert_ne!(second, preserved);
+        assert_eq!(std::fs::read(&second).unwrap(), b"garbage");
+        assert_eq!(std::fs::read(&preserved).unwrap(), corrupt);
+
+        // A readable or absent file reports nothing.
+        save(&path, &good).unwrap();
+        assert_eq!(load(&path).1, None);
+        assert_eq!(load(&dir.join("missing.json")).1, None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -864,7 +984,7 @@ mod tests {
         .unwrap();
         std::fs::write(&path, b"{not json").unwrap();
 
-        let back = load(&path);
+        let (back, _) = load(&path);
         assert_eq!(back.ids, vec![1]);
         assert_eq!(back.state.jobs[0].path, PathBuf::from("/tmp/keep.mkv"));
 
