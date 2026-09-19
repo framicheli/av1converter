@@ -49,7 +49,7 @@ fn reuse_or_create(current: Option<PathBuf>, base: &Path) -> Option<PathBuf> {
 
 /// A directory itself (not a symlink to one), owned by this user and closed to
 /// group and others.
-fn is_private_dir(path: &Path) -> bool {
+pub fn is_private_dir(path: &Path) -> bool {
     let Ok(metadata) = std::fs::symlink_metadata(path) else {
         return false;
     };

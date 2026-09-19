@@ -420,7 +420,7 @@ behind_proxy = false       # Treat every web request as remote; set when a rever
 
 [disc]
 # makemkvcon_path = ""      # Unset: PATH, then the platform's MakeMKV install location
-# staging_directory = ""    # Where ripped titles wait to be encoded (unset = <system temp>/av1converter-staging)
+# staging_directory = ""    # Where ripped titles wait to be encoded (unset = a private per-user folder under the system temp directory)
 ```
 
 If `config.toml` cannot be parsed it is left untouched and defaults are used for that run. Saving settings afterwards first copies the broken file to `config.toml.bak`.

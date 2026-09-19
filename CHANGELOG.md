@@ -104,6 +104,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Stopping or restarting the daemon keeps the running and queued jobs for the next start instead of marking them cancelled; the file that was encoding starts over, and files being analysed are analysed again.
 - A machine with no drive, or a disc with no usable titles, is reported as "no drive" or "drive empty" instead of quoting MakeMKV's startup banner or "Operation successfully completed".
 - A long rip that fails is reported with MakeMKV's closing messages, not with the first 200 it printed.
+- The default staging folder is private to the user (`av1converter-staging-<uid>`, mode 0700 on Unix), so another user on the machine can no longer claim it or tamper with a rip.
 
 ### Known limitations
 

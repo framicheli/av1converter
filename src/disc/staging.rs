@@ -22,19 +22,45 @@ const SPACE_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// read-retry loops on a damaged disc, which write nothing while they run.
 pub const ACTIVE_RIP_WINDOW: Duration = Duration::from_mins(30);
 
-/// The staging root: the configured directory, or one under the system temp
-/// directory.
-pub fn staging_root(config: &AppConfig) -> PathBuf {
+/// The configured staging directory, if one is set.
+fn configured_root(config: &AppConfig) -> Option<&str> {
     config
         .disc
         .staging_directory
         .as_deref()
         .map(str::trim)
         .filter(|dir| !dir.is_empty())
-        .map_or_else(
-            || std::env::temp_dir().join("av1converter-staging"),
-            PathBuf::from,
-        )
+}
+
+/// The staging root: the configured directory, or a per-user one under the
+/// system temp directory.
+pub fn staging_root(config: &AppConfig) -> PathBuf {
+    configured_root(config).map_or_else(default_staging_root, PathBuf::from)
+}
+
+fn default_staging_root() -> PathBuf {
+    #[cfg(unix)]
+    // SAFETY: geteuid is always safe.
+    let name = format!("av1converter-staging-{}", unsafe { libc::geteuid() });
+    #[cfg(not(unix))]
+    let name = "av1converter-staging".to_string();
+    std::env::temp_dir().join(name)
+}
+
+/// Create `root` as a directory only this user can enter, or accept it when it
+/// already is one.
+fn prepare_private_root(root: &Path) -> std::io::Result<()> {
+    match crate::utils::create_private_dir(root) {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
+        _ => {}
+    }
+    if crate::utils::is_private_dir(root) {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            "it is not a private directory owned by this user",
+        ))
+    }
 }
 
 /// The directory encoded output goes to. A rip refuses to start without one:
@@ -73,7 +99,12 @@ pub fn rip_to_staging(
     require_destination(config)?;
 
     let root = staging_root(config);
-    std::fs::create_dir_all(&root).map_err(|e| {
+    let prepared = if configured_root(config).is_some() {
+        std::fs::create_dir_all(&root)
+    } else {
+        prepare_private_root(&root)
+    };
+    prepared.map_err(|e| {
         DiscError::Failed(format!(
             "could not create the staging directory {}: {e}",
             root.display()
@@ -603,6 +634,31 @@ mod tests {
         let root = staging_root(&AppConfig::default());
         assert!(root.starts_with(std::env::temp_dir()));
         assert_ne!(root, std::env::temp_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staging_root_must_be_private_to_this_user() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let base = scratch("private_root");
+        let fresh = base.join("fresh");
+        prepare_private_root(&fresh).unwrap();
+        let mode = std::fs::metadata(&fresh).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        prepare_private_root(&fresh).unwrap();
+
+        let shared = base.join("shared");
+        std::fs::DirBuilder::new()
+            .mode(0o755)
+            .create(&shared)
+            .unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(prepare_private_root(&shared).is_err());
+
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&fresh, &link).unwrap();
+        assert!(prepare_private_root(&link).is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[cfg(unix)]
