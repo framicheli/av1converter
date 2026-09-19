@@ -781,11 +781,15 @@ impl App {
                 }
             }
             SelectionMode::DiscFolder => {
-                if entry.is_parent() {
-                    self.enter_directory();
-                } else if entry.is_dir || crate::disc::is_iso(&selected) {
-                    self.scan_disc_folder(&selected);
-                }
+                // The highlighted folder or image, or the open folder from any
+                // other row.
+                let target =
+                    if !entry.is_parent() && (entry.is_dir || crate::disc::is_iso(&selected)) {
+                        selected
+                    } else {
+                        self.current_dir.clone()
+                    };
+                self.scan_disc_folder(&target);
             }
             SelectionMode::Folder | SelectionMode::FolderRecursive => {
                 // The highlighted subfolder, or the open folder from any other row.
