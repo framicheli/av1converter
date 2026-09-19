@@ -1,12 +1,27 @@
 # Changelog
 
-## [3.0.0]
+## [3.0.0] - 2026-09-19
 
-Initial public release: interactive TUI for batch-converting video to AV1 with FFmpeg — hardware encoder auto-detection (NVENC/QSV/AMF), Dolby Vision passthrough and profile 5 tone-mapping, VMAF quality verification, per-track audio/subtitle selection with Opus transcoding, daemon mode with a web UI, and a six-language interface.
+Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autostart, and matching settings in the TUI and the web UI. It also hardens the daemon and the encode pipeline. Read **Breaking changes** before upgrading a daemon that is reachable from the network.
+
+### Breaking changes
+
+- A daemon bound outside loopback no longer starts over plain HTTP unless `allow_insecure_lan = true` is set under `[daemon]`. It also needs a non-empty `browse_root`. Both are checked when settings are saved and when the daemon starts; 2.6.1 only printed a warning.
+- The web UI reads the access token from `#token=…` instead of `?token=…`, so old `?token=` links no longer log in. `av1converter --status` prints the new link.
+- An `auth_token` shorter than 32 characters is replaced with a generated one when the daemon starts. A replacement entered in either settings page must have at least 32 characters, all printable ASCII without spaces.
+- `output.container` accepts only `mkv`, `mp4` and `webm`; any other value loads as `mkv`.
+- With `quality_preset` set to `low`, `medium` or `high`, the `[presets.*]` tables are rewritten from the preset whenever the configuration is loaded or saved. Set `quality_preset = "custom"` to keep hand-edited per-tier values.
+- `disc.makemkvcon_path` must name a file called `makemkvcon` or `makemkvcon64` (with or without `.exe`). A wrapper script, such as one for a Flatpak install, has to be named `makemkvcon`.
+- The command line takes a single option. Extra arguments print the usage and exit with status 2.
+
+### Changed
+
+- `--start` and `--start-foreground` replace `--daemon` and `--daemon-foreground`, which remain as aliases.
+- Stopping or restarting the daemon keeps the running and queued jobs for the next start instead of marking them cancelled; the file that was encoding starts over, and files being analysed are analysed again.
 
 ### Added
 
-- `--start` and `--restart` daemon lifecycle commands. The former replaces `--daemon` in the documented interface, while `--daemon` remains a compatibility alias; `--start-foreground` likewise aliases the old foreground spelling.
+- `--restart`, which stops a running daemon cleanly and starts it again.
 - **Disc ripping.** Import titles straight from a DVD or Blu-ray through MakeMKV, from the TUI (`Rip DVD / Blu-ray` on the home menu) or the web UI (`+ Disc`). Titles are extracted to a staging directory and then analyzed, track-configured and encoded exactly like a file opened by hand.
   - Ripping and encoding overlap: the next title reads from the disc while the previous one encodes, so peak disk use stays at one rip plus one encode input.
   - A rip appears in the queue as a job of its own, with progress and cancellation in the same place as everything else.
@@ -17,7 +32,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - **Run at Startup.** A Settings toggle (and `--install-service` / `--uninstall-service`) installs a systemd user unit on Linux or a launchd agent on macOS so the web UI comes up at login. Not stored in `config.toml`; `--status` reports whether it is installed. `--purge` removes the unit too.
 - `[disc]` configuration block: `makemkvcon_path` (unset resolves through `PATH` and the platform's install location) and `staging_directory` (unset stages under the system temp directory).
 - Complete settings parity between the TUI and web UI, including every per-tier encoder value, film-grain strength, track fallback, daemon/service controls, and disc paths. Host-sensitive values are writable from loopback web sessions and read-only to remote sessions.
-- Four token-guarded API endpoints — `GET /api/discs`, `POST /api/discs/{scan,rip,cancel}` — accepting only drive and title ids the server itself reported. Disc state rides in `/api/status`, so the page still has one poll loop.
+- Four token-guarded API endpoints — `POST /api/discs/{list,scan,rip,cancel}` — accepting only drive and title ids the server itself reported. Disc state rides in `/api/status`, so the page still has one poll loop.
 - Disc failures are reported in the user's language and told apart from one another: MakeMKV missing, no drive, empty drive, expired Blu-ray key, unreadable disc, permission denied, insufficient space, a swapped disc, and cancellation.
 - `daemon.behind_proxy` (TUI and web Settings): treats every web request as remote, for a reverse proxy on the daemon host that a loopback browser cannot be told apart from. Off by default, so a browser on the daemon host keeps full settings access.
 
@@ -31,7 +46,6 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Portrait 4K uses the 4K VMAF models (long side ≥ 3840).
 - Dolby Vision without a readable `dv_profile` fails analysis instead of encoding IPT as bare PQ.
 - `film_grain` is SVT-AV1 only in settings; the web Settings tab no longer breaks when a hardware encoder is selected.
-- Public binds require a non-empty `browse_root` at settings save and at daemon start.
 - Web i18n refresh no longer clobbers live status text or clears the file-browser pick callback.
 - Queue add reports true duplicates separately from other skips; concurrent add of the same inode is deduped.
 - Empty auth tokens never open the API.
@@ -90,7 +104,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - First-run encoder detection encodes one test frame with each hardware AV1 encoder instead of matching GPU names, so Turing Quadros, AV1-decode-only GPUs and AMD cards are no longer given an encoder they cannot use; Windows no longer calls the deprecated wmic.
 - A config section with only some keys keeps the defaults for the rest instead of discarding the whole file; a config.toml that cannot be read is reported in the TUI status line.
 - Web settings cannot clear browse_root while the running daemon listens outside loopback, even when the saved bind address is loopback.
-- A web request from `::ffff:127.0.0.1` counts as loopback, and `makemkvcon_path` only accepts a file named `makemkvcon` or `makemkvcon64`.
+- A web request from `::ffff:127.0.0.1` counts as loopback.
 - The output directory disc rips need can be set in the web UI and TUI while "same directory" is on; the add-to-queue toast reports skipped and already-queued files separately and is translated.
 - Web UI: closing a track dialog without saving no longer opens the next job's dialog a second later, and an automatic track dialog no longer opens over another dialog.
 - An infinite `DURATION` tag no longer makes the saved queue unreadable.
@@ -101,7 +115,6 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Windows: an empty PID file left by a crash no longer blocks every start, and a failed `tasklist` no longer removes a running daemon's PID file.
 - Delete-on-success keeps a symlinked source rather than removing the link and reporting it deleted.
 - Adding files reads their identities without holding the daemon lock.
-- Stopping or restarting the daemon keeps the running and queued jobs for the next start instead of marking them cancelled; the file that was encoding starts over, and files being analysed are analysed again.
 - A machine with no drive, or a disc with no usable titles, is reported as "no drive" or "drive empty" instead of quoting MakeMKV's startup banner or "Operation successfully completed".
 - A long rip that fails is reported with MakeMKV's closing messages, not with the first 200 it printed.
 - The default staging folder is private to the user (`av1converter-staging-<uid>`, mode 0700 on Unix), so another user on the machine can no longer claim it or tamper with a rip.
@@ -136,3 +149,5 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 
 - Dolby Vision profile 7 UHD discs are extracted by MakeMKV with the enhancement layer as a separate MKV track, which FFmpeg will not recombine. Those discs encode from the HDR10 base layer and the EL/RPU track shows up as a stray stream.
 - The disc test suite runs against a fake `makemkvcon`; ripping has not been checked against real hardware.
+
+[3.0.0]: https://github.com/framicheli/av1converter/compare/v2.6.1...v3.0.0
