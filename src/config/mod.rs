@@ -304,6 +304,12 @@ impl AppConfig {
             .clamp(AudioConfig::MIN_PER_CHANNEL, AudioConfig::MAX_PER_CHANNEL);
         self.daemon.browse_root = self.daemon.browse_root.trim().to_string();
         self.daemon.auth_token = self.daemon.auth_token.trim().to_string();
+        self.output.output_directory = self
+            .output
+            .output_directory
+            .take()
+            .map(|directory| directory.trim().to_string())
+            .filter(|directory| !directory.is_empty());
         if let Some(directory) = self.output.output_directory.as_mut() {
             expand_home(directory);
         }
@@ -462,6 +468,19 @@ mod tests {
 
         assert_ne!(here, there);
         assert!(!there.exists());
+    }
+
+    /// A blank output directory counts as unset; surrounding spaces are trimmed.
+    #[test]
+    fn a_blank_output_directory_counts_as_unset() {
+        let mut cfg = AppConfig::default();
+        cfg.output.output_directory = Some("  ".to_string());
+        cfg.sanitize();
+        assert_eq!(cfg.output.output_directory, None);
+
+        cfg.output.output_directory = Some(" /data/out ".to_string());
+        cfg.sanitize();
+        assert_eq!(cfg.output.output_directory.as_deref(), Some("/data/out"));
     }
 
     #[test]

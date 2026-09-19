@@ -126,6 +126,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Web: a status poll that hangs, for example after the computer sleeps, times out after 10 seconds and shows the offline banner.
 - Web: dragging a text selection out of a dialog no longer closes it, or cancels a running disc scan.
 - Web: Windows paths in the file browser show backslash separators, including after the drive.
+- A blank `output_directory` in config.toml counts as unset instead of writing encodes to the working directory.
 
 ### Known limitations
 
