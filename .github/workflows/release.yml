@@ -1,3 +1,4 @@
+# Publishing to crates.io is manual: run cargo publish --locked from the release commit.
 name: Release
 
 on:

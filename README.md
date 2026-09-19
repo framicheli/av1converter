@@ -60,8 +60,6 @@ Platform notes:
 cargo install av1converter
 ```
 
-Maintainers must publish each release to crates.io with `cargo publish --locked` before announcing it.
-
 ### Nix
 
 The flake builds the binary only; `ffmpeg` and `ffprobe` still have to be on your `PATH`.
@@ -107,6 +105,8 @@ Download the package for your release from the [release page](https://github.com
 sudo apt install ./av1converter_VERSION_amd64.deb
 sudo dnf install ./av1converter-VERSION-1.x86_64.rpm
 ```
+
+On Fedora the RPM depends on the `ffmpeg` package from RPM Fusion; enable RPM Fusion first (see Platform notes above).
 
 ### Release binary or source
 
@@ -179,7 +179,7 @@ Usage: av1converter [OPTION]
 Legacy aliases: --daemon is --start; --daemon-foreground is --start-foreground
 ```
 
-`-h` and `-V` are short for `--help` and `--version`. An unknown option prints a suggestion and exits with status 2.
+`-h` and `-V` are short for `--help` and `--version`. An unknown option, or any extra argument, prints the usage and exits with status 2; a near-miss such as `--stpo` also gets a suggestion.
 
 `--scan-discs` is a diagnostic: it prints what MakeMKV reported, so a disc that lists oddly can be seen rather than guessed at.
 
@@ -247,7 +247,7 @@ Two things worth knowing:
 | Key | Where | Action |
 |-----|-------|--------|
 | `↑` / `k`, `↓` / `j` | Everywhere | Navigate |
-| `Enter` | Everywhere | Select / Confirm; on the queue, configure the next job waiting for tracks |
+| `Enter` | Everywhere | Select / Confirm; on the queue, configure the next job waiting for tracks, or open the summary once nothing is running |
 | `Space` | Selection, disc titles, track config | Select the highlighted or open folder, toggle a disc title, toggle the highlighted track |
 | `Esc` | Everywhere | Go back; on the queue, cancel the disc rip, analysis or encode (asks first) |
 | `PgUp` / `PgDn` | Queue, finish, disc titles | Scroll the detail pane |
@@ -257,13 +257,14 @@ Two things worth knowing:
 | `r` | Track config | Switch mode: encode ↔ demux/remux |
 | `d` | Track config | Change Dolby Vision handling (DV sources) |
 | `a` / `s` | Track config | Toggle all audio / subtitle tracks |
-| `o` | Track config, audio focused | Convert the highlighted audio track to Opus |
+| `o` | Track config, audio focused | Toggle Opus for the highlighted audio track |
 | `O` | Track config | Convert all selected audio tracks to Opus; press again to undo |
 | `←` / `h`, `→` / `l` | Configuration | Decrease / increase the value |
 | `Enter` | Configuration | Edit a text field (`Enter` commits, `Esc` aborts) |
 | `s` | Configuration | Save configuration |
-| `1` / `2` | Dolby Vision dialog | Pick an option (`Esc` applies the recommended one) |
+| `1` / `2` | Dolby Vision dialog | Pick an option; `↑`/`↓` or `Tab` then `Enter` also work. `Esc` keeps the current choice, or applies the recommended one when there is none yet |
 | `y` / `n` | Confirmation dialogs | Answer yes / no |
+| `←` / `h`, `→` / `l`, `Enter` | Confirmation dialogs | Highlight Yes or No, then answer with the highlighted one (No unless changed) |
 | `q`, `Ctrl+C` | Everywhere | Quit (with confirmation, which mentions unsaved configuration changes; `q` is ignored while editing a text field) |
 
 ## Disc Ripping
@@ -377,7 +378,7 @@ On first run (when no `config.toml` exists yet) the tool encodes one test frame 
 
 ## Configuration
 
-Configuration is stored at `$XDG_CONFIG_HOME/av1converter/config.toml` (default `~/.config/av1converter/config.toml`; `%APPDATA%\av1converter\config.toml` on Windows) and can be edited directly or through either settings interface. The first run writes a complete file. The excerpt below leaves out the `[presets.*]` tables, so edit the generated file rather than replacing it with this block.
+Configuration is stored at `$XDG_CONFIG_HOME/av1converter/config.toml` (default `~/.config/av1converter/config.toml`). On Windows it is `%APPDATA%\av1converter\config.toml` unless `XDG_CONFIG_HOME` or `HOME` is set (Git Bash and MSYS2 set `HOME`), in which case the paths above apply. It can be edited directly or through either settings interface. The first run writes a complete file. The excerpt below leaves out the `[presets.*]` tables, so edit the generated file rather than replacing it with this block.
 
 ```toml
 language = "en"                # UI language: en, it, es, fr, de, zh (English if omitted)
@@ -441,6 +442,6 @@ AV1_DEBUG=1 ./av1converter
 
 Logs roll daily and are written to:
 - **macOS/Linux:** `$XDG_DATA_HOME/av1converter/av1converter.log.<date>` (default `~/.local/share/av1converter/`)
-- **Windows:** `%LOCALAPPDATA%\av1converter\av1converter.log.<date>`
+- **Windows:** `%LOCALAPPDATA%\av1converter\av1converter.log.<date>`, unless `XDG_DATA_HOME` or `HOME` is set, in which case the macOS/Linux path applies
 
 For the daemon, `AV1_DEBUG` raises the log level of stdout or `daemon.log` to debug.
