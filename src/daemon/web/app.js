@@ -1438,7 +1438,10 @@ async function addToQueue(path, mode) {
   if (mode === "folder_recursive") choose.textContent = tr("scanning");
   try {
     const r = await post("/api/queue/add", { path, mode });
-    if (browser.session === session && $("browser").open) $("browser").close();
+    // A file add leaves the browser open for the next file.
+    if (mode !== "file" && browser.session === session && $("browser").open) {
+      $("browser").close();
+    }
     const skippedParts = [];
     if (r.already_queued) skippedParts.push(trf("already_queued", { n: r.already_queued }));
     if (r.skipped) skippedParts.push(trf("skipped_files", { n: r.skipped }));
