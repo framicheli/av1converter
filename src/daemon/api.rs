@@ -1363,6 +1363,24 @@ fn merged_settings(
     Ok(config)
 }
 
+/// Write `live` back to `config.toml` after a refused save: 409 with `error`,
+/// or 500 when `live` cannot be written.
+fn restore_live_settings(live: &AppConfig, error: &str) -> (u16, Value) {
+    match live.save() {
+        Ok(()) => (409, json!({"error": error})),
+        Err(e) => {
+            tracing::error!("Refused settings remain in config.toml; restoring failed: {e}");
+            (
+                500,
+                json!({"error": format!(
+                    "{}: {e}",
+                    crate::i18n::t(live.language, Msg::SettingsRestoreFailed)
+                )}),
+            )
+        }
+    }
+}
+
 /// Held by settings writes from the snapshot of the live config through its
 /// save and commit.
 static SETTINGS_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1463,8 +1481,7 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
         root.is_empty() || path.starts_with(root)
     }) {
         drop(state);
-        let _ = live.save();
-        return (409, json!({"error": error}));
+        return restore_live_settings(&live, error);
     }
     let output_changed = state.config.output != config.output;
     let mut saved = redacted(&config);
@@ -2402,6 +2419,31 @@ mod tests {
                 .is_err()
             );
             assert!(merged_settings(&json!({"output": {"suffix": 5}}), &current, true).is_err());
+        }
+
+        /// A refused save that restores the live settings answers 409; one
+        /// that cannot write them back answers 500.
+        #[test]
+        fn a_failed_settings_restore_is_a_server_error() {
+            let current = live();
+            let path = AppConfig::config_path();
+            let (code, body) = restore_live_settings(&current, "conflict");
+            assert_eq!(code, 409, "{body}");
+            assert_eq!(body["error"], "conflict");
+            assert_eq!(AppConfig::load_existing(), current);
+
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir_all(path.join("blocker")).unwrap();
+            let (code, body) = restore_live_settings(&current, "conflict");
+            assert_eq!(code, 500, "{body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|e| e
+                        .starts_with(crate::i18n::t(current.language, Msg::SettingsRestoreFailed))),
+                "{body}"
+            );
+            std::fs::remove_dir_all(&path).unwrap();
         }
 
         #[test]

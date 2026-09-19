@@ -275,6 +275,7 @@ pub enum Msg {
     MakemkvconInvalid,
     TokenTooShort,
     OutputDirectoryOutsideBrowseRoot,
+    SettingsRestoreFailed,
     BrowseRootExcludesJobs,
     QueuedRipsNeedOutputDirectory,
     CfgGroupTracks,
@@ -2079,6 +2080,24 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Le jeton d'accès doit contenir au moins 32 caractères",
             De => "Das Zugriffstoken muss mindestens 32 Zeichen enthalten",
             Zh => "访问令牌必须至少包含 32 个字符",
+        },
+        Msg::SettingsRestoreFailed => match lang {
+            En => {
+                "The settings were refused, but config.toml still holds them: the previous settings could not be written back"
+            }
+            It => {
+                "Le impostazioni sono state rifiutate, ma config.toml le contiene ancora: non è stato possibile riscrivere quelle precedenti"
+            }
+            Es => {
+                "La configuración se rechazó, pero config.toml aún la contiene: no se pudo volver a escribir la anterior"
+            }
+            Fr => {
+                "Les paramètres ont été refusés, mais config.toml les contient encore : les paramètres précédents n'ont pas pu être réécrits"
+            }
+            De => {
+                "Die Einstellungen wurden abgelehnt, stehen aber noch in config.toml: die vorherigen Einstellungen konnten nicht zurückgeschrieben werden"
+            }
+            Zh => "设置已被拒绝，但 config.toml 中仍保存着它们：无法写回之前的设置",
         },
         Msg::OutputDirectoryOutsideBrowseRoot => match lang {
             En => "Output directory must be an existing directory inside the daemon browse root",

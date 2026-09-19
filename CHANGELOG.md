@@ -130,6 +130,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - A `[presets.<tier>]` table with only some values keeps that tier's defaults for the others instead of discarding the whole configuration.
 - Web settings under a browse root refuse an output directory that is outside it or missing with the same message, so a remote session cannot use the check to learn which directories exist on the host.
 - `POST /api/settings` with only some keys changes just those keys instead of resetting the rest to defaults. `POST /api/job/tracks` refuses a track list, `remux_only` or `apply_to_remaining` of the wrong type instead of ignoring it.
+- Web settings refused because of a job queued during the save report an error when the previous settings cannot be written back, instead of claiming nothing changed while `config.toml` holds the refused values.
 - Web settings cannot clear browse_root while the running daemon listens outside loopback, even when the saved bind address is loopback.
 - A web request from `::ffff:127.0.0.1` counts as loopback.
 - The output directory disc rips need can be set in the web UI and TUI while "same directory" is on; the add-to-queue toast reports skipped and already-queued files separately and is translated.
