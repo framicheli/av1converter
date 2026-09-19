@@ -481,6 +481,43 @@ mod tests {
         assert!(!there.exists());
     }
 
+    /// A `[presets.<tier>]` table with only some values keeps that tier's
+    /// defaults for the others and leaves the rest of the file intact.
+    #[test]
+    fn a_partial_preset_table_keeps_the_tier_defaults() {
+        std::fs::create_dir_all(AppConfig::config_path().parent().unwrap()).unwrap();
+        std::fs::write(
+            AppConfig::config_path(),
+            "[quality]\nvmaf_threshold = 91.0\n\n[presets.sd]\ncrf = 20\n\n[presets.uhd_dv]\nfilm_grain = 9\n",
+        )
+        .unwrap();
+        let (config, error) = AppConfig::read_existing().unwrap();
+        assert_eq!(error, None);
+        assert_eq!(config.quality_preset, QualityPreset::Custom);
+        assert!((config.quality.vmaf_threshold - 91.0).abs() < f64::EPSILON);
+
+        let defaults = EncodingPresetsConfig::default();
+        assert_eq!(
+            config.presets.sd,
+            EncodingPreset {
+                crf: 20,
+                ..defaults.sd.clone()
+            }
+        );
+        assert_eq!(
+            config.presets.uhd_dv,
+            EncodingPreset {
+                film_grain: 9,
+                ..defaults.uhd_dv.clone()
+            }
+        );
+        assert_eq!(config.presets.hd, defaults.hd);
+
+        std::fs::write(AppConfig::config_path(), "[presets.sd]\ncrf = \"x\"\n").unwrap();
+        assert!(AppConfig::read_existing().unwrap().1.is_some());
+        let _ = std::fs::remove_file(AppConfig::config_path());
+    }
+
     /// A blank output directory counts as unset; surrounding spaces are trimmed.
     #[test]
     fn a_blank_output_directory_counts_as_unset() {

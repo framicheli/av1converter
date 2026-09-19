@@ -132,20 +132,73 @@ impl EncodingPreset {
     }
 }
 
-/// Encoding presets per resolution tier
+/// Encoding presets per resolution tier. A missing tier or value takes the
+/// tier's default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "PartialPresets")]
 pub struct EncodingPresetsConfig {
     pub sd: EncodingPreset,
     pub hd: EncodingPreset,
     pub full_hd: EncodingPreset,
     pub full_hd_hdr: EncodingPreset,
-    #[serde(default = "default_full_hd_dv")]
     pub full_hd_dv: EncodingPreset,
     pub uhd: EncodingPreset,
     pub uhd_hdr: EncodingPreset,
-    #[serde(default = "default_uhd_dv")]
     pub uhd_dv: EncodingPreset,
+}
+
+/// One `[presets.<tier>]` table as written, with any value left out.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct PartialPreset {
+    crf: Option<u8>,
+    film_grain: Option<u8>,
+    nvenc_cq: Option<u8>,
+    qsv_quality: Option<u8>,
+    amf_quality: Option<u8>,
+}
+
+impl PartialPreset {
+    /// The written values, with `base` filling the rest.
+    fn over(self, base: &EncodingPreset) -> EncodingPreset {
+        EncodingPreset {
+            crf: self.crf.unwrap_or(base.crf),
+            film_grain: self.film_grain.unwrap_or(base.film_grain),
+            nvenc_cq: self.nvenc_cq.unwrap_or(base.nvenc_cq),
+            qsv_quality: self.qsv_quality.unwrap_or(base.qsv_quality),
+            amf_quality: self.amf_quality.unwrap_or(base.amf_quality),
+        }
+    }
+}
+
+/// The `[presets]` tables as written, with any tier left out.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct PartialPresets {
+    sd: PartialPreset,
+    hd: PartialPreset,
+    full_hd: PartialPreset,
+    full_hd_hdr: PartialPreset,
+    full_hd_dv: PartialPreset,
+    uhd: PartialPreset,
+    uhd_hdr: PartialPreset,
+    uhd_dv: PartialPreset,
+}
+
+impl From<PartialPresets> for EncodingPresetsConfig {
+    fn from(written: PartialPresets) -> Self {
+        let base = Self::default();
+        Self {
+            sd: written.sd.over(&base.sd),
+            hd: written.hd.over(&base.hd),
+            full_hd: written.full_hd.over(&base.full_hd),
+            full_hd_hdr: written.full_hd_hdr.over(&base.full_hd_hdr),
+            full_hd_dv: written.full_hd_dv.over(&base.full_hd_dv),
+            uhd: written.uhd.over(&base.uhd),
+            uhd_hdr: written.uhd_hdr.over(&base.uhd_hdr),
+            uhd_dv: written.uhd_dv.over(&base.uhd_dv),
+        }
+    }
 }
 
 fn default_full_hd_dv() -> EncodingPreset {
