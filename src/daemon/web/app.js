@@ -496,7 +496,8 @@ const rows = new Map();
 const promptedTrackJobs = new Set();
 let openingTracks = false;
 // Highest job id seen in the queue, and the id at or below which jobs are not
-// auto-prompted: set when a tracks dialog closes without saving.
+// auto-prompted: the highest id seen when a tracks dialog that closed without
+// saving was opened.
 let maxJobId = 0;
 let trackPromptFloor = 0;
 
@@ -812,7 +813,7 @@ $("tracks-close").addEventListener("click", () => closeTracks());
 $("tracks-back").addEventListener("click", () => closeTracks());
 $("tracks-modal").addEventListener("close", () => {
   if (trackEditor && !trackEditor.saved) {
-    trackPromptFloor = Math.max(trackPromptFloor, trackEditor.id);
+    trackPromptFloor = Math.max(trackPromptFloor, trackEditor.promptFloor);
   }
   trackEditor = null;
 });
@@ -846,11 +847,13 @@ async function openTracks(id) {
   openingTracks = true;
   // The projected Opus bitrate comes from the audio settings, which are
   // reloaded here unless the settings tab holds unsaved edits.
+  const promptFloor = maxJobId;
   try {
     if (!settingsDirty()) await loadSettings();
     const data = await api(`/api/job/tracks?id=${id}`);
     const editor = trackEditor = {
       id,
+      promptFloor,
       audio: data.audio.map((t) => ({ ...t, mode: t.selected ? (t.opus ? "opus" : "copy") : "off" })),
       subtitles: data.subtitles.map((t) => ({ ...t })),
       editable: data.editable,
@@ -871,7 +874,10 @@ async function openTracks(id) {
     // The server maps the selection onto other files by track order.
     $("tracks-apply-hint").classList.toggle("hidden", data.remaining === 0);
     renderTracks();
-    if (trackEditor !== editor) return false;
+    if (trackEditor !== editor || document.querySelector("dialog[open]")) {
+      if (trackEditor === editor) trackEditor = null;
+      return false;
+    }
     $("tracks-modal").showModal();
     $("tracks-body")
       .querySelector("input:not(:disabled), select:not(:disabled), button:not(:disabled)")
