@@ -1600,8 +1600,10 @@ function renderDiscBody() {
   body.textContent = "";
   if (!disc) return;
 
-  // A failure from either side of the exchange reads the same way here.
-  const failure = disc.error ?? discState.error;
+  // A failure from either side of the exchange reads the same way here. The
+  // drive picker shows only its own errors.
+  const sourced = disc.drive != null || disc.folder != null;
+  const failure = disc.error ?? (sourced ? discState.error : null);
   if (failure) body.appendChild(discNote(failure, true));
 
   if (disc.loading) {

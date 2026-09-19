@@ -122,6 +122,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - Web: queue text can be selected during an encode, and screen readers no longer re-read every row once a second.
 - Web: a missing VMAF score or progress value shows "?" instead of 0.0.
 - Web: track changes made while a save is still being sent are no longer dropped without asking.
+- Web: going back to the drive picker in the disc dialog no longer shows the previous scan's error.
 
 ### Known limitations
 
