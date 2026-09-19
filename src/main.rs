@@ -1227,6 +1227,8 @@ fn save_config(app: &mut App) {
         app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
     } else {
         app.config_snapshot = Some(app.config.clone());
+        app.encoder_deps =
+            utils::DependencyStatus::encoder_available(app.config.encoder.ffmpeg_name());
         let output_directory_missing = app
             .config
             .output
@@ -1235,6 +1237,8 @@ fn save_config(app: &mut App) {
             .is_some_and(|dir| !dir.is_empty() && !std::path::Path::new(dir).is_dir());
         if output_directory_missing {
             app.set_timed_error(t(lang, Msg::OutputDirectoryMissing), 6);
+        } else if !app.encoder_deps {
+            app.set_timed_message(t(lang, Msg::EncoderUnavailable), 6);
         } else {
             app.set_timed_success(t(lang, Msg::SavedExclaim), 3);
         }

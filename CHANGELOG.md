@@ -111,6 +111,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - A rip MakeMKV reports as failed ("… titles saved, 1 failed") is refused even when it exits cleanly and leaves a file behind.
 - On Windows, MakeMKV is also found under `C:\Program Files\MakeMKV`.
 - Teletext and CEA-608 subtitle tracks, common in DVB `.ts` recordings, are left out of MKV output instead of failing the encode; the source is kept.
+- TUI: saving a different encoder re-checks that FFmpeg has it, updating the Home warning and saying so when it is missing; the startup warning about a missing encoder no longer stays on screen for good.
 
 ### Known limitations
 

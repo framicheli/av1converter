@@ -271,6 +271,7 @@ impl App {
 
         info!("Using encoder: {}", config.encoder);
 
+        let encoder_warning_expires = load_error.is_none() && !encoder_deps;
         let (message, message_kind) = if let Some(error) = load_error {
             (
                 Some(format!(
@@ -342,7 +343,8 @@ impl App {
             encoder_deps,
             message,
             message_kind,
-            message_expiry: None,
+            message_expiry: encoder_warning_expires
+                .then(|| Instant::now() + std::time::Duration::from_secs(8)),
             confirm_dialog: None,
             dv_dialog: None,
             detail_scroll: 0,
