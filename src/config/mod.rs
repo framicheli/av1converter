@@ -378,6 +378,9 @@ impl AppConfig {
         if !self.daemon.auth_token.bytes().all(|b| b.is_ascii_graphic()) {
             return Err(t(self.language, Msg::InvalidAuthToken).to_string());
         }
+        if !self.daemon.auth_token.is_empty() && self.daemon.auth_token.len() < 32 {
+            return Err(t(self.language, Msg::TokenTooShort).to_string());
+        }
         if self
             .daemon
             .bind_address
@@ -826,6 +829,22 @@ mod tests {
         assert!(cfg.validate_settings().is_ok());
         cfg.daemon.auth_token.clear();
         assert!(cfg.validate_settings().is_ok());
+    }
+
+    /// A non-empty token needs at least 32 characters; an empty one is
+    /// regenerated when the daemon starts.
+    #[test]
+    fn an_access_token_is_empty_or_at_least_32_characters() {
+        let mut cfg = AppConfig::default();
+        cfg.daemon.auth_token = "a".repeat(31);
+        assert_eq!(
+            cfg.validate_settings(),
+            Err(t(cfg.language, Msg::TokenTooShort).to_string())
+        );
+        cfg.daemon.auth_token = "a".repeat(32);
+        assert_eq!(cfg.validate_settings(), Ok(()));
+        cfg.daemon.auth_token.clear();
+        assert_eq!(cfg.validate_settings(), Ok(()));
     }
 
     #[test]

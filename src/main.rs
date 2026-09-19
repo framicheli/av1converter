@@ -1404,7 +1404,8 @@ fn commit_config_edit(app: &mut App) {
             }
             app.config.daemon.port = port;
         }
-        // Both accept an empty value, which turns the feature off
+        // An empty browse root turns confinement off; an empty token is
+        // regenerated when the daemon starts.
         ConfigField::DaemonBrowseRoot => app.config.daemon.browse_root = value,
         ConfigField::DaemonAuthToken => app.config.daemon.auth_token = value,
         // Empty uses PATH and the platform installation location.

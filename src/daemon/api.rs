@@ -1285,8 +1285,6 @@ fn merged_settings(
         config.daemon.auth_token = config.daemon.auth_token.trim().to_string();
         if config.daemon.auth_token.is_empty() {
             config.daemon.auth_token.clone_from(&live.daemon.auth_token);
-        } else if config.daemon.auth_token.trim().len() < 32 {
-            return Err(crate::i18n::t(config.language, Msg::TokenTooShort).to_string());
         }
         config.disc.makemkvcon_path = config
             .disc
@@ -2108,7 +2106,7 @@ mod tests {
 
         fn guarded() -> DaemonConfig {
             DaemonConfig {
-                auth_token: "s3cret".to_string(),
+                auth_token: "s3cret".repeat(6),
                 browse_root: "/media".to_string(),
                 ..DaemonConfig::default()
             }
