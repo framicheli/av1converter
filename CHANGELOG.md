@@ -130,6 +130,7 @@ Initial public release: interactive TUI for batch-converting video to AV1 with F
 - `--stop`, `--status`, `--uninstall-service` and `--scan-discs` no longer create config.toml or probe the GPU when there is no configuration yet.
 - When `--start-foreground` generates an access token it points to `--status` for the link, instead of to a URL it does not print.
 - Settings errors from the TUI and the web UI (output folder, browse root, staging and MakeMKV paths, bind address, port, token length) and the web "no video files" error follow the interface language, and the TUI names the output-folder problem instead of showing a field label.
+- Translation fixes: one term for disc ripping in Chinese, German, Italian and Spanish; "source", "encoder", "settings" and "folder" are used consistently; the Spanish autostart notice says "at login"; German daemon notices use "Sie"; the Chinese Dolby Vision profile label and track dialog are corrected.
 
 ### Known limitations
 

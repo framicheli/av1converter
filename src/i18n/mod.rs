@@ -756,7 +756,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Es => "Extraer de DVD / Blu-ray",
             Fr => "Extraire un DVD / Blu-ray",
             De => "DVD / Blu-ray auslesen",
-            Zh => "抓取 DVD / 蓝光",
+            Zh => "翻录 DVD / 蓝光",
         },
         Msg::DiscSelectDrive => match lang {
             En => "Select Drive",
@@ -771,8 +771,8 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             It => "Contrassegna un titolo con Spazio prima di estrarre.",
             Es => "Marca un título con Espacio antes de extraer.",
             Fr => "Marquez un titre avec Espace avant d'extraire.",
-            De => "Markieren Sie einen Titel mit Leertaste vor dem Rippen.",
-            Zh => "开始提取前请用空格键标记标题。",
+            De => "Markieren Sie vor dem Auslesen einen Titel mit der Leertaste.",
+            Zh => "开始翻录前请用空格键标记标题。",
         },
         Msg::DiscSelectTitles => match lang {
             En => "Select Titles",
@@ -810,7 +810,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             En => "Scan disc image",
             It => "Analizza immagine disco",
             Es => "Analizar imagen de disco",
-            Fr => "Analyser l’image disque",
+            Fr => "Analyser l'image disque",
             De => "Disc-Abbild lesen",
             Zh => "扫描光盘映像",
         },
@@ -844,7 +844,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Es => "Extraer",
             Fr => "Extraire",
             De => "Auslesen",
-            Zh => "抓取",
+            Zh => "翻录",
         },
         Msg::WebAddDisc => match lang {
             En | De => "+ Disc",
@@ -866,7 +866,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Es => "Extrayendo",
             Fr => "Extraction",
             De => "Wird ausgelesen",
-            Zh => "抓取中",
+            Zh => "翻录中",
         },
         Msg::DiscNotInstalled => match lang {
             En => {
@@ -983,18 +983,18 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
                 "Set an output directory in Settings before ripping: the encode cannot be written to the staging directory."
             }
             It => {
-                "Imposta una cartella di destinazione nelle impostazioni prima di estrarre: la codifica non può essere scritta nella cartella di staging."
+                "Imposta una cartella di output nelle impostazioni prima di estrarre: la codifica non può essere scritta nella cartella di staging."
             }
             Es => {
                 "Define una carpeta de salida en los ajustes antes de extraer: la codificación no puede escribirse en la carpeta temporal."
             }
             Fr => {
-                "Choisissez un dossier de sortie dans les réglages avant d'extraire : l'encodage ne peut pas être écrit dans le dossier temporaire."
+                "Choisissez un dossier de sortie dans les paramètres avant d'extraire : l'encodage ne peut pas être écrit dans le dossier temporaire."
             }
             De => {
                 "Legen Sie vor dem Auslesen einen Ausgabeordner in den Einstellungen fest: Die Kodierung kann nicht in den Zwischenordner geschrieben werden."
             }
-            Zh => "抓取前请在设置中指定输出目录：编码结果不能写入暂存目录。",
+            Zh => "翻录前请在设置中指定输出目录：编码结果不能写入暂存目录。",
         },
         Msg::DiscNotADiscFolder => match lang {
             En => {
@@ -1064,9 +1064,9 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         Msg::CurrentDirectory => match lang {
             En => "Current Directory",
             It => "Cartella corrente",
-            Es => "Directorio actual",
-            Fr => "Répertoire actuel",
-            De => "Aktuelles Verzeichnis",
+            Es => "Carpeta actual",
+            Fr => "Dossier actuel",
+            De => "Aktueller Ordner",
             Zh => "当前目录",
         },
         Msg::Notice => match lang {
@@ -1139,7 +1139,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Es => "la detección de unidades se detuvo inesperadamente",
             Fr => "la détection des lecteurs s'est arrêtée de façon inattendue",
             De => "die Laufwerkssuche wurde unerwartet beendet",
-            Zh => "驱动器检测意外停止",
+            Zh => "光驱检测意外停止",
         },
         Msg::DiscRunStopped => match lang {
             En => "the run stopped unexpectedly",
@@ -1347,7 +1347,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         },
         Msg::UseRecommended => match lang {
             En => "Use recommended",
-            It => "Usa l’opzione consigliata",
+            It => "Usa l'opzione consigliata",
             Es => "Usar la opción recomendada",
             Fr => "Utiliser la recommandation",
             De => "Empfehlung verwenden",
@@ -1548,7 +1548,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         },
         Msg::SourceLabel => match lang {
             En | Fr => "Source",
-            It => "Origine",
+            It => "Sorgente",
             Es => "Origen",
             De => "Quelle",
             Zh => "源文件",
@@ -1578,7 +1578,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         },
         Msg::SourceFileDeleted => match lang {
             En => "Source file deleted",
-            It => "File di origine eliminato",
+            It => "File sorgente eliminato",
             Es => "Archivo de origen eliminado",
             Fr => "Fichier source supprimé",
             De => "Quelldatei gelöscht",
@@ -1586,7 +1586,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         },
         Msg::SourceKept => match lang {
             En => "Source kept",
-            It => "Origine mantenuta",
+            It => "Sorgente mantenuta",
             Es => "Origen conservado",
             Fr => "Source conservée",
             De => "Quelle behalten",
@@ -1682,7 +1682,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         },
         Msg::SourceDeletedTag => match lang {
             En => "source deleted",
-            It => "origine eliminata",
+            It => "sorgente eliminata",
             Es => "origen eliminado",
             Fr => "source supprimée",
             De => "Quelle gelöscht",
@@ -1690,7 +1690,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         },
         Msg::SourceKeptTag => match lang {
             En => "source kept",
-            It => "origine mantenuta",
+            It => "sorgente mantenuta",
             Es => "origen conservado",
             Fr => "source conservée",
             De => "Quelle behalten",
@@ -1782,8 +1782,8 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             It => "Annullare la scansione o l'estrazione del disco in corso?",
             Es => "¿Cancelar el escaneo o la extracción del disco actual?",
             Fr => "Annuler l'analyse ou l'extraction du disque en cours ?",
-            De => "Den laufenden Disc-Scan oder Rip abbrechen?",
-            Zh => "取消当前的光盘扫描或提取吗？",
+            De => "Das laufende Lesen oder Auslesen der Disc abbrechen?",
+            Zh => "取消当前的光盘扫描或翻录吗？",
         },
         Msg::ExitAppTitle => match lang {
             En => "Exit Application",
@@ -1813,7 +1813,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             En => "Unsaved settings will be lost. Exit anyway?",
             It => "Le impostazioni non salvate andranno perse. Uscire comunque?",
             Es => "Los ajustes sin guardar se perderán. ¿Salir de todos modos?",
-            Fr => "Les réglages non enregistrés seront perdus. Quitter quand même ?",
+            Fr => "Les paramètres non enregistrés seront perdus. Quitter quand même ?",
             De => "Ungespeicherte Einstellungen gehen verloren. Trotzdem beenden?",
             Zh => "未保存的设置将丢失。仍要退出吗？",
         },
@@ -1824,7 +1824,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
                 "Los títulos extraídos que siguen en la cola se eliminarán. ¿Salir de todos modos?"
             }
             Fr => "Les titres extraits encore dans la file seront supprimés. Quitter quand même ?",
-            De => "Gerippte Titel in der Warteschlange werden gelöscht. Trotzdem beenden?",
+            De => "Ausgelesene Titel in der Warteschlange werden gelöscht. Trotzdem beenden?",
             Zh => "队列中的已翻录标题将被删除。仍要退出吗？",
         },
         Msg::AbandonTrackConfigTitle => match lang {
@@ -1871,9 +1871,9 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         },
         Msg::CancelAnalysisPrompt => match lang {
             En => "Cancel the remaining file analysis?",
-            It => "Annullare l’analisi dei file rimanenti?",
+            It => "Annullare l'analisi dei file rimanenti?",
             Es => "¿Cancelar el análisis de los archivos restantes?",
-            Fr => "Annuler l’analyse des fichiers restants ?",
+            Fr => "Annuler l'analyse des fichiers restants ?",
             De => "Die Analyse der übrigen Dateien abbrechen?",
             Zh => "取消其余文件的分析吗？",
         },
@@ -1881,7 +1881,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             En => "Clear the queue and return to the home screen?",
             It => "Svuotare la coda e tornare alla schermata iniziale?",
             Es => "¿Vaciar la cola y volver a la pantalla de inicio?",
-            Fr => "Vider la file et revenir à l’écran d’accueil ?",
+            Fr => "Vider la file et revenir à l'écran d'accueil ?",
             De => "Warteschlange leeren und zum Startbildschirm zurückkehren?",
             Zh => "清空队列并返回主屏幕？",
         },
@@ -1978,16 +1978,16 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
                 "Saved, but the output directory does not exist: encodes and disc rips that write there will fail until it is created or changed"
             }
             It => {
-                "Salvato, ma la cartella di output non esiste: le codifiche e i rip dei dischi che scrivono lì falliranno finché non viene creata o cambiata"
+                "Salvato, ma la cartella di output non esiste: le codifiche e le estrazioni dei dischi che scrivono lì falliranno finché non viene creata o cambiata"
             }
             Es => {
-                "Guardado, pero la carpeta de salida no existe: las codificaciones y los ripeos de discos que escriben allí fallarán hasta que se cree o se cambie"
+                "Guardado, pero la carpeta de salida no existe: las codificaciones y las extracciones de discos que escriben allí fallarán hasta que se cree o se cambie"
             }
             Fr => {
                 "Enregistré, mais le dossier de sortie n'existe pas : les encodages et les extractions de disques qui y écrivent échoueront tant qu'il n'est pas créé ou modifié"
             }
             De => {
-                "Gespeichert, aber das Ausgabeverzeichnis existiert nicht: Kodierungen und Disc-Rips, die dorthin schreiben, schlagen fehl, bis es angelegt oder geändert wird"
+                "Gespeichert, aber der Ausgabeordner existiert nicht: Kodierungen und ausgelesene Discs, die dorthin geschrieben werden, schlagen fehl, bis er angelegt oder geändert wird"
             }
             Zh => {
                 "已保存，但输出目录不存在：在创建或更改该目录之前，写入该目录的编码和光盘翻录将会失败"
@@ -2117,7 +2117,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         },
         Msg::CfgDeleteSource => match lang {
             En => "Delete Source if VMAF Passes",
-            It => "Elimina origine se VMAF OK",
+            It => "Elimina sorgente se VMAF OK",
             Es => "Eliminar origen si VMAF OK",
             Fr => "Supprimer la source si VMAF OK",
             De => "Quelle löschen bei VMAF-Erfolg",
@@ -2229,9 +2229,9 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         Msg::CfgSameDirectory => match lang {
             En => "Same Directory Output",
             It => "Output nella stessa cartella",
-            Es => "Salida en el mismo directorio",
+            Es => "Salida en la misma carpeta",
             Fr => "Sortie dans le même dossier",
-            De => "Ausgabe im selben Verzeichnis",
+            De => "Ausgabe im selben Ordner",
             Zh => "输出到同一目录",
         },
         Msg::CfgAudioLanguages => match lang {
@@ -2269,7 +2269,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         Msg::CfgDaemonAutostart => match lang {
             En => "Run at Startup",
             It => "Avvia all'accesso",
-            Es => "Ejecutar al iniciar",
+            Es => "Ejecutar al iniciar sesión",
             Fr => "Démarrer à la connexion",
             De => "Beim Anmelden starten",
             Zh => "登录时启动",
@@ -2364,13 +2364,13 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
                 "La modalità daemon è disabilitata. Abilitala nelle Impostazioni o imposta enabled = true sotto [daemon] in config.toml."
             }
             Es => {
-                "El modo daemon está deshabilitado. Habilítalo en Configuración o establece enabled = true bajo [daemon] en config.toml."
+                "El modo daemon está deshabilitado. Habilítalo en Ajustes o establece enabled = true bajo [daemon] en config.toml."
             }
             Fr => {
                 "Le mode daemon est désactivé. Activez-le dans les Paramètres ou définissez enabled = true sous [daemon] dans config.toml."
             }
             De => {
-                "Der Daemon-Modus ist deaktiviert. Aktiviere ihn in den Einstellungen oder setze enabled = true unter [daemon] in config.toml."
+                "Der Daemon-Modus ist deaktiviert. Aktivieren Sie ihn in den Einstellungen oder setzen Sie enabled = true unter [daemon] in config.toml."
             }
             Zh => {
                 "守护进程模式已禁用。请在设置中启用，或在 config.toml 的 [daemon] 下设置 enabled = true。"
@@ -2407,7 +2407,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
                 "Warning: the selected encoder is missing from this FFmpeg build; every encode will fail."
             }
             It => {
-                "Attenzione: il codificatore selezionato non è presente in questa build di FFmpeg; ogni conversione fallirà."
+                "Attenzione: l'encoder selezionato non è presente in questa build di FFmpeg; ogni conversione fallirà."
             }
             Es => {
                 "Aviso: el codificador seleccionado no está en esta compilación de FFmpeg; todas las conversiones fallarán."
@@ -2615,7 +2615,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         Msg::DaemonServiceUnsupported => match lang {
             En => "Starting at login is only supported on Linux (systemd) and macOS",
             It => "L'avvio all'accesso è supportato solo su Linux (systemd) e macOS",
-            Es => "El inicio de sesión automático solo está disponible en Linux (systemd) y macOS",
+            Es => "El arranque al iniciar sesión solo está disponible en Linux (systemd) y macOS",
             Fr => {
                 "Le démarrage à la connexion n'est pris en charge que sous Linux (systemd) et macOS"
             }
@@ -2855,7 +2855,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             It => "immagine disco",
             Es => "imagen de disco",
             Fr => "image disque",
-            De => "Disc-Image",
+            De => "Disc-Abbild",
             Zh => "光盘映像",
         },
         Msg::WebTracksHint => match lang {
@@ -2999,7 +2999,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Es => "perfil {n}",
             Fr => "profil {n}",
             De => "Profil {n}",
-            Zh => "配置 {n}",
+            Zh => "Profile {n}",
         },
         Msg::WebCancelling => match lang {
             En => "Cancelling…",
@@ -3107,7 +3107,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             It => "Estrazione dischi",
             Es => "Extracción de discos",
             Fr => "Extraction de disques",
-            De => "Disc-Rippen",
+            De => "Discs auslesen",
             Zh => "光盘翻录",
         },
         Msg::WebGroupRateFactors => match lang {
@@ -3130,7 +3130,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             En => "Select all tracks as fallback",
             It => "Seleziona tutte le tracce come ripiego",
             Es => "Seleccionar todas las pistas como alternativa",
-            Fr => "Sélectionner toutes les pistes par défaut",
+            Fr => "Sélectionner toutes les pistes en repli",
             De => "Alle Spuren als Rückfall auswählen",
             Zh => "回退时选择所有轨道",
         },
@@ -3163,7 +3163,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
                 "Encoder, quality and output changes apply to waiting jobs; track defaults apply to newly added files."
             }
             It => {
-                "Le modifiche a codificatore, qualità e output valgono per i lavori in attesa; le tracce predefinite solo per i nuovi file."
+                "Le modifiche a encoder, qualità e output valgono per i lavori in attesa; le tracce predefinite solo per i nuovi file."
             }
             Es => {
                 "Los cambios de codificador, calidad y salida se aplican a los trabajos en espera; las pistas predeterminadas solo a archivos nuevos."
@@ -3256,7 +3256,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             En => "Save settings",
             It => "Salva impostazioni",
             Es => "Guardar ajustes",
-            Fr => "Enregistrer les réglages",
+            Fr => "Enregistrer les paramètres",
             De => "Einstellungen speichern",
             Zh => "保存设置",
         },
@@ -3274,7 +3274,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Es => "Confirmar pistas",
             Fr => "Confirmer les pistes",
             De => "Spuren bestätigen",
-            Zh => "确认音轨",
+            Zh => "确认轨道",
         },
         Msg::WebSessionTotals => match lang {
             En => "Session totals",
@@ -3292,7 +3292,7 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             }
             Fr => "Associe les pistes dans l'ordre — idéal pour des fichiers de même structure.",
             De => "Ordnet Spuren nach Reihenfolge zu — am besten bei gleichem Spurenaufbau.",
-            Zh => "按顺序匹配音轨——最适合轨道结构相同的文件。",
+            Zh => "按顺序匹配轨道——最适合轨道结构相同的文件。",
         },
         Msg::WebSaving => match lang {
             En => "Saving…",
@@ -3339,10 +3339,10 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
                 "Permanent: after video quality passes, the source is deleted. Audio, subtitles and metadata are not quality-checked."
             }
             It => {
-                "Permanente: superato il controllo qualità video, il sorgente viene eliminato. Audio, sottotitoli e metadati non vengono verificati."
+                "Permanente: superato il controllo qualità video, la sorgente viene eliminata. Audio, sottotitoli e metadati non vengono verificati."
             }
             Es => {
-                "Permanente: tras superar la calidad de vídeo, se elimina el origen. Audio, subtítulos y metadatos no se verifican."
+                "Permanente: tras superar la calidad de video, se elimina el origen. Audio, subtítulos y metadatos no se verifican."
             }
             Fr => {
                 "Permanent : après validation de la qualité vidéo, la source est supprimée. Audio, sous-titres et métadonnées ne sont pas vérifiés."
@@ -3357,8 +3357,8 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             It => "Rimuovere questo lavoro? Il file estratto dal disco verrà eliminato.",
             Es => "¿Quitar este trabajo? Se eliminará el archivo extraído del disco.",
             Fr => "Retirer cette tâche ? Le fichier extrait du disque sera supprimé.",
-            De => "Diesen Auftrag entfernen? Die vom Datenträger gerippte Datei wird gelöscht.",
-            Zh => "移除此任务？从光盘提取的文件将被删除。",
+            De => "Diesen Auftrag entfernen? Die von der Disc ausgelesene Datei wird gelöscht.",
+            Zh => "移除此任务？从光盘翻录的文件将被删除。",
         },
         Msg::WebClearFinishedRipPrompt => match lang {
             En => "Clear finished jobs? Ripped disc files among them will be deleted.",
@@ -3372,9 +3372,9 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
                 "Retirer les tâches terminées ? Les fichiers extraits du disque parmi elles seront supprimés."
             }
             De => {
-                "Abgeschlossene Aufträge entfernen? Darunter vom Datenträger gerippte Dateien werden gelöscht."
+                "Abgeschlossene Aufträge entfernen? Darunter befindliche, von der Disc ausgelesene Dateien werden gelöscht."
             }
-            Zh => "清除已完成的任务？其中从光盘提取的文件将被删除。",
+            Zh => "清除已完成的任务？其中从光盘翻录的文件将被删除。",
         },
         Msg::WebDurationHoursMinutes => match lang {
             En => "{h}h {m}m",
