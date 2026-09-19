@@ -86,6 +86,7 @@ pub enum Msg {
     CopyTracks,
     ToOpus,
     AllOpus,
+    AddToQueue,
     AlreadyOpus,
     SubtitleNotIncluded,
     OpusUnavailable,
@@ -613,6 +614,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Tout en Opus",
             De => "Alles zu Opus",
             Zh => "全部转为 Opus",
+        },
+        Msg::AddToQueue => match lang {
+            En => "Add to queue",
+            It => "Aggiungi alla coda",
+            Es => "Añadir a la cola",
+            Fr => "Ajouter à la file",
+            De => "Zur Warteschlange hinzufügen",
+            Zh => "添加到队列",
         },
         Msg::AlreadyOpus => match lang {
             En => "already Opus",

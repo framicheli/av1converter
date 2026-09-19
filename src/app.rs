@@ -150,6 +150,8 @@ pub struct App {
 
     // Multi-file selection
     pub selected_files: Vec<PathBuf>,
+    /// Index of the first job added by the current explorer selection.
+    pub batch_start: usize,
     pub file_confirm_scroll: usize,
     pub file_confirm_list_state: ListState,
 
@@ -312,6 +314,7 @@ impl App {
             subtitle_list_state,
             home_index: 0,
             selected_files: Vec::new(),
+            batch_start: 0,
             file_confirm_scroll: 0,
             file_confirm_list_state,
             disc_drives: Vec::new(),
@@ -724,10 +727,14 @@ impl App {
 
     /// Navigate back from file confirm to the explorer
     pub fn cancel_file_confirm(&mut self) {
+        let batch_start = self.batch_start.min(self.queue.jobs.len());
         if self.selection_mode == SelectionMode::File {
-            self.selected_files = self.queue.jobs.iter().map(|j| j.path.clone()).collect();
+            self.selected_files = self.queue.jobs[batch_start..]
+                .iter()
+                .map(|j| j.path.clone())
+                .collect();
         }
-        self.queue.jobs.clear();
+        self.queue.jobs.truncate(batch_start);
         let select_folder = self.selection_mode == SelectionMode::Folder;
         self.current_screen = Screen::FileExplorer { select_folder };
     }
@@ -765,19 +772,17 @@ impl App {
                 } else if is_video_file(&selected) {
                     if self.selected_files.is_empty() {
                         // Single file
-                        self.clear_queue();
-                        self.queue.jobs.push(EncodingJob::new(selected));
-                        self.analyze_jobs();
+                        if self.append_jobs(vec![selected]) {
+                            self.analyze_jobs();
+                        }
                     } else {
                         // Multi-file — include current file and go to confirmation
                         if !self.selected_files.contains(&selected) {
                             self.selected_files.push(selected);
                         }
-                        self.clear_queue();
-                        for path in &self.selected_files {
-                            self.queue.jobs.push(EncodingJob::new(path.clone()));
+                        if self.append_jobs(self.selected_files.clone()) {
+                            self.navigate_to_file_confirm();
                         }
-                        self.navigate_to_file_confirm();
                     }
                 }
             }
@@ -873,17 +878,15 @@ impl App {
         let Err(error) = &result else {
             let paths = result.unwrap_or_default();
             self.clear_message();
-            self.clear_queue();
-            for path in paths {
-                self.queue.jobs.push(EncodingJob::new(path));
-            }
-            if self.queue.jobs.is_empty() {
+            if paths.is_empty() {
                 let msg = crate::i18n::t(self.config.language, crate::i18n::Msg::NoVideoFiles);
                 self.set_message(msg);
-            } else if self.queue.jobs.len() == 1 {
-                self.analyze_jobs();
-            } else {
-                self.navigate_to_file_confirm();
+            } else if self.append_jobs(paths) {
+                if self.queue.jobs.len() - self.batch_start == 1 {
+                    self.analyze_jobs();
+                } else {
+                    self.navigate_to_file_confirm();
+                }
             }
             return;
         };
@@ -895,8 +898,37 @@ impl App {
         }
     }
 
+    /// Append `paths` to the queue as a new batch, skipping any already queued
+    /// and not finished. Returns whether anything was added; when nothing was,
+    /// says so in the status line.
+    fn append_jobs(&mut self, paths: Vec<PathBuf>) -> bool {
+        self.queue.reset_session_if_finished();
+        let resolved = |path: &PathBuf| path.canonicalize().unwrap_or_else(|_| path.clone());
+        let queued: std::collections::HashSet<PathBuf> = self
+            .queue
+            .jobs
+            .iter()
+            .filter(|job| !job.status.is_terminal())
+            .map(|job| resolved(&job.path))
+            .collect();
+        self.batch_start = self.queue.jobs.len();
+        for path in paths {
+            if !queued.contains(&resolved(&path)) {
+                self.queue.jobs.push(EncodingJob::new(path));
+            }
+        }
+        let added = self.queue.jobs.len() > self.batch_start;
+        if !added {
+            self.set_timed_message(
+                crate::i18n::t(self.config.language, crate::i18n::Msg::WebNothingAdded),
+                4,
+            );
+        }
+        added
+    }
+
     fn analyze_jobs(&mut self) {
-        let indices: Vec<usize> = (0..self.queue.jobs.len()).collect();
+        let indices: Vec<usize> = (self.batch_start..self.queue.jobs.len()).collect();
         self.analyze_indices(&indices);
         self.navigate_to_queue();
     }
@@ -1176,15 +1208,28 @@ impl App {
         self.set_timed_success(&message, 4);
     }
 
-    /// Abandon the whole batch and return to Home, discarding the queue.
+    /// Abandon every job not yet finished, keeping finished ones, and return
+    /// to the queue, or to Home when nothing is left.
     pub fn cancel_track_config(&mut self) {
         if self.encoding_active || self.disc_operation_active() {
             self.navigate_to_queue();
             return;
         }
         self.drop_analysis_round();
-        self.clear_queue();
-        self.navigate_to_home();
+        let root = crate::disc::staging::staging_root(&self.config);
+        for job in &self.queue.jobs {
+            if job.temporary && !job.status.is_terminal() {
+                crate::disc::staging::discard_staged(&root, &job.path);
+            }
+        }
+        self.queue.jobs.retain(|job| job.status.is_terminal());
+        if self.queue.jobs.is_empty() {
+            self.clear_queue();
+            self.navigate_to_home();
+        } else {
+            self.queue.config_job_index = 0;
+            self.navigate_to_queue();
+        }
     }
 
     /// Move to the previous (`forward = false`) or next (`forward = true`)
@@ -1380,6 +1425,10 @@ impl App {
 
     /// Start drive discovery and open the drive-selection screen.
     pub fn start_disc_flow(&mut self) {
+        if self.disc_operation_active() {
+            self.navigate_to_queue();
+            return;
+        }
         let lang = self.config.language;
         let bin = match crate::disc::find_makemkvcon(&self.config) {
             Ok(bin) => bin,
@@ -2590,7 +2639,7 @@ mod tests {
     }
 
     #[test]
-    fn choosing_a_file_discards_staged_rips() {
+    fn opening_files_appends_and_keeps_a_queued_rip() {
         let root = std::env::temp_dir().join(format!("av1c-choose-staging-{}", std::process::id()));
         let dir = root.join("rip-abc");
         std::fs::create_dir_all(&dir).unwrap();
@@ -2618,7 +2667,13 @@ mod tests {
 
         app.select_explorer_entry();
 
-        assert!(!dir.exists());
+        assert!(dir.exists(), "the queued rip stays");
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert_eq!(app.batch_start, 1);
+
+        // The same file again adds nothing.
+        app.select_explorer_entry();
+        assert_eq!(app.queue.jobs.len(), 2);
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(videos);
     }

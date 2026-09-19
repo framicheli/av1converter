@@ -42,6 +42,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - TUI: the queue title shows overall progress and space saved, and the summary counts cancelled jobs apart from skipped ones.
 - TUI: encoding starts as soon as the first job's tracks are confirmed, and `t` reopens the tracks of any job not being encoded, as in the web UI.
 - TUI: `A` in track selection applies the choices to every file still waiting, matching tracks by order, as the web UI's "Apply to remaining files".
+- TUI: files, folders and discs can be added while an encode, analysis or rip runs (`a` in the queue, `Esc` on Home returns to it); new files join the queue instead of replacing it, and files already queued are skipped. Abandoning track selection drops only the files not yet finished.
 
 ### Fixed
 
@@ -106,7 +107,6 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - The encoded output is flushed to disk before the source is deleted; if the flush fails, the source is kept.
 - Removing or clearing a ripped job only deletes a staging directory under the staging root, never a directory named after a disc title elsewhere.
 - Restarting the daemon no longer marks jobs as outside `browse_root` because their source was deleted or the share is not mounted yet. Finished jobs keep their history, and a staged rip is no longer swept while its job still exists.
-- Opening a file or folder in the TUI while ripped titles wait in the queue deletes their staging files instead of leaving them behind.
 - Ripping no longer fails with "disc changed" when the drive list was read before the disc finished loading; staged files carry the disc label.
 - First-run encoder detection encodes one test frame with each hardware AV1 encoder instead of matching GPU names, so Turing Quadros, AV1-decode-only GPUs and AMD cards are no longer given an encoder they cannot use; Windows no longer calls the deprecated wmic.
 - A config section with only some keys keeps the defaults for the rest instead of discarding the whole file; a config.toml that cannot be read is reported in the TUI status line.

@@ -844,6 +844,7 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
         KeyCode::Down | KeyCode::Char('j') if app.home_index < HOME_MENU.len() - 1 => {
             app.home_index += 1;
         }
+        KeyCode::Esc if !app.queue.jobs.is_empty() => app.navigate_to_queue(),
         KeyCode::Enter => match app.home_index {
             0 => app.navigate_to_explorer(false, false), // Open video file
             1 => app.navigate_to_explorer(true, false),  // Open folder
@@ -942,7 +943,13 @@ fn handle_file_confirm_key(app: &mut App, key: KeyCode) {
             app.file_confirm_scroll -= 1;
         }
         KeyCode::Down | KeyCode::Char('j')
-            if app.file_confirm_scroll < app.queue.jobs.len().saturating_sub(1) =>
+            if app.file_confirm_scroll
+                < app
+                    .queue
+                    .jobs
+                    .len()
+                    .saturating_sub(app.batch_start)
+                    .saturating_sub(1) =>
         {
             app.file_confirm_scroll += 1;
         }
@@ -1098,7 +1105,7 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
         KeyCode::Esc if app.encoding_active => {
             app.confirm_dialog = Some((ConfirmAction::CancelEncoding, false));
         }
-        KeyCode::Esc => app.navigate_to_home(),
+        KeyCode::Esc | KeyCode::Char('a') => app.navigate_to_home(),
         KeyCode::Up | KeyCode::Char('k') => app.queue_move_cursor(false),
         KeyCode::Down | KeyCode::Char('j') => app.queue_move_cursor(true),
         KeyCode::Char('K') => app.queue_move_selected_up(),

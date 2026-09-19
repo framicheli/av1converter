@@ -9,6 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
+#[allow(clippy::too_many_lines)]
 pub fn render_home(f: &mut Frame, app: &App) {
     // Notice text width: the frame minus the 2-cell margins and the borders.
     let notice_rows = app.message.as_deref().map_or(0, |msg| {
@@ -116,9 +117,17 @@ pub fn render_home(f: &mut Frame, app: &App) {
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Select))),
-        Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
     ]);
+    let mut help_text = help_text;
+    if !app.queue.jobs.is_empty() {
+        help_text.push_span(Span::styled("Esc", Style::default().fg(Color::Yellow)));
+        help_text.push_span(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::WebBackToQueue)
+        )));
+    }
+    help_text.push_span(Span::styled("q", Style::default().fg(Color::Yellow)));
+    help_text.push_span(Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))));
 
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
