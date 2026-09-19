@@ -16,7 +16,8 @@ pub fn selected_subtitles(tracks: &[SubtitleTrack], indices: &[usize]) -> Vec<Su
 /// The subtitle codec to write for each selected track in a given output
 /// container, or `None` for a track the container cannot hold.
 ///
-/// Matroska holds every format; `mov_text` is converted to SRT there. `WebM`
+/// Matroska holds every format except teletext and CEA-608 captions, which are
+/// left out; `mov_text` is converted to SRT there. `WebM`
 /// holds only `WebVTT`, and MP4 only `mov_text` and DVD bitmaps: other text
 /// tracks are converted, other bitmap tracks are left out.
 pub fn subtitle_codecs_for(
@@ -36,6 +37,7 @@ pub fn subtitle_codecs_for(
                 .any(is);
             match extension.to_ascii_lowercase().as_str() {
                 "mkv" if is("mov_text") => Some("srt"),
+                "mkv" if is("dvb_teletext") || is("eia_608") => None,
                 "webm" if is("webvtt") => Some("copy"),
                 "webm" if text => Some("webvtt"),
                 "mp4" | "m4v" | "mov" if is("mov_text") || is("dvd_subtitle") => Some("copy"),
@@ -88,6 +90,21 @@ mod tests {
             [None, Some("mov_text")]
         );
         assert!(selected_subtitles(&tracks, &[]).is_empty());
+    }
+
+    #[test]
+    fn teletext_and_cea608_are_left_out_of_matroska() {
+        assert_eq!(
+            subtitle_codecs_for(
+                Path::new("x.mkv"),
+                &[
+                    sub("dvb_teletext"),
+                    sub("eia_608"),
+                    sub("hdmv_pgs_subtitle")
+                ]
+            ),
+            [None, None, Some("copy")]
+        );
     }
 
     #[test]
