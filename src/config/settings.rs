@@ -74,19 +74,6 @@ pub const SERIALIZED_SETTING_PATHS: &[&str] = &[
     "disc.staging_directory",
 ];
 
-/// Settings that can widen daemon access or choose a host executable.
-pub const LOCAL_ONLY_SETTING_PATHS: &[&str] = &[
-    "daemon.enabled",
-    "daemon.bind_address",
-    "daemon.port",
-    "daemon.browse_root",
-    "daemon.auth_token",
-    "daemon.allow_insecure_lan",
-    "daemon.behind_proxy",
-    "disc.makemkvcon_path",
-    "disc.staging_directory",
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,14 +109,5 @@ mod tests {
         expected.sort();
 
         assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn local_only_paths_are_serialized_settings() {
-        assert!(
-            LOCAL_ONLY_SETTING_PATHS
-                .iter()
-                .all(|path| SERIALIZED_SETTING_PATHS.contains(path))
-        );
     }
 }

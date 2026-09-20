@@ -1299,7 +1299,6 @@ pub fn settings_access(shared: &SharedState, local_request: bool) -> Value {
         "auth_token_set": !lock(shared).config.daemon.auth_token.is_empty(),
         "setting_paths": crate::config::settings::SERIALIZED_SETTING_PATHS,
         "preset_tables": preset_tables(),
-        "local_only_paths": crate::config::settings::LOCAL_ONLY_SETTING_PATHS,
     })
 }
 
