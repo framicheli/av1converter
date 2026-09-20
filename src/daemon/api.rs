@@ -202,7 +202,7 @@ pub fn queue(shared: &SharedState) -> Value {
 }
 
 /// Whether a job's tracks can still be changed. False once its encode is under
-/// way: the selection is baked into the running `FFmpeg` command.
+/// way, with the selection already in the running `FFmpeg` command.
 fn tracks_editable(state: &super::state::DaemonState, id: u64, job: &EncodingJob) -> bool {
     !state.in_active_session(id)
         && matches!(job.status, JobStatus::Ready | JobStatus::AwaitingConfig)
@@ -247,8 +247,8 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
     });
     let output = &outputs[usize::from(job.remux_only)];
 
-    // Resolved so the row shows the bitrate the encoder is actually asked for,
-    // including already-Opus tracks, which are left alone.
+    // Resolved to the bitrate the encoder is asked for, including
+    // already-Opus tracks, which are left alone.
     let plan = job
         .track_selection
         .resolve_for(&job.audio_tracks, &audio_config, output);
@@ -455,7 +455,7 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
             audio_to_opus,
         };
 
-        // Both options are absent-means-unchanged, so a client that only knows
+        // Both options are absent-means-unchanged; a client that only knows
         // about tracks leaves them as they stand.
         let remux_only = match optional_bool(body, "remux_only") {
             Ok(value) => value.unwrap_or(job.remux_only),
@@ -549,8 +549,8 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
     (200, applied)
 }
 
-/// Whether `path` sits inside `root`, comparing resolved paths so that `..`
-/// segments and symlinks cannot step outside. An empty root allows everything.
+/// Whether `path` sits inside `root`, comparing resolved paths: `..` segments
+/// and symlinks do not step outside. An empty root allows everything.
 pub fn within_root(path: &Path, root: &str) -> bool {
     confined_path(path, root).is_some()
 }
@@ -678,8 +678,8 @@ pub fn queue_add(
         other => return (400, json!({"error": format!("unknown mode '{other}'")})),
     }
 
-    // Scanning follows symlinks, so a link can lead back out of the browse
-    // root even from a folder inside it. Each result is re-checked.
+    // Scanning follows symlinks; a link can lead back out of the browse root
+    // even from a folder inside it. Each result is re-checked.
     files = files
         .into_iter()
         .filter_map(|path| confined_path(&path, &browse_root))
@@ -701,8 +701,7 @@ pub fn queue_add(
     )
 }
 
-/// Keep at most one recursive scan in flight, leaving the other HTTP workers
-/// free.
+/// Keep at most one recursive scan in flight.
 struct RecursiveScanGuard(SharedState);
 
 impl RecursiveScanGuard {
@@ -737,8 +736,8 @@ pub fn queue_remove(shared: &SharedState, body: &Value) -> (u16, Value) {
             json!({"error": t(state.config.language, Msg::ErrJobEncoding)}),
         );
     }
-    // A `Ripping` job is owned by the disc worker; removing it would leave
-    // the extraction running with no job to land on.
+    // A `Ripping` job is owned by the disc worker and stays while the
+    // extraction runs.
     if state
         .queue
         .job_by_id(id)
@@ -990,8 +989,8 @@ pub fn strings(shared: &SharedState) -> Value {
         .map(|(key, msg)| ((*key).to_string(), Value::from(crate::i18n::t(lang, *msg))))
         .collect();
 
-    // The page sets `<html lang>` from this. Taken from the serde rename the
-    // config file uses, so there is no second list of codes.
+    // The page sets `<html lang>` from this, taken from the serde rename the
+    // config file uses.
     let code = serde_json::to_value(lang)
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
@@ -1131,8 +1130,8 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
     }
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     if let Some(previous) = state.disc_worker.take() {
-        // `active` was false, so the previous run has settled; join before
-        // arming the next one so shutdown always sees a live handle.
+        // `active` was false, so the previous run has settled; its handle is
+        // joined before the next run is armed.
         let _ = previous.join();
     }
     state.disc.cancel_flag = Some(cancel.clone());
@@ -1255,9 +1254,9 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
 
     state.queue.state.reset_session_if_finished();
 
-    // Each title is a queue job from the start, so a rip renders in the queue
-    // table like everything else. Its path is the title's name until the file
-    // it extracts to is known.
+    // Each title is a queue job from the start and renders in the queue table
+    // like everything else. Its path is the title's name until the file it
+    // extracts to is known.
     let job_ids: Vec<u64> = titles
         .iter()
         .map(|title| {
@@ -2142,7 +2141,7 @@ mod tests {
         assert!(within_root(&root, &root_str));
         assert!(within_root(&inside, ""));
 
-        // Traversal is resolved before the comparison, so it cannot escape.
+        // Traversal is resolved before the comparison.
         assert!(!within_root(&dir, &root_str));
         assert!(!within_root(&root.join("..").join(".."), &root_str));
 
@@ -2159,7 +2158,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A path that cannot be resolved is refused rather than assumed safe.
+    /// A path that cannot be resolved is refused.
     #[test]
     fn unresolvable_paths_are_refused_under_a_root() {
         let root = std::env::temp_dir().join(format!("av1c_unresolvable_{}", std::process::id()));
@@ -2261,8 +2260,8 @@ mod tests {
             let shared = scanned(Some("/tmp".to_string()));
             let (tx, _rx) = mpsc::channel();
 
-            // Each case names the refusal, so a missing makemkvcon (also a
-            // 400) cannot stand in for the check being made.
+            // Each case names its own refusal; a missing makemkvcon also
+            // answers 400.
             for (body, error) in [
                 (json!({"drive": 7}), "unknown drive id"),
                 (json!({}), "missing or invalid 'drive'"),
@@ -2312,8 +2311,7 @@ mod tests {
             assert_eq!(rip(&shared, &json!({"drive": 0, "titles": [3]})).0, 409);
         }
 
-        /// Without a destination the encode would be written into the staging
-        /// directory that is deleted afterwards, so the rip never starts.
+        /// Without a configured destination directory, the rip never starts.
         #[test]
         fn a_rip_without_a_destination_is_refused_with_the_reason() {
             let shared = scanned(None);
@@ -2924,8 +2922,8 @@ mod tests {
             assert_eq!(merged.daemon.auth_token, replacement);
         }
 
-        /// The staging directory holds the queued rips, so it cannot be
-        /// moved out from under them.
+        /// The staging directory cannot be moved while it holds queued
+        /// rips.
         #[test]
         fn changing_the_staging_directory_is_refused_while_rips_are_queued() {
             let mut live = live();

@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-/// Queue wrapper that gives every job a stable id, so HTTP clients can
-/// reference jobs while the underlying `Vec` shifts on removal.
+/// Queue wrapper that gives every job a stable id, which HTTP clients
+/// reference while the underlying `Vec` shifts on removal.
 pub struct DaemonQueue {
     /// `ids[i]` corresponds to `state.jobs[i]`; kept aligned at all times.
     ids: Vec<u64>,
@@ -135,9 +135,9 @@ pub struct EncodeSession {
 
 /// Disc scanning and ripping, as the API sees it.
 ///
-/// One run at a time, scan or rip: there is one drive. `active` is set when a
-/// run starts and cleared only by the event that ends it, so a cancelled run
-/// cannot have its trailing events applied to the next one.
+/// One run at a time, scan or rip, for the one drive. `active` is set when a
+/// run starts and cleared only by the event that ends it; a cancelled run's
+/// trailing events are never applied to the next one.
 #[derive(Default)]
 pub struct DiscSession {
     /// Drives from the last listing. The only drive ids a request may name.
@@ -258,19 +258,15 @@ pub type SharedState = Arc<Mutex<DaemonState>>;
 
 /// Lock the shared state, recovering from a poisoned mutex.
 ///
-/// A panic in one HTTP handler must not turn the daemon into a process that
-/// answers nothing for the rest of its life, so a poisoned lock is taken up
-/// again rather than propagated.
+/// A lock poisoned by a panic in one HTTP handler is taken up again, and the
+/// daemon keeps answering.
 ///
-/// This is a judgement, not a proof of safety. Almost everything behind the
-/// mutex is plain data that a half-finished mutation leaves merely stale — but
-/// [`DaemonQueue`] does hold one real invariant, `ids[i]` against
-/// `state.jobs[i]`, and it is maintained by two `Vec` operations in a row
-/// rather than atomically. A panic between them would misalign the two for
-/// good, and every later lookup by id would answer with the wrong job. In
-/// practice neither operation can panic (`push` only on allocation failure,
-/// `remove` only on an index `index_of` just validated), and `index_of`
-/// debug-asserts the alignment; the trade is still worth naming.
+/// Almost everything behind the mutex is plain data that a half-finished
+/// mutation leaves stale. [`DaemonQueue`] holds one invariant, `ids[i]`
+/// against `state.jobs[i]`, maintained by two `Vec` operations in a row: a
+/// panic between them misaligns the two permanently. `push` panics only on
+/// allocation failure and `remove` only on an index `index_of` has just
+/// validated, and `index_of` debug-asserts the alignment.
 pub fn lock(shared: &SharedState) -> std::sync::MutexGuard<'_, DaemonState> {
     shared
         .lock()

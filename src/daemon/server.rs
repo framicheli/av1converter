@@ -34,9 +34,9 @@ pub fn serve(
 ) {
     while !shutdown.load(Ordering::SeqCst) {
         match server.recv_timeout(Duration::from_millis(500)) {
-            // A panic costs one request, not the worker thread, which is never
-            // replaced. The request is consumed either way, so the client sees
-            // a dropped connection rather than a hung one.
+            // A panic costs one request, not the worker thread, which is
+            // never replaced. The request is consumed either way and the
+            // client sees a dropped connection.
             Ok(Some(request)) => {
                 if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     handle_request(request, shared, probe_tx, disc_tx, shutdown);
@@ -52,8 +52,8 @@ pub fn serve(
     }
 }
 
-/// Compare two secrets without giving away how much of a guess was right.
-/// The length is not hidden, which tells an attacker nothing useful here.
+/// Compare two secrets in constant time over their bytes. The length is not
+/// hidden.
 fn secret_eq(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
@@ -67,8 +67,7 @@ fn secret_eq(a: &str, b: &str) -> bool {
 /// Accepted as `Authorization: Bearer <token>`. The launch URL carries the
 /// token in its fragment, which browsers never send to this HTTP server.
 fn authorized(request: &Request, token: &str) -> bool {
-    // An empty token is never accepted: startup always regenerates one, and a
-    // cleared runtime token must not open the API.
+    // An empty token is never accepted; startup always regenerates one.
     if token.is_empty() {
         return false;
     }
@@ -121,8 +120,8 @@ fn host_is_loopback(host: &str) -> bool {
             .is_ok_and(|address| address.to_canonical().is_loopback())
 }
 
-/// Requiring JSON makes browser cross-origin POSTs preflight instead of being
-/// silently accepted as form/text requests. This server grants no CORS access.
+/// Whether the request declares a JSON body, which makes a cross-origin POST
+/// preflight. This server grants no CORS access.
 fn has_json_content_type(headers: &[Header]) -> bool {
     headers
         .iter()
@@ -131,7 +130,8 @@ fn has_json_content_type(headers: &[Header]) -> bool {
         .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
 }
 
-/// Cancel endpoints still run so an in-flight encode/rip can be told to stop.
+/// Whether a request is refused while the daemon shuts down. The cancel
+/// endpoints still run.
 fn blocks_on_shutdown(method: &Method, path: &str) -> bool {
     if matches!(
         path,

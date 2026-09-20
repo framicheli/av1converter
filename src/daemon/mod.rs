@@ -28,8 +28,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// How long shutdown waits for in-flight HTTP requests before leaving their
 /// threads detached.
 const HTTP_JOIN_GRACE: Duration = Duration::from_secs(5);
-/// Number of HTTP worker threads, so a slow scan or listing does not stall the
-/// dashboard poll behind it.
+/// Number of HTTP worker threads.
 const SERVER_THREADS: usize = 4;
 
 /// Bind the web server and append the bound address to `pid_path`.
@@ -117,9 +116,9 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     // applies what they report.
     let (disc_tx, disc_rx) = mpsc::channel::<crate::disc::worker::DiscEvent>();
 
-    // One long-lived prober rather than a thread per add request, so a client
-    // does not get to decide how many ffprobe children run at once. A panic is
-    // caught, blamed on the file that caused it, and the next one picked up.
+    // One long-lived prober handles every add request, one file at a time. A
+    // panic is caught, blamed on the file that caused it, and the next file
+    // picked up.
     let shutdown = Arc::new(AtomicBool::new(false));
     lock(&shared).shutting_down = shutdown.clone();
     let analysis_handle = {
@@ -179,9 +178,9 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
             return Err(e);
         }
     });
-    // The bare address, not `url()`: stdout is the daemon log file in
-    // background mode, and the token stays out of it. The tokenised URL is
-    // printed to the terminal by whoever started us.
+    // The bare address, not `url()`: in background mode stdout is the daemon
+    // log file, which carries no token. The tokenised URL is printed to the
+    // terminal by whoever started this process.
     println!("{} http://{listen}", t(lang, Msg::DaemonListening));
     info!("Web UI listening on http://{listen}");
     let server_handles: Vec<_> = (0..SERVER_THREADS)
@@ -250,10 +249,10 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         state.disc.cancel();
     }
 
-    // HTTP stops accepting once `shutdown` is set. It is joined before taking
-    // worker handles so an in-flight rip is stored (and then cancelled)
-    // rather than spawned after take(). A thread still blocked on a stalled
-    // client after `HTTP_JOIN_GRACE` is left detached.
+    // HTTP stops accepting once `shutdown` is set, and is joined before the
+    // worker handles are taken: an in-flight rip is stored and then cancelled,
+    // never spawned after `take()`. A thread still blocked on a stalled client
+    // after `HTTP_JOIN_GRACE` is left detached.
     let http_joined = join_within(server_handles, HTTP_JOIN_GRACE);
     if !http_joined {
         warn!("HTTP requests still in flight after the shutdown grace; not waiting for them");
@@ -271,8 +270,8 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         }
     };
 
-    // A rip is waited out the same way: makemkvcon is a child of this process
-    // and exiting while it runs would leave it behind.
+    // A rip is waited out the same way; makemkvcon is a child of this
+    // process.
     if lock(&shared).disc.active {
         lock(&shared).disc.cancel();
         println!("{}", t(lang, Msg::DaemonShuttingDown));
@@ -307,7 +306,8 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         warn!("shutdown grace elapsed; killing leftover child processes");
     }
     // Always reap child process groups: analysis-only ffprobe may still be
-    // alive, and children use their own PGID so parent exit will not reap them.
+    // alive, and children run in their own PGID, which a parent exit does not
+    // reap.
     crate::utils::child::kill_all();
     let (encode_worker, disc_worker) = {
         let mut state = lock(&shared);
@@ -334,8 +334,8 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         &mut last_save_warning,
     );
     // The analyzer owns ffprobe children; kill_all already reaped them.
-    // Detached HTTP threads may still hold probe_tx clones, so never block
-    // forever on the prober — join with a grace window instead.
+    // Detached HTTP threads may still hold `probe_tx` clones, and the prober
+    // is joined with a grace window.
     drop(probe_tx);
     if !join_within(vec![analysis_handle], HTTP_JOIN_GRACE) {
         warn!("analysis prober still running after shutdown grace; abandoning join");
@@ -621,11 +621,9 @@ fn apply_disc_event(
 /// Write the queue out if its serialized form changed since the last write.
 /// The only save call site: handlers and worker messages mutate the queue
 /// behind the mutex without saving. `JobStatus::Encoding` does not persist its
-/// percentage, so a running encode does not churn the file.
+/// percentage, and a running encode does not churn the file.
 ///
-// Re-serializes the queue once per tick to compare: O(jobs) four times a
-// second. A dirty flag in `DaemonQueue`'s mutators is the upgrade if a very
-// large queue ever makes it show up.
+/// The comparison re-serializes the queue once per tick.
 fn persist_queue(
     shared: &SharedState,
     path: &std::path::Path,
@@ -788,8 +786,8 @@ fn add_paths(
         }
     }
 
-    // A dead prober is reported on the jobs themselves, which would otherwise
-    // sit in the non-terminal `Analyzing`, blocking re-adds of the same file.
+    // A dead prober is reported on the jobs themselves; they leave the
+    // non-terminal `Analyzing` state, which blocks re-adds of the same file.
     let mut orphaned: Vec<u64> = Vec::new();
     let mut requests = to_analyze.into_iter();
     for request in requests.by_ref() {
@@ -1002,8 +1000,8 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
     let tx = worker_tx.clone();
     state.encode_worker = Some(thread::spawn(move || {
         // `run_worker` catches a panic per job; this covers one outside any
-        // job. The channel cannot report it — this daemon holds its own sender
-        // alive, so a dead worker stops talking without ever disconnecting.
+        // job. The channel never reports it: this daemon holds its own sender
+        // alive, and a dead worker stops talking without disconnecting.
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_worker(worker_jobs, &config, &cancel_flag, &tx);
         }))
@@ -1394,8 +1392,8 @@ mod tests {
                 frame_rate_den: 1,
                 duration_secs: 1.0,
             });
-            // An identity taken from the directory does not match the file, so
-            // the worker thread reports an error at once instead of encoding.
+            // An identity taken from the directory does not match the file;
+            // the worker thread reports an error at once.
             ready.source_identity = Some(crate::queue::SourceIdentity::from_metadata(
                 &std::fs::metadata(&dir).unwrap(),
             ));

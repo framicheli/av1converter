@@ -1,7 +1,8 @@
 //! User-level autostart: a systemd user unit on Linux, a launchd agent on macOS.
 //!
-//! The unit/plist is generated at install time so `ExecStart` is whatever
-//! binary ran `--install-service` (a cargo build or `/usr/bin/av1converter`).
+//! The unit/plist is generated at install time, with `ExecStart` naming the
+//! binary that ran `--install-service` (a cargo build or
+//! `/usr/bin/av1converter`).
 //! Nothing is stored in `config.toml`; [`installed`] is the OS state.
 
 use std::io;
@@ -52,8 +53,7 @@ pub fn installed() -> bool {
 }
 
 /// Write the unit/plist, enable it, and start the daemon unless one is already
-/// running (starting a second instance would fail the port bind and, with a
-/// restart policy, loop).
+/// running.
 pub fn install() -> io::Result<InstallOutcome> {
     let exe = current_exe()?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]

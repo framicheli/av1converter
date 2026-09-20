@@ -43,8 +43,7 @@ pub fn log_file() -> PathBuf {
     data_dir().join("daemon.log")
 }
 
-/// The queue as it stood when the daemon last changed it, so a restart or a
-/// crash does not lose what was waiting to encode.
+/// The queue as it stood when the daemon last changed it.
 pub fn queue_file() -> PathBuf {
     data_dir().join("queue.json")
 }
@@ -279,8 +278,8 @@ pub fn spawn_background() -> io::Result<u32> {
     crate::utils::ensure_private_dir(&data_dir())?;
     let mut options = std::fs::OpenOptions::new();
     options.create(true).append(true);
-    // The daemon logs the paths of everything it touches; that is the user's
-    // business and nobody else's.
+    // The log holds the paths of everything the daemon touches, and is
+    // readable by its owner only.
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -295,8 +294,8 @@ pub fn spawn_background() -> io::Result<u32> {
         .stdout(log)
         .stderr(log_err)
         .current_dir("/");
-    // New session: no controlling terminal, so closing the shell that
-    // launched us cannot HUP the daemon.
+    // New session: no controlling terminal, and no HUP when the launching
+    // shell closes.
     unsafe {
         cmd.pre_exec(|| {
             if libc::setsid() == -1 {
