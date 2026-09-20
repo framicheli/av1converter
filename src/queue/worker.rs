@@ -1,6 +1,6 @@
 use crate::analyzer::{DvMode, VideoMetadata};
 use crate::config::AppConfig;
-use crate::encoder::{self, FullEncodeResult};
+use crate::encoder::{self, FullEncodeResult, KeepReason};
 use crate::queue::SourceIdentity;
 use crate::tracks::OutputTracks;
 use std::path::PathBuf;
@@ -34,6 +34,8 @@ pub enum WorkerMessage {
     /// Source file was kept: VMAF mean and/or min was below the threshold
     /// (index, mean, min)
     SourceKeptLowVmaf(usize, f64, f64),
+    /// Source file was kept although VMAF met the threshold
+    SourceKept(usize, KeepReason),
 }
 
 /// Data needed by the worker thread for one job
@@ -119,10 +121,14 @@ pub fn run_worker(
             FullEncodeResult::SuccessWithVmaf {
                 vmaf,
                 source_deleted,
+                keep_reason,
             } => {
                 let score = vmaf.score;
                 if source_deleted {
                     let _ = tx.send(WorkerMessage::SourceDeleted(job.index));
+                }
+                if let Some(reason) = keep_reason {
+                    let _ = tx.send(WorkerMessage::SourceKept(job.index, reason));
                 }
                 let _ = tx.send(WorkerMessage::DoneWithVmaf(job.index, score));
             }

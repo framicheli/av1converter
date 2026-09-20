@@ -130,6 +130,10 @@ pub struct EncodingJob {
     pub output_size: Option<u64>,
     pub source_deleted: bool,
     pub source_kept_vmaf: Option<f64>,
+    /// Why a job that met the VMAF threshold kept its source. Absent from
+    /// queues written before the reason was recorded.
+    #[serde(default)]
+    pub source_kept_reason: Option<crate::encoder::KeepReason>,
     pub remux_only: bool,
     /// Dolby Vision handling; `None` until the user has chosen (DV sources only)
     pub dv_mode: Option<DvMode>,
@@ -157,6 +161,7 @@ impl EncodingJob {
             output_size: None,
             source_deleted: false,
             source_kept_vmaf: None,
+            source_kept_reason: None,
             remux_only: false,
             dv_mode: None,
             temporary: false,

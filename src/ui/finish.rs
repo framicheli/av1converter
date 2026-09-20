@@ -234,9 +234,9 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
             t(lang, Msg::SourceFileDeleted),
             Style::default().fg(Color::Yellow),
         )]));
-    } else if job.source_kept_vmaf.is_some() {
+    } else if job.source_kept_vmaf.is_some() || job.source_kept_reason.is_some() {
         lines.push(Line::from(vec![Span::styled(
-            source_kept_text(&job.status, lang),
+            source_kept_text(job, lang),
             Style::default().fg(Color::DarkGray),
         )]));
     }
@@ -458,11 +458,15 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
     f.render_widget(help, chunks[3]);
 }
 
-/// "Source kept" with the VMAF score that failed the job's threshold: the
-/// mean, or the minimum when only the minimum is below it.
-fn source_kept_text(status: &JobStatus, lang: Language) -> String {
+/// "Source kept" with the reason: the VMAF score that failed the job's
+/// threshold (the mean, or the minimum when only the minimum is below it), or
+/// the recorded keep reason of a job that met the threshold.
+fn source_kept_text(job: &crate::queue::EncodingJob, lang: Language) -> String {
     let kept = t(lang, Msg::SourceKept);
-    match *status {
+    if let Some(reason) = job.source_kept_reason {
+        return format!("{kept} ({})", t(lang, reason.msg()));
+    }
+    match job.status {
         JobStatus::QualityWarning {
             vmaf,
             min_score,
@@ -525,7 +529,7 @@ fn create_result_item(
     // Source deletion info
     let source_info = if job.source_deleted {
         format!(" [{}]", t(lang, Msg::SourceDeletedTag))
-    } else if job.source_kept_vmaf.is_some() {
+    } else if job.source_kept_vmaf.is_some() || job.source_kept_reason.is_some() {
         format!(" [{}]", t(lang, Msg::SourceKeptTag))
     } else {
         String::new()
@@ -627,21 +631,28 @@ fn create_result_item(
 #[cfg(test)]
 mod tests {
     use super::source_kept_text;
+    use crate::encoder::KeepReason;
     use crate::i18n::Language;
-    use crate::queue::JobStatus;
+    use crate::queue::{EncodingJob, JobStatus};
+
+    fn job_with(status: JobStatus) -> EncodingJob {
+        let mut job = EncodingJob::new(std::path::PathBuf::from("clip.mkv"));
+        job.status = status;
+        job
+    }
 
     #[test]
     fn a_kept_source_names_the_score_below_the_jobs_threshold() {
-        let min_failed = JobStatus::QualityWarning {
+        let min_failed = job_with(JobStatus::QualityWarning {
             vmaf: 96.0,
             min_score: 80.25,
             threshold: 95.5,
-        };
-        let mean_failed = JobStatus::QualityWarning {
+        });
+        let mean_failed = job_with(JobStatus::QualityWarning {
             vmaf: 93.0,
             min_score: 70.0,
             threshold: 95.0,
-        };
+        });
 
         assert_eq!(
             source_kept_text(&min_failed, Language::English),
@@ -650,6 +661,17 @@ mod tests {
         assert_eq!(
             source_kept_text(&mean_failed, Language::English),
             "Source kept (VMAF 93.0 < 95)"
+        );
+    }
+
+    #[test]
+    fn a_passing_job_that_kept_its_source_names_the_reason() {
+        let mut job = job_with(JobStatus::DoneWithVmaf { score: 97.0 });
+        job.source_kept_reason = Some(KeepReason::AudioTranscoded);
+
+        assert_eq!(
+            source_kept_text(&job, Language::English),
+            "Source kept (audio was transcoded and VMAF does not verify it)"
         );
     }
 }

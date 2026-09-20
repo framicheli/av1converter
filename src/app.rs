@@ -2033,6 +2033,11 @@ impl App {
                         job.source_kept_vmaf = Some(vmaf);
                     }
                 }
+                WorkerMessage::SourceKept(idx, reason) => {
+                    if let Some(job) = self.queue.jobs.get_mut(idx) {
+                        job.source_kept_reason = Some(reason);
+                    }
+                }
                 WorkerMessage::Cancelled => {
                     for &index in &self.encoding_session_indices {
                         if let Some(job) = self.queue.jobs.get_mut(index)

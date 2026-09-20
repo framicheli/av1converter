@@ -636,9 +636,11 @@ function updateRow(row, job) {
     job.crf != null ? `CRF ${job.crf}` : "",
     job.remux_only ? tr("tag_remux") : "",
     job.source_deleted ? tr("tag_source_deleted") : "",
-    job.source_kept_vmaf != null ? tr("tag_source_kept") : "",
+    job.source_kept_vmaf != null || job.source_kept_reason ? tr("tag_source_kept") : "",
   ].filter(Boolean).join(" · "));
-  row.sub.title = job.source_kept_vmaf != null ? failedVmafText(job.status) : "";
+  row.sub.title = job.source_kept_reason
+    ? `${tr("tag_source_kept")}: ${job.source_kept_reason}`
+    : job.source_kept_vmaf != null ? failedVmafText(job.status) : "";
   // Resolution and HDR are null until the probe has run.
   setText(row.source, [job.resolution, job.hdr].filter(Boolean).join(" ") || "—");
 

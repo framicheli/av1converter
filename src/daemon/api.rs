@@ -183,6 +183,9 @@ pub fn queue(shared: &SharedState) -> Value {
                 "can_move_up": can_move_up,
                 "crf": job.crf,
                 "source_kept_vmaf": job.source_kept_vmaf,
+                "source_kept_reason": job
+                    .source_kept_reason
+                    .map(|reason| crate::i18n::t(state.config.language, reason.msg())),
                 "output_name": job
                     .output_path
                     .as_ref()

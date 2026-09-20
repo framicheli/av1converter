@@ -599,6 +599,7 @@ mod tests {
         done.status = JobStatus::DoneWithVmaf { score: 96.5 };
         done.source_size = Some(1000);
         done.output_size = Some(400);
+        done.source_kept_reason = Some(crate::encoder::KeepReason::AudioTranscoded);
         state.jobs.push(done);
         state.cleared_saved_bytes = 777;
         state.converted_count = 7;
@@ -640,6 +641,16 @@ mod tests {
             JobStatus::DoneWithVmaf { score } if (score - 96.5).abs() < f64::EPSILON
         ));
         assert_eq!(back.state.total_space_saved().0, 777 + 600);
+        assert_eq!(
+            back.state.jobs[1].source_kept_reason,
+            Some(crate::encoder::KeepReason::AudioTranscoded)
+        );
+
+        // A queue written before the keep reason existed still loads.
+        let mut older = serde_json::to_value(&back.state.jobs[1]).unwrap();
+        older.as_object_mut().unwrap().remove("source_kept_reason");
+        let older: EncodingJob = serde_json::from_value(older).unwrap();
+        assert_eq!(older.source_kept_reason, None);
 
         // And resuming leaves settled jobs alone.
         resume(&mut back);

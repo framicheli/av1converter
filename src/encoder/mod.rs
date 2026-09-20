@@ -24,6 +24,8 @@ pub enum FullEncodeResult {
     SuccessWithVmaf {
         vmaf: verifier::VmafResult,
         source_deleted: bool,
+        /// Why the source was kept although the score met the threshold.
+        keep_reason: Option<KeepReason>,
     },
     /// Encoding succeeded but VMAF check could not be run (e.g. libvmaf missing)
     VmafFailed { message: String },
@@ -36,6 +38,88 @@ pub enum FullEncodeResult {
         vmaf: verifier::VmafResult,
         threshold: f64,
     },
+}
+
+/// Why a job whose VMAF met the threshold still kept its source file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum KeepReason {
+    /// Dolby Vision was to be kept but the encoder converted it to HDR10.
+    DolbyVisionConverted,
+    /// Audio was transcoded and VMAF does not verify it.
+    AudioTranscoded,
+    /// A selected subtitle track was converted or left out.
+    SubtitleChanged,
+    /// The Dolby Vision profile 7 enhancement layer is not carried over.
+    DolbyVisionProfile7,
+    /// The source chroma or bit depth exceeds the 4:2:0 10-bit encode.
+    ChromaOrBitDepth,
+    /// The source streams could not be checked.
+    StreamsUnchecked,
+    /// The source has video or data streams the output does not carry.
+    ExtraStreams,
+    /// The source cover art or attachments are not carried over.
+    Attachments,
+    /// Cancellation was requested.
+    Cancelled,
+    /// The encoded output changed before deletion.
+    OutputChanged,
+    /// The encoded output could not be flushed to disk.
+    FlushFailed,
+    /// The source is a symbolic link.
+    Symlink,
+    /// The source changed while the job was running.
+    SourceChanged,
+    /// Deleting the source failed.
+    DeleteFailed,
+}
+
+impl KeepReason {
+    /// The English clause used in the log line.
+    pub fn log(self) -> &'static str {
+        match self {
+            Self::DolbyVisionConverted => {
+                "Dolby Vision was to be kept but this encoder converted it to HDR10"
+            }
+            Self::AudioTranscoded => "audio was transcoded and VMAF does not verify it",
+            Self::SubtitleChanged => "a selected subtitle track was converted or left out",
+            Self::DolbyVisionProfile7 => {
+                "its Dolby Vision profile 7 enhancement layer is not carried into the output"
+            }
+            Self::ChromaOrBitDepth => {
+                "its chroma or bit depth may be reduced by the 4:2:0 10-bit encode"
+            }
+            Self::StreamsUnchecked => "its streams could not be checked",
+            Self::ExtraStreams => "it has video or data streams the output does not carry",
+            Self::Attachments => "its cover art or attachments are not carried into the output",
+            Self::Cancelled => "cancellation was requested",
+            Self::OutputChanged => "the encoded output changed before deletion",
+            Self::FlushFailed => "the encoded output could not be flushed to disk",
+            Self::Symlink => "it is a symbolic link",
+            Self::SourceChanged => "it changed while the job was running",
+            Self::DeleteFailed => "deleting it failed",
+        }
+    }
+
+    /// The translated message shown in the UIs.
+    pub fn msg(self) -> crate::i18n::Msg {
+        use crate::i18n::Msg;
+        match self {
+            Self::DolbyVisionConverted => Msg::KeepDvConverted,
+            Self::AudioTranscoded => Msg::KeepAudioTranscoded,
+            Self::SubtitleChanged => Msg::KeepSubtitleChanged,
+            Self::DolbyVisionProfile7 => Msg::KeepDvProfile7,
+            Self::ChromaOrBitDepth => Msg::KeepChromaOrBitDepth,
+            Self::StreamsUnchecked => Msg::KeepStreamsUnchecked,
+            Self::ExtraStreams => Msg::KeepExtraStreams,
+            Self::Attachments => Msg::KeepAttachments,
+            Self::Cancelled => Msg::KeepCancelled,
+            Self::OutputChanged => Msg::KeepOutputChanged,
+            Self::FlushFailed => Msg::KeepFlushFailed,
+            Self::Symlink => Msg::KeepSymlink,
+            Self::SourceChanged => Msg::KeepSourceChanged,
+            Self::DeleteFailed => Msg::KeepDeleteFailed,
+        }
+    }
 }
 
 /// Orchestrate the full encoding pipeline: encode -> verify
@@ -164,37 +248,55 @@ pub fn run_encoding_pipeline(
             if config.quality.delete_source_on_success {
                 if let FullEncodeResult::SuccessWithVmaf {
                     ref mut source_deleted,
+                    ref mut keep_reason,
                     ..
                 } = result
                 {
                     if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
-                        warn!("Keeping source file {input}: cancellation was requested");
+                        warn!(
+                            "Keeping source file {input}: {}",
+                            KeepReason::Cancelled.log()
+                        );
+                        *keep_reason = Some(KeepReason::Cancelled);
                     } else if let Some(reason) = keep_source_reason(&params, dv_mode, cancel_flag) {
-                        info!("Keeping source file {input}: {reason}");
+                        info!("Keeping source file {input}: {}", reason.log());
+                        *keep_reason = Some(reason);
                     } else if !output_identity
                         .as_ref()
                         .is_some_and(|identity| identity.matches_path(output))
                     {
                         warn!(
-                            "Keeping source file {input}: the encoded output changed before deletion"
+                            "Keeping source file {input}: {}",
+                            KeepReason::OutputChanged.log()
                         );
+                        *keep_reason = Some(KeepReason::OutputChanged);
                     } else if let Err(e) = flush_to_disk(output) {
                         warn!(
-                            "Keeping source file {input}: the encoded output could not be flushed to disk: {e}"
+                            "Keeping source file {input}: {}: {e}",
+                            KeepReason::FlushFailed.log()
                         );
+                        *keep_reason = Some(KeepReason::FlushFailed);
                     } else if std::fs::symlink_metadata(input)
                         .is_ok_and(|m| m.file_type().is_symlink())
                     {
-                        warn!("Keeping source file {input}: it is a symbolic link");
+                        warn!("Keeping source file {input}: {}", KeepReason::Symlink.log());
+                        *keep_reason = Some(KeepReason::Symlink);
                     } else if !expected_source.matches_path(input) {
-                        warn!("Keeping source file {input}: it changed while the job was running");
+                        warn!(
+                            "Keeping source file {input}: {}",
+                            KeepReason::SourceChanged.log()
+                        );
+                        *keep_reason = Some(KeepReason::SourceChanged);
                     } else {
                         match std::fs::remove_file(input) {
                             Ok(()) => {
                                 info!("Deleted source file: {input}");
                                 *source_deleted = true;
                             }
-                            Err(e) => warn!("Failed to delete source file {input}: {e}"),
+                            Err(e) => {
+                                warn!("Failed to delete source file {input}: {e}");
+                                *keep_reason = Some(KeepReason::DeleteFailed);
+                            }
                         }
                     }
                 } else if matches!(result, FullEncodeResult::Success) {
@@ -237,15 +339,15 @@ fn keep_source_reason(
     params: &EncodingParams,
     requested_dv_mode: DvMode,
     cancel: &AtomicBool,
-) -> Option<&'static str> {
+) -> Option<KeepReason> {
     if params.hdr_type == HdrType::DolbyVision
         && requested_dv_mode == DvMode::KeepDolbyVision
         && params.dv_mode != DvMode::KeepDolbyVision
     {
-        return Some("Dolby Vision was to be kept but this encoder converted it to HDR10");
+        return Some(KeepReason::DolbyVisionConverted);
     }
     if params.tracks.transcodes_audio() {
-        return Some("audio was transcoded and VMAF does not verify it");
+        return Some(KeepReason::AudioTranscoded);
     }
     if params.subtitle_codecs.len() != params.tracks.subtitle_indices.len()
         || params
@@ -253,21 +355,19 @@ fn keep_source_reason(
             .iter()
             .any(|codec| *codec != Some("copy"))
     {
-        return Some("a selected subtitle track was converted or left out");
+        return Some(KeepReason::SubtitleChanged);
     }
     if params.hdr_type == HdrType::DolbyVision && params.dv_profile == Some(7) {
-        return Some("its Dolby Vision profile 7 enhancement layer is not carried into the output");
+        return Some(KeepReason::DolbyVisionProfile7);
     }
     if !crate::analyzer::ffprobe::probe_video_pix_fmt(&params.input, cancel)
         .is_some_and(|pix_fmt| is_yuv420_within_10_bit(&pix_fmt))
     {
-        return Some("its chroma or bit depth may be reduced by the 4:2:0 10-bit encode");
+        return Some(KeepReason::ChromaOrBitDepth);
     }
     match crate::analyzer::ffprobe::probe_unselectable_streams(&params.input, cancel) {
-        None => Some("its streams could not be checked"),
-        Some(streams) if streams.other > 0 => {
-            Some("it has video or data streams the output does not carry")
-        }
+        None => Some(KeepReason::StreamsUnchecked),
+        Some(streams) if streams.other > 0 => Some(KeepReason::ExtraStreams),
         Some(streams)
             if streams.pictures == 0
                 && (streams.attachments == 0
@@ -275,7 +375,7 @@ fn keep_source_reason(
         {
             None
         }
-        Some(_) => Some("its cover art or attachments are not carried into the output"),
+        Some(_) => Some(KeepReason::Attachments),
     }
 }
 
@@ -355,6 +455,7 @@ fn run_vmaf_check(
             FullEncodeResult::SuccessWithVmaf {
                 vmaf,
                 source_deleted: false,
+                keep_reason: None,
             }
         }
         Err(e) => {
@@ -377,11 +478,53 @@ fn skips_vmaf(params: &EncodingParams) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DvMode, EncodingParams, HdrType, SourceIdentity, VideoMetadata, flush_to_disk,
+        DvMode, EncodingParams, HdrType, KeepReason, SourceIdentity, VideoMetadata, flush_to_disk,
         is_yuv420_within_10_bit, keep_source_reason, skips_vmaf,
     };
     use crate::config::{AppConfig, Encoder};
     use crate::tracks::OutputTracks;
+
+    /// Every keep reason carries its own English log clause and its own
+    /// translated message.
+    #[test]
+    fn each_keep_reason_maps_to_its_own_message() {
+        let all = [
+            KeepReason::DolbyVisionConverted,
+            KeepReason::AudioTranscoded,
+            KeepReason::SubtitleChanged,
+            KeepReason::DolbyVisionProfile7,
+            KeepReason::ChromaOrBitDepth,
+            KeepReason::StreamsUnchecked,
+            KeepReason::ExtraStreams,
+            KeepReason::Attachments,
+            KeepReason::Cancelled,
+            KeepReason::OutputChanged,
+            KeepReason::FlushFailed,
+            KeepReason::Symlink,
+            KeepReason::SourceChanged,
+            KeepReason::DeleteFailed,
+        ];
+        let mut texts: Vec<&'static str> = all
+            .iter()
+            .map(|reason| crate::i18n::t(crate::i18n::Language::English, reason.msg()))
+            .collect();
+        texts.sort_unstable();
+        let count = texts.len();
+        texts.dedup();
+        assert_eq!(texts.len(), count);
+
+        assert_eq!(
+            crate::i18n::t(
+                crate::i18n::Language::English,
+                KeepReason::FlushFailed.msg()
+            ),
+            "the encoded output could not be flushed to disk"
+        );
+        assert_eq!(
+            KeepReason::AudioTranscoded.log(),
+            "audio was transcoded and VMAF does not verify it"
+        );
+    }
 
     #[test]
     fn hardware_encoder_skips_vmaf_for_a_keep_dv_profile5_job() {
@@ -449,7 +592,7 @@ mod tests {
                 DvMode::KeepDolbyVision,
                 &std::sync::atomic::AtomicBool::new(false)
             ),
-            Some("Dolby Vision was to be kept but this encoder converted it to HDR10")
+            Some(KeepReason::DolbyVisionConverted)
         );
     }
 
@@ -483,7 +626,7 @@ mod tests {
                 DvMode::ToHdr10,
                 &std::sync::atomic::AtomicBool::new(false)
             ),
-            Some("its Dolby Vision profile 7 enhancement layer is not carried into the output")
+            Some(KeepReason::DolbyVisionProfile7)
         );
     }
 
@@ -523,7 +666,7 @@ mod tests {
                 DvMode::ToHdr10,
                 &std::sync::atomic::AtomicBool::new(false)
             ),
-            Some("a selected subtitle track was converted or left out")
+            Some(KeepReason::SubtitleChanged)
         );
     }
 

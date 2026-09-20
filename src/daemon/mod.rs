@@ -1087,6 +1087,11 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
                 job.source_kept_vmaf = Some(vmaf);
             }
         }
+        WorkerMessage::SourceKept(idx, reason) => {
+            if let Some(job) = id_for(idx).and_then(|id| state.queue.job_by_id_mut(id)) {
+                job.source_kept_reason = Some(reason);
+            }
+        }
         // A daemon stop leaves session jobs as they are; `queue::state::resume`
         // settles them on the next start.
         WorkerMessage::Cancelled if state.shutting_down.load(Ordering::SeqCst) => {}
@@ -1302,6 +1307,35 @@ mod tests {
         let _ = child.wait();
         drop(guard);
         assert!(killed, "the sleeping child outlived the failed startup");
+    }
+
+    /// A kept source with a reason reaches the queue rows the web UI reads.
+    #[test]
+    fn a_kept_source_reason_reaches_the_queue_rows() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut job = EncodingJob::new(std::path::PathBuf::from("kept.mkv"));
+        job.status = JobStatus::Encoding { progress: 90.0 };
+        let id = state.queue.push(job);
+        state.session = Some(EncodeSession {
+            job_ids: vec![id],
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        });
+        state.encoding_active = true;
+        let shared = Arc::new(Mutex::new(state));
+
+        apply_worker_message(
+            &shared,
+            WorkerMessage::SourceKept(0, crate::encoder::KeepReason::Symlink),
+        );
+
+        assert_eq!(
+            lock(&shared).queue.state.jobs[0].source_kept_reason,
+            Some(crate::encoder::KeepReason::Symlink)
+        );
+        assert_eq!(
+            crate::daemon::api::queue(&shared)["jobs"][0]["source_kept_reason"],
+            "the source is a symbolic link"
+        );
     }
 
     #[test]

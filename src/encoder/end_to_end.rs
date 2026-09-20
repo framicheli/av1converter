@@ -498,7 +498,7 @@ fn a_4_4_4_or_12_bit_source_is_kept() {
         super::keep_source_reason(&params, DvMode::ToHdr10, &AtomicBool::new(false))
     };
 
-    let kept = Some("its chroma or bit depth may be reduced by the 4:2:0 10-bit encode");
+    let kept = Some(super::KeepReason::ChromaOrBitDepth);
     assert_eq!(reason(&clip("420.mkv", "yuv420p")), None);
     assert_eq!(reason(&clip("444.mkv", "yuv444p")), kept);
     assert_eq!(reason(&clip("420_12.mkv", "yuv420p12le")), kept);
@@ -719,6 +719,7 @@ fn a_source_replaced_during_the_job_is_kept() {
             result,
             super::FullEncodeResult::SuccessWithVmaf {
                 source_deleted: false,
+                keep_reason: Some(super::KeepReason::SourceChanged),
                 ..
             }
         ),
@@ -742,6 +743,7 @@ fn an_output_replaced_before_deletion_keeps_the_source() {
             result,
             super::FullEncodeResult::SuccessWithVmaf {
                 source_deleted: false,
+                keep_reason: Some(super::KeepReason::OutputChanged),
                 ..
             }
         ),
@@ -824,7 +826,7 @@ fn extra_video_or_data_streams_keep_the_source() {
         super::keep_source_reason(&params, DvMode::ToHdr10, &AtomicBool::new(false))
     };
 
-    let lost = Some("it has video or data streams the output does not carry");
+    let lost = Some(super::KeepReason::ExtraStreams);
     assert_eq!(reason(&single), None);
     assert_eq!(reason(&two_videos), lost);
     assert_eq!(reason(&timecode), lost);
