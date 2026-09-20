@@ -141,11 +141,28 @@ function applyStrings(root = document) {
   }
 }
 
+// The token a settings save is installing. A request rejected while it was on
+// its way is retried with it.
+let pendingToken = null;
+
+function adoptToken(value) {
+  token = value;
+  try { sessionStorage.setItem("av1c_token", token); } catch { /* memory only */ }
+}
+
 async function api(path, options) {
+  const sent = token;
   const init = { ...options, headers: { ...(options && options.headers) } };
   if (token) init.headers.Authorization = `Bearer ${token}`;
   const response = await fetch(path, init);
   const body = await response.json().catch(() => ({}));
+  // A save that replaced the token rejects requests carrying the old one;
+  // those are retried once with the new token.
+  if (response.status === 401 && sent !== token) return api(path, options);
+  if (response.status === 401 && pendingToken && pendingToken !== sent) {
+    adoptToken(pendingToken);
+    return api(path, options);
+  }
   // The stored token is deliberately kept. Dropping it here turned a single
   // rejected request into a permanent logout, and it bought nothing: the only
   // way back in is #token=… in the URL, which overwrites it regardless.
@@ -2223,15 +2240,13 @@ $("btn-save-settings").addEventListener("click", async () => {
   delete submittedConfig._service;
   const save = $("btn-save-settings");
   save.textContent = tr("saving");
+  pendingToken = replacementToken || null;
   try {
     config = await post("/api/settings", submittedConfig);
     const saveWarning = config._warning;
     delete config._warning;
     config._service = serviceState;
-    if (replacementToken) {
-      token = replacementToken;
-      try { sessionStorage.setItem("av1c_token", token); } catch { /* memory only */ }
-    }
+    if (replacementToken) adoptToken(replacementToken);
     savedConfig = cloneConfig(config);
     if (languageChanged) {
       try {
@@ -2250,6 +2265,7 @@ $("btn-save-settings").addEventListener("click", async () => {
     announce(tr("saved_exclaim"));
   } catch (e) { toast(e.message, true); }
   finally {
+    pendingToken = null;
     settingsSaving = false;
     form.inert = false;
     form.removeAttribute("aria-busy");
