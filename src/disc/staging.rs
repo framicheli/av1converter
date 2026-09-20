@@ -264,9 +264,11 @@ pub fn discard_staged(root: &Path, file: &Path) {
 /// written to for `min_age`.
 ///
 /// Runs at TUI and daemon startup and whenever a disc run settles, where a rip
-/// cut short by a kill has nothing left tracking its file. In the default root,
-/// a directory whose owner has exited is removed whatever its age. Only
-/// subdirectories of the staging root are ever removed, never the root itself.
+/// cut short by a kill has nothing left tracking its file. This process's own
+/// leftovers are swept like any other, since `jobs` names the directories it
+/// still needs. In the default root, a directory whose owner has exited is
+/// removed whatever its age. Only subdirectories of the staging root are ever
+/// removed, never the root itself.
 pub fn sweep_orphans(config: &AppConfig, jobs: &[EncodingJob], min_age: Duration) {
     sweep_root(
         &staging_root(config),
@@ -294,7 +296,9 @@ fn sweep_root(root: &Path, default_root: bool, jobs: &[EncodingJob], min_age: Du
         if !path.is_dir() || !is_staging_dir(&path) || live.contains(&path) {
             continue;
         }
-        if owner_pid(&path).is_some_and(crate::utils::child::pid_alive) {
+        if owner_pid(&path)
+            .is_some_and(|pid| pid != std::process::id() && crate::utils::child::pid_alive(pid))
+        {
             info!(
                 "Leaving staging directory {} of a running process",
                 path.display()
@@ -732,11 +736,19 @@ mod tests {
     #[test]
     fn the_sweep_leaves_a_running_owners_rip_alone() {
         let root = scratch("owner");
-        let running = staged_rip(&root, std::process::id());
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        let (mut owner, guard) = crate::utils::child::spawn(&mut command).unwrap();
+        let running = staged_rip(&root, owner.id());
         let gone = staged_rip(&root, DEAD_PID);
+
         sweep_orphans(&config_with_root(&root), &[], Duration::ZERO);
+
         assert!(running.exists());
         assert!(!gone.exists());
+        let _ = owner.kill();
+        let _ = owner.wait();
+        drop(guard);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -771,6 +783,27 @@ mod tests {
         std::os::unix::fs::symlink(&fresh, &link).unwrap();
         assert!(prepare_private_root(&link).is_err());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// This process's own leftovers are swept once no job points into them.
+    #[test]
+    fn our_own_staging_directory_is_swept_when_no_job_needs_it() {
+        let default_root = scratch("own_leftover");
+        let ours = staged_rip(&default_root, std::process::id());
+
+        sweep_root(&default_root, true, &[], ACTIVE_RIP_WINDOW);
+
+        assert!(!ours.parent().unwrap().exists());
+
+        let live = staged_rip(&default_root, std::process::id());
+        let mut job = EncodingJob::new(live.clone());
+        job.temporary = true;
+        sweep_root(&default_root, true, &[job], ACTIVE_RIP_WINDOW);
+        assert!(
+            live.parent().unwrap().exists(),
+            "a directory a job still needs is kept"
+        );
+        let _ = std::fs::remove_dir_all(&default_root);
     }
 
     #[cfg(unix)]

@@ -444,6 +444,23 @@ struct RobotRun {
     messages: Vec<String>,
 }
 
+/// Kills and reaps the child it holds when dropped, unless disarmed first.
+struct KillOnUnwind<'a>(Option<&'a mut std::process::Child>);
+
+impl KillOnUnwind<'_> {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for KillOnUnwind<'_> {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.take() {
+            crate::utils::child::kill_and_wait(child);
+        }
+    }
+}
+
 /// Run `makemkvcon` and stream its robot output to `on_line`, killing the child
 /// as soon as `cancel` is set.
 fn run_robot(
@@ -472,6 +489,8 @@ fn run_robot(
     })?;
 
     let stdout = child.stdout.take().expect("piped stdout");
+    let pid = child.id();
+    let mut kill_on_unwind = KillOnUnwind(Some(&mut child));
     let (tx, rx) = mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
@@ -513,15 +532,17 @@ fn run_robot(
         }
         if cancel.load(Ordering::Acquire) {
             cancelled = true;
-            crate::utils::child::kill_pid(child.id());
+            crate::utils::child::kill_pid(pid);
             break;
         }
     }
 
+    kill_on_unwind.disarm();
+    drop(kill_on_unwind);
     let status = child
         .wait()
         .map_err(|e| DiscError::Failed(format!("makemkvcon could not be waited for: {e}")))?;
-    crate::utils::child::ChildGuard::unregister(child.id());
+    crate::utils::child::ChildGuard::unregister(pid);
 
     // After wait (and process-group kill on cancel), the write end of the pipe
     // should close. Join with a short grace so a stuck grandchild cannot pin a
@@ -743,6 +764,46 @@ mod tests {
             DiscSource::folder(dir.join("missing.iso")),
             Err(DiscError::NotADiscFolder)
         );
+    }
+
+    /// A panic in the line callback does not leave makemkvcon running.
+    #[cfg(unix)]
+    #[test]
+    fn a_panicking_callback_kills_makemkvcon() {
+        let base = scratch("panic_kill");
+        let bin = fake_makemkvcon(&base, &Fake::RipHangs);
+        let dest = base.join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        let cancel = AtomicBool::new(false);
+
+        let blew_up = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = run_robot(
+                &bin,
+                &["-r", "mkv", "disc:0", "0", dest.to_str().unwrap()],
+                &cancel,
+                |_, _| panic!("the callback gives up"),
+            );
+        }))
+        .is_err();
+
+        assert!(blew_up);
+        let pid_file = dest.join("makemkvcon.pid");
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .expect("the fake records its pid")
+            .trim()
+            .parse()
+            .unwrap();
+        let mut alive = true;
+        for _ in 0..100 {
+            if crate::utils::child::pid_alive(pid) {
+                std::thread::sleep(Duration::from_millis(20));
+            } else {
+                alive = false;
+                break;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(!alive, "makemkvcon outlived the panic");
     }
 
     /// A notice that the key is about to expire is not an expired key.

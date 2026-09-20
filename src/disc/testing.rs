@@ -59,7 +59,11 @@ impl Fake {
                  : > \"$dest/title_t00.mkv\"\n  \
                  echo 'MSG:5003,16,2,\"Scsi error - MEDIUM ERROR\",\"x\"'\n  exit 1",
             ),
-            Fake::RipHangs => (BLURAY_SCAN, "  echo 'PRGV:0,1,65536'\n  exec sleep 300"),
+            Fake::RipHangs => (
+                BLURAY_SCAN,
+                "  echo $$ > \"$dest/makemkvcon.pid\"\n  echo 'PRGV:0,1,65536'\n  \
+                 exec sleep 300",
+            ),
             Fake::RipReportsFailure => (
                 BLURAY_SCAN,
                 "  : > \"$dest/title_t00.mkv\"\n  \
