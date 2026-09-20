@@ -120,6 +120,16 @@ mod tests {
     }
 
     #[test]
+    fn a_short_terminal_still_shows_the_confirmation_prompt() {
+        let mut app = App::new();
+        app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+
+        let screen = rendered(60, 16, |frame| render_confirm_dialog(frame, &app));
+
+        assert!(screen.contains("Are you sure you want to exit?"));
+    }
+
+    #[test]
     fn profile_five_warning_fits_the_supported_terminal() {
         let mut app = App::new();
         let mut job = EncodingJob::new("profile5.mkv".into());
