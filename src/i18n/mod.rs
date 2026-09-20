@@ -231,6 +231,7 @@ pub enum Msg {
     KeepSymlink,
     KeepSourceChanged,
     KeepDeleteFailed,
+    KeepLedgerUnwritable,
     TimeLabel,
     ResultTitle,
     Summary,
@@ -1800,6 +1801,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "la suppression de la source a échoué",
             De => "das Löschen der Quelle ist fehlgeschlagen",
             Zh => "删除源文件失败",
+        },
+        Msg::KeepLedgerUnwritable => match lang {
+            En => "the deletion record could not be written",
+            It => "non è stato possibile scrivere il registro delle eliminazioni",
+            Es => "no se pudo escribir el registro de borrados",
+            Fr => "le journal des suppressions n'a pas pu être écrit",
+            De => "das Löschprotokoll konnte nicht geschrieben werden",
+            Zh => "无法写入删除记录",
         },
         Msg::TimeLabel => match lang {
             En => "Time",

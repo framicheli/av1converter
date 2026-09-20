@@ -684,6 +684,17 @@ fn a_passing_vmaf_score_deletes_the_source() {
     );
     assert!(!input.exists());
     assert!(output.exists());
+
+    // The deletion is recorded in this thread's ledger.
+    let ledger = std::fs::read_to_string(super::ledger_path()).unwrap();
+    let recorded: serde_json::Value = serde_json::from_str(ledger.lines().next().unwrap()).unwrap();
+    assert_eq!(recorded["action"], serde_json::json!("deleted"));
+    assert_eq!(
+        recorded["source"],
+        serde_json::json!(input.to_str().unwrap())
+    );
+
+    let _ = std::fs::remove_dir_all(super::ledger_dir());
     let _ = std::fs::remove_dir_all(input.parent().unwrap());
 }
 

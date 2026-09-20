@@ -23,6 +23,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 ### Added
 
 - `--restart`, which stops a running daemon cleanly and starts it again.
+- A deletion ledger: every VMAF-verified job with source deletion on appends one JSON line to `deletions.jsonl` in the data directory, recording the source, the output, their sizes, the scores, the threshold and whether the source was deleted or kept. A source whose decision cannot be written to the ledger is kept.
 - **Disc ripping.** Import titles straight from a DVD or Blu-ray through MakeMKV, from the TUI (`Rip DVD / Blu-ray` on the home menu) or the web UI (`+ Disc`). Titles are extracted to a staging directory and then analyzed, track-configured and encoded exactly like a file opened by hand.
   - Ripping and encoding overlap: the next title reads from the disc while the previous one encodes, so peak disk use stays at one rip plus one encode input.
   - A rip appears in the queue as a job of its own, with progress and cancellation in the same place as everything else.

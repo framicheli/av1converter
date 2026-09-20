@@ -72,6 +72,8 @@ pub enum KeepReason {
     SourceChanged,
     /// Deleting the source failed.
     DeleteFailed,
+    /// The deletion ledger could not be written.
+    LedgerUnwritable,
 }
 
 impl KeepReason {
@@ -98,6 +100,7 @@ impl KeepReason {
             Self::Symlink => "it is a symbolic link",
             Self::SourceChanged => "it changed while the job was running",
             Self::DeleteFailed => "deleting it failed",
+            Self::LedgerUnwritable => "the deletion ledger could not be written",
         }
     }
 
@@ -119,6 +122,111 @@ impl KeepReason {
             Self::Symlink => Msg::KeepSymlink,
             Self::SourceChanged => Msg::KeepSourceChanged,
             Self::DeleteFailed => Msg::KeepDeleteFailed,
+            Self::LedgerUnwritable => Msg::KeepLedgerUnwritable,
+        }
+    }
+}
+
+/// One line of the deletion ledger.
+#[derive(serde::Serialize)]
+struct DeletionRecord<'a> {
+    /// Seconds since the Unix epoch.
+    time: u64,
+    source: &'a str,
+    output: &'a str,
+    vmaf_mean: f64,
+    vmaf_min: f64,
+    threshold: f64,
+    source_bytes: Option<u64>,
+    output_bytes: Option<u64>,
+    /// `deleted` or `kept`.
+    action: &'static str,
+    reason: Option<KeepReason>,
+}
+
+impl<'a> DeletionRecord<'a> {
+    /// The decision taken for `source` against `vmaf`, with the sizes read
+    /// from disk as they stand.
+    fn new(
+        source: &'a str,
+        output: &'a str,
+        vmaf: &verifier::VmafResult,
+        threshold: f64,
+        reason: Option<KeepReason>,
+    ) -> Self {
+        let size = |path: &str| std::fs::metadata(path).ok().map(|m| m.len());
+        Self {
+            time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs()),
+            source,
+            output,
+            vmaf_mean: vmaf.score,
+            vmaf_min: vmaf.min_score,
+            threshold,
+            source_bytes: size(source),
+            output_bytes: size(output),
+            action: if reason.is_some() { "kept" } else { "deleted" },
+            reason,
+        }
+    }
+}
+
+/// The append-only ledger of deletion decisions.
+fn ledger_path() -> std::path::PathBuf {
+    ledger_dir().join("deletions.jsonl")
+}
+
+#[cfg(not(test))]
+fn ledger_dir() -> std::path::PathBuf {
+    crate::daemon::lifecycle::data_dir()
+}
+
+/// A ledger directory of its own per test thread.
+#[cfg(test)]
+fn ledger_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "av1c_ledger_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ))
+}
+
+/// Append `record` as one JSON line to the ledger and flush it to disk.
+fn append_ledger(record: &DeletionRecord) -> std::io::Result<()> {
+    use std::io::Write;
+
+    crate::utils::ensure_private_dir(&ledger_dir())?;
+    let mut line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
+    line.push(b'\n');
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(ledger_path())?;
+    file.write_all(&line)?;
+    file.sync_data()
+}
+
+/// Record the deletion of `source` and remove it. Returns the reason the
+/// source was kept instead: an unwritable ledger, or a removal that failed.
+fn record_and_delete(
+    source: &str,
+    output: &str,
+    vmaf: &verifier::VmafResult,
+    threshold: f64,
+) -> Option<KeepReason> {
+    if let Err(e) = append_ledger(&DeletionRecord::new(source, output, vmaf, threshold, None)) {
+        warn!(
+            "Keeping source file {source}: {}: {e}",
+            KeepReason::LedgerUnwritable.log()
+        );
+        return Some(KeepReason::LedgerUnwritable);
+    }
+    match std::fs::remove_file(source) {
+        Ok(()) => None,
+        Err(e) => {
+            warn!("Failed to delete source file {source}: {e}");
+            Some(KeepReason::DeleteFailed)
         }
     }
 }
@@ -248,11 +356,12 @@ pub fn run_encoding_pipeline(
             // disabled, a remux, or a tone-mapped DV profile 5 output).
             if config.quality.delete_source_on_success {
                 if let FullEncodeResult::SuccessWithVmaf {
+                    ref vmaf,
                     ref mut source_deleted,
                     ref mut keep_reason,
-                    ..
                 } = result
                 {
+                    let threshold = config.quality.vmaf_threshold;
                     if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
                         warn!(
                             "Keeping source file {input}: {}",
@@ -289,16 +398,28 @@ pub fn run_encoding_pipeline(
                         );
                         *keep_reason = Some(KeepReason::SourceChanged);
                     } else {
-                        match std::fs::remove_file(input) {
-                            Ok(()) => {
+                        match record_and_delete(input, output, vmaf, threshold) {
+                            None => {
                                 info!("Deleted source file: {input}");
                                 *source_deleted = true;
                             }
-                            Err(e) => {
-                                warn!("Failed to delete source file {input}: {e}");
-                                *keep_reason = Some(KeepReason::DeleteFailed);
-                            }
+                            Some(reason) => *keep_reason = Some(reason),
                         }
+                    }
+
+                    // Every decision that kept the source is recorded as well.
+                    // A ledger that could not be written cannot record that.
+                    if let Some(reason) = *keep_reason
+                        && reason != KeepReason::LedgerUnwritable
+                        && let Err(e) = append_ledger(&DeletionRecord::new(
+                            input,
+                            output,
+                            vmaf,
+                            threshold,
+                            Some(reason),
+                        ))
+                    {
+                        warn!("Could not record the kept source file {input}: {e}");
                     }
                 } else if matches!(result, FullEncodeResult::Success) {
                     info!("Keeping source file {input}: no VMAF verification ran for this job");
@@ -478,6 +599,7 @@ fn skips_vmaf(params: &EncodingParams) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::verifier;
     use super::{
         DvMode, EncodingParams, HdrType, KeepReason, SourceIdentity, VideoMetadata, flush_to_disk,
         is_yuv420_within_10_bit, keep_source_reason, skips_vmaf,
@@ -702,6 +824,104 @@ mod tests {
         assert!(!identity.matches_path(path.to_str().unwrap()));
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A scratch directory holding a source and an output file, with this
+    /// thread's ledger removed.
+    fn ledger_fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let _ = std::fs::remove_dir_all(super::ledger_dir());
+        let dir =
+            std::env::temp_dir().join(format!("av1c_ledger_job_{}_{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("movie.mkv");
+        let output = dir.join("movie_av1.mkv");
+        std::fs::write(&source, b"source bytes").unwrap();
+        std::fs::write(&output, b"out").unwrap();
+        (source, output)
+    }
+
+    /// The ledger's only line, parsed.
+    fn only_ledger_line() -> serde_json::Value {
+        let contents = std::fs::read_to_string(super::ledger_path()).unwrap();
+        let mut lines = contents.lines();
+        let line = lines.next().expect("the ledger holds a line");
+        assert_eq!(lines.next(), None, "one line per decision");
+        serde_json::from_str(line).unwrap()
+    }
+
+    fn passing_score() -> verifier::VmafResult {
+        verifier::VmafResult {
+            score: 96.5,
+            min_score: 95.25,
+            max_score: 99.0,
+        }
+    }
+
+    #[test]
+    fn a_deleted_source_is_recorded_as_one_ledger_line() {
+        let (source, output) = ledger_fixture("deleted");
+        let (source, output) = (
+            source.to_str().unwrap().to_string(),
+            output.to_str().unwrap().to_string(),
+        );
+
+        assert_eq!(
+            super::record_and_delete(&source, &output, &passing_score(), 95.0),
+            None
+        );
+        assert!(!std::path::Path::new(&source).exists());
+
+        let line = only_ledger_line();
+        assert_eq!(line["source"], serde_json::json!(source));
+        assert_eq!(line["output"], serde_json::json!(output));
+        assert_eq!(line["action"], serde_json::json!("deleted"));
+        assert_eq!(line["reason"], serde_json::Value::Null);
+        assert_eq!(line["vmaf_mean"], serde_json::json!(96.5));
+        assert_eq!(line["vmaf_min"], serde_json::json!(95.25));
+        assert_eq!(line["threshold"], serde_json::json!(95.0));
+        assert_eq!(line["source_bytes"], serde_json::json!(12));
+        assert_eq!(line["output_bytes"], serde_json::json!(3));
+        assert!(line["time"].as_u64().unwrap() > 0);
+        let _ = std::fs::remove_dir_all(super::ledger_dir());
+    }
+
+    #[test]
+    fn a_kept_source_is_recorded_with_its_reason() {
+        let (source, output) = ledger_fixture("kept");
+        let record = super::DeletionRecord::new(
+            source.to_str().unwrap(),
+            output.to_str().unwrap(),
+            &passing_score(),
+            95.0,
+            Some(KeepReason::AudioTranscoded),
+        );
+        super::append_ledger(&record).unwrap();
+
+        let line = only_ledger_line();
+        assert_eq!(line["action"], serde_json::json!("kept"));
+        assert_eq!(line["reason"], serde_json::json!("AudioTranscoded"));
+        assert!(source.exists());
+        let _ = std::fs::remove_dir_all(super::ledger_dir());
+    }
+
+    #[test]
+    fn a_ledger_that_cannot_be_written_keeps_the_source() {
+        let (source, output) = ledger_fixture("unwritable");
+        // A directory at the ledger's path cannot be opened as a file.
+        crate::utils::ensure_private_dir(&super::ledger_path()).unwrap();
+
+        assert_eq!(
+            super::record_and_delete(
+                source.to_str().unwrap(),
+                output.to_str().unwrap(),
+                &passing_score(),
+                95.0,
+            ),
+            Some(KeepReason::LedgerUnwritable)
+        );
+        assert!(source.exists(), "an unrecorded deletion keeps the source");
+        let _ = std::fs::remove_dir_all(super::ledger_dir());
     }
 
     #[test]
