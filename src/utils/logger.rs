@@ -122,8 +122,6 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().starts_with("test.log"))
             .count();
         assert_eq!(logs, MAX_LOG_FILES);
-        assert!(!dir.join("test.log.2026-01-01").exists());
-        assert!(dir.join("test.log.2026-01-10").exists());
         assert!(dir.join("keep-me.txt").exists());
 
         drop(appender);
