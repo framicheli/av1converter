@@ -443,7 +443,7 @@ When `same_directory` is disabled, `output_directory` is required and must be an
 
 ## Debugging
 
-Set the `AV1_DEBUG` environment variable to enable log output:
+The TUI always writes a log at level `info`, which records every file it encodes, verifies and deletes. Set `AV1_DEBUG` to any value other than `0` or the empty string to raise it to `debug`:
 
 ```bash
 AV1_DEBUG=1 ./av1converter
@@ -453,4 +453,4 @@ Logs roll daily and are written to:
 - **macOS/Linux:** `$XDG_DATA_HOME/av1converter/av1converter.log.<date>` (default `~/.local/share/av1converter/`)
 - **Windows:** `%LOCALAPPDATA%\av1converter\av1converter.log.<date>`, unless `XDG_DATA_HOME` or `HOME` is set, in which case the macOS/Linux path applies
 
-For the daemon, `AV1_DEBUG` raises the log level of stdout or `daemon.log` to debug.
+For the daemon, `AV1_DEBUG` raises the log level of stdout or `daemon.log` to debug in the same way.

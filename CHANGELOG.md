@@ -18,6 +18,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 - `--start` and `--start-foreground` replace `--daemon` and `--daemon-foreground`, which remain as aliases.
 - Stopping or restarting the daemon keeps the running and queued jobs for the next start instead of marking them cancelled; the file that was encoding starts over, and files being analysed are analysed again.
+- The terminal UI now always writes its daily log file, at level `info`, so an encode that deletes a source leaves a record. `AV1_DEBUG` raises it to `debug`, and `AV1_DEBUG=0` (or an empty value) no longer counts as enabled.
 
 ### Added
 
