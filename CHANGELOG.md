@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- Saving settings flushes the new `config.toml` directory entry to disk and clears the temporary files an interrupted save left next to it.
 - A config file that cannot be parsed is now copied to `config.toml.unreadable-<timestamp>` instead of a single `config.toml.bak`, so breaking the file a second time no longer blocks every settings save.
 - Web UI: an open page follows a language change made from another client instead of mixing two languages.
 - Web UI: after the daemon restarts, an open page prompts for the track choices of the new queue's jobs again.

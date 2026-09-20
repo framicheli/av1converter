@@ -217,7 +217,43 @@ impl AppConfig {
         if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
-        result.map_err(|e| AppError::Config(format!("Failed to write config file: {e}")))
+        result.map_err(|e| AppError::Config(format!("Failed to write config file: {e}")))?;
+        Self::settle_directory(config_path);
+        Ok(())
+    }
+
+    /// Flush the renamed entry to disk and remove the temporary files left by
+    /// interrupted saves.
+    fn settle_directory(config_path: &std::path::Path) {
+        let parent = match config_path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            Some(_) => std::path::Path::new("."),
+            None => return,
+        };
+        #[cfg(unix)]
+        if let Err(e) = std::fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+            warn!(
+                "Could not flush the config directory {}: {e}",
+                parent.display()
+            );
+        }
+        let prefix = format!(
+            "{}.",
+            config_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+        );
+        let Ok(entries) = std::fs::read_dir(parent) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            if name.starts_with(&prefix) && path.extension().is_some_and(|ext| ext == "tmp") {
+                let _ = std::fs::remove_file(path);
+            }
+        }
     }
 
     /// Copy `path` aside as `<name>.unreadable-<secs>[-<n>]` if it exists but
@@ -677,6 +713,31 @@ mod tests {
         let loaded: AppConfig = toml::from_str(legacy).unwrap();
         assert_eq!(loaded.audio, AudioConfig::default());
         assert_eq!(loaded.audio.default_mode, AudioMode::Copy);
+    }
+
+    /// A save removes the temporary files an interrupted save left behind,
+    /// and keeps the ones it is not responsible for.
+    #[test]
+    fn a_save_sweeps_leftover_temporary_files() {
+        let dir = std::env::temp_dir().join(format!("av1c_cfg_tmp_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let stale = dir.join("config.toml.0123456789abcdef.tmp");
+        let foreign = dir.join("queue.json.tmp");
+        std::fs::write(&stale, b"half a config").unwrap();
+        std::fs::write(&foreign, b"not ours").unwrap();
+
+        AppConfig::default().save_to_path(&path).unwrap();
+
+        assert!(
+            !stale.exists(),
+            "the leftover temporary file is still there"
+        );
+        assert_eq!(std::fs::read(&foreign).unwrap(), b"not ours");
+        assert!(AppConfig::load_from_file(&path).is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The bytes of every config a user broke by hand survive the save that
