@@ -378,7 +378,7 @@ function updateWorkButtons() {
   $("btn-cancel-disc").hidden = !ripping;
   $("btn-cancel-disc").disabled = offline;
   $("btn-add-disc").disabled = offline || ripping;
-  $("btn-add-disc").title = ripping ? tr("status_ripping") : "";
+  $("btn-add-disc").title = ripping ? tr("disc_busy") : "";
 }
 
 // ── Batch summary ───────────────────────────────────────────────────
@@ -1592,7 +1592,7 @@ $("disc-modal").addEventListener("close", () => {
 async function openDisc() {
   if ($("disc-modal").open) return;
   if (discState.active) {
-    toast(tr("status_ripping"), true);
+    toast(tr("disc_busy"), true);
     return;
   }
   const session = disc = {
