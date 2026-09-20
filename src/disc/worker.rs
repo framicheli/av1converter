@@ -33,6 +33,11 @@ pub enum DiscEvent {
     Finished,
 }
 
+/// The span every line about a disc run carries: the drive or path it reads.
+fn disc_span(source: &DiscSource) -> tracing::Span {
+    tracing::info_span!("disc", drive = %source.to_arg())
+}
+
 /// Scan `source` and report its titles.
 pub fn spawn_scan(
     bin: PathBuf,
@@ -42,6 +47,7 @@ pub fn spawn_scan(
 ) -> JoinHandle<()> {
     let cancel = cancel.clone();
     thread::spawn(move || {
+        let _span = disc_span(&source).entered();
         let scanned = std::panic::catch_unwind(AssertUnwindSafe(|| {
             super::scan_titles(&bin, &source, &cancel)
         }));
@@ -71,6 +77,7 @@ pub fn spawn_rips(
 ) -> JoinHandle<()> {
     let cancel = cancel.clone();
     thread::spawn(move || {
+        let _span = disc_span(&source).entered();
         let confirmed = std::panic::catch_unwind(AssertUnwindSafe(|| {
             staging::confirm_titles(&bin, &source, &titles, &cancel)
         }));

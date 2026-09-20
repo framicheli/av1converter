@@ -139,6 +139,8 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
                     };
                     cancel
                 };
+                let _span =
+                    crate::queue::worker::job_span(id, std::path::Path::new(&path)).entered();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     analyzer::analyze(&path, &cancel)
                 }))

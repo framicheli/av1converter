@@ -57,6 +57,11 @@ pub struct WorkerJob {
     pub subtitle_codecs: Vec<Option<&'static str>>,
 }
 
+/// The span every line about job `index` carries: its queue id and its file.
+pub fn job_span(id: impl std::fmt::Display, file: &std::path::Path) -> tracing::Span {
+    tracing::info_span!("job", id = %id, file = %file.display())
+}
+
 /// Run the encoding worker in a separate thread
 #[allow(clippy::too_many_lines)]
 pub fn run_worker(
@@ -70,6 +75,7 @@ pub fn run_worker(
             let _ = tx.send(WorkerMessage::Cancelled);
             return;
         }
+        let _span = job_span(job.index, &job.input).entered();
         let _ = tx.send(WorkerMessage::Progress(job.index, 0.0));
 
         let tx_progress = tx.clone();
@@ -218,6 +224,43 @@ mod tests {
         );
 
         assert!(matches!(rx.recv().unwrap(), WorkerMessage::Finished));
+    }
+
+    /// A line logged inside the job span carries the job id and its file.
+    #[test]
+    fn log_lines_inside_a_job_span_name_the_job() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Captured(Arc<Mutex<Vec<u8>>>);
+        impl Write for Captured {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let captured = Captured(Arc::new(Mutex::new(Vec::new())));
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let _span = super::job_span(7, std::path::Path::new("/movies/a film.mkv")).entered();
+            tracing::info!("Deleted source file");
+        });
+
+        let logged = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            logged.contains("job{id=7 file=/movies/a film.mkv}"),
+            "{logged}"
+        );
+        assert!(logged.contains("Deleted source file"), "{logged}");
     }
 
     /// Each pipeline result turns into its own messages, in order, and only

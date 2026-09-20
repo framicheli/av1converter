@@ -2248,6 +2248,9 @@ fn analyze_batch(
                     let result = match path {
                         _ if cancel_flag.load(Ordering::Acquire) => Err(AppError::Cancelled),
                         Ok(path) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let _span =
+                                crate::queue::worker::job_span(index, std::path::Path::new(path))
+                                    .entered();
                             analyzer::analyze(path, cancel_flag)
                         }))
                         .unwrap_or_else(|_| Err(AppError::AnalysisPanicked(path.clone()))),
