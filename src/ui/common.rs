@@ -106,6 +106,26 @@ pub fn message_color(kind: MessageKind) -> Color {
     }
 }
 
+/// Fit `text` to terminal-cell width, replacing the dropped tail with "…".
+pub fn truncate_end(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if Line::raw(text).width() <= max_width {
+        return text.to_string();
+    }
+    let mut kept = String::new();
+    for character in text.chars() {
+        let candidate = format!("{kept}{character}…");
+        if Line::raw(&candidate).width() > max_width {
+            break;
+        }
+        kept.push(character);
+    }
+    kept.push('…');
+    kept
+}
+
 /// Create a menu item with selection styling
 pub fn create_menu_item(text: &str, index: usize, selected: usize) -> ListItem<'static> {
     let style = if index == selected {
@@ -124,7 +144,15 @@ pub use crate::i18n::quality_description as get_quality_description;
 
 #[cfg(test)]
 mod tests {
-    use super::wrapped_rows;
+    use super::{truncate_end, wrapped_rows};
+
+    #[test]
+    fn a_text_wider_than_the_room_keeps_its_start() {
+        assert_eq!(truncate_end("[1/3] Encoding: movie.mkv", 10), "[1/3] Enc…");
+        assert_eq!(truncate_end("short", 10), "short");
+        assert_eq!(truncate_end("abc", 0), "");
+        assert_eq!(truncate_end("字字字", 4), "字…");
+    }
 
     #[test]
     fn a_long_cjk_word_fills_rows_by_whole_characters() {

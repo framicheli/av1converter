@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- TUI: the overall percentage and the space saved stay visible in the queue header when the file being encoded has a long name.
 - TUI: the results screen can no longer be opened on an empty queue, for instance right after clearing every finished job.
 - TUI: the text cursor comes back after quitting, a crash or a terminal error, and a terminal error on the way out now stops FFmpeg and removes the staging copies of queued rips as a normal quit does.
 - A file that passed its VMAF check but kept its source now says why in both UIs (transcoded audio, a converted subtitle, a changed or unflushed output, a symbolic link and the rest), instead of leaving it to the log.

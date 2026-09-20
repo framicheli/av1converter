@@ -106,9 +106,11 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
         format!("{} ({done}/{total})", t(lang, Msg::ConversionQueue))
     };
 
-    let mut title_text = title_text;
+    // The overall percentage and the space saved keep their room; the job
+    // description is truncated to whatever the title row has left.
+    let mut suffix = String::new();
     if total_to_encode > 0 {
-        let _ = write!(title_text, " · {:.0}%", app.queue.overall_progress());
+        let _ = write!(suffix, " · {:.0}%", app.queue.overall_progress());
     }
     let (saved, saved_human) = app.queue.total_space_saved();
     if saved != 0 {
@@ -118,12 +120,18 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
             Msg::TotalSpaceSaved
         };
         let _ = write!(
-            title_text,
+            suffix,
             " · {}: {}",
             t(lang, label),
             saved_human.trim_start_matches('-')
         );
     }
+    let inner_width = usize::from(chunks[0].width.saturating_sub(2));
+    let head_width = inner_width.saturating_sub(Line::raw(&suffix).width());
+    let title_text = format!(
+        "{}{suffix}",
+        crate::ui::common::truncate_end(&title_text, head_width)
+    );
 
     let title = Paragraph::new(title_text)
         .style(
@@ -366,7 +374,10 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
         "PgUp/PgDn",
         Style::default().fg(Color::Yellow),
     ));
-    help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::VideoInfo))));
+    help_spans.push(Span::raw(format!(
+        "\u{a0}{}  ",
+        t(lang, Msg::ScrollDetails)
+    )));
     help_spans.push(Span::styled("q", Style::default().fg(Color::Yellow)));
     help_spans.push(Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))));
     let help_text = Line::from(help_spans);
