@@ -33,7 +33,7 @@ cargo check --locked --all-targets   # MSRV job, toolchain 1.91
 
 **TUI**: `src/app.rs` holds `App` (screen state machine, `Screen` enum) and spawns the worker; `src/main.rs` owns the event loop and key handlers; `src/ui/*` are the per-screen renderers.
 
-**Daemon**: `daemon::run_daemon` (`src/daemon/mod.rs`) is the orchestrator loop: one prober thread, the encode worker, and disc runs all report on channels into state behind `SharedState` (`Arc<Mutex<DaemonState>>`). `daemon::server` is a `tiny_http` server with the routes; `daemon::api` holds the JSON handlers. The web UI (`src/daemon/web/`: plain `index.html`, `app.js`, `style.css`, no build step) is embedded with `include_str!`. `DaemonQueue` gives jobs stable ids; the queue persists to `queue.json`. `lifecycle` handles pid/log files and background start/stop; `service` installs the systemd/launchd login unit.
+**Daemon**: `daemon::run_daemon` (`src/daemon/mod.rs`) is the orchestrator loop: one prober thread, the encode worker, and disc runs all report on channels into state behind `SharedState` (`Arc<Mutex<DaemonState>>`). `daemon::server` is a `tiny_http` server with the routes; `daemon::api` holds the JSON handlers. The web UI (`src/daemon/web/`: plain `index.html`, `app.js`, `style.css` and `favicon.png`, no build step) is embedded with `include_str!`/`include_bytes!`. `DaemonQueue` gives jobs stable ids; the queue persists to `queue.json`. `lifecycle` handles pid/log files and background start/stop; `service` installs the systemd/launchd login unit.
 
 **Disc ripping** (`src/disc/`): wraps `makemkvcon` robot mode (`robot.rs` parses its output), rips titles into a staging dir (`staging.rs`), then feeds them into the normal queue as jobs.
 

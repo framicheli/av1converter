@@ -27,6 +27,14 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
   - A rip appears in the queue as a job of its own, with progress and cancellation in the same place as everything else.
   - Staging files are deleted once their encode succeeds, kept when it fails, comes in under the VMAF threshold or cannot be VMAF-checked, and swept at startup when a rip was cut short.
   - Output files are named after the disc label (`<label>_t<NN>_av1.mkv`) rather than MakeMKV's `title_t00.mkv`.
+  - Rips from a `BDMV` or `VIDEO_TS` folder are named after the folder above it, and rips from a disc image drop the `.iso` extension.
+  - The default staging folder is private to the user (`av1converter-staging-<uid>`, mode 0700 on Unix), and a staging directory is only ever deleted from under the staging root.
+  - A disc swapped between the scan and the rip is caught before extraction, by drive id, drive name and disc label and by each title's id, name, length and size.
+  - A rip can be cancelled at any point, including while drives are being listed; cancelling stops `makemkvcon` and its children without waiting for them.
+  - A rip cut short by a crash is cleaned up the next time the TUI or the daemon starts.
+  - A failure is reported with MakeMKV's closing messages, and a run it reports as "… titles saved, 1 failed" is refused even when it exits cleanly and leaves a file behind. Titles a stopped run never reached are skipped with that error.
+  - A title with no output directory configured is reported as an error instead of waiting in the queue.
+  - On Windows, MakeMKV is found under `C:\Program Files (x86)\MakeMKV\` and `C:\Program Files\MakeMKV\`.
 - `--scan-discs`, a diagnostic that prints the drives and the titles MakeMKV reports.
 - `--purge`, which deletes configuration and daemon state after confirmation. Refuses while the daemon is running.
 - **Run at Startup.** A Settings toggle (and `--install-service` / `--uninstall-service`) installs a systemd user unit on Linux or a launchd agent on macOS so the web UI comes up at login. Not stored in `config.toml`; `--status` reports whether it is installed. `--purge` removes the unit too.
@@ -112,16 +120,11 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Empty auth tokens never open the API.
 - Cancelling disc listing respects shutdown; encode/disc workers join within the shutdown grace.
 - Preferred languages match BCP-47 region tags (`en-US` ↔ `eng`).
-- Cancelling a `makemkvcon` run could block until its child processes exited; the output reader is no longer waited on after a cancellation.
 - A job's analysis result no longer overwrites a status the job had already reached, so a file that failed keeps the reason it failed.
 - The web UI's Cancel button now stops an in-progress disc rip, not only an encode. `+ Disc` is disabled while a rip is running.
 - Daemon shutdown now kills leftover ffmpeg/ffprobe/makemkvcon children after the grace period and waits for the encode and rip worker threads to finish.
-- A TUI disc rip appends to the queue instead of wiping it, and rip events follow those jobs rather than raw queue positions.
 - Turning off Run at Startup from the TUI uninstalls the login unit without stopping a daemon that is already running, matching the web UI.
-- Drive listings can be cancelled; `disc.active` is the shared flag those listings set, so the dashboard can stop them.
-- Late MakeMKV progress for a title that has already extracted no longer resets that job to ripping.
 - A successful queue save keeps the previous `queue.json` as `queue.json.bak`; a corrupt file reloads from that backup.
-- Disc identity is drive id, drive name, disc label, and title id plus title name, so a same-label swap is caught before extraction.
 - Web status pill prefers verifying over encoding; the track modal no longer opens over unsaved Settings; cancelled jobs appear in the batch summary; cancel uses an in-page confirm; a skipped poll tick is retried.
 - The TUI home title and the disc Discovering screen follow the selected language. `--start` mints an auth token only after taking the PID lock.
 - After a forced shutdown, leftover encode/rip messages are applied before `queue.json` is written, so a killed encode is not restarted as Ready. HTTP mutations are refused once shutdown starts, and in-flight requests finish before worker handles are taken.
@@ -143,7 +146,6 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - The systemd unit stops with `KillMode=mixed` and a stop timeout that covers the daemon's own grace, so a stop cancels the running job cleanly; `%` and `$` in the binary path are escaped.
 - `--start` reports success only once the daemon is listening, and a failed bind as a failure. Shutdown cancels disc and analysis work before waiting for HTTP requests and no longer waits indefinitely for a stalled client. A running probe is reached by cancellation. A PID lock can no longer be taken on an already-deleted PID file.
 - Starting the daemon no longer deletes staged rips that a running TUI is waiting to encode, quitting the TUI removes its staged rips, leftover staging directories are also swept when a disc run ends, and cancelling a rip kills makemkvcon's whole process group.
-- A ripped title with no output directory is reported as an error instead of waiting in Ready forever.
 - On Windows, staging directories and partial encodes owned by a running instance are recognised as in use instead of being treated as leftovers.
 - `--install-service` reports a daemon that fails to start (a port already in use, for example) as a failure and removes the unit or agent, instead of claiming it will start at login. A daemon that is still starting after 30 seconds stays installed, with a note to check `--status`.
 - The launchd agent runs as a standard process rather than a background one, so macOS no longer throttles its disk access; `Nice` still lowers its CPU priority.
@@ -151,7 +153,6 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Web API: the output directory is confined to `browse_root` even when outputs go next to their sources; a saved directory that has since disappeared no longer blocks saving other settings and is reported as a warning. Disc scans and rips no longer hold the daemon's state lock during filesystem checks, and are refused once shutdown starts. Saving tracks for a Dolby Vision job after switching to a hardware encoder works. Concurrent settings, autostart and queue-add requests no longer overwrite each other or bypass the browse root. The cancelled count survives clearing finished jobs. Folder mode skips directories named like videos, omitted track lists keep their values, requests through a reverse proxy with forwarding headers are treated as remote, and a padded browse root is trimmed. Old disc titles are cleared when drives are listed.
 - Web UI: removing a ripped job, or clearing finished jobs that include one, asks first. Settings are re-read when the tab opens. Closing a tracks dialog stops further automatic prompts until new files arrive. The disc dialog no longer flashes "No drive found" or old titles. Keyboard focus survives Move up and disc dialog redraws. The file browser cannot select a folder it did not load. Adding `#token=` to an open page logs in. Interface strings are fetched again after a failed load, durations are translated, "Queue is empty" waits for the queue to load, refreshes after actions show the new state, and cancel re-checks what is running after the confirmation. The breadcrumb and track rows fit phone widths.
 - TUI: a rip that fails while being cancelled no longer leaves the queue stuck on "Cancelling". A finished job no longer throws you out of track configuration. Cancelling analysis keeps already analysed jobs and does nothing once analysis has finished, and it reaches every analysis batch. Ctrl and Alt shortcuts no longer type letters into text fields, and `Shift+Tab` moves focus backwards. Long notices and the configuration footer wrap instead of being cut off, text uses the terminal's default colour, `Space` selects the open folder in folder mode, quitting with unsaved settings says so, a scan finishing during a cancel returns to the drive list, and the remaining English status messages are translated.
-- Tests use a private configuration path per test thread instead of the user's configuration or a process-wide environment variable.
 - Small terminals keep the home menu and its notices visible, disc titles and other normal text use the terminal's default colour, the Performance heading appears once, titles without chapters omit the count (TUI, web and `--scan-discs`), ripped titles no longer claim their source was deleted, quitting warns that ripped titles still in the queue will be deleted, long configuration values end with an ellipsis, and the Opus target stays visible in narrow track panels.
 - The web page no longer scrolls sideways on phones, and queue sizes stay on one line.
 - The cancel prompt says that jobs waiting to encode are cancelled with the current encode.
@@ -159,9 +160,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Cover art that comes before the video in an MP4/MOV is no longer analysed, encoded and VMAF-checked in place of the film, which could delete the source after a one-frame encode.
 - The source is kept when a selected subtitle track is converted or left out, or when cover art or other attachments are not carried into the output.
 - The encoded output is flushed to disk before the source is deleted; if the flush fails, the source is kept.
-- Removing or clearing a ripped job only deletes a staging directory under the staging root, never a directory named after a disc title elsewhere.
 - Restarting the daemon no longer marks jobs as outside `browse_root` because their source was deleted or the share is not mounted yet. Finished jobs keep their history, and a staged rip is no longer swept while its job still exists.
-- Ripping no longer fails with "disc changed" when the drive list was read before the disc finished loading; staged files carry the disc label.
 - First-run encoder detection encodes one test frame with each hardware AV1 encoder instead of matching GPU names, so Turing Quadros, AV1-decode-only GPUs and AMD cards are no longer given an encoder they cannot use; Windows no longer calls the deprecated wmic.
 - A config section with only some keys keeps the defaults for the rest instead of discarding the whole file; a config.toml that cannot be read is reported in the TUI status line.
 - A `[presets.<tier>]` table with only some values keeps that tier's defaults for the others instead of discarding the whole configuration.
@@ -188,14 +187,6 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 - Windows: an empty PID file left by a crash no longer blocks every start, and a failed `tasklist` no longer removes a running daemon's PID file.
 - Delete-on-success keeps a symlinked source rather than removing the link and reporting it deleted.
 - Adding files reads their identities without holding the daemon lock.
-- A machine with no drive, or a disc with no usable titles, is reported as "no drive" or "drive empty" instead of quoting MakeMKV's startup banner or "Operation successfully completed".
-- A long rip that fails is reported with MakeMKV's closing messages, not with the first 200 it printed.
-- The default staging folder is private to the user (`av1converter-staging-<uid>`, mode 0700 on Unix), so another user on the machine can no longer claim it or tamper with a rip.
-- A rip cut short by a crash is cleaned up when the TUI or the daemon next starts, instead of lingering for 30 minutes or, after a TUI crash, until the daemon runs.
-- Rips from a `BDMV` or `VIDEO_TS` folder are named after the folder above it, and rips from an image drop the `.iso` extension from the name.
-- When a rip run stops on an error, the titles it never reached are skipped with that error instead of being shown and counted as cancelled.
-- A rip MakeMKV reports as failed ("… titles saved, 1 failed") is refused even when it exits cleanly and leaves a file behind.
-- On Windows, MakeMKV is also found under `C:\Program Files\MakeMKV`.
 - Teletext and CEA-608 subtitle tracks, common in DVB `.ts` recordings, are left out of MKV output instead of failing the encode; the source is kept.
 - TUI: saving a different encoder re-checks that FFmpeg has it, updating the Home warning and saying so when it is missing; the startup warning about a missing encoder no longer stays on screen for good.
 - TUI: Ctrl+C while shutting down no longer opens a dialog that cannot be answered, and `q` on the "terminal too small" screen asks to quit even while a settings field is being edited, instead of typing into it.

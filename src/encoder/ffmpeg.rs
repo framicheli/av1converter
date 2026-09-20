@@ -11,8 +11,8 @@ use std::time::Duration;
 static JOB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Scratch path an in-progress encode is written to, alongside the real output
-/// and keeping its extension so `FFmpeg` still infers the container. Renamed
-/// onto the destination once the encode finishes.
+/// and keeping its extension so `FFmpeg` still infers the container. Published
+/// to the destination by [`publish_partial`] once the encode finishes.
 fn partial_output_path(output: &str, tag: &str) -> String {
     let path = Path::new(output);
     let parent = path.parent().unwrap_or(Path::new("."));
@@ -558,14 +558,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// The scratch file sits next to the real output, keeps its extension, and
-    /// is never the destination path itself.
     #[cfg(any(unix, windows))]
     #[test]
     fn the_current_process_counts_as_alive() {
         assert!(super::pid_alive(std::process::id()));
     }
 
+    /// The scratch file sits next to the real output, keeps its extension, and
+    /// is never the destination path itself.
     #[test]
     fn partial_path_is_a_distinct_sibling_with_the_same_extension() {
         let output = "/media/films/movie_av1.mkv";

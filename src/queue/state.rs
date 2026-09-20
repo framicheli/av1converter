@@ -360,8 +360,8 @@ fn preserve_unreadable(path: &Path) -> Option<PathBuf> {
 /// claims, so on disk that is indistinguishable from "never probed".
 ///
 /// - `Encoding` — the `.part` scratch file is deleted and the job re-queued to
-///   encode from the start. The destination is untouched: `FFmpeg` only renames
-///   onto it once finished.
+///   encode from the start. The destination is untouched: the scratch file is
+///   published to it only once the encode finishes.
 /// - `Verifying` with its output on disk — recorded as encoded-but-unverified.
 ///   Without its output, it is handled like `Encoding`.
 /// - `Analyzing`, and anything else unfinished — `Ready` when analyzed,

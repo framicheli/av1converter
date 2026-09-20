@@ -2,7 +2,6 @@
 //! and stopping a running instance.
 //!
 //! Daemonization is Unix-only; on other platforms use `--start-foreground`.
-//! running in the foreground.
 
 use std::fs::File;
 #[cfg(unix)]

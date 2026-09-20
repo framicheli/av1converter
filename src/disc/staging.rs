@@ -971,7 +971,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// A rip that fails takes its half-written file with it.
     /// The drive a rip starts from is the one listed now, not the one listed
     /// before the disc loaded.
     #[cfg(unix)]
@@ -994,6 +993,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// A rip that fails takes its half-written file with it.
     #[cfg(unix)]
     #[test]
     fn a_failed_rip_leaves_no_partial_behind() {

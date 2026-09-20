@@ -287,7 +287,8 @@ mod tests {
         assert_eq!(sel.audio_to_opus, vec![2]);
     }
 
-    /// Bitrate follows the source channel count; the layout is never changed.
+    /// Opus bitrate follows the source channel count, and an unknown count
+    /// falls back to stereo.
     #[test]
     fn opus_bitrate_scales_with_channel_count() {
         let tracks = [
