@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- Stopping the daemon during a disc rip now leaves the title for the next start to settle, and a saved queue whose job ids run past its counter is kept instead of being discarded.
 - The daemon now stops with an error when it cannot bind the web server, install its signal handler, or record the address it is listening on, instead of running where `--status` and `--stop` cannot find it. A failed start no longer leaves `ffprobe` processes behind.
 - TUI cancel confirm (Esc → Yes) actually cancels encoding, analysis, and disc work instead of only closing the dialog.
 - Encode/probe/VMAF cancel kills the whole process group; shutdown `kill_all` skips reused PIDs and on Windows no longer requires the child image to match this binary.

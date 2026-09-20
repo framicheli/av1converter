@@ -217,9 +217,7 @@ impl PersistedQueue {
     /// per job, all below `next_id`. [`load`] discards a file that fails this.
     fn is_consistent(&self) -> bool {
         let unique: std::collections::HashSet<_> = self.ids.iter().collect();
-        self.ids.len() == self.state.jobs.len()
-            && unique.len() == self.ids.len()
-            && self.ids.iter().all(|id| *id < self.next_id)
+        self.ids.len() == self.state.jobs.len() && unique.len() == self.ids.len()
     }
 }
 
@@ -448,6 +446,41 @@ pub fn needs_analysis(queue: &PersistedQueue) -> Vec<(usize, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A saved queue whose ids run past its `next_id` is kept, with `next_id`
+    /// floored past the highest id in hand.
+    #[test]
+    fn a_queue_whose_ids_run_past_next_id_keeps_its_jobs() {
+        let dir = std::env::temp_dir().join(format!("av1c_ids_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("queue.json");
+        let job = crate::queue::EncodingJob::new(std::path::PathBuf::from("/movies/a.mkv"));
+        let state = QueueState {
+            jobs: vec![job],
+            ..QueueState::default()
+        };
+        save(
+            &path,
+            &QueueRef {
+                state: &state,
+                ids: &[7],
+                next_id: 2,
+            },
+        )
+        .unwrap();
+
+        let (loaded, unreadable) = load(&path);
+
+        assert!(unreadable.is_none());
+        assert_eq!(loaded.ids, vec![7]);
+        assert_eq!(loaded.state.jobs.len(), 1);
+        let mut queue = crate::daemon::state::DaemonQueue::from_persisted(loaded);
+        let next = queue.push(crate::queue::EncodingJob::new(std::path::PathBuf::from(
+            "/movies/b.mkv",
+        )));
+        assert_eq!(next, 8);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use std::path::PathBuf;
 
     fn finished_job(source: u64, output: u64) -> EncodingJob {

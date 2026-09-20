@@ -404,9 +404,6 @@ fn drain_shutdown_channels(
     if lock(shared).encoding_active {
         apply_worker_message(shared, WorkerMessage::Cancelled);
     }
-    if lock(shared).disc.active {
-        apply_disc_event(shared, probe_tx, crate::disc::worker::DiscEvent::Cancelled);
-    }
 }
 
 /// Build the starting state from the queue this daemon last wrote. Returns the
@@ -498,6 +495,16 @@ fn restore_state(
     (state, reprobe)
 }
 
+/// The size of a freshly ripped title's file, read outside the state lock.
+fn ripped_size(event: &crate::disc::worker::DiscEvent) -> Option<u64> {
+    match event {
+        crate::disc::worker::DiscEvent::TitleReady { path, .. } => {
+            std::fs::metadata(path).ok().map(|m| m.len())
+        }
+        _ => None,
+    }
+}
+
 /// Apply one event from a disc run, and hand each extracted file straight to
 /// the prober: the drive moves on to the next title while this one is probed.
 fn apply_disc_event(
@@ -507,6 +514,7 @@ fn apply_disc_event(
 ) {
     use crate::disc::worker::DiscEvent;
 
+    let ripped_size = ripped_size(&event);
     let mut ready = None;
     {
         let mut state = lock(shared);
@@ -534,7 +542,7 @@ fn apply_disc_event(
                     && let Some(job) = state.queue.job_by_id_mut(id)
                     && matches!(job.status, JobStatus::Ripping { .. })
                 {
-                    job.source_size = std::fs::metadata(&path).ok().map(|m| m.len());
+                    job.source_size = ripped_size;
                     job.path = path;
                     if let Some(path) = job.path.to_str() {
                         job.status = JobStatus::Analyzing;
@@ -1138,6 +1146,36 @@ fn finish_job(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shutdown leaves a running rip as it is, for `resume` to settle.
+    #[test]
+    fn a_shutdown_leaves_a_running_rip_for_the_next_start() {
+        let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (probe_tx, _probe_rx) = mpsc::channel();
+        let (_worker_tx, worker_rx) = mpsc::channel();
+        let (_disc_tx, disc_rx) = mpsc::channel();
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("Title 0"));
+            job.status = JobStatus::Ripping { progress: 40.0 };
+            job.temporary = true;
+            let id = state.queue.push(job);
+            state.disc.job_ids = vec![id];
+            state.disc.active = true;
+            id
+        };
+
+        drain_shutdown_channels(&shared, &worker_rx, &disc_rx, &probe_tx);
+
+        let state = lock(&shared);
+        let job = state.queue.job_by_id(id).unwrap();
+        let JobStatus::Ripping { progress } = job.status else {
+            panic!("a rip stays a rip across a shutdown");
+        };
+        assert!((progress - 40.0).abs() < f64::EPSILON);
+        assert!(job.temporary);
+        assert_eq!(state.queue.state.cancelled_count, 0);
+    }
 
     /// A listen address already in use fails startup.
     #[test]
