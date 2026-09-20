@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- Track selection now recognises more language codes, including Slovak, Icelandic, Persian, Croatian, Serbian, Bulgarian, Catalan, Indonesian, Malay and the Norwegian written forms. On macOS and Windows, two files whose names differ only in capitalisation no longer get the same output name, and a link pointing nowhere is skipped instead of queued.
 - Staging directories this process left behind are now cleaned up on the next sweep, and an internal failure during a rip no longer leaves `makemkvcon` holding the drive.
 - The staging directory can no longer be changed while ripped titles are waiting to be encoded, which used to leave their files behind for good.
 - A disc swapped for another with the same title numbering is now caught by each title's length and size, and a MakeMKV notice that the Blu-ray key is about to expire is no longer reported as an expired key.

@@ -347,7 +347,12 @@ fn collect_video_files_inner(
                 warn!("Skipping {}: {e}", path.display());
             }
         } else if is_video_file(&path) {
-            let real = path.canonicalize().unwrap_or_else(|_| path.clone());
+            let resolved = path.canonicalize();
+            if resolved.is_err() && root.is_some() {
+                warn!("Skipping {}: it does not resolve", path.display());
+                continue;
+            }
+            let real = resolved.unwrap_or_else(|_| path.clone());
             if root.is_none_or(|root| real.starts_with(root)) && seen_files.insert(real.clone()) {
                 paths.push(if root.is_some() { real } else { path });
             }
@@ -356,10 +361,20 @@ fn collect_video_files_inner(
     Ok(())
 }
 
+/// The key a path is compared under: case-folded where the filesystem ignores
+/// case, so `Movie_av1.mkv` and `movie_av1.mkv` count as one name.
+fn output_key(path: &Path) -> PathBuf {
+    if cfg!(any(target_os = "macos", target_os = "windows")) {
+        PathBuf::from(path.as_os_str().to_string_lossy().to_lowercase())
+    } else {
+        path.to_path_buf()
+    }
+}
+
 /// Make every generated output distinct from every queued source and output.
 /// Terminal, encoding, and verifying jobs keep their output path.
 pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
-    let mut used: HashSet<PathBuf> = jobs.iter().map(|job| job.path.clone()).collect();
+    let mut used: HashSet<PathBuf> = jobs.iter().map(|job| output_key(&job.path)).collect();
     used.extend(
         jobs.iter()
             .filter(|job| {
@@ -369,7 +384,7 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
                         JobStatus::Encoding { .. } | JobStatus::Verifying
                     )
             })
-            .filter_map(|job| job.output_path.clone()),
+            .filter_map(|job| job.output_path.as_deref().map(output_key)),
     );
 
     for job in jobs {
@@ -384,7 +399,7 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
         let Some(output) = job.output_path.clone() else {
             continue;
         };
-        if used.insert(output.clone()) && std::fs::symlink_metadata(&output).is_err() {
+        if used.insert(output_key(&output)) && std::fs::symlink_metadata(&output).is_err() {
             continue;
         }
 
@@ -400,11 +415,12 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
                 parent.join(name)
             })
             .find(|candidate| {
-                !used.contains(candidate) && std::fs::symlink_metadata(candidate).is_err()
+                !used.contains(&output_key(candidate))
+                    && std::fs::symlink_metadata(candidate).is_err()
             });
 
         if let Some(candidate) = free {
-            used.insert(candidate.clone());
+            used.insert(output_key(&candidate));
             job.output_path = Some(candidate);
         } else {
             // Left pointing at the taken path: the encoder refuses to overwrite
@@ -450,7 +466,7 @@ fn language_canonical(tag: &str) -> Option<&'static str> {
         "nl" | "nld" | "dut" => Some("nld"),
         "pl" | "pol" => Some("pol"),
         "sv" | "swe" => Some("swe"),
-        "no" | "nor" => Some("nor"),
+        "no" | "nor" | "nb" | "nob" | "nn" | "nno" => Some("nor"),
         "da" | "dan" => Some("dan"),
         "fi" | "fin" => Some("fin"),
         "cs" | "ces" | "cze" => Some("ces"),
@@ -464,6 +480,19 @@ fn language_canonical(tag: &str) -> Option<&'static str> {
         "th" | "tha" => Some("tha"),
         "vi" | "vie" => Some("vie"),
         "uk" | "ukr" => Some("ukr"),
+        "sk" | "slk" | "slo" => Some("slk"),
+        "sl" | "slv" => Some("slv"),
+        "is" | "isl" | "ice" => Some("isl"),
+        "fa" | "fas" | "per" => Some("fas"),
+        "hr" | "hrv" => Some("hrv"),
+        "sr" | "srp" => Some("srp"),
+        "bg" | "bul" => Some("bul"),
+        "ca" | "cat" => Some("cat"),
+        "id" | "ind" => Some("ind"),
+        "ms" | "msa" | "may" => Some("msa"),
+        "et" | "est" => Some("est"),
+        "lv" | "lav" => Some("lav"),
+        "lt" | "lit" => Some("lit"),
         "und" => Some("und"),
         _ => None,
     }
@@ -979,6 +1008,70 @@ mod tests {
 
         assert_eq!(job.track_selection.audio_indices, vec![0]);
         assert_eq!(job.track_selection.subtitle_indices, vec![3]);
+    }
+
+    /// The bibliographic and terminological codes of one language match, as
+    /// do their two-letter forms.
+    /// On a case-insensitive filesystem, two sources whose names differ only
+    /// in case do not get the same output name.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn outputs_differing_only_in_case_are_made_unique() {
+        let dir = std::env::temp_dir().join(format!("av1c_case_{}", std::process::id()));
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let mut first = EncodingJob::new(dir.join("Movie.mkv"));
+        first.output_path = Some(out.join("Movie_av1.mkv"));
+        let mut second = EncodingJob::new(dir.join("movie.mkv"));
+        second.output_path = Some(out.join("movie_av1.mkv"));
+        let mut jobs = vec![first, second];
+
+        make_output_paths_unique(&mut jobs);
+
+        assert_eq!(jobs[0].output_path, Some(out.join("Movie_av1.mkv")));
+        assert_eq!(jobs[1].output_path, Some(out.join("movie_av1_2.mkv")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A link that resolves nowhere is not queued under a browse root.
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_under_a_root_is_skipped() {
+        let dir = std::env::temp_dir().join(format!("av1c_dangling_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real.mkv");
+        std::fs::write(&real, b"v").unwrap();
+        std::os::unix::fs::symlink(dir.join("gone.mkv"), dir.join("dangling.mkv")).unwrap();
+        let root = dir.canonicalize().unwrap();
+
+        let mut found = Vec::new();
+        collect_video_files_within(&dir, &root, &mut found, None);
+
+        assert_eq!(found, vec![real.canonicalize().unwrap()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn language_aliases_cover_both_iso639_2_codes() {
+        for (a, b) in [
+            ("slo", "slk"),
+            ("sk", "slk"),
+            ("ice", "isl"),
+            ("per", "fas"),
+            ("may", "msa"),
+            ("hr", "hrv"),
+            ("sr", "srp"),
+            ("bg", "bul"),
+            ("ca", "cat"),
+            ("id", "ind"),
+            ("nb", "nor"),
+            ("nno", "nor"),
+        ] {
+            assert!(language_matches(a, b), "{a} should match {b}");
+        }
+        assert!(!language_matches("slk", "slv"));
+        assert!(!language_matches("hrv", "srp"));
     }
 
     #[test]
