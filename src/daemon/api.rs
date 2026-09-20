@@ -1693,8 +1693,9 @@ mod tests {
     #[cfg(unix)]
     use super::queue_add;
     use super::{
-        RecursiveScanGuard, queue, queue_cancel, queue_clear_finished, queue_move_up, queue_remove,
-        settings_access, status, within_root,
+        Msg, RecursiveScanGuard, SharedState, Value, fs_browse, json, queue, queue_cancel,
+        queue_cancel_analysis, queue_clear_finished, queue_move_up, queue_remove, settings_access,
+        status, within_root,
     };
     use crate::config::AppConfig;
     #[cfg(unix)]
@@ -1703,6 +1704,7 @@ mod tests {
     use crate::queue::{EncodingJob, JobStatus};
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -1739,6 +1741,175 @@ mod tests {
         assert_eq!(code, 200);
         assert_eq!(body["removed"], 1);
         assert!(lock(&shared).queue.state.jobs.is_empty());
+    }
+
+    /// A confirmed clear deletes the rip's staging directory; an unconfirmed
+    /// one leaves it where it is.
+    #[cfg(unix)]
+    #[test]
+    fn clearing_a_finished_rip_deletes_its_staging_directory() {
+        let root = std::env::temp_dir().join(format!("av1c_clear_stage_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let staged = crate::disc::staging::staged_rip(&root, std::process::id());
+
+        let mut config = AppConfig::default();
+        config.disc.staging_directory = Some(root.to_string_lossy().into_owned());
+        let mut state = DaemonState::new(config);
+        let mut job = EncodingJob::new(staged.clone());
+        job.status = JobStatus::DoneWithVmaf { score: 96.0 };
+        job.temporary = true;
+        state.queue.push(job);
+        let shared = Arc::new(Mutex::new(state));
+
+        assert_eq!(queue_clear_finished(&shared, &serde_json::json!({})).0, 409);
+        assert!(staged.exists(), "an unconfirmed clear keeps the rip");
+
+        assert_eq!(
+            queue_clear_finished(&shared, &serde_json::json!({"confirm": true})).0,
+            200
+        );
+        assert!(!staged.exists());
+        assert!(!staged.parent().unwrap().exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Cancelling analysis settles the jobs that were waiting or being probed
+    /// and leaves everything else alone.
+    #[test]
+    fn cancelling_analysis_settles_only_the_unanalysed_jobs() {
+        let mut state = DaemonState::new(AppConfig::default());
+        for status in [
+            JobStatus::Pending,
+            JobStatus::Analyzing,
+            JobStatus::Ready,
+            JobStatus::DoneWithVmaf { score: 96.0 },
+        ] {
+            let mut job = EncodingJob::new(PathBuf::from("/x/in.mkv"));
+            job.status = status;
+            state.queue.push(job);
+        }
+        let shared = Arc::new(Mutex::new(state));
+
+        let (code, body) = queue_cancel_analysis(&shared);
+
+        assert_eq!((code, body["skipped"].as_u64()), (200, Some(2)));
+        let state = lock(&shared);
+        assert!(
+            state
+                .analysis_cancel
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+        let statuses: Vec<&JobStatus> = state.queue.state.jobs.iter().map(|j| &j.status).collect();
+        assert!(matches!(statuses[0], JobStatus::Skipped { .. }));
+        assert!(matches!(statuses[1], JobStatus::Skipped { .. }));
+        assert!(matches!(statuses[2], JobStatus::Ready));
+        assert!(matches!(statuses[3], JobStatus::DoneWithVmaf { .. }));
+        assert_eq!(state.queue.state.cancelled_count, 2);
+        assert_eq!(state.queue.state.skipped_count, 2);
+    }
+
+    /// The browser refuses a path outside the root, filters an entry that
+    /// links out of it, and offers no parent at the root itself.
+    #[cfg(unix)]
+    #[test]
+    fn fs_browse_stays_inside_the_browse_root() {
+        let base = std::env::temp_dir().join(format!("av1c_browse_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(root.join("inside")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.mkv"), b"x").unwrap();
+        std::fs::write(root.join("kept.mkv"), b"x").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.mkv"), root.join("escape.mkv")).unwrap();
+
+        let mut config = AppConfig::default();
+        config.daemon.browse_root = root.to_string_lossy().into_owned();
+        let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(config)));
+
+        let (code, body) = fs_browse(&shared, &outside.to_string_lossy(), false);
+        assert_eq!(
+            (code, &body["error"]),
+            (
+                403,
+                &json!(crate::i18n::t(
+                    crate::i18n::Language::English,
+                    Msg::ErrOutsideBrowseRoot
+                ))
+            )
+        );
+
+        let (code, body) = fs_browse(&shared, &root.to_string_lossy(), false);
+        assert_eq!(code, 200);
+        assert_eq!(body["parent"], Value::Null, "no way out of the root");
+        let names = |key: &str| -> Vec<String> {
+            body[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(names("dirs"), vec!["inside".to_string()]);
+        assert_eq!(names("files"), vec!["kept.mkv".to_string()]);
+
+        // A directory inside the root does offer its parent.
+        let (code, body) = fs_browse(&shared, &root.join("inside").to_string_lossy(), false);
+        assert_eq!(code, 200);
+        assert_eq!(
+            body["parent"],
+            json!(root.canonicalize().unwrap().to_string_lossy())
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A folder inside the root holding a symlink out of it queues nothing,
+    /// in both folder modes.
+    #[cfg(unix)]
+    #[test]
+    fn adding_a_folder_never_queues_a_link_out_of_the_root() {
+        let base = std::env::temp_dir().join(format!("av1c_add_escape_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.mkv"), b"x").unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.mkv"), root.join("link.mkv")).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.mkv"), root.join("sub/link.mkv")).unwrap();
+
+        let mut config = AppConfig::default();
+        config.daemon.browse_root = root.to_string_lossy().into_owned();
+        let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(config)));
+        let (probe_tx, _probe_rx) = mpsc::channel();
+        let shutdown = AtomicBool::new(false);
+
+        for mode in ["folder", "folder_recursive"] {
+            let (code, body) = queue_add(
+                &shared,
+                &probe_tx,
+                &json!({"path": root.to_string_lossy(), "mode": mode}),
+                &shutdown,
+            );
+            assert_eq!(
+                (code, &body["error"]),
+                (
+                    400,
+                    &json!(crate::i18n::t(
+                        crate::i18n::Language::English,
+                        Msg::NoVideoFiles
+                    ))
+                ),
+                "{mode} queued something"
+            );
+            assert!(lock(&shared).queue.state.jobs.is_empty());
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
