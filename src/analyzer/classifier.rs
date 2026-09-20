@@ -16,8 +16,9 @@ pub enum ResolutionTier {
 impl ResolutionTier {
     /// Classify resolution into a tier.
     ///
-    /// Uses the short and long sides so portrait clips classify like their
-    /// landscape equivalents (1080×1920 is Full HD, not UHD):
+    /// Classifies on the short and long sides: a portrait clip lands in the
+    /// same tier as its landscape equivalent (1080×1920 is Full HD, not UHD).
+    ///
     /// - Above 4K: long ≥ 4097 or short ≥ 2161
     /// - UHD: long ≥ 3000 or short ≥ 1800
     /// - Full HD: long ≥ 1920 or short ≥ 1080 (includes 1440p)

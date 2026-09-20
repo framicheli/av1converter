@@ -54,8 +54,7 @@ impl QueueState {
     }
 
     /// Progress across the current encode session, in percent. Counted from
-    /// [`Self::encoding_progress_done`], not from the job list, which jobs can
-    /// leave mid-session.
+    /// [`Self::encoding_progress_done`], not from the job list.
     pub fn overall_progress(&self) -> f64 {
         if self.total_jobs_to_encode == 0 {
             return 0.0;
@@ -75,7 +74,7 @@ impl QueueState {
             })
             .unwrap_or(0.0);
 
-        // u32::try_from avoids usize→f64 precision lint; f64::from(u32) is lossless
+        // Counts go through u32; f64::from(u32) is lossless.
         let done = f64::from(u32::try_from(completed).unwrap_or(u32::MAX));
         let total = f64::from(u32::try_from(self.total_jobs_to_encode).unwrap_or(u32::MAX));
         ((done * 100.0 + current_progress) / total).min(100.0)
@@ -91,7 +90,7 @@ impl QueueState {
         let total_estimated_secs = elapsed_secs / (progress / 100.0);
         let remaining_secs = total_estimated_secs - elapsed_secs;
         if remaining_secs > 0.0 {
-            // Non-panicking: a progress value near zero overflows `Duration`.
+            // A progress value near zero overflows `Duration` and yields `None`.
             Duration::try_from_secs_f64(remaining_secs).ok()
         } else {
             None
@@ -191,8 +190,8 @@ impl Default for QueueState {
     }
 }
 
-/// The queue as it is written to disk, carrying the stable HTTP ids so they
-/// survive a restart.
+/// The queue as it is written to disk, carrying the stable HTTP ids across a
+/// restart.
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct PersistedQueue {
@@ -238,8 +237,7 @@ pub fn save(path: &Path, queue: &QueueRef<'_>) -> std::io::Result<()> {
     save_serialized(path, &json)
 }
 
-/// Write an already-serialized queue without keeping its caller's state lock
-/// held across disk I/O.
+/// Write an already-serialized queue to `path`.
 pub(crate) fn save_serialized(path: &Path, json: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
@@ -247,7 +245,7 @@ pub(crate) fn save_serialized(path: &Path, json: &[u8]) -> std::io::Result<()> {
     {
         let mut file = std::fs::File::create(&tmp)?;
         file.write_all(json)?;
-        // The rename can otherwise land before the contents.
+        // The contents reach disk before the rename.
         file.sync_all()?;
     }
     let bak = path.with_extension("json.bak");
@@ -357,7 +355,7 @@ fn preserve_unreadable(path: &Path) -> Option<PathBuf> {
 ///
 /// In-flight states settle by whether the job carries metadata, not by the
 /// status it was frozen in: a session start stamps `Pending` on every job it
-/// claims, so on disk that is indistinguishable from "never probed".
+/// claims.
 ///
 /// - `Encoding` — the `.part` scratch file is deleted and the job re-queued to
 ///   encode from the start. The destination is untouched: the scratch file is
@@ -382,8 +380,7 @@ pub fn resume(queue: &mut PersistedQueue) {
             }
         }
 
-        // Queues written before source identities existed are re-probed rather
-        // than trusting their metadata.
+        // A job with no recorded source identity is re-probed.
         if job.source_identity.is_none() && job.metadata.is_some() && !job.status.is_terminal() {
             job.metadata = None;
             job.audio_tracks.clear();
@@ -396,9 +393,8 @@ pub fn resume(queue: &mut PersistedQueue) {
         }
 
         match job.status {
-            // The file the rip was writing is incomplete, and the staging
-            // sweep deletes it: the job carries the failure, not the flag that
-            // would keep the directory alive.
+            // The file the rip was writing is incomplete; the job records the
+            // failure and stops claiming its staging directory.
             JobStatus::Ripping { .. } => {
                 job.temporary = false;
                 job.status = JobStatus::Error {
@@ -519,7 +515,7 @@ mod tests {
         assert!((state.overall_progress() - 100.0).abs() < f64::EPSILON);
     }
 
-    /// Cancelled jobs count as done, so a cancelled batch reads as complete.
+    /// Cancelled jobs count as done, and a cancelled batch reads as complete.
     #[test]
     fn a_fully_cancelled_session_reads_as_complete() {
         let mut state = QueueState::new();
@@ -744,8 +740,8 @@ mod tests {
         state.jobs.push(verifying);
         state.jobs.push(unanalyzed(JobStatus::Pending));
         state.jobs.push(unanalyzed(JobStatus::Analyzing));
-        // Legacy queues carry metadata but no identity, and go back through
-        // analysis even when the source has since disappeared.
+        // A job with metadata but no identity goes back through analysis even
+        // when the source has disappeared.
         let mut legacy = EncodingJob::new(PathBuf::from("/tmp/av1c-missing-legacy.mkv"));
         legacy.metadata = Some(meta());
         legacy.status = JobStatus::Ready;
@@ -818,8 +814,8 @@ mod tests {
         assert!(queue.state.jobs[0].temporary);
     }
 
-    /// A rip cut short by a restart has no file worth keeping: the job records
-    /// the failure and stops claiming its staging directory.
+    /// A rip cut short by a restart records the failure and stops claiming its
+    /// staging directory.
     #[test]
     fn an_interrupted_rip_does_not_come_back_as_a_job() {
         let mut job = EncodingJob::new(PathBuf::from("/staging/rip-a1/DISC_t00.mkv"));

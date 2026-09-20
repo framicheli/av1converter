@@ -272,13 +272,10 @@ fn parse_timestamp_secs(value: &str) -> Option<f64> {
         .then_some(hours * 3600.0 + minutes * 60.0 + seconds)
 }
 
-/// Parse frame rate from ffprobe format
 /// The HDR type of a stream, from its Dolby Vision side data and colour
 /// transfer.
 ///
-/// Dolby Vision without a readable profile is refused: it can be IPT
-/// (profile 5) with no HDR10-compatible base, and tagging that as PQ without
-/// a tonemap produces wrong colours.
+/// Dolby Vision without a readable profile is refused.
 fn hdr_type_of(
     has_dovi: bool,
     dv_profile: Option<u8>,
@@ -487,7 +484,7 @@ fn run_ffprobe(args: &[&str], cancel: &AtomicBool) -> Result<String, AppError> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Run a probe without allowing a broken file or network mount to hang the UI.
+/// Run a probe, aborting it on cancellation or once `timeout` elapses.
 fn run_command(
     command: &mut Command,
     cancel: &AtomicBool,
@@ -835,8 +832,7 @@ mod tests {
         assert!(exceeded);
     }
 
-    /// Cancellation is its own error, never a message to match on: ffprobe's
-    /// stderr can quote a path such as `/media/Cancelled Shows/ep1.mkv`.
+    /// Cancellation is reported as its own error, not as an stderr message.
     #[test]
     fn a_cancelled_probe_reports_cancellation_exactly() {
         let cancel = AtomicBool::new(true);

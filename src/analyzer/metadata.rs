@@ -40,9 +40,8 @@ pub enum DvMode {
 }
 
 impl DvMode {
-    /// Recommended mode for a given DV profile: HDR10 for profile 5, which has
-    /// no HDR10-compatible base layer, and keep-DV for the cross-compatible
-    /// profiles (7/8).
+    /// Recommended mode for a given DV profile: HDR10 for profile 5, keep-DV
+    /// for the cross-compatible profiles (7/8).
     pub fn recommended_for(dv_profile: Option<u8>) -> Self {
         if dv_profile == Some(5) {
             DvMode::ToHdr10

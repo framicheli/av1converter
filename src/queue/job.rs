@@ -8,8 +8,8 @@ use std::time::SystemTime;
 use tracing::warn;
 
 /// Filesystem identity captured while a source is analyzed. The encoder
-/// re-checks it before doing any work and before an automatic source deletion,
-/// so a file replaced at the same path is detected.
+/// re-checks it before doing any work and before an automatic source deletion;
+/// a file replaced at the same path no longer matches.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SourceIdentity {
     len: u64,
@@ -55,8 +55,7 @@ impl SourceIdentity {
 pub enum JobStatus {
     /// Waiting to be processed
     Pending,
-    /// Being extracted from a disc. The percentage is not persisted: a
-    /// reloaded `Ripping` job has no file to carry on from.
+    /// Being extracted from a disc. The percentage is not persisted.
     Ripping {
         #[serde(skip)]
         progress: f64,
@@ -130,15 +129,15 @@ pub struct EncodingJob {
     pub output_size: Option<u64>,
     pub source_deleted: bool,
     pub source_kept_vmaf: Option<f64>,
-    /// Why a job that met the VMAF threshold kept its source. Absent from
-    /// queues written before the reason was recorded.
+    /// Why a job that met the VMAF threshold kept its source. `None` in a
+    /// queue file that does not carry the field.
     #[serde(default)]
     pub source_kept_reason: Option<crate::encoder::KeepReason>,
     pub remux_only: bool,
     /// Dolby Vision handling; `None` until the user has chosen (DV sources only)
     pub dv_mode: Option<DvMode>,
     /// A ripped title staged for encoding, deleted once the encode finishes.
-    /// Absent from queues written before disc ripping existed.
+    /// Absent from a queue file that does not carry the field.
     #[serde(default)]
     pub temporary: bool,
 }
@@ -193,9 +192,8 @@ impl EncodingJob {
     /// Generate the output path based on config.
     ///
     /// A temporary source ignores `same_directory` and needs a configured
-    /// output directory: its own directory is the staging directory, which is
-    /// deleted as soon as the encode finishes. Without one the path is left as
-    /// it stands and the job does not encode.
+    /// output directory; its own directory is the staging directory. Without
+    /// one the path is left as it stands and the job does not encode.
     pub fn generate_output_path(&mut self, output_config: &crate::config::OutputConfig) {
         let stem = self.path.file_stem().unwrap_or_default().to_string_lossy();
         let default_parent = || self.path.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -411,7 +409,7 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
         let parent = output.parent().unwrap_or(Path::new("."));
         let stem = output.file_stem().unwrap_or_default().to_string_lossy();
         let extension = output.extension().map(|ext| ext.to_string_lossy());
-        // Bounded rather than counting up indefinitely.
+        // Suffixes `_2` through `_999`.
         let free = (2..1000)
             .map(|n| {
                 let name = extension
@@ -428,8 +426,8 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
             used.insert(output_key(&candidate));
             job.output_path = Some(candidate);
         } else {
-            // Left pointing at the taken path: the encoder refuses to overwrite
-            // an existing output, so the job fails rather than clobbering it.
+            // Left pointing at the taken path; the encoder refuses to
+            // overwrite an existing output.
             warn!(
                 "No free output name near {} for {}",
                 output.display(),
@@ -552,8 +550,8 @@ pub fn auto_select_tracks(job: &mut EncodingJob, config: &TrackPresetConfig, aud
     } else if config.select_all_fallback || config.preferred_subtitle_languages.is_empty() {
         job.subtitle_tracks.iter().map(|t| t.index).collect()
     } else {
-        // Preferences were set but nothing matched: leave subs empty
-        // (unlike audio, which falls back to the first track).
+        // Preferences set with no match: subtitles stay empty, where audio
+        // falls back to the first track.
         Vec::new()
     };
 
@@ -585,9 +583,7 @@ pub fn resolved_dv_mode(encoder: Encoder, dv_profile: Option<u8>) -> DvMode {
 }
 
 /// Map one file's choices onto another file by track order. Extra target
-/// tracks keep their automatic selection instead of being silently dropped.
-// Order mapping targets same-layout batches; matching language/title is the
-// upgrade for mixed-layout ones.
+/// tracks keep their automatic selection.
 fn mapped_selection(
     job: &EncodingJob,
     audio_modes: &[Option<bool>],

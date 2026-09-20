@@ -75,8 +75,8 @@ pub fn run_worker(
         let tx_progress = tx.clone();
         let idx = job.index;
 
-        // The pipeline takes `&str` paths; a non-UTF-8 path is reported on the
-        // job rather than silently emptied.
+        // The pipeline takes `&str` paths; a non-UTF-8 path is reported as a
+        // job error.
         let (Some(input_str), Some(output_str)) = (job.input.to_str(), job.output.to_str()) else {
             let _ = tx.send(WorkerMessage::Error(
                 job.index,
@@ -91,7 +91,7 @@ pub fn run_worker(
         let tx_verifying = tx.clone();
         let verifying_idx = job.index;
 
-        // Convert a pipeline panic into a per-job error so the session can finish.
+        // A pipeline panic becomes a per-job error and the session continues.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             encoder::run_encoding_pipeline(
                 &input_str,
@@ -285,7 +285,7 @@ mod tests {
         assert!(!carry_on, "a cancellation ends the session");
         assert!(matches!(messages[..], [WorkerMessage::Cancelled]));
 
-        // Deletion is off by default, so only the warning is sent.
+        // With deletion off, only the warning is sent.
         let (carry_on, messages) = report(FullEncodeResult::QualityWarning {
             vmaf: vmaf.clone(),
             threshold: 98.0,

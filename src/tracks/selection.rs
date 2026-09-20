@@ -6,9 +6,7 @@ use crate::tracks::AudioTrack;
 pub struct TrackSelection {
     pub audio_indices: Vec<usize>,
     pub subtitle_indices: Vec<usize>,
-    /// Audio tracks to re-encode to Opus. Always a subset of `audio_indices`:
-    /// a stale entry here would shift every per-stream codec option onto the
-    /// wrong output stream.
+    /// Audio tracks to re-encode to Opus. Always a subset of `audio_indices`.
     pub audio_to_opus: Vec<usize>,
 }
 
@@ -41,7 +39,7 @@ impl TrackSelection {
     }
 
     /// Turn Opus transcoding on or off for one audio track. Turning it on also
-    /// selects the track, so the subset invariant cannot be broken from the UI.
+    /// selects the track.
     pub fn set_audio_opus(&mut self, index: usize, opus: bool) {
         if opus {
             if !self.audio_indices.contains(&index) {
@@ -96,9 +94,9 @@ impl TrackSelection {
             })
             .collect();
 
-        // Sorted here so the `-map 0:s:N` order and the codec list that
-        // `subtitle_codecs_for` produces are both in index order, whatever
-        // order the selection was built up in.
+        // Index order for both `-map 0:s:N` and the codec list that
+        // `subtitle_codecs_for` produces, whatever order the selection was
+        // built up in.
         let mut subtitle_indices = self.subtitle_indices.clone();
         subtitle_indices.sort_unstable();
 
@@ -214,10 +212,10 @@ fn opus_supports_layout(layout: &str) -> bool {
 }
 
 /// The standard name for a layout that differs from one only in spelling: the
-/// same channels in the same order, so `aformat` relabels without touching a
-/// sample. Layouts that differ by more than the name (`7.1(wide)` carries
-/// front-of-centre channels where 7.1 carries sides) are not listed — those
-/// would rematrix, and keep mapping family 255 instead.
+/// same channels in the same order, which `aformat` relabels without touching
+/// a sample. Layouts that differ by more than the name (`7.1(wide)` carries
+/// front-of-centre channels where 7.1 carries sides) are not listed and keep
+/// mapping family 255.
 fn standard_spelling(layout: &str) -> Option<&'static str> {
     [
         ("5.0(side)", "5.0"),
@@ -230,8 +228,8 @@ fn standard_spelling(layout: &str) -> Option<&'static str> {
 }
 
 /// The audio and subtitle streams to write, already resolved from the user's
-/// selection. The encoder never sees [`TrackSelection`]: a plan whose order
-/// matches the output stream order is what per-stream codec options need.
+/// selection, in output stream order. The encoder never sees
+/// [`TrackSelection`].
 #[derive(Debug, Clone, Default)]
 pub struct OutputTracks {
     pub audio: Vec<AudioStreamPlan>,
@@ -262,8 +260,7 @@ mod tests {
         }
     }
 
-    /// Deselecting a track must clear its Opus flag: a leftover index would
-    /// place `-c:a:N libopus` on whatever stream ended up in that slot.
+    /// Deselecting a track clears its Opus flag.
     #[test]
     fn deselecting_a_track_clears_its_opus_flag() {
         let mut sel = TrackSelection::default();
@@ -277,8 +274,7 @@ mod tests {
         assert!(sel.audio_to_opus.is_empty());
     }
 
-    /// Marking a track for Opus selects it, so the subset invariant holds even
-    /// when the user presses the transcode key on an unselected row.
+    /// Marking an unselected track for Opus also selects it.
     #[test]
     fn marking_opus_selects_the_track() {
         let mut sel = TrackSelection::default();
@@ -307,7 +303,7 @@ mod tests {
         assert_eq!(plan.audio[0].opus_kbps, Some(128));
         assert_eq!(plan.audio[1].opus_kbps, Some(384));
         assert_eq!(plan.audio[2].opus_kbps, Some(512));
-        // Unknown channel count falls back to stereo rather than guessing high.
+        // Unknown channel count falls back to stereo.
         assert_eq!(plan.audio[3].opus_kbps, Some(128));
     }
 
@@ -335,7 +331,7 @@ mod tests {
         assert!(mkv.audio.iter().all(|a| a.opus_kbps.is_none()));
     }
 
-    /// Re-encoding Opus to Opus is pure generation loss, so it is skipped.
+    /// An already-Opus track is copied, not re-encoded.
     #[test]
     fn already_opus_tracks_are_copied() {
         let tracks = [track(0, "Opus", Some(6))];
@@ -352,8 +348,7 @@ mod tests {
         assert_eq!(sel.resolve(&tracks, &forced).audio[0].opus_kbps, Some(384));
     }
 
-    /// Subtitle indices come out sorted whatever order they went in, so they
-    /// line up with the codec list built from the tracks.
+    /// Subtitle indices come out sorted whatever order they went in.
     #[test]
     fn resolved_subtitle_indices_are_sorted() {
         let sel = TrackSelection {

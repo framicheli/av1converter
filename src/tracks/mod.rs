@@ -1,8 +1,9 @@
 pub mod selection;
 
 /// The selected subtitle tracks, sorted by index — the order they will be
-/// written. `TrackSelection::resolve` sorts the indices the same way, so the
-/// `-map 0:s:N` and `-c:s:N` lists line up whatever order ffprobe reported.
+/// written. `TrackSelection::resolve` sorts the indices the same way, and the
+/// `-map 0:s:N` and `-c:s:N` lists follow that order whatever order ffprobe
+/// reported.
 pub fn selected_subtitles(tracks: &[SubtitleTrack], indices: &[usize]) -> Vec<SubtitleTrack> {
     let mut selected: Vec<SubtitleTrack> = tracks
         .iter()
@@ -73,8 +74,8 @@ mod tests {
         }
     }
 
-    /// `-map 0:s:N` follows the sorted indices, so the codec list has to as
-    /// well — even when ffprobe reported the streams out of order.
+    /// The codec list follows the sorted indices, matching `-map 0:s:N`, even
+    /// when ffprobe reported the streams out of order.
     #[test]
     fn selected_subtitles_are_ordered_by_index() {
         let tracks = [sub_at(2, "subrip"), sub_at(0, "hdmv_pgs_subtitle")];
@@ -84,7 +85,7 @@ mod tests {
             selected.iter().map(|t| t.index).collect::<Vec<_>>(),
             vec![0, 2]
         );
-        // ...which is what leaves out stream 0 and puts `mov_text` on stream 1.
+        // Output stream 0 is left out and `mov_text` lands on stream 1.
         assert_eq!(
             subtitle_codecs_for(Path::new("out.mp4"), &selected),
             [None, Some("mov_text")]
@@ -213,7 +214,7 @@ impl AudioTrack {
             || "N/A".to_string(),
             |b| {
                 if b >= 1_000_000 {
-                    // Convert to kbps first (fits in u32 for any real-world bitrate)
+                    // Bitrate in kbps.
                     let kbps = u32::try_from(b / 1000).unwrap_or(u32::MAX);
                     format!("{:.1} Mbps", f64::from(kbps) / 1000.0)
                 } else {
