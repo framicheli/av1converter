@@ -86,7 +86,7 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
         .streams
         .into_iter()
         .next()
-        .ok_or_else(|| AppError::Analysis("No video stream found".to_string()))?;
+        .ok_or(AppError::NoVideoStream)?;
 
     // Check for Dolby Vision by inspecting the side_data_type field
     let dovi_entry = stream.side_data_list.as_ref().and_then(|list| {

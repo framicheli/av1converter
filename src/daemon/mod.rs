@@ -143,9 +143,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     analyzer::analyze(&path, &cancel)
                 }))
-                .unwrap_or_else(|_| {
-                    Err(AppError::Analysis(format!("Analysis panicked on {path}")))
-                });
+                .unwrap_or_else(|_| Err(AppError::AnalysisPanicked(path.clone())));
                 if analysis_tx.send((id, result)).is_err() {
                     break;
                 }
@@ -882,7 +880,7 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
         }
         Err(e) => {
             job.status = JobStatus::Error {
-                message: e.to_string(),
+                message: e.message(lang),
             };
             state.queue.state.error_count += 1;
         }

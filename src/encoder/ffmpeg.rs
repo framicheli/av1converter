@@ -1,4 +1,5 @@
 use crate::encoder::command_builder::{EncodingParams, build_ffmpeg_args};
+use crate::i18n::{Msg, t};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -113,13 +114,10 @@ pub fn encode_video(
 ) -> EncodeResult {
     // FFmpeg cannot edit a file in place; refuse before spawning.
     if is_same_file(Path::new(&params.input), Path::new(&params.output)) {
-        return EncodeResult::Error(
-            "Output path is the same as the input file; check the output suffix and container"
-                .to_string(),
-        );
+        return EncodeResult::Error(t(params.lang, Msg::ErrOutputIsInput).to_string());
     }
     if path_occupied(Path::new(&params.output)) {
-        return EncodeResult::Error("Output already exists; refusing to overwrite it".to_string());
+        return EncodeResult::Error(t(params.lang, Msg::ErrOutputExists).to_string());
     }
 
     // Reserved with `create_new` before FFmpeg sees it, so `-y` cannot erase a
@@ -208,6 +206,7 @@ pub fn encode_video(
             &partial,
             &stderr_path,
             params.remux_only.then(|| params.input.clone()).as_ref(),
+            params.lang,
         )
     }))
     .unwrap_or_else(|_| {
@@ -235,7 +234,7 @@ pub fn encode_video(
     // filesystems without hard links fall back to an exclusive create+copy so
     // a destination that appears mid-publish is never clobbered.
     if matches!(result, EncodeResult::Success)
-        && let Err(message) = publish_partial(&partial, &params.output)
+        && let Err(message) = publish_partial(&partial, &params.output, params.lang)
     {
         let _ = std::fs::remove_file(&partial);
         return EncodeResult::Error(message);
@@ -245,14 +244,14 @@ pub fn encode_video(
 }
 
 /// Move `partial` onto `output` without ever replacing an existing file.
-fn publish_partial(partial: &str, output: &str) -> Result<(), String> {
+fn publish_partial(partial: &str, output: &str, lang: crate::i18n::Language) -> Result<(), String> {
     match std::fs::hard_link(partial, output) {
         Ok(()) => {
             let _ = std::fs::remove_file(partial);
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            Err("Output appeared while encoding; refusing to overwrite it".to_string())
+            Err(t(lang, Msg::ErrOutputAppeared).to_string())
         }
         Err(_) => {
             // Exclusive create: fails atomically if the destination exists.
@@ -272,7 +271,7 @@ fn publish_partial(partial: &str, output: &str) -> Result<(), String> {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    Err("Output appeared while encoding; refusing to overwrite it".to_string())
+                    Err(t(crate::i18n::Language::English, Msg::ErrOutputAppeared).to_string())
                 }
                 Err(e) => Err(format!("Failed to move the encoded file into place: {e}")),
             }
@@ -293,6 +292,7 @@ fn run_encode_loop(
     output: &str,
     stderr_path: &Path,
     remux_input: Option<&String>,
+    lang: crate::i18n::Language,
 ) -> EncodeResult {
     // For remux jobs, estimate the final output size from the source file size.
     let remux_input_size = remux_input
@@ -359,16 +359,16 @@ fn run_encode_loop(
                 if let Some(missing) = short {
                     let _ = std::fs::remove_file(output);
                     return EncodeResult::Error(with_stderr(
-                        &format!(
-                            "ffmpeg stopped {missing:.0}s short of the source's {duration:.0}s and still reported success"
-                        ),
+                        &t(lang, Msg::ErrEncodeShort)
+                            .replace("{missing}", &format!("{missing:.0}"))
+                            .replace("{duration}", &format!("{duration:.0}")),
                         stderr_path,
                     ));
                 }
                 if !status.success() {
                     let _ = std::fs::remove_file(output);
                     return EncodeResult::Error(with_stderr(
-                        &format!("ffmpeg failed ({status})"),
+                        &t(lang, Msg::ErrFfmpegFailed).replace("{status}", &status.to_string()),
                         stderr_path,
                     ));
                 }
@@ -530,15 +530,28 @@ mod tests {
         std::fs::write(&partial, b"encoded").unwrap();
         std::fs::write(&output, b"someone else's file").unwrap();
 
-        let result = publish_partial(partial.to_str().unwrap(), output.to_str().unwrap());
+        let result = publish_partial(
+            partial.to_str().unwrap(),
+            output.to_str().unwrap(),
+            crate::i18n::Language::English,
+        );
         assert_eq!(
             result,
-            Err("Output appeared while encoding; refusing to overwrite it".to_string())
+            Err(crate::i18n::t(
+                crate::i18n::Language::English,
+                crate::i18n::Msg::ErrOutputAppeared
+            )
+            .to_string())
         );
         assert_eq!(std::fs::read(&output).unwrap(), b"someone else's file");
 
         std::fs::remove_file(&output).unwrap();
-        publish_partial(partial.to_str().unwrap(), output.to_str().unwrap()).unwrap();
+        publish_partial(
+            partial.to_str().unwrap(),
+            output.to_str().unwrap(),
+            crate::i18n::Language::English,
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"encoded");
         assert!(!partial.exists());
 

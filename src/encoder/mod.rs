@@ -1,3 +1,4 @@
+use crate::i18n::{Msg, t};
 pub mod command_builder;
 #[cfg(test)]
 mod end_to_end;
@@ -140,7 +141,7 @@ pub fn run_encoding_pipeline(
 ) -> FullEncodeResult {
     if !expected_source.matches_path(input) {
         return FullEncodeResult::Error(
-            "Source changed since it was analyzed; remove and add it again".to_string(),
+            t(config.language, Msg::ErrSourceChangedSinceAnalysis).to_string(),
         );
     }
     // The original stays open and fingerprinted for the whole pipeline, so a
@@ -159,13 +160,13 @@ pub fn run_encoding_pipeline(
             }
             Ok(_) => {
                 return FullEncodeResult::Error(
-                    "Source changed while preparing the job; remove and add it again".to_string(),
+                    t(config.language, Msg::ErrSourceChangedWhilePreparing).to_string(),
                 );
             }
             Err(e) => {
-                return FullEncodeResult::Error(format!(
-                    "Could not safely hold the source file open: {e}"
-                ));
+                return FullEncodeResult::Error(
+                    t(config.language, Msg::ErrSourceHoldFailed).replace("{error}", &e.to_string()),
+                );
             }
         }
     } else {

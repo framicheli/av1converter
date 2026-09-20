@@ -27,6 +27,8 @@ pub struct EncodingParams {
     /// Subtitle codec per selected track, in index order; `None` leaves the
     /// track out of the output.
     pub subtitle_codecs: Vec<Option<&'static str>>,
+    /// Language the encode step reports its own failures in.
+    pub lang: crate::i18n::Language,
 }
 
 impl EncodingParams {
@@ -62,6 +64,7 @@ impl EncodingParams {
         Self {
             input: input.to_string(),
             output: output.to_string(),
+            lang: config.language,
             encoder: config.encoder,
             crf,
             film_grain: preset.film_grain,
@@ -439,6 +442,7 @@ mod tests {
         EncodingParams {
             input: "in.mkv".to_string(),
             output: "out.mkv".to_string(),
+            lang: crate::i18n::Language::English,
             encoder,
             crf: 27,
             film_grain: 0,

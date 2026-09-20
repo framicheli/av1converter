@@ -1009,7 +1009,7 @@ impl App {
             }))
             .unwrap_or_else(|_| {
                 work.iter()
-                    .map(|_| Err(AppError::Analysis("Analysis thread panicked".to_string())))
+                    .map(|_| Err(AppError::AnalysisThreadPanicked))
                     .collect()
             });
             for ((index, _), result) in work.into_iter().zip(results) {
@@ -1060,7 +1060,7 @@ impl App {
             }
             Err(e) => {
                 job.status = JobStatus::Error {
-                    message: e.to_string(),
+                    message: e.message(lang),
                 };
                 self.queue.error_count += 1;
             }
@@ -2253,9 +2253,7 @@ fn analyze_batch(
                         Ok(path) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             analyzer::analyze(path, cancel_flag)
                         }))
-                        .unwrap_or_else(|_| {
-                            Err(AppError::Analysis(format!("Analysis panicked on {path}")))
-                        }),
+                        .unwrap_or_else(|_| Err(AppError::AnalysisPanicked(path.clone()))),
                         Err(e) => Err(AppError::Analysis(e.to_string())),
                     };
                     if let Ok(mut slot) = slots[index].lock() {
@@ -2272,7 +2270,7 @@ fn analyze_batch(
             slot.into_inner()
                 .ok()
                 .flatten()
-                .unwrap_or_else(|| Err(AppError::Analysis("Analysis thread panicked".to_string())))
+                .unwrap_or(Err(AppError::AnalysisThreadPanicked))
         })
         .collect()
 }

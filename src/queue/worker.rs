@@ -1,6 +1,7 @@
 use crate::analyzer::{DvMode, VideoMetadata};
 use crate::config::AppConfig;
 use crate::encoder::{self, FullEncodeResult, KeepReason};
+use crate::i18n::{Msg, t};
 use crate::queue::SourceIdentity;
 use crate::tracks::OutputTracks;
 use std::path::PathBuf;
@@ -79,7 +80,8 @@ pub fn run_worker(
         let (Some(input_str), Some(output_str)) = (job.input.to_str(), job.output.to_str()) else {
             let _ = tx.send(WorkerMessage::Error(
                 job.index,
-                format!("File path is not valid UTF-8: {}", job.input.display()),
+                t(config.language, Msg::ErrPathNotUtf8)
+                    .replace("{path}", &job.input.display().to_string()),
             ));
             continue;
         };
@@ -111,7 +113,10 @@ pub fn run_worker(
             )
         }))
         .unwrap_or_else(|_| {
-            FullEncodeResult::Error(format!("Encoding panicked on {}", job.input.display()))
+            FullEncodeResult::Error(
+                t(config.language, Msg::ErrEncodePanicked)
+                    .replace("{path}", &job.input.display().to_string()),
+            )
         });
 
         match result {

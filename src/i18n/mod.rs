@@ -467,6 +467,25 @@ pub enum Msg {
     ErrScanDiscFirst,
     ErrAutostartLocalOnly,
     ErrEnableDaemon,
+    ErrIo,
+    ErrAnalysisFailed,
+    ErrConfigFailed,
+    ErrVmafFailed,
+    ErrParseFailed,
+    ErrCommandFailed,
+    ErrAnalysisPanicked,
+    ErrAnalysisThreadPanicked,
+    ErrNoVideoStream,
+    ErrSourceChangedSinceAnalysis,
+    ErrSourceChangedWhilePreparing,
+    ErrSourceHoldFailed,
+    ErrOutputIsInput,
+    ErrOutputExists,
+    ErrOutputAppeared,
+    ErrEncodeShort,
+    ErrFfmpegFailed,
+    ErrPathNotUtf8,
+    ErrEncodePanicked,
     WebApplyRemainingHint,
     WebSaving,
     WebBrowse,
@@ -3725,6 +3744,186 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Impossible d'activer le démon : {error}",
             De => "Der Daemon konnte nicht aktiviert werden: {error}",
             Zh => "无法启用守护进程：{error}",
+        },
+        Msg::ErrIo => match lang {
+            En => "I/O error during '{operation}' on '{path}': {message}",
+            It => "Errore di I/O durante '{operation}' su '{path}': {message}",
+            Es => "Error de E/S durante '{operation}' en '{path}': {message}",
+            Fr => "Erreur d'E/S pendant '{operation}' sur '{path}' : {message}",
+            De => "E/A-Fehler bei '{operation}' an '{path}': {message}",
+            Zh => "在“{path}”上执行“{operation}”时发生 I/O 错误：{message}",
+        },
+        Msg::ErrAnalysisFailed => match lang {
+            En => "Video analysis failed: {message}",
+            It => "Analisi del video non riuscita: {message}",
+            Es => "El análisis del vídeo ha fallado: {message}",
+            Fr => "Échec de l'analyse vidéo : {message}",
+            De => "Videoanalyse fehlgeschlagen: {message}",
+            Zh => "视频分析失败：{message}",
+        },
+        Msg::ErrConfigFailed => match lang {
+            En => "Configuration error: {message}",
+            It => "Errore di configurazione: {message}",
+            Es => "Error de configuración: {message}",
+            Fr => "Erreur de configuration : {message}",
+            De => "Konfigurationsfehler: {message}",
+            Zh => "配置错误：{message}",
+        },
+        Msg::ErrVmafFailed => match lang {
+            En => "VMAF calculation failed: {message}",
+            It => "Calcolo VMAF non riuscito: {message}",
+            Es => "El cálculo de VMAF ha fallado: {message}",
+            Fr => "Échec du calcul VMAF : {message}",
+            De => "VMAF-Berechnung fehlgeschlagen: {message}",
+            Zh => "VMAF 计算失败：{message}",
+        },
+        Msg::ErrParseFailed => match lang {
+            En => "Parse error in {context}: {message}",
+            It => "Errore di analisi in {context}: {message}",
+            Es => "Error de análisis en {context}: {message}",
+            Fr => "Erreur d'analyse dans {context} : {message}",
+            De => "Parserfehler in {context}: {message}",
+            Zh => "{context} 解析错误：{message}",
+        },
+        Msg::ErrCommandFailed => match lang {
+            En => "Command execution failed: {message}",
+            It => "Esecuzione del comando non riuscita: {message}",
+            Es => "La ejecución del comando ha fallado: {message}",
+            Fr => "Échec de l'exécution de la commande : {message}",
+            De => "Befehlsausführung fehlgeschlagen: {message}",
+            Zh => "命令执行失败：{message}",
+        },
+        Msg::ErrAnalysisPanicked => match lang {
+            En => "Analysis crashed on {path}",
+            It => "L'analisi si è interrotta su {path}",
+            Es => "El análisis ha fallado en {path}",
+            Fr => "L'analyse a planté sur {path}",
+            De => "Die Analyse ist bei {path} abgestürzt",
+            Zh => "分析在 {path} 上崩溃",
+        },
+        Msg::ErrAnalysisThreadPanicked => match lang {
+            En => "The analysis thread crashed",
+            It => "Il thread di analisi si è interrotto",
+            Es => "El hilo de análisis ha fallado",
+            Fr => "Le thread d'analyse a planté",
+            De => "Der Analyse-Thread ist abgestürzt",
+            Zh => "分析线程已崩溃",
+        },
+        Msg::ErrNoVideoStream => match lang {
+            En => "The file has no video stream",
+            It => "Il file non contiene alcun flusso video",
+            Es => "El archivo no tiene ningún flujo de vídeo",
+            Fr => "Le fichier ne contient aucun flux vidéo",
+            De => "Die Datei enthält keinen Videostream",
+            Zh => "该文件没有视频流",
+        },
+        Msg::ErrSourceChangedSinceAnalysis => match lang {
+            En => "The source changed since it was analysed; remove it and add it again",
+            It => "La sorgente è cambiata dopo l'analisi; rimuovila e aggiungila di nuovo",
+            Es => "El origen ha cambiado desde el análisis; quítalo y vuelve a añadirlo",
+            Fr => "La source a changé depuis son analyse ; retirez-la et ajoutez-la de nouveau",
+            De => "Die Quelle hat sich seit der Analyse geändert; entfernen und erneut hinzufügen",
+            Zh => "源文件在分析后已更改；请移除后重新添加",
+        },
+        Msg::ErrSourceChangedWhilePreparing => match lang {
+            En => "The source changed while the job was being prepared; remove it and add it again",
+            It => {
+                "La sorgente è cambiata durante la preparazione del lavoro; rimuovila e aggiungila di nuovo"
+            }
+            Es => {
+                "El origen ha cambiado mientras se preparaba la tarea; quítalo y vuelve a añadirlo"
+            }
+            Fr => {
+                "La source a changé pendant la préparation de la tâche ; retirez-la et ajoutez-la de nouveau"
+            }
+            De => {
+                "Die Quelle hat sich während der Vorbereitung geändert; entfernen und erneut hinzufügen"
+            }
+            Zh => "任务准备期间源文件已更改；请移除后重新添加",
+        },
+        Msg::ErrSourceHoldFailed => match lang {
+            En => "The source file could not be held open: {error}",
+            It => "Impossibile mantenere aperto il file sorgente: {error}",
+            Es => "No se ha podido mantener abierto el archivo de origen: {error}",
+            Fr => "Impossible de garder le fichier source ouvert : {error}",
+            De => "Die Quelldatei konnte nicht offen gehalten werden: {error}",
+            Zh => "无法保持源文件处于打开状态：{error}",
+        },
+        Msg::ErrOutputIsInput => match lang {
+            En => {
+                "The output path is the same as the input file; check the output suffix and container"
+            }
+            It => {
+                "Il percorso di uscita coincide con il file di ingresso; controlla suffisso e contenitore"
+            }
+            Es => {
+                "La ruta de salida coincide con el archivo de entrada; comprueba el sufijo y el contenedor"
+            }
+            Fr => {
+                "Le chemin de sortie est identique au fichier d'entrée ; vérifiez le suffixe et le conteneur"
+            }
+            De => "Der Ausgabepfad entspricht der Eingabedatei; Suffix und Container prüfen",
+            Zh => "输出路径与输入文件相同；请检查输出后缀和封装格式",
+        },
+        Msg::ErrOutputExists => match lang {
+            En => "The output file already exists and will not be overwritten",
+            It => "Il file di uscita esiste già e non verrà sovrascritto",
+            Es => "El archivo de salida ya existe y no se sobrescribirá",
+            Fr => "Le fichier de sortie existe déjà et ne sera pas écrasé",
+            De => "Die Ausgabedatei existiert bereits und wird nicht überschrieben",
+            Zh => "输出文件已存在，不会被覆盖",
+        },
+        Msg::ErrOutputAppeared => match lang {
+            En => "The output file appeared while encoding and will not be overwritten",
+            It => "Il file di uscita è comparso durante la codifica e non verrà sovrascritto",
+            Es => "El archivo de salida ha aparecido durante la codificación y no se sobrescribirá",
+            Fr => "Le fichier de sortie est apparu pendant l'encodage et ne sera pas écrasé",
+            De => {
+                "Die Ausgabedatei ist während der Kodierung aufgetaucht und wird nicht überschrieben"
+            }
+            Zh => "输出文件在编码期间出现，不会被覆盖",
+        },
+        Msg::ErrEncodeShort => match lang {
+            En => {
+                "FFmpeg stopped {missing}s short of the source's {duration}s and still reported success"
+            }
+            It => {
+                "FFmpeg si è fermato {missing}s prima dei {duration}s della sorgente segnalando comunque successo"
+            }
+            Es => {
+                "FFmpeg se ha detenido {missing}s antes de los {duration}s del origen y aun así ha indicado éxito"
+            }
+            Fr => {
+                "FFmpeg s'est arrêté {missing}s avant les {duration}s de la source tout en signalant une réussite"
+            }
+            De => {
+                "FFmpeg endete {missing}s vor den {duration}s der Quelle und meldete dennoch Erfolg"
+            }
+            Zh => "FFmpeg 比源的 {duration} 秒提前 {missing} 秒结束，却报告成功",
+        },
+        Msg::ErrFfmpegFailed => match lang {
+            En => "FFmpeg failed ({status})",
+            It => "FFmpeg non riuscito ({status})",
+            Es => "FFmpeg ha fallado ({status})",
+            Fr => "Échec de FFmpeg ({status})",
+            De => "FFmpeg fehlgeschlagen ({status})",
+            Zh => "FFmpeg 失败（{status}）",
+        },
+        Msg::ErrPathNotUtf8 => match lang {
+            En => "The file path is not valid UTF-8: {path}",
+            It => "Il percorso del file non è UTF-8 valido: {path}",
+            Es => "La ruta del archivo no es UTF-8 válido: {path}",
+            Fr => "Le chemin du fichier n'est pas de l'UTF-8 valide : {path}",
+            De => "Der Dateipfad ist kein gültiges UTF-8: {path}",
+            Zh => "文件路径不是有效的 UTF-8：{path}",
+        },
+        Msg::ErrEncodePanicked => match lang {
+            En => "Encoding crashed on {path}",
+            It => "La codifica si è interrotta su {path}",
+            Es => "La codificación ha fallado en {path}",
+            Fr => "L'encodage a planté sur {path}",
+            De => "Die Kodierung ist bei {path} abgestürzt",
+            Zh => "编码在 {path} 上崩溃",
         },
         Msg::WebApplyRemainingHint => match lang {
             En => "Matches tracks by order — best for files with the same track layout.",
