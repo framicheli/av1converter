@@ -341,6 +341,7 @@ Two things are worth knowing before exposing the daemon to a network:
 
 - `browse_root` — set it. It is the only directory the file browser and the queue will accept paths under, and it is the difference between "manage my media library" and "read every file this user can read". An empty `browse_root` is refused when the daemon binds outside loopback.
 - `bind_address` — leave it on loopback unless you mean it. A non-loopback bind is refused unless `allow_insecure_lan = true` (plain HTTP would otherwise expose the Bearer token on the LAN); even with that opt-in, prefer an HTTPS reverse proxy on a trusted network.
+  The built-in server accepts requests before the token is checked, and puts no limit on header size or how long a connection may stay idle. On a LAN, put it behind a reverse proxy that does, rather than exposing it directly.
 
 The daemon serves plain HTTP. If it must be reachable beyond the local machine, put it behind an HTTPS reverse proxy with connection/request timeouts and rate limiting, and keep the direct daemon port firewalled from untrusted networks. The embedded server is intended for trusted local or LAN use, not direct internet exposure.
 

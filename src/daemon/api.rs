@@ -179,7 +179,7 @@ pub fn queue(shared: &SharedState) -> Value {
                 "source_deleted": job.source_deleted,
                 // A ripped file whose staging copy is deleted with the job.
                 "temporary": job.temporary,
-                "tracks_editable": tracks_editable(&state, id),
+                "tracks_editable": tracks_editable(&state, id, job),
                 "can_move_up": can_move_up,
                 "crf": job.crf,
                 "source_kept_vmaf": job.source_kept_vmaf,
@@ -199,12 +199,9 @@ pub fn queue(shared: &SharedState) -> Value {
 
 /// Whether a job's tracks can still be changed. False once its encode is under
 /// way: the selection is baked into the running `FFmpeg` command.
-fn tracks_editable(state: &super::state::DaemonState, id: u64) -> bool {
+fn tracks_editable(state: &super::state::DaemonState, id: u64, job: &EncodingJob) -> bool {
     !state.in_active_session(id)
-        && state
-            .queue
-            .job_by_id(id)
-            .is_some_and(|job| matches!(job.status, JobStatus::Ready | JobStatus::AwaitingConfig))
+        && matches!(job.status, JobStatus::Ready | JobStatus::AwaitingConfig)
 }
 
 const DV_KEEP: &str = "keep";
@@ -335,7 +332,7 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
         json!({
             "id": id,
             "filename": job.filename(),
-            "editable": tracks_editable(&state, id),
+            "editable": tracks_editable(&state, id, job),
             "audio": audio,
             "subtitles": subtitles,
             "remux_only": job.remux_only,
@@ -411,7 +408,7 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
         let Some(job) = state.queue.job_by_id(id) else {
             return (404, json!({"error": "unknown job id"}));
         };
-        if !tracks_editable(&state, id) {
+        if !tracks_editable(&state, id, job) {
             return (409, json!({"error": "job is encoding or already finished"}));
         }
 
@@ -888,7 +885,9 @@ pub fn fs_browse(shared: &SharedState, path: &str, show_hidden: bool) -> (u16, V
     let requested = if path.is_empty() {
         // With a root configured, that is where browsing starts.
         if browse_root.is_empty() {
-            std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map_or_else(|| PathBuf::from("/"), PathBuf::from)
         } else {
             PathBuf::from(&browse_root)
         }

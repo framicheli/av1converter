@@ -122,6 +122,9 @@ fn unknown_arg_message(arg: &str) -> String {
 }
 
 fn suggest_flag(arg: &str) -> Option<&'static str> {
+    if arg.len() < 2 {
+        return None;
+    }
     let mut best: Option<(&'static str, usize)> = None;
     for flag in FLAGS {
         let d = edit_distance(arg, flag);
@@ -1812,6 +1815,15 @@ mod tests {
     fn extra_arguments_are_rejected() {
         let err = parse_cli(["--stop", "foo"]).unwrap_err();
         assert!(err.contains("Unexpected extra argument: foo"), "{err}");
+    }
+
+    #[test]
+    fn a_one_character_argument_is_not_suggested_a_flag() {
+        for arg in ["", "-", "x"] {
+            let err = parse_cli([arg]).unwrap_err();
+            assert!(err.contains(&format!("Unknown argument: {arg}")), "{err}");
+            assert!(!err.contains("Did you mean"), "{err}");
+        }
     }
 
     #[test]

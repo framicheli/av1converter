@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- The web file browser starts in the user's home directory on Windows, and a one-character argument on the command line no longer suggests an unrelated option.
 - Stopping the daemon during a disc rip now leaves the title for the next start to settle, and a saved queue whose job ids run past its counter is kept instead of being discarded.
 - The daemon now stops with an error when it cannot bind the web server, install its signal handler, or record the address it is listening on, instead of running where `--status` and `--stop` cannot find it. A failed start no longer leaves `ffprobe` processes behind.
 - TUI cancel confirm (Esc → Yes) actually cancels encoding, analysis, and disc work instead of only closing the dialog.
