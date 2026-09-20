@@ -544,11 +544,14 @@ fn apply_disc_event(
                     && matches!(job.status, JobStatus::Ripping { .. })
                 {
                     job.source_size = ripped_size;
-                    job.path = path;
-                    if let Some(path) = job.path.to_str() {
+                    if let Some(text) = path.to_str().map(str::to_string) {
+                        job.path = path;
                         job.status = JobStatus::Analyzing;
-                        ready = Some((id, path.to_string()));
+                        ready = Some((id, text));
                     } else {
+                        // A path the queue file cannot carry is kept in its
+                        // lossy form, which every later save can write.
+                        job.path = std::path::PathBuf::from(path.to_string_lossy().into_owned());
                         job.status = JobStatus::Error {
                             message: "File path contains non-UTF-8 characters".to_string(),
                         };
@@ -636,7 +639,13 @@ fn persist_queue(
         let snapshot = state.queue.as_persistable();
         match serde_json::to_vec_pretty(&snapshot) {
             Ok(json) => json,
-            Err(_) => return,
+            Err(e) => {
+                if last_warning.is_none_or(|at| at.elapsed() >= Duration::from_mins(1)) {
+                    warn!("The queue cannot be written: {e}");
+                    *last_warning = Some(Instant::now());
+                }
+                return;
+            }
         }
     };
     if json == *last_saved {
@@ -1147,6 +1156,47 @@ fn finish_job(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ripped file whose name is not UTF-8 does not stop the queue from
+    /// being saved.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_ripped_path_still_lets_the_queue_be_saved() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (probe_tx, _probe_rx) = mpsc::channel();
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("Title 0"));
+            job.status = JobStatus::Ripping { progress: 0.0 };
+            job.temporary = true;
+            let id = state.queue.push(job);
+            state.disc.job_ids = vec![id];
+            state.disc.active = true;
+            id
+        };
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            crate::disc::worker::DiscEvent::TitleReady {
+                index: 0,
+                path: std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![0xff])),
+            },
+        );
+
+        let state = lock(&shared);
+        assert!(matches!(
+            state.queue.job_by_id(id).unwrap().status,
+            JobStatus::Error { .. }
+        ));
+        let snapshot = state.queue.as_persistable();
+        assert!(
+            serde_json::to_vec_pretty(&snapshot).is_ok(),
+            "the queue must stay writable"
+        );
+    }
 
     /// A shutdown leaves a running rip as it is, for `resume` to settle.
     #[test]
