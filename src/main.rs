@@ -638,6 +638,7 @@ fn main() -> io::Result<()> {
         disc::staging::ACTIVE_RIP_WINDOW,
     );
     let res = run_app(&mut terminal, &mut app);
+    utils::remove_scratch_dir_if_empty();
 
     // Restore terminal
     let restore = restore_terminal();

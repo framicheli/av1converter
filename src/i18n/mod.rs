@@ -279,6 +279,7 @@ pub enum Msg {
     BrowseRootExcludesJobs,
     QueuedRipsNeedOutputDirectory,
     QueuedRipsPinStagingDirectory,
+    ThresholdTooLowToDelete,
     CfgGroupTracks,
     CfgGroupDisc,
     CfgVmafThreshold,
@@ -2123,6 +2124,22 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
                 "Der neue Basisordner schließt einen oder mehrere Aufträge in der Warteschlange aus"
             }
             Zh => "新的浏览根目录不包含一个或多个排队中的任务",
+        },
+        Msg::ThresholdTooLowToDelete => match lang {
+            En => "A VMAF threshold of 0 proves nothing; raise it or turn off deleting the source",
+            It => {
+                "Una soglia VMAF di 0 non dimostra nulla: alzala o disattiva l'eliminazione dell'originale"
+            }
+            Es => {
+                "Un umbral VMAF de 0 no demuestra nada: súbelo o desactiva el borrado del original"
+            }
+            Fr => {
+                "Un seuil VMAF de 0 ne prouve rien : augmentez-le ou désactivez la suppression de la source"
+            }
+            De => {
+                "Ein VMAF-Schwellenwert von 0 belegt nichts: Erhöhen Sie ihn oder schalten Sie das Löschen der Quelle aus"
+            }
+            Zh => "VMAF 阈值为 0 无法证明任何内容：请提高阈值或关闭删除源文件",
         },
         Msg::QueuedRipsPinStagingDirectory => match lang {
             En => "Queued disc rips are stored in the current staging directory",

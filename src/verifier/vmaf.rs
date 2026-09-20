@@ -115,6 +115,18 @@ impl std::fmt::Display for VmafResult {
     }
 }
 
+/// The error a failed libvmaf run reports. [`AppError`]'s own text names the
+/// step, so the message carries only the reason.
+fn vmaf_failure(stderr: String) -> AppError {
+    if stderr.contains("No such filter: 'libvmaf'")
+        || stderr.contains("Unknown libvmaf")
+        || stderr.contains("Option model not found")
+    {
+        return AppError::Vmaf("FFmpeg must be compiled with libvmaf support".to_string());
+    }
+    AppError::Vmaf(stderr)
+}
+
 /// Calculate VMAF score between original and encoded video. Honours
 /// `cancel_flag` as encoding does: the ffmpeg process is killed and its log
 /// file cleaned up.
@@ -222,15 +234,7 @@ pub fn calculate_vmaf(
 
     if !status.success() {
         let _ = std::fs::remove_file(&json_output);
-        if stderr.contains("No such filter: 'libvmaf'")
-            || stderr.contains("Unknown libvmaf")
-            || stderr.contains("Option model not found")
-        {
-            return Err(AppError::Vmaf(
-                "VMAF not available. FFmpeg must be compiled with libvmaf support.".to_string(),
-            ));
-        }
-        return Err(AppError::Vmaf(format!("VMAF calculation failed: {stderr}")));
+        return Err(vmaf_failure(stderr));
     }
 
     // Read result then remove
@@ -257,7 +261,20 @@ pub fn calculate_vmaf(
 
 #[cfg(test)]
 mod tests {
-    use super::{VmafResult, escape_filter_value};
+    use super::{VmafResult, escape_filter_value, vmaf_failure};
+
+    /// The reported reason is not prefixed twice.
+    #[test]
+    fn a_failed_vmaf_run_names_the_step_once() {
+        assert_eq!(
+            vmaf_failure("Conversion failed".to_string()).to_string(),
+            "VMAF calculation failed: Conversion failed"
+        );
+        assert_eq!(
+            vmaf_failure("No such filter: 'libvmaf'".to_string()).to_string(),
+            "VMAF calculation failed: FFmpeg must be compiled with libvmaf support"
+        );
+    }
 
     fn scores(score: f64, min_score: f64) -> VmafResult {
         VmafResult {

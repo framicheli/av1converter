@@ -58,5 +58,10 @@ fn check_vmaf_available() -> bool {
     Command::new("ffmpeg")
         .args(["-filters"])
         .output()
-        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("libvmaf"))
+        .is_ok_and(|o| {
+            // The filter name is the second column, after the capability flags.
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l.split_whitespace().nth(1) == Some("libvmaf"))
+        })
 }

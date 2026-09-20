@@ -339,6 +339,12 @@ impl AppConfig {
         {
             return Err("VMAF threshold must be between 0 and 100".to_string());
         }
+        if self.quality.delete_source_on_success
+            && self.quality.vmaf_enabled
+            && self.quality.vmaf_threshold <= 0.0
+        {
+            return Err(t(self.language, Msg::ThresholdTooLowToDelete).to_string());
+        }
         if self.performance.svt_preset > 13 {
             return Err("SVT preset must be between 0 and 13".to_string());
         }
@@ -866,6 +872,26 @@ mod tests {
         assert!(cfg.validate_settings().is_ok());
         cfg.daemon.auth_token.clear();
         assert!(cfg.validate_settings().is_ok());
+    }
+
+    /// Deleting the source needs a threshold that can actually fail.
+    #[test]
+    fn deleting_the_source_needs_a_threshold_above_zero() {
+        let mut config = AppConfig::default();
+        config.quality.vmaf_enabled = true;
+        config.quality.delete_source_on_success = true;
+        config.quality.vmaf_threshold = 0.0;
+        assert_eq!(
+            config.validate_settings(),
+            Err(t(config.language, Msg::ThresholdTooLowToDelete).to_string())
+        );
+
+        config.quality.vmaf_threshold = 0.5;
+        assert_eq!(config.validate_settings(), Ok(()));
+
+        config.quality.vmaf_threshold = 0.0;
+        config.quality.delete_source_on_success = false;
+        assert_eq!(config.validate_settings(), Ok(()));
     }
 
     /// A non-empty token needs at least 32 characters; an empty one is

@@ -105,12 +105,41 @@ pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
     builder.create(path)
 }
 
-// The directory itself is left behind at exit; the files inside are removed as
-// each job finishes.
+/// Remove this process's scratch directory if nothing is left in it. Files are
+/// removed as each job finishes, so a clean run leaves an empty directory.
+pub fn remove_scratch_dir_if_empty() {
+    if let Some(dir) = scratch_dir()
+        && remove_if_empty(&dir)
+    {
+        tracing::debug!("Removed the scratch directory {}", dir.display());
+    }
+}
+
+/// Remove `dir` when it holds nothing. Returns whether it was removed.
+fn remove_if_empty(dir: &Path) -> bool {
+    std::fs::remove_dir(dir).is_ok()
+}
 
 #[cfg(test)]
 mod tests {
     use super::{create_private_dir, reuse_or_create, scratch_dir};
+
+    /// An empty scratch directory is removed; one still holding a file stays.
+    #[test]
+    fn the_scratch_directory_goes_only_when_it_is_empty() {
+        let dir = std::env::temp_dir().join(format!("av1c_scratch_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        super::create_private_dir(&dir).unwrap();
+        let busy = dir.join("job.progress");
+        std::fs::write(&busy, b"50").unwrap();
+
+        assert!(!super::remove_if_empty(&dir));
+        assert!(dir.exists(), "a directory with a file in it is kept");
+
+        std::fs::remove_file(&busy).unwrap();
+        assert!(super::remove_if_empty(&dir));
+        assert!(!dir.exists());
+    }
 
     /// Stable across calls, and actually a directory we can write into.
     #[test]

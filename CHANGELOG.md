@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- Settings no longer accept a VMAF threshold of 0 while source deletion is on, since nothing could fail it. VMAF failures are reported without a doubled prefix, an FFmpeg build that only lists a variant of the libvmaf filter is no longer taken for libvmaf support, and an empty scratch directory is removed at exit.
 - Track selection now recognises more language codes, including Slovak, Icelandic, Persian, Croatian, Serbian, Bulgarian, Catalan, Indonesian, Malay and the Norwegian written forms. On macOS and Windows, two files whose names differ only in capitalisation no longer get the same output name, and a link pointing nowhere is skipped instead of queued.
 - Staging directories this process left behind are now cleaned up on the next sweep, and an internal failure during a rip no longer leaves `makemkvcon` holding the drive.
 - The staging directory can no longer be changed while ripped titles are waiting to be encoded, which used to leave their files behind for good.

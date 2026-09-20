@@ -395,7 +395,7 @@ encoder = "SvtAv1"             # Selected encoder: Nvenc, Qsv, Amf, SvtAv1 (auto
 quality_preset = "medium"      # Quality preset: low, medium, high, custom (new files get medium; a file without this key loads as custom)
 
 [quality]
-vmaf_threshold = 90.0          # Mean and min sampled-frame VMAF must both meet this (0–100)
+vmaf_threshold = 90.0          # Mean and min sampled-frame VMAF must both meet this (0–100; above 0 while delete_source_on_success is on)
 vmaf_enabled = true            # Enable/disable VMAF verification after encoding
 delete_source_on_success = false  # Delete source when mean and min VMAF both meet the threshold
 

@@ -342,6 +342,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     if !join_within(vec![analysis_handle], HTTP_JOIN_GRACE) {
         warn!("analysis prober still running after shutdown grace; abandoning join");
     }
+    crate::utils::remove_scratch_dir_if_empty();
     Ok(())
 }
 
