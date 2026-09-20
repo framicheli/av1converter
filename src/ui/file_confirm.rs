@@ -26,9 +26,8 @@ pub fn render_file_confirm(f: &mut Frame, app: &mut App) {
     let total_size: u64 = batch.iter().filter_map(|j| j.source_size).sum();
 
     let title_text = format!(
-        "{} {}  ({})",
-        batch.len(),
-        t(lang, Msg::FilesSelectedWord),
+        "{}  ({})",
+        t(lang, Msg::FilesSelectedCount).replace("{n}", &batch.len().to_string()),
         format_file_size(total_size)
     );
 

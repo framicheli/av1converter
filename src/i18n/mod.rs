@@ -118,7 +118,7 @@ pub enum Msg {
     DiscDiscovering,
     DiscNoTitles,
     DiscRipAction,
-    DiscChapters,
+    DiscChapterCount,
     WebAddDisc,
     StatusRipping,
     DiscNotInstalled,
@@ -143,7 +143,7 @@ pub enum Msg {
     Notice,
     SelectVideoFile,
     SelectFolder,
-    SelectedWord,
+    SelectedCount,
     NoVideoFiles,
     ScanningFiles,
     FolderScanFailed,
@@ -155,7 +155,7 @@ pub enum Msg {
     // ── File confirm ─────────────────────────────────────────────────────────
     ConfirmSelection,
     Files,
-    FilesSelectedWord,
+    FilesSelectedCount,
 
     // ── Track config ─────────────────────────────────────────────────────────
     FileLabel,
@@ -416,6 +416,8 @@ pub enum Msg {
     WebDolbyVision,
     WebDvRemuxHint,
     WebDvSourceHint,
+    WebDvSourceHintPlain,
+    WebDvHint,
     WebDvProfile,
     WebCancelling,
     WebRemovedFinished,
@@ -451,6 +453,8 @@ pub enum Msg {
     WebBackToQueue,
     WebConfirmTracks,
     WebSessionTotals,
+    WebSessionSummary,
+    WebSessionSummaryCancelled,
     WebApplyRemainingHint,
     WebSaving,
     WebBrowse,
@@ -887,13 +891,13 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "+ Disque",
             Zh => "+ 光盘",
         },
-        Msg::DiscChapters => match lang {
-            En => "chapters",
-            It => "capitoli",
-            Es => "capítulos",
-            Fr => "chapitres",
-            De => "Kapitel",
-            Zh => "章节",
+        Msg::DiscChapterCount => match lang {
+            En => "{n} chapters",
+            It => "{n} capitoli",
+            Es => "{n} capítulos",
+            Fr => "{n} chapitres",
+            De => "{n} Kapitel",
+            Zh => "{n} 个章节",
         },
         Msg::StatusRipping => match lang {
             En => "Ripping",
@@ -1128,13 +1132,13 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Ordner wählen",
             Zh => "选择文件夹",
         },
-        Msg::SelectedWord => match lang {
-            En => "selected",
-            It => "selezionati",
-            Es => "seleccionados",
-            Fr => "sélectionnés",
-            De => "ausgewählt",
-            Zh => "已选择",
+        Msg::SelectedCount => match lang {
+            En => "{n} selected",
+            It => "{n} selezionati",
+            Es => "{n} seleccionados",
+            Fr => "{n} sélectionnés",
+            De => "{n} ausgewählt",
+            Zh => "已选择 {n} 个",
         },
         Msg::NoVideoFiles => match lang {
             En => "No video files found in this folder",
@@ -1210,13 +1214,13 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Dateien",
             Zh => "文件",
         },
-        Msg::FilesSelectedWord => match lang {
-            En => "files selected",
-            It => "file selezionati",
-            Es => "archivos seleccionados",
-            Fr => "fichiers sélectionnés",
-            De => "Dateien ausgewählt",
-            Zh => "个文件已选择",
+        Msg::FilesSelectedCount => match lang {
+            En => "{n} files selected",
+            It => "{n} file selezionati",
+            Es => "{n} archivos seleccionados",
+            Fr => "{n} fichiers sélectionnés",
+            De => "{n} Dateien ausgewählt",
+            Zh => "已选择 {n} 个文件",
         },
 
         // ── Track config ─────────────────────────────────────────────────────
@@ -3265,6 +3269,18 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Dolby-Vision-Quelle {profile}.",
             Zh => "杜比视界 {profile} 源。",
         },
+        Msg::WebDvSourceHintPlain => match lang {
+            En => "Dolby Vision source.",
+            It => "Sorgente Dolby Vision.",
+            Es => "Fuente Dolby Vision.",
+            Fr => "Source Dolby Vision.",
+            De => "Dolby-Vision-Quelle.",
+            Zh => "杜比视界源。",
+        },
+        Msg::WebDvHint => match lang {
+            En | It | Es | Fr | De => "{source} {detail}.",
+            Zh => "{source}{detail}。",
+        },
         Msg::WebDvProfile => match lang {
             En => "profile {n}",
             It => "profilo {n}",
@@ -3556,6 +3572,44 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Sitzungssummen",
             Zh => "会话总计",
         },
+        Msg::WebSessionSummary => match lang {
+            En => {
+                "{headline} — {totals}: {converted} converted, {skipped} skipped, {errors} failed"
+            }
+            It => {
+                "{headline} — {totals}: {converted} convertiti, {skipped} saltati, {errors} falliti"
+            }
+            Es => {
+                "{headline} — {totals}: {converted} convertidos, {skipped} omitidos, {errors} fallidos"
+            }
+            Fr => {
+                "{headline} — {totals} : {converted} convertis, {skipped} ignorés, {errors} en échec"
+            }
+            De => {
+                "{headline} — {totals}: {converted} konvertiert, {skipped} übersprungen, {errors} fehlgeschlagen"
+            }
+            Zh => "{headline} — {totals}：已转换 {converted}，已跳过 {skipped}，失败 {errors}",
+        },
+        Msg::WebSessionSummaryCancelled => match lang {
+            En => {
+                "{headline} — {totals}: {converted} converted, {skipped} skipped, {cancelled} stopped, {errors} failed"
+            }
+            It => {
+                "{headline} — {totals}: {converted} convertiti, {skipped} saltati, {cancelled} interrotti, {errors} falliti"
+            }
+            Es => {
+                "{headline} — {totals}: {converted} convertidos, {skipped} omitidos, {cancelled} detenidos, {errors} fallidos"
+            }
+            Fr => {
+                "{headline} — {totals} : {converted} convertis, {skipped} ignorés, {cancelled} arrêtés, {errors} en échec"
+            }
+            De => {
+                "{headline} — {totals}: {converted} konvertiert, {skipped} übersprungen, {cancelled} gestoppt, {errors} fehlgeschlagen"
+            }
+            Zh => {
+                "{headline} — {totals}：已转换 {converted}，已跳过 {skipped}，已停止 {cancelled}，失败 {errors}"
+            }
+        },
         Msg::WebApplyRemainingHint => match lang {
             En => "Matches tracks by order — best for files with the same track layout.",
             It => "Abbina le tracce in ordine — ideale per file con lo stesso schema di tracce.",
@@ -3708,7 +3762,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("cancel", Msg::Cancel),
     ("confirm", Msg::Confirm),
     ("disc_busy", Msg::DiscOperationRunning),
-    ("disc_chapters", Msg::DiscChapters),
+    ("disc_chapters", Msg::DiscChapterCount),
     ("disc_drive_empty", Msg::DiscDriveEmpty),
     ("disc_no_drive", Msg::DiscNoDrive),
     ("disc_no_titles", Msg::DiscNoTitles),
@@ -3720,7 +3774,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("disc_select_drive", Msg::DiscSelectDrive),
     ("disc_select_titles", Msg::DiscSelectTitles),
     ("disc_title", Msg::HomeRipDisc),
-    ("selected", Msg::SelectedWord),
+    ("selected", Msg::SelectedCount),
     ("status_ripping", Msg::StatusRipping),
     ("cancel_encoding", Msg::CancelEncodingTitle),
     ("cancel_encoding_prompt", Msg::CancelEncodingPrompt),
@@ -3802,6 +3856,8 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("dv_remux_hint", Msg::WebDvRemuxHint),
     ("dv_requires_svt", Msg::DvRequiresSvt),
     ("dv_source_hint", Msg::WebDvSourceHint),
+    ("dv_source_hint_plain", Msg::WebDvSourceHintPlain),
+    ("dv_hint", Msg::WebDvHint),
     ("eta", Msg::Eta),
     ("elapsed", Msg::Elapsed),
     ("threshold_label", Msg::ThresholdLabel),
@@ -3900,6 +3956,8 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("back_to_queue", Msg::WebBackToQueue),
     ("confirm_tracks", Msg::WebConfirmTracks),
     ("session_totals", Msg::WebSessionTotals),
+    ("session_summary", Msg::WebSessionSummary),
+    ("session_summary_cancelled", Msg::WebSessionSummaryCancelled),
     ("apply_remaining_hint", Msg::WebApplyRemainingHint),
     ("autostart_hint", Msg::CfgDaemonAutostartHint),
     ("autostart_unsupported", Msg::DaemonServiceUnsupported),

@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- Counts and hints built from separate words — "{n} selected", "{n} chapters", the session summary notification and the Dolby Vision hint — are now single translated sentences, so they read correctly in every language instead of following English word order and punctuation.
 - The "(min …)" note next to a VMAF score, the QSV and AMF quality settings, the SVT-AV1 encoder name and the navigation label are now translated, in both the TUI and the web UI. A web request the daemon rejects without a message is also reported in your language.
 - Saving settings flushes the new `config.toml` directory entry to disk and clears the temporary files an interrupted save left next to it.
 - A config file that cannot be parsed is now copied to `config.toml.unreadable-<timestamp>` instead of a single `config.toml.bak`, so breaking the file a second time no longer blocks every settings save.

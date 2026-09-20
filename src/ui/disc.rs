@@ -173,7 +173,11 @@ pub fn render_disc_titles(f: &mut Frame, app: &mut App) {
                     let selected = app.disc_selected.contains(&title.id);
                     let cursor = i == app.disc_cursor;
                     let chapters = if title.chapters > 0 {
-                        format!("  {} {}", title.chapters, t(lang, Msg::DiscChapters))
+                        format!(
+                            "  {}",
+                            t(lang, Msg::DiscChapterCount)
+                                .replace("{n}", &title.chapters.to_string())
+                        )
                     } else {
                         String::new()
                     };

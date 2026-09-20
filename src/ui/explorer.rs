@@ -123,9 +123,9 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
                     spans.push(Span::raw("  "));
                     spans.push(Span::styled(
                         format!(
-                            "[{} {}]",
-                            app.selected_files.len(),
-                            t(lang, Msg::SelectedWord)
+                            "[{}]",
+                            t(lang, Msg::SelectedCount)
+                                .replace("{n}", &app.selected_files.len().to_string())
                         ),
                         Style::default()
                             .fg(Color::Cyan)

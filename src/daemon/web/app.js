@@ -471,11 +471,14 @@ function updateSummary(s) {
       : cancelled > 0 ? "summary_stopped"
       : "summary_complete";
     toast(
-      `${tr(headline)} ${tr("session_totals")} — ` +
-      `${tr("summary_converted")}: ${converted}, ` +
-      `${tr("badge_skipped")}: ${skipped}` +
-      (cancelled > 0 ? `, ${tr("summary_cancelled")}: ${cancelled}` : "") +
-      `, ${tr("summary_errors")}: ${errors}`,
+      trf(cancelled > 0 ? "session_summary_cancelled" : "session_summary", {
+        headline: tr(headline),
+        totals: tr("session_totals"),
+        converted,
+        skipped,
+        cancelled,
+        errors,
+      }),
       errors > 0,
     );
   }
@@ -1274,13 +1277,16 @@ function dvRow() {
     $("opt-dolby-vision")?.focus();
   });
 
-  const profile = dv.profile == null ? "" : trf("dv_profile", { n: dv.profile });
-  const source = trf("dv_source_hint", { profile });
-  const choice = tr(select.value === "keep" ? "dv_keep_desc" : "dv_hdr10_desc");
+  const source = dv.profile == null
+    ? tr("dv_source_hint_plain")
+    : trf("dv_source_hint", { profile: trf("dv_profile", { n: dv.profile }) });
+  const detail = dv.can_keep
+    ? tr(select.value === "keep" ? "dv_keep_desc" : "dv_hdr10_desc")
+    : tr("dv_requires_svt");
   const warning = dv.profile === 5 ? ` ⚠ ${tr("dv_p5_warning")}` : "";
   const hint = remuxOnly
     ? tr("dv_remux_hint")
-    : dv.can_keep ? `${source} ${choice}.${warning}` : `${source} ${tr("dv_requires_svt")}${warning}`;
+    : trf("dv_hint", { source, detail }) + warning;
   return optionRow("dolby-vision", tr("dolby_vision"), hint, select);
 }
 
@@ -1773,7 +1779,7 @@ function renderDisc() {
 function updateDiscFooter() {
   const listed = Boolean(disc) && !disc.loading && !discState.scanning
     && discState.titles.length > 0;
-  $("disc-note").textContent = listed ? `${disc.selected.size} ${tr("selected")}` : "";
+  $("disc-note").textContent = listed ? trf("selected", { n: disc.selected.size }) : "";
   $("disc-rip").disabled = offline || !listed || disc.selected.size === 0
     || discState.active || ripInFlight;
   $("disc-folder").disabled = offline || (Boolean(disc) && (discState.active || disc.loading));
@@ -1872,7 +1878,7 @@ function renderDiscBody() {
     meta.textContent = [
       title.duration,
       title.size,
-      title.chapters ? `${title.chapters} ${tr("disc_chapters")}` : "",
+      title.chapters ? trf("disc_chapters", { n: title.chapters }) : "",
       ...title.tracks,
     ].filter(Boolean).join(" · ");
     info.append(name, meta);
