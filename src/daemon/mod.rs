@@ -32,6 +32,34 @@ const HTTP_JOIN_GRACE: Duration = Duration::from_secs(5);
 /// dashboard poll behind it.
 const SERVER_THREADS: usize = 4;
 
+/// Bind the web server and append the bound address to `pid_path`.
+fn start_server_at(
+    listen: &str,
+    pid_path: &std::path::Path,
+) -> Result<tiny_http::Server, AppError> {
+    let server = server::bind(listen)?;
+    if let Some(bound) = server.server_addr().to_ip() {
+        lifecycle::append_listen(pid_path, &bound.to_string()).map_err(|e| {
+            AppError::CommandExecution(format!(
+                "Failed to record the listen address in {}: {e}",
+                pid_path.display()
+            ))
+        })?;
+    }
+    Ok(server)
+}
+
+/// Bind the web server and record the bound address `--status` reads.
+fn start_server(listen: &str) -> Result<tiny_http::Server, AppError> {
+    start_server_at(listen, &lifecycle::pid_file())
+}
+
+/// Stop the prober and kill tracked child processes after a startup failure.
+fn abort_startup(shutdown: &Arc<AtomicBool>) {
+    shutdown.store(true, Ordering::SeqCst);
+    crate::utils::child::kill_all();
+}
+
 /// Run the headless daemon: web server + encoding orchestrator.
 /// Blocks until SIGINT/SIGTERM.
 #[allow(clippy::too_many_lines)]
@@ -134,7 +162,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         }
     }
 
-    {
+    let handler = {
         let shutdown = shutdown.clone();
         ctrlc::set_handler(move || {
             if shutdown.swap(true, Ordering::SeqCst) {
@@ -144,16 +172,15 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
                 std::process::exit(1);
             }
         })
-        .map_err(|e| AppError::CommandExecution(format!("Failed to set signal handler: {e}")))?;
-    }
-
-    let server = Arc::new(server::bind(&listen)?);
-    // `--status` reads the bound address back from the PID file.
-    if let Some(bound) = server.server_addr().to_ip()
-        && let Err(e) = lifecycle::record_listen(&bound.to_string())
-    {
-        warn!("Could not record the listen address in the PID file: {e}");
-    }
+        .map_err(|e| AppError::CommandExecution(format!("Failed to set signal handler: {e}")))
+    };
+    let server = Arc::new(match handler.and_then(|()| start_server(&listen)) {
+        Ok(server) => server,
+        Err(e) => {
+            abort_startup(&shutdown);
+            return Err(e);
+        }
+    });
     // The bare address, not `url()`: stdout is the daemon log file in
     // background mode, and the token stays out of it. The tokenised URL is
     // printed to the terminal by whoever started us.
@@ -1111,6 +1138,82 @@ fn finish_job(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A listen address already in use fails startup.
+    #[test]
+    fn a_busy_address_fails_startup() {
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let busy = held.local_addr().unwrap().to_string();
+        let dir = std::env::temp_dir().join(format!("av1c_startup_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_path = dir.join("daemon.pid");
+        std::fs::write(&pid_path, format!("{}", std::process::id())).unwrap();
+
+        let Err(refused) = start_server_at(&busy, &pid_path) else {
+            panic!("a busy address must not bind");
+        };
+
+        assert!(matches!(refused, AppError::CommandExecution(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bound address that cannot be recorded fails startup instead of
+    /// leaving the parent without a port to read.
+    #[test]
+    fn an_unrecordable_listen_address_fails_startup() {
+        let dir = std::env::temp_dir().join(format!("av1c_record_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let missing = dir.join("daemon.pid");
+
+        let Err(refused) = start_server_at("127.0.0.1:0", &missing) else {
+            panic!("an unrecordable address must not start");
+        };
+
+        assert!(matches!(refused, AppError::CommandExecution(_)));
+
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&missing, format!("{}", std::process::id())).unwrap();
+        let Ok(server) = start_server_at("127.0.0.1:0", &missing) else {
+            panic!("a free address with a writable PID file starts");
+        };
+        let recorded = std::fs::read_to_string(&missing).unwrap();
+        assert_eq!(
+            recorded.lines().nth(1).unwrap(),
+            server.server_addr().to_ip().unwrap().to_string()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed startup kills the children the prober already spawned.
+    #[test]
+    fn a_failed_startup_kills_tracked_children() {
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        let Ok((mut child, guard)) = crate::utils::child::spawn(&mut command) else {
+            eprintln!("skipping: sleep is not available");
+            return;
+        };
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        abort_startup(&shutdown);
+
+        assert!(shutdown.load(Ordering::SeqCst));
+        let mut exit = None;
+        for _ in 0..100 {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    exit = Some(status);
+                    break;
+                }
+                _ => thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        let killed = exit.is_some();
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(guard);
+        assert!(killed, "the sleeping child outlived the failed startup");
+    }
 
     #[test]
     fn a_finished_job_leaves_the_run_open_for_the_next_ready_job() {

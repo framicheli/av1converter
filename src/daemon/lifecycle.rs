@@ -88,11 +88,7 @@ fn locked_pid(path: &std::path::Path) -> Option<u32> {
 }
 
 /// Append the bound socket address as the second line of the PID file.
-pub fn record_listen(listen: &str) -> io::Result<()> {
-    append_listen(&pid_file(), listen)
-}
-
-fn append_listen(path: &std::path::Path, listen: &str) -> io::Result<()> {
+pub(crate) fn append_listen(path: &std::path::Path, listen: &str) -> io::Result<()> {
     let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
     writeln!(file)?;
     file.write_all(listen.as_bytes())?;
