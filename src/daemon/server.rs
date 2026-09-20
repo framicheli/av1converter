@@ -83,17 +83,6 @@ fn authorized(request: &Request, token: &str) -> bool {
         .is_some_and(|value| secret_eq(value.trim(), token))
 }
 
-/// Whether a `Host` header names something that cannot have been DNS-rebound:
-/// an IP literal, or the resolver-pinned `localhost`. The port is ignored, and
-/// an IPv6 literal arrives bracketed (`[::1]:8399`).
-fn host_is_pinned(host: &str) -> bool {
-    let name = host.strip_prefix('[').map_or_else(
-        || host.split(':').next().unwrap_or(""),
-        |rest| rest.split(']').next().unwrap_or(""),
-    );
-    name.eq_ignore_ascii_case("localhost") || name.parse::<std::net::IpAddr>().is_ok()
-}
-
 /// Whether the connection and requested origin both identify this host.
 fn request_is_local(request: &Request, behind_proxy: bool) -> bool {
     !behind_proxy && is_local(request.remote_addr(), request.headers())
@@ -132,27 +121,6 @@ fn host_is_loopback(host: &str) -> bool {
             .is_ok_and(|address| address.to_canonical().is_loopback())
 }
 
-/// Whether this `Host` header can be trusted to actually mean *this* daemon.
-///
-/// A DNS rebinding attack has to reach us through a name the attacker controls:
-/// the browser resolves `evil.com` to `127.0.0.1` and every request it then
-/// sends is same-origin, so neither CORS nor the JSON content type stops it. An
-/// IP literal cannot be rebound and `localhost` is pinned by the resolver, so
-/// those are the only names accepted while no token is set.
-///
-/// A configured token defeats rebinding on its own — the attacker cannot read
-/// it cross-origin — so real hostnames keep working for anyone who set one.
-fn host_allowed(request: &Request, token: &str) -> bool {
-    if !token.is_empty() {
-        return true;
-    }
-    request
-        .headers()
-        .iter()
-        .find(|h| h.field.equiv("Host"))
-        .is_some_and(|h| host_is_pinned(h.value.as_str()))
-}
-
 /// Requiring JSON makes browser cross-origin POSTs preflight instead of being
 /// silently accepted as form/text requests. This server grants no CORS access.
 fn has_json_content_type(headers: &[Header]) -> bool {
@@ -189,13 +157,6 @@ fn handle_request(
 
     if path.starts_with("/api") {
         let token = super::state::lock(shared).config.daemon.auth_token.clone();
-        if !host_allowed(&request, &token) {
-            return respond_json(
-                request,
-                403,
-                &serde_json::json!({"error": "unrecognised Host header; reach the daemon by IP address or set an auth_token"}),
-            );
-        }
         if !authorized(&request, &token) {
             return respond_json(
                 request,
@@ -418,22 +379,6 @@ mod tests {
         assert_eq!(query_param("", "path"), None);
     }
 
-    /// Only IP literals and `localhost` count as pinned; real hostnames do not.
-    #[test]
-    fn only_unrebindable_hosts_are_pinned() {
-        assert!(host_is_pinned("127.0.0.1:8399"));
-        assert!(host_is_pinned("192.168.1.10:8399"));
-        assert!(host_is_pinned("[::1]:8399"));
-        assert!(host_is_pinned("[::1]"));
-        assert!(host_is_pinned("localhost:8399"));
-        assert!(host_is_pinned("LocalHost"));
-
-        assert!(!host_is_pinned("evil.com:8399"));
-        assert!(!host_is_pinned("nas.lan"));
-        assert!(!host_is_pinned("localhost.evil.com"));
-        assert!(!host_is_pinned(""));
-    }
-
     #[test]
     fn local_admin_hosts_are_limited_to_loopback_origins() {
         assert!(host_is_loopback("127.0.0.1:8399"));
@@ -548,6 +493,64 @@ mod tests {
             assert!(
                 !authorized.starts_with("HTTP/1.1 404") && !authorized.starts_with("HTTP/1.1 401"),
                 "{method} {path} is not registered: {authorized}"
+            );
+        }
+
+        shutdown.store(true, Ordering::SeqCst);
+        worker.join().expect("the server thread");
+    }
+
+    /// With no token configured the API answers 401 to every request,
+    /// whatever `Host` it carries and whether or not it sends a bearer token.
+    #[test]
+    fn an_empty_token_accepts_nothing() {
+        use crate::config::AppConfig;
+        use crate::daemon::state::DaemonState;
+        use std::io::Write;
+        use std::net::TcpStream;
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex};
+
+        let mut config = AppConfig::default();
+        config.daemon.auth_token = String::new();
+        let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(config)));
+        let server = Arc::new(bind("127.0.0.1:0").expect("an ephemeral port"));
+        let port = server.server_addr().to_ip().expect("an IP listener").port();
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (probe_tx, _probe_rx) = mpsc::channel();
+        let (disc_tx, _disc_rx) = mpsc::channel();
+        let worker = {
+            let server = server.clone();
+            let shared = shared.clone();
+            let shutdown = shutdown.clone();
+            std::thread::spawn(move || serve(&server, &shared, &probe_tx, &disc_tx, &shutdown))
+        };
+
+        let request = |host: &str, auth: &str| {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            write!(
+                stream,
+                "GET /api/status HTTP/1.1\r\nHost: {host}\r\n{auth}\
+                 Connection: close\r\n\r\n"
+            )
+            .expect("write");
+            let mut response = String::new();
+            std::io::Read::read_to_string(&mut stream, &mut response).expect("read");
+            response
+        };
+
+        for (host, auth) in [
+            ("127.0.0.1", ""),
+            ("evil.example.com", ""),
+            ("127.0.0.1", "Authorization: Bearer \r\n"),
+            ("evil.example.com", "Authorization: Bearer \r\n"),
+            ("127.0.0.1", "Authorization: Bearer anything\r\n"),
+        ] {
+            let response = request(host, auth);
+            assert!(
+                response.starts_with("HTTP/1.1 401"),
+                "Host {host} with {auth:?} was not refused: {response}"
             );
         }
 

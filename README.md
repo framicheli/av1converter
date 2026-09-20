@@ -349,7 +349,7 @@ Every configuration field exists in both the TUI and web settings pages; the TUI
 
 The current access token is never returned to a browser. A local web session can leave the token field blank to keep it or enter a replacement containing at least 32 characters. The accepted replacement becomes the browser session token immediately. The TUI's Settings screen takes the same rule for a replacement; a blank token there is regenerated on the next start.
 
-The token is also what stops a website you visit from reaching the daemon. A page that re-points its own hostname at `127.0.0.1` still cannot produce the bearer token. The API also requires JSON for mutations, rejects unsafe unauthenticated hostnames, caps request bodies, and confines restored as well as newly added jobs to `browse_root`.
+The token is also what stops a website you visit from reaching the daemon. A page that re-points its own hostname at `127.0.0.1` still cannot produce the bearer token. The API also requires JSON for mutations, caps request bodies, and confines restored as well as newly added jobs to `browse_root`.
 
 ## Encoding Presets
 
