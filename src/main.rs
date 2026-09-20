@@ -14,6 +14,7 @@ mod verifier;
 
 use app::{App, ConfirmAction, Screen, TrackFocus};
 use crossterm::{
+    cursor::Show,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -23,7 +24,6 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::app::HOME_MENU;
 use crate::i18n::{Msg, t};
 
 const USAGE: &str = "\
@@ -638,21 +638,30 @@ fn main() -> io::Result<()> {
         disc::staging::ACTIVE_RIP_WINDOW,
     );
     let res = run_app(&mut terminal, &mut app);
+    if res.is_err() {
+        shutdown_after_error(&app);
+    }
     utils::remove_scratch_dir_if_empty();
 
     // Restore terminal
     let restore = restore_terminal();
-    let cursor = terminal.show_cursor();
     res?;
-    restore?;
-    cursor
+    restore
+}
+
+/// Cleanup for an event-loop error, which returns before the quit path runs:
+/// kills tracked children and removes the staging copies of queued rips.
+fn shutdown_after_error(app: &App) {
+    crate::utils::child::kill_all();
+    app.discard_staged_jobs();
 }
 
 /// Best-effort terminal restoration used by setup errors, runtime errors and
-/// the panic hook. Both operations are attempted even when the first fails.
+/// the panic hook. Leaves raw mode, the alternate screen and cursor hiding,
+/// attempting every operation even when the first fails.
 fn restore_terminal() -> io::Result<()> {
     let raw = disable_raw_mode();
-    let screen = execute!(io::stdout(), LeaveAlternateScreen);
+    let screen = execute!(io::stdout(), LeaveAlternateScreen, Show);
     raw.and(screen)
 }
 
@@ -888,7 +897,7 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
 fn handle_home_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Up | KeyCode::Char('k') if app.home_index > 0 => app.home_index -= 1,
-        KeyCode::Down | KeyCode::Char('j') if app.home_index < HOME_MENU.len() - 1 => {
+        KeyCode::Down | KeyCode::Char('j') if app.home_index + 1 < ui::home::MENU_ITEMS => {
             app.home_index += 1;
         }
         KeyCode::Esc if !app.queue.jobs.is_empty() => app.navigate_to_queue(),
@@ -1753,6 +1762,15 @@ fn adjust_preset_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_home_cursor_stops_on_the_last_menu_entry() {
+        let mut app = App::new();
+        for _ in 0..ui::home::MENU_ITEMS + 2 {
+            handle_home_key(&mut app, KeyCode::Down);
+        }
+        assert_eq!(app.home_index, ui::home::MENU_ITEMS - 1);
+    }
 
     #[test]
     fn no_args_starts_the_tui() {
