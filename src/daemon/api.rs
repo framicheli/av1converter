@@ -1446,48 +1446,6 @@ fn restore_live_settings(live: &AppConfig, error: &str) -> (u16, Value) {
 /// save and commit.
 static SETTINGS_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Why `config` cannot replace `live` while `jobs` — unfinished jobs as
-/// `(source, output, temporary)` — are queued. `inside` tells whether a path
-/// lies within a browse root.
-fn queue_conflict(
-    live: &AppConfig,
-    config: &AppConfig,
-    jobs: &[(PathBuf, Option<PathBuf>, bool)],
-    inside: impl Fn(&Path, &str) -> bool,
-) -> Option<&'static str> {
-    let root = &config.daemon.browse_root;
-    if live.daemon.browse_root != *root
-        && jobs.iter().any(|(path, output, temporary)| {
-            (!temporary && !inside(path, root))
-                || output
-                    .as_deref()
-                    .and_then(Path::parent)
-                    .is_some_and(|parent| !inside(parent, root))
-        })
-    {
-        return Some(crate::i18n::t(config.language, Msg::BrowseRootExcludesJobs));
-    }
-    let has_directory = |config: &AppConfig| {
-        config
-            .output
-            .output_directory
-            .as_deref()
-            .is_some_and(|dir| !dir.trim().is_empty())
-    };
-    if live.disc.staging_directory != config.disc.staging_directory
-        && jobs.iter().any(|(_, _, temporary)| *temporary)
-    {
-        return Some(crate::i18n::t(
-            config.language,
-            Msg::QueuedRipsPinStagingDirectory,
-        ));
-    }
-    (has_directory(live)
-        && !has_directory(config)
-        && jobs.iter().any(|(_, _, temporary)| *temporary))
-    .then(|| crate::i18n::t(config.language, Msg::QueuedRipsNeedOutputDirectory))
-}
-
 /// Replace the configuration: sanitize, persist to config.toml, and swap the
 /// live copy. Changes apply from the next analysis/encode.
 pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) -> (u16, Value) {
@@ -1520,7 +1478,7 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
             json!({"error": crate::i18n::t(config.language, Msg::BrowseRootRequired)}),
         );
     }
-    if let Some(error) = queue_conflict(&live, &config, &job_paths, within_root) {
+    if let Some(error) = crate::config::queue_conflict(&live, &config, &job_paths, within_root) {
         return (409, json!({"error": error}));
     }
     let encoder_available = (config.encoder != live.encoder)
@@ -1546,9 +1504,11 @@ pub fn settings_post(shared: &SharedState, body: &Value, local_request: bool) ->
         })
         .map(|job| (job.path.clone(), job.output_path.clone(), job.temporary))
         .collect();
-    if let Some(error) = queue_conflict(&live, &config, &queued_since, |path, root| {
-        root.is_empty() || path.starts_with(root)
-    }) {
+    if let Some(error) =
+        crate::config::queue_conflict(&live, &config, &queued_since, |path, root| {
+            root.is_empty() || path.starts_with(root)
+        })
+    {
         drop(state);
         return restore_live_settings(&live, error);
     }
@@ -2934,15 +2894,15 @@ mod tests {
 
             let rip = [(PathBuf::from("/scratch/rip-a1/DISC_t00.mkv"), None, true)];
             assert_eq!(
-                queue_conflict(&live, &moved, &rip, inside),
+                crate::config::queue_conflict(&live, &moved, &rip, inside),
                 Some(crate::i18n::t(
                     moved.language,
                     Msg::QueuedRipsPinStagingDirectory
                 ))
             );
             let file = [(PathBuf::from("/media/movie.mkv"), None, false)];
-            assert!(queue_conflict(&live, &moved, &file, inside).is_none());
-            assert!(queue_conflict(&live, &live, &rip, inside).is_none());
+            assert!(crate::config::queue_conflict(&live, &moved, &file, inside).is_none());
+            assert!(crate::config::queue_conflict(&live, &live, &rip, inside).is_none());
         }
 
         /// The output directory cannot be cleared while ripped files wait to
@@ -2956,10 +2916,10 @@ mod tests {
             let inside = |_: &Path, _: &str| true;
 
             let rip = [(PathBuf::from("/staging/rip-a1/DISC_t00.mkv"), None, true)];
-            assert!(queue_conflict(&live, &cleared, &rip, inside).is_some());
+            assert!(crate::config::queue_conflict(&live, &cleared, &rip, inside).is_some());
             let file = [(PathBuf::from("/media/movie.mkv"), None, false)];
-            assert!(queue_conflict(&live, &cleared, &file, inside).is_none());
-            assert!(queue_conflict(&live, &live, &rip, inside).is_none());
+            assert!(crate::config::queue_conflict(&live, &cleared, &file, inside).is_none());
+            assert!(crate::config::queue_conflict(&live, &live, &rip, inside).is_none());
         }
 
         /// A job queued since the settings snapshot is checked against the
@@ -2972,11 +2932,11 @@ mod tests {
             let prefix = |path: &Path, root: &str| path.starts_with(root);
 
             let outside = [(PathBuf::from("/media/movie.mkv"), None, false)];
-            assert!(queue_conflict(&live, &config, &outside, prefix).is_some());
+            assert!(crate::config::queue_conflict(&live, &config, &outside, prefix).is_some());
             let inside = [(PathBuf::from("/new-root/movie.mkv"), None, false)];
-            assert!(queue_conflict(&live, &config, &inside, prefix).is_none());
+            assert!(crate::config::queue_conflict(&live, &config, &inside, prefix).is_none());
             // An unchanged root is never a conflict.
-            assert!(queue_conflict(&live, &live, &outside, prefix).is_none());
+            assert!(crate::config::queue_conflict(&live, &live, &outside, prefix).is_none());
         }
 
         /// Paths confined against a browse root that has since changed are

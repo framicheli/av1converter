@@ -10,7 +10,7 @@ pub use crate::i18n::Language;
 use crate::i18n::{Msg, t};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 /// Main application configuration
@@ -106,6 +106,45 @@ fn expand_home(path: &mut String) {
     {
         *path = format!("{}{rest}", home.to_string_lossy());
     }
+}
+
+/// Why `config` cannot replace `live` while `jobs` — unfinished jobs as
+/// `(source, output, temporary)` — are queued. `inside` tells whether a path
+/// lies within a browse root.
+pub fn queue_conflict(
+    live: &AppConfig,
+    config: &AppConfig,
+    jobs: &[(PathBuf, Option<PathBuf>, bool)],
+    inside: impl Fn(&Path, &str) -> bool,
+) -> Option<&'static str> {
+    let root = &config.daemon.browse_root;
+    if live.daemon.browse_root != *root
+        && jobs.iter().any(|(path, output, temporary)| {
+            (!temporary && !inside(path, root))
+                || output
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .is_some_and(|parent| !inside(parent, root))
+        })
+    {
+        return Some(t(config.language, Msg::BrowseRootExcludesJobs));
+    }
+    let has_directory = |config: &AppConfig| {
+        config
+            .output
+            .output_directory
+            .as_deref()
+            .is_some_and(|dir| !dir.trim().is_empty())
+    };
+    if live.disc.staging_directory != config.disc.staging_directory
+        && jobs.iter().any(|(_, _, temporary)| *temporary)
+    {
+        return Some(t(config.language, Msg::QueuedRipsPinStagingDirectory));
+    }
+    (has_directory(live)
+        && !has_directory(config)
+        && jobs.iter().any(|(_, _, temporary)| *temporary))
+    .then(|| t(config.language, Msg::QueuedRipsNeedOutputDirectory))
 }
 
 /// Trim a filename fragment down to characters that are safe inside one path

@@ -1358,6 +1358,19 @@ fn validate_and_save_config(
 fn save_config(app: &mut App) {
     let lang = app.config.language;
     let previous = app.saved_config.clone();
+    let queued: Vec<(std::path::PathBuf, Option<std::path::PathBuf>, bool)> = app
+        .queue
+        .jobs
+        .iter()
+        .filter(|job| !job.status.is_terminal())
+        .map(|job| (job.path.clone(), job.output_path.clone(), job.temporary))
+        .collect();
+    if let Some(error) =
+        config::queue_conflict(&previous, &app.config, &queued, daemon::api::within_root)
+    {
+        app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 6);
+        return;
+    }
     if let Err(error) = validate_and_save_config(&mut app.config, &previous) {
         app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
     } else {
@@ -2076,6 +2089,32 @@ mod tests {
         app.encoding_active = true;
         app.current_screen = Screen::TrackConfig;
         app
+    }
+
+    /// The TUI refuses a settings save that would strand queued rips, the
+    /// same way the daemon does.
+    #[test]
+    fn saving_settings_is_refused_while_a_rip_needs_them() {
+        let mut app = App::new();
+        app.config.disc.staging_directory = Some("/scratch".to_string());
+        app.saved_config = app.config.clone();
+        let mut rip = crate::queue::EncodingJob::new(PathBuf::from("/scratch/rip-a1/DISC_t00.mkv"));
+        rip.status = crate::queue::JobStatus::Ready;
+        rip.temporary = true;
+        app.queue.jobs.push(rip);
+        app.config.disc.staging_directory = Some("/elsewhere".to_string());
+
+        save_config(&mut app);
+
+        assert_eq!(
+            app.saved_config.disc.staging_directory,
+            Some("/scratch".to_string())
+        );
+        let message = app.message.clone().expect("the refusal is shown");
+        assert!(
+            message.contains(t(app.config.language, Msg::QueuedRipsPinStagingDirectory)),
+            "{message}"
+        );
     }
 
     /// Toggling remux puts the output where the saved settings say, not where
