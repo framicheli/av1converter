@@ -144,8 +144,8 @@ pub fn run_encoding_pipeline(
             t(config.language, Msg::ErrSourceChangedSinceAnalysis).to_string(),
         );
     }
-    // The original stays open and fingerprinted for the whole pipeline, so a
-    // file that replaces it at the same path is not taken for the original.
+    // The original stays open and fingerprinted for the whole pipeline; a file
+    // that replaces it at the same path no longer matches.
     let _source_guard = if config.quality.delete_source_on_success {
         match File::open(input) {
             Ok(file)
@@ -205,8 +205,8 @@ pub fn run_encoding_pipeline(
 
     match encode_result {
         EncodeResult::Success => {
-            // VMAF and source deletion refer to the output by path, so the
-            // file the encoder placed there is remembered and re-checked.
+            // The file the encoder placed at the output path is remembered
+            // and re-checked before VMAF and source deletion.
             let output_identity = config
                 .quality
                 .delete_source_on_success
@@ -217,8 +217,8 @@ pub fn run_encoding_pipeline(
                 info!("Skipping VMAF: DV profile 5 tone-mapped output is not comparable");
             }
 
-            // A cancel that arrived after ffmpeg exited but before verification
-            // should not leave a finished output that blocks the next run.
+            // A cancel between the ffmpeg exit and verification removes the
+            // finished output.
             if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
                 let _ = std::fs::remove_file(output);
                 return FullEncodeResult::Cancelled;
@@ -424,8 +424,8 @@ fn run_vmaf_check(
         height,
         cancel_flag,
     ) {
-        // Cancel during verification: drop the finished output so a retry is
-        // not blocked by "output already exists", and report Cancelled.
+        // Cancel during verification: the finished output is removed and
+        // Cancelled is reported.
         Ok(verifier::VmafOutcome::Cancelled) => {
             let _ = std::fs::remove_file(output);
             FullEncodeResult::Cancelled
@@ -468,8 +468,8 @@ fn run_vmaf_check(
     }
 }
 
-/// DV profile 5 → HDR10 is a tone-mapping pass: output pixels differ from
-/// the source by design and VMAF is not comparable.
+/// DV profile 5 → HDR10 is a tone-mapping pass: the output pixels differ from
+/// the source and VMAF is not comparable.
 fn skips_vmaf(params: &EncodingParams) -> bool {
     params.hdr_type == HdrType::DolbyVision
         && params.dv_profile == Some(5)

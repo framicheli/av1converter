@@ -120,8 +120,8 @@ pub fn encode_video(
         return EncodeResult::Error(t(params.lang, Msg::ErrOutputExists).to_string());
     }
 
-    // Reserved with `create_new` before FFmpeg sees it, so `-y` cannot erase a
-    // real file that happens to sit at the `.part` name.
+    // Reserved with `create_new` before FFmpeg sees it; `-y` never erases a
+    // real file sitting at the `.part` name.
     let (partial, tag) = loop {
         let uid = JOB_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tag = format!("{}_{}", std::process::id(), uid);
@@ -160,7 +160,7 @@ pub fn encode_video(
     args.insert(2, "-progress".to_string());
     args.insert(3, progress_file.to_string_lossy().to_string());
 
-    // Redirect stderr to a temp file to avoid pipe buffer deadlock
+    // stderr goes to a temp file, not a pipe.
     let stderr_path = match crate::utils::scratch_path(&format!("av1c_stderr_{tag}.txt")) {
         Ok(path) => path,
         Err(e) => {
@@ -219,8 +219,8 @@ pub fn encode_video(
     let _ = std::fs::remove_file(&progress_file);
     let _ = std::fs::remove_file(&stderr_path);
 
-    // Cancel can win the race against a successful ffmpeg exit: treat that as
-    // Cancelled and leave no finished output behind.
+    // A cancel that wins the race against a successful ffmpeg exit is reported
+    // as Cancelled and leaves no finished output behind.
     let result = if matches!(result, EncodeResult::Success) && cancel_flag.load(Ordering::Acquire) {
         let _ = std::fs::remove_file(&partial);
         EncodeResult::Cancelled
@@ -231,8 +231,8 @@ pub fn encode_video(
     // The scratch file becomes the output only now, when the encode is known to
     // have succeeded. Failure and cancellation already removed it. `hard_link`
     // fails with `AlreadyExists` instead of replacing an existing destination;
-    // filesystems without hard links fall back to an exclusive create+copy so
-    // a destination that appears mid-publish is never clobbered.
+    // filesystems without hard links fall back to an exclusive create+copy,
+    // which never clobbers a destination that appears mid-publish.
     if matches!(result, EncodeResult::Success)
         && let Err(message) = publish_partial(&partial, &params.output, params.lang)
     {
@@ -324,7 +324,7 @@ fn run_encode_loop(
                 Some(if duration > 0.0 {
                     (time_secs / duration * 100.0).min(100.0)
                 } else {
-                    // Duration unknown: advance slowly so UI shows activity (caps at 99%)
+                    // Duration unknown: advances slowly, capped at 99%.
                     (time_secs / 7200.0 * 100.0).min(99.0)
                 })
             } else if total_frames > 0.0 {
@@ -380,8 +380,7 @@ fn run_encode_loop(
                 return EncodeResult::Success;
             }
             Ok(None) => {
-                // Remux copies finish quickly, so poll more often to collect
-                // enough progress samples for a meaningful ETA.
+                // Remux copies finish quickly and are polled more often.
                 let poll_ms = if remux_input_size.is_some() { 100 } else { 250 };
                 thread::sleep(Duration::from_millis(poll_ms));
             }
@@ -442,10 +441,10 @@ fn shortfall(duration: f64, encoded: f64) -> Option<f64> {
 }
 
 /// Read the last few progress blocks from `-progress` output. `FFmpeg` appends
-/// a block roughly twice a second and never truncates, so only the tail of the
+/// a block roughly twice a second and never truncates; only the tail of the
 /// file is read.
 pub(crate) fn read_file_tail(path: &Path) -> Option<String> {
-    /// Comfortably more than one block, so a full block is always in view.
+    /// Comfortably more than one block, which always covers a whole block.
     const WINDOW: usize = 8192;
 
     let mut file = File::open(path).ok()?;
@@ -455,8 +454,8 @@ pub(crate) fn read_file_tail(path: &Path) -> Option<String> {
 
     let mut buf = Vec::with_capacity(WINDOW);
     file.read_to_end(&mut buf).ok()?;
-    // The window can start mid-line; parsing is per-line, so a partial first
-    // line is simply ignored by the callers.
+    // The window can start mid-line; parsing is per-line and a partial first
+    // line is ignored.
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 

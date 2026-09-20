@@ -76,9 +76,7 @@ pub struct VmafResult {
 
 impl VmafResult {
     /// Check if quality meets threshold. Both the mean score and the worst
-    /// sampled frame must clear the threshold so a few catastrophic scenes
-    /// cannot hide behind a passing average (frames are scored with
-    /// `n_subsample=10`).
+    /// sampled frame must clear it (frames are scored with `n_subsample=10`).
     pub fn meets_threshold(&self, threshold: f64) -> bool {
         self.score >= threshold && self.min_score >= threshold
     }
@@ -116,7 +114,7 @@ impl std::fmt::Display for VmafResult {
 }
 
 /// The error a failed libvmaf run reports. [`AppError`]'s own text names the
-/// step, so the message carries only the reason.
+/// step; the message carries only the reason.
 fn vmaf_failure(stderr: String) -> AppError {
     if stderr.contains("No such filter: 'libvmaf'")
         || stderr.contains("Unknown libvmaf")
@@ -140,8 +138,8 @@ pub fn calculate_vmaf(
     cancel_flag: &AtomicBool,
 ) -> Result<VmafOutcome, AppError> {
     let uid = VMAF_COUNTER.fetch_add(1, Ordering::Relaxed);
-    // libvmaf opens `log_path` itself, so the path has to be somewhere nobody
-    // else can have pre-planted a symlink under the name.
+    // libvmaf opens the log path itself; it is a per-process name in the
+    // private scratch directory.
     let json_output =
         crate::utils::scratch_path(&format!("av1c_vmaf_{}_{}.json", std::process::id(), uid))
             .map_err(AppError::Vmaf)?;
@@ -180,8 +178,7 @@ pub fn calculate_vmaf(
         hdr_type.display_string()
     );
 
-    // stderr goes to a file, not a pipe: nothing here reads it while ffmpeg
-    // runs, and a full pipe buffer blocks the child.
+    // stderr goes to a file, not a pipe; nothing reads it while ffmpeg runs.
     let stderr_path = crate::utils::scratch_path(&format!(
         "av1c_vmaf_stderr_{}_{}.txt",
         std::process::id(),
@@ -299,8 +296,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn waiting_returns_the_status_or_kills_on_cancel() {
-        // Spawned the way the pipeline does, so the cancel kills the child's
-        // own process group and not the test runner's.
+        // Spawned the way the pipeline does: the cancel kills the child's own
+        // process group, not the test runner's.
         let (mut quick, _quick) =
             crate::utils::child::spawn(std::process::Command::new("true").stdin(Stdio::null()))
                 .expect("true");

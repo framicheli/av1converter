@@ -120,7 +120,7 @@ fn encodes_a_surround_source_to_av1_and_opus() {
         return;
     };
 
-    // The layout the fixture really has is the one this test exists for.
+    // The layout the fixture really has.
     assert_eq!(
         probe(&input, "stream=channel_layout"),
         vec!["5.1(side)"],
@@ -471,7 +471,8 @@ fn lost_cover_art_or_subtitles_keep_the_source() {
     assert!(reason(&clip, vec![Some("mov_text")]).is_some());
     assert!(reason(&clip, vec![None]).is_some());
     assert!(reason(&covered, Vec::new()).is_some());
-    // An MKV output carries a font attachment through, so it is no reason.
+    // An MKV output carries a font attachment through, and it is no keep
+    // reason.
     assert_eq!(reason(&fonted, Vec::new()), None);
 
     let _ = std::fs::remove_dir_all(&dir);

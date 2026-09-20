@@ -54,7 +54,8 @@ impl EncodingParams {
             Encoder::Amf => preset.amf_quality,
         };
 
-        // DV passthrough needs an encoder that can write the RPU (SVT-AV1)
+        // Only SVT-AV1 writes the DV RPU; every other encoder converts to
+        // HDR10.
         let dv_mode = if config.encoder == Encoder::SvtAv1 {
             dv_mode
         } else {
@@ -98,8 +99,8 @@ impl EncodingParams {
         self.hdr_type == HdrType::DolbyVision && self.dv_mode == DvMode::KeepDolbyVision
     }
 
-    /// Dolby Vision profile 5 converted to HDR10: the pixels are in Dolby's
-    /// IPT color space, so a real tone-mapping pass (libplacebo) is required
+    /// Dolby Vision profile 5 converted to HDR10 through a libplacebo
+    /// tone-mapping pass; the source pixels are in Dolby's IPT color space
     fn needs_dv_tonemap(&self) -> bool {
         self.hdr_type == HdrType::DolbyVision
             && self.dv_mode == DvMode::ToHdr10
@@ -128,8 +129,7 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         "0:V:0".to_string(),
     ]);
 
-    // Track mapping. An empty selection maps nothing: defaults are already
-    // resolved by auto-selection before this point.
+    // Track mapping. An empty selection maps nothing.
     for plan in &params.tracks.audio {
         args.extend(["-map".to_string(), format!("0:a:{}", plan.source_index)]);
     }
@@ -165,7 +165,7 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         // Video encoder
         args.extend(["-c:v".to_string(), params.encoder.ffmpeg_name().to_string()]);
 
-        // Build video filter chain (explicit filter graph is more robust than -pix_fmt auto-insertion)
+        // Build the video filter chain as an explicit filter graph.
         let vf = build_video_filter(params);
         args.extend(["-vf".to_string(), vf]);
 
@@ -189,8 +189,7 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         }
     }
 
-    // The output is a positional argument; a leading `-` is spelled `./-` so
-    // FFmpeg does not read it as an option.
+    // The output is a positional argument; a leading `-` is spelled `./-`.
     if params.output.starts_with('-') {
         args.push(format!("./{}", params.output));
     } else {
@@ -270,11 +269,10 @@ fn get_svtav1_params(params: &EncodingParams) -> Vec<String> {
         "tune=0:film-grain=0:enable-overlays=1:scd=1:enable-tf=1".to_string()
     };
 
-    // Attach HDR10 static metadata so PQ output is true HDR10, not bare PQ.
-    // SVT-AV1 only: hardware encoders get color tags below but not mastering /
-    // MaxCLL SEI today (see README). Applies to native HDR10 sources and to DV
-    // sources (both modes: the HDR10 base of a kept-DV stream benefits from it
-    // too). An SDR base layer (profile 8.2) gets none.
+    // HDR10 static metadata, which makes PQ output true HDR10 rather than
+    // bare PQ. SVT-AV1 only: hardware encoders get the color tags below but no
+    // mastering / MaxCLL SEI (see README). Applies to native HDR10 sources and
+    // to DV sources in both modes. An SDR base layer (profile 8.2) gets none.
     if matches!(params.hdr_type, HdrType::Pq | HdrType::DolbyVision)
         && params.dv_bl_compat != Some(2)
         && let Some(ref hdr10) = params.hdr10_static
@@ -692,8 +690,8 @@ mod tests {
         assert!(!args.contains(&"-c:a".to_string()));
     }
 
-    /// Unsupported standard mappings use independent streams; no filter may
-    /// silently downmix or add channels to make the layout fit.
+    /// Unsupported standard mappings use independent streams, with no filter
+    /// that downmixes or adds channels.
     #[test]
     fn uncommon_opus_layout_preserves_channels() {
         let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
@@ -767,7 +765,7 @@ mod tests {
         assert_eq!(arg_after(&args, "-c:v"), Some("copy".to_string()));
         assert_eq!(arg_after(&args, "-c:a:0"), Some("libopus".to_string()));
         assert_eq!(arg_after(&args, "-b:a:0"), Some("128k".to_string()));
-        // Remux must never grow a video filter or encoder settings.
+        // A remux carries no video filter and no encoder settings.
         assert!(!args.contains(&"-vf".to_string()));
         assert!(!args.contains(&"-crf".to_string()));
     }
