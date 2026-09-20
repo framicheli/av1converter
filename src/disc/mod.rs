@@ -562,7 +562,7 @@ fn failure(messages: &[String], default: DiscError) -> DiscError {
 fn classify(messages: &[String]) -> Option<DiscError> {
     for message in messages {
         let text = message.to_lowercase();
-        let expired = text.contains("expire");
+        let expired = text.contains("expired");
         let licence = ["key", "registration", "evaluation", "licence", "license"]
             .iter()
             .any(|word| text.contains(word));
@@ -743,6 +743,19 @@ mod tests {
             DiscSource::folder(dir.join("missing.iso")),
             Err(DiscError::NotADiscFolder)
         );
+    }
+
+    /// A notice that the key is about to expire is not an expired key.
+    #[test]
+    fn a_key_that_will_expire_is_not_reported_as_expired() {
+        let soon = vec![
+            "The beta registration key will expire in 8 days".to_string(),
+            "Please refresh your registration key".to_string(),
+        ];
+        assert_eq!(classify(&soon), None);
+
+        let gone = vec!["The beta registration key has expired".to_string()];
+        assert_eq!(classify(&gone), Some(DiscError::KeyExpired));
     }
 
     #[cfg(unix)]

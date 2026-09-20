@@ -179,10 +179,12 @@ pub fn confirm_titles(
     };
     let scan = super::scan_titles(bin, source, cancel)?;
     if titles.iter().any(|want| {
-        !scan
-            .titles
-            .iter()
-            .any(|have| have.id == want.id && have.name == want.name)
+        !scan.titles.iter().any(|have| {
+            have.id == want.id
+                && have.name == want.name
+                && have.duration == want.duration
+                && have.size_bytes == want.size_bytes
+        })
     }) {
         return Err(DiscError::DiscChanged);
     }
@@ -470,9 +472,9 @@ mod tests {
             DiscTitle {
                 id: 0,
                 name: "Blade Runner, The \"Final\" Cut".to_string(),
-                duration: Duration::from_mins(1),
-                size_bytes: 1024,
-                chapters: 4,
+                duration: Duration::from_secs(7051),
+                size_bytes: 29_715_223_808,
+                chapters: 32,
                 tracks: Vec::new(),
             },
         )
@@ -895,6 +897,29 @@ mod tests {
         assert_eq!(result, Err(DiscError::DiscChanged));
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A disc swapped for one with the same title ids and names, but
+    /// different titles, is caught.
+    #[cfg(unix)]
+    #[test]
+    fn confirm_titles_rejects_a_title_of_a_different_length() {
+        let base = scratch("confirm_length");
+        let bin = fake_makemkvcon(&base, &Fake::Rip);
+        let (source, mut title) = disc("THE_DISC");
+        title.duration = Duration::from_mins(97);
+        assert_eq!(
+            confirm_titles(&bin, &source, &[title.clone()], &AtomicBool::new(false)),
+            Err(DiscError::DiscChanged)
+        );
+
+        title.duration = Duration::from_secs(7051);
+        title.size_bytes = 999_999;
+        assert_eq!(
+            confirm_titles(&bin, &source, &[title], &AtomicBool::new(false)),
+            Err(DiscError::DiscChanged)
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
