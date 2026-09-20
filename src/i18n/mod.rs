@@ -166,6 +166,7 @@ pub enum Msg {
     RemuxOnly,
     EncodeVideo,
     VideoInfo,
+    ScrollDetails,
     AudioTracks,
     SubtitleTracks,
     SpaceToToggle,
@@ -1389,6 +1390,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Infos vidéo",
             De => "Video-Info",
             Zh => "视频信息",
+        },
+        Msg::ScrollDetails => match lang {
+            En => "Scroll details",
+            It => "Scorri dettagli",
+            Es => "Desplazar detalles",
+            Fr => "Faire défiler les détails",
+            De => "Details scrollen",
+            Zh => "滚动详情",
         },
         Msg::AudioTracks => match lang {
             En => "Audio Tracks",

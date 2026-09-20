@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- TUI: PgUp/PgDn is now labelled "Scroll details" on the queue and results screens, which is what it scrolls there.
 - TUI: the overall percentage and the space saved stay visible in the queue header when the file being encoded has a long name.
 - TUI: the results screen can no longer be opened on an empty queue, for instance right after clearing every finished job.
 - TUI: the text cursor comes back after quitting, a crash or a terminal error, and a terminal error on the way out now stops FFmpeg and removes the staging copies of queued rips as a normal quit does.

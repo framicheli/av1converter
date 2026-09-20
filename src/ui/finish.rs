@@ -266,7 +266,7 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
     // Help
     let help_text = Line::from(vec![
         Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
-        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::VideoInfo))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::ScrollDetails))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::NewConversion))),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
@@ -442,7 +442,7 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
         Span::styled("↑↓", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
         Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
-        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::VideoInfo))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::ScrollDetails))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::NewConversion))),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
