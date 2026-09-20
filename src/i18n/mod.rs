@@ -167,6 +167,7 @@ pub enum Msg {
     EncodeVideo,
     VideoInfo,
     ScrollDetails,
+    DetectingEncoder,
     AudioTracks,
     SubtitleTracks,
     SpaceToToggle,
@@ -1390,6 +1391,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Infos vidéo",
             De => "Video-Info",
             Zh => "视频信息",
+        },
+        Msg::DetectingEncoder => match lang {
+            En => "Detecting the AV1 encoder…",
+            It => "Rilevamento del codificatore AV1…",
+            Es => "Detectando el codificador AV1…",
+            Fr => "Détection de l'encodeur AV1…",
+            De => "AV1-Encoder wird erkannt…",
+            Zh => "正在检测 AV1 编码器…",
         },
         Msg::ScrollDetails => match lang {
             En => "Scroll details",

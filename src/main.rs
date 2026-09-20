@@ -606,6 +606,16 @@ fn main() -> io::Result<()> {
         }
     }));
 
+    // First run detects the encoder by test-encoding a frame per candidate,
+    // which takes seconds; do it before the alternate screen hides the reason.
+    if !config::AppConfig::config_path().exists() {
+        println!(
+            "{}",
+            t(config::AppConfig::default().language, Msg::DetectingEncoder)
+        );
+        let _ = config::AppConfig::load();
+    }
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();

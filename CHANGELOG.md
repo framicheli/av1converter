@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- TUI: the first run says it is detecting the AV1 encoder instead of showing an empty screen while the test encodes run.
 - TUI: an unreadable `config.toml` is reported in the notice line only, instead of also printing over the first screen.
 - TUI: Settings shows a VMAF threshold with decimals, such as 93.25, instead of rounding it on screen.
 - TUI: a long notice on the track screen no longer squeezes the subtitle list down to nothing on an 80x24 terminal.
