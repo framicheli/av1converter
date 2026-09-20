@@ -9,6 +9,9 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
+/// Entries in the home menu.
+pub const MENU_ITEMS: usize = 6;
+
 #[allow(clippy::too_many_lines)]
 pub fn render_home(f: &mut Frame, app: &App) {
     // Notice text width: the frame minus the 2-cell margins and the borders.
@@ -64,7 +67,7 @@ pub fn render_home(f: &mut Frame, app: &App) {
     }
 
     // Menu
-    let labels = [
+    let labels: [&str; MENU_ITEMS] = [
         t(lang, Msg::HomeOpenFile),
         t(lang, Msg::HomeOpenFolder),
         t(lang, Msg::HomeOpenFolderRecursive),

@@ -117,15 +117,6 @@ pub enum MessageKind {
     Error,
 }
 
-pub const HOME_MENU: &[&str] = &[
-    "Open Video File",
-    "Open Folder",
-    "Open Folder (Recursive)",
-    "Rip DVD / Blu-ray",
-    "Configuration",
-    "Quit",
-];
-
 /// Main application state
 // Flat screen-state flags, read one at a time.
 #[allow(clippy::struct_excessive_bools)]
@@ -563,7 +554,7 @@ impl App {
     }
 
     pub fn navigate_to_finish(&mut self) {
-        if self.work_active() || !self.queue.all_completed() {
+        if self.queue.jobs.is_empty() || self.work_active() || !self.queue.all_completed() {
             return;
         }
         // Update output sizes for all jobs that produced an output file
@@ -2483,6 +2474,16 @@ mod tests {
         app.queue
             .jobs
             .push(EncodingJob::new(PathBuf::from("waiting.mkv")));
+
+        app.navigate_to_finish();
+
+        assert_eq!(app.current_screen, Screen::Queue);
+    }
+
+    #[test]
+    fn an_empty_queue_blocks_the_finish_screen() {
+        let mut app = App::new();
+        app.current_screen = Screen::Queue;
 
         app.navigate_to_finish();
 

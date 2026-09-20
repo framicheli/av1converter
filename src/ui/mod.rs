@@ -6,7 +6,7 @@ mod dv_dialog;
 mod explorer;
 mod file_confirm;
 mod finish;
-mod home;
+pub mod home;
 mod queue;
 mod track_config;
 
