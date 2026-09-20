@@ -486,10 +486,14 @@ fn launchctl(args: &[&str]) -> io::Result<String> {
 #[cfg(any(test, target_os = "macos"))]
 pub(crate) fn launchd_plist(exe: &Path, env: &[(&str, String)]) -> String {
     let exe = xml_escape(&exe.to_string_lossy());
-    let environment = if env.is_empty() {
-        String::new()
-    } else {
-        let mut entries = String::from("\t<key>EnvironmentVariables</key>\n\t<dict>\n");
+    let log = xml_escape(&crate::daemon::lifecycle::log_file().to_string_lossy());
+    // The agent has no console: the daemon writes its own rolling log, and the
+    // standard output paths below hold what it prints before that log opens.
+    let environment = {
+        let mut entries = format!(
+            "\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>{}</key>\n\t\t<string>1</string>\n",
+            crate::utils::logger::BACKGROUND_ENV
+        );
         for (name, value) in env {
             for part in [
                 "\t\t<key>",
@@ -530,6 +534,10 @@ pub(crate) fn launchd_plist(exe: &Path, env: &[(&str, String)]) -> String {
          \t<string>Standard</string>\n\
          \t<key>ExitTimeOut</key>\n\
          \t<integer>45</integer>\n\
+         \t<key>StandardOutPath</key>\n\
+         \t<string>{log}</string>\n\
+         \t<key>StandardErrorPath</key>\n\
+         \t<string>{log}</string>\n\
          {environment}\
          </dict>\n\
          </plist>\n"
@@ -643,13 +651,25 @@ mod tests {
         );
         assert!(plist.contains("<string>/usr/local/bin/av1converter</string>"));
         assert!(plist.contains(
-            "<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n\t\t<string>/opt/homebrew/bin:/usr/bin</string>"
+            "<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>AV1_DAEMON_BACKGROUND</key>\n\t\t<string>1</string>\n\t\t<key>PATH</key>\n\t\t<string>/opt/homebrew/bin:/usr/bin</string>"
         ));
         assert!(plist.contains("<string>--start-foreground</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<key>Crashed</key>"));
         assert!(!plist.contains("SuccessfulExit"));
         assert!(plist.contains("<key>ExitTimeOut</key>\n\t<integer>45</integer>"));
+
+        let log = crate::daemon::lifecycle::log_file();
+        assert!(log.ends_with("daemon-startup.log"), "{}", log.display());
+        for key in ["StandardOutPath", "StandardErrorPath"] {
+            assert!(
+                plist.contains(&format!(
+                    "<key>{key}</key>\n\t<string>{}</string>",
+                    log.display()
+                )),
+                "{plist}"
+            );
+        }
     }
 
     #[test]
@@ -672,9 +692,9 @@ mod tests {
         );
         assert!(plist.contains("/opt/foo&amp;bar/av1converter"));
         assert!(plist.contains("<string>/opt/a&amp;b/bin</string>"));
-        assert!(
-            !launchd_plist(Path::new("/bin/av1converter"), &[]).contains("EnvironmentVariables")
-        );
+        let bare = launchd_plist(Path::new("/bin/av1converter"), &[]);
+        assert!(bare.contains("<key>AV1_DAEMON_BACKGROUND</key>"));
+        assert!(!bare.contains("<key>PATH</key>"));
         assert!(!plist.contains("/opt/foo&bar/"));
     }
 

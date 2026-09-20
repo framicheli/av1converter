@@ -318,6 +318,8 @@ av1converter --uninstall-service  # remove it
 
 `--install-service` also sets `enabled = true`, generates a token if needed, and starts the daemon right away when it is not already running. The systemd unit and the launchd agent record your `PATH`, and `XDG_CONFIG_HOME` and `XDG_DATA_HOME` when they are set, at install time, so an FFmpeg installed through Homebrew or another package manager is found and the daemon reads the same `config.toml` and queue as the shell that installed it; re-run `--install-service` (or turn Run at Startup off and on) after upgrading from an older version or moving FFmpeg.
 
+The macOS launchd agent has no console: it writes the same rolling `daemon.log.<date>` as `--start`, with anything printed before that log is open captured in `daemon-startup.log`. The systemd unit keeps logging to the journal (`journalctl --user -u av1converter`).
+
 `--stop` lasts until the next login; uninstall is what prevents it coming back. On a headless Linux machine the user unit dies at logout unless lingering is enabled (`loginctl enable-linger $USER`). Re-run `--install-service` after moving the binary so `ExecStart` stays correct.
 
 Turning **Run at Startup** off from the web settings page leaves the current daemon session running and prevents it from starting at the next login. On macOS the launchd job is also disabled, so a crash does not relaunch it.
