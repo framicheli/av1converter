@@ -455,6 +455,18 @@ pub enum Msg {
     WebSessionTotals,
     WebSessionSummary,
     WebSessionSummaryCancelled,
+    ErrOutsideBrowseRoot,
+    ErrPathMissing,
+    ErrNotVideoFile,
+    ErrNotDirectory,
+    ErrReadDirectory,
+    ErrJobEncoding,
+    ErrJobNotEditable,
+    ErrJobRipping,
+    ErrScanRunning,
+    ErrScanDiscFirst,
+    ErrAutostartLocalOnly,
+    ErrEnableDaemon,
     WebApplyRemainingHint,
     WebSaving,
     WebBrowse,
@@ -3609,6 +3621,110 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Zh => {
                 "{headline} — {totals}：已转换 {converted}，已跳过 {skipped}，已停止 {cancelled}，失败 {errors}"
             }
+        },
+        Msg::ErrOutsideBrowseRoot => match lang {
+            En => "That path is outside the configured browse root.",
+            It => "Quel percorso è fuori dalla cartella di navigazione configurata.",
+            Es => "Esa ruta está fuera de la carpeta de navegación configurada.",
+            Fr => "Ce chemin est en dehors du dossier de navigation configuré.",
+            De => "Dieser Pfad liegt außerhalb des konfigurierten Navigationsordners.",
+            Zh => "该路径不在配置的浏览根目录内。",
+        },
+        Msg::ErrPathMissing => match lang {
+            En => "That path does not exist.",
+            It => "Quel percorso non esiste.",
+            Es => "Esa ruta no existe.",
+            Fr => "Ce chemin n'existe pas.",
+            De => "Dieser Pfad existiert nicht.",
+            Zh => "该路径不存在。",
+        },
+        Msg::ErrNotVideoFile => match lang {
+            En => "That file is not a video file.",
+            It => "Quel file non è un file video.",
+            Es => "Ese archivo no es un archivo de vídeo.",
+            Fr => "Ce fichier n'est pas un fichier vidéo.",
+            De => "Diese Datei ist keine Videodatei.",
+            Zh => "该文件不是视频文件。",
+        },
+        Msg::ErrNotDirectory => match lang {
+            En => "That path is not a folder.",
+            It => "Quel percorso non è una cartella.",
+            Es => "Esa ruta no es una carpeta.",
+            Fr => "Ce chemin n'est pas un dossier.",
+            De => "Dieser Pfad ist kein Ordner.",
+            Zh => "该路径不是文件夹。",
+        },
+        Msg::ErrReadDirectory => match lang {
+            En => "The folder cannot be read: {error}",
+            It => "Impossibile leggere la cartella: {error}",
+            Es => "No se puede leer la carpeta: {error}",
+            Fr => "Le dossier ne peut pas être lu : {error}",
+            De => "Der Ordner kann nicht gelesen werden: {error}",
+            Zh => "无法读取该文件夹：{error}",
+        },
+        Msg::ErrJobEncoding => match lang {
+            En => "That file is already encoding.",
+            It => "Quel file è già in codifica.",
+            Es => "Ese archivo ya se está codificando.",
+            Fr => "Ce fichier est déjà en cours d'encodage.",
+            De => "Diese Datei wird bereits kodiert.",
+            Zh => "该文件正在编码中。",
+        },
+        Msg::ErrJobNotEditable => match lang {
+            En => "That file is encoding or already finished.",
+            It => "Quel file è in codifica o già terminato.",
+            Es => "Ese archivo se está codificando o ya ha terminado.",
+            Fr => "Ce fichier est en cours d'encodage ou déjà terminé.",
+            De => "Diese Datei wird kodiert oder ist bereits fertig.",
+            Zh => "该文件正在编码或已完成。",
+        },
+        Msg::ErrJobRipping => match lang {
+            En => "That file is being ripped from the disc.",
+            It => "Quel file è in estrazione dal disco.",
+            Es => "Ese archivo se está extrayendo del disco.",
+            Fr => "Ce fichier est en cours d'extraction depuis le disque.",
+            De => "Diese Datei wird gerade von der Disc gelesen.",
+            Zh => "该文件正在从光盘提取。",
+        },
+        Msg::ErrScanRunning => match lang {
+            En => "Another recursive folder scan is already running.",
+            It => "È già in corso un'altra scansione ricorsiva di cartelle.",
+            Es => "Ya hay otro análisis recursivo de carpetas en curso.",
+            Fr => "Une autre analyse récursive de dossiers est déjà en cours.",
+            De => "Es läuft bereits ein anderer rekursiver Ordner-Scan.",
+            Zh => "已有另一个递归文件夹扫描在运行。",
+        },
+        Msg::ErrScanDiscFirst => match lang {
+            En => "Scan the disc before ripping from it.",
+            It => "Scansiona il disco prima di estrarne i titoli.",
+            Es => "Analiza el disco antes de extraer sus títulos.",
+            Fr => "Analysez le disque avant d'en extraire les titres.",
+            De => "Scannen Sie die Disc, bevor Sie davon rippen.",
+            Zh => "请先扫描光盘再进行提取。",
+        },
+        Msg::ErrAutostartLocalOnly => match lang {
+            En => "Autostart can only be changed from the machine running the daemon.",
+            It => {
+                "L'avvio automatico può essere modificato solo dal computer che esegue il daemon."
+            }
+            Es => {
+                "El inicio automático solo puede cambiarse desde el equipo que ejecuta el daemon."
+            }
+            Fr => {
+                "Le démarrage automatique ne peut être modifié que depuis la machine qui exécute le démon."
+            }
+            De => {
+                "Der Autostart kann nur auf dem Rechner geändert werden, der den Daemon ausführt."
+            }
+            Zh => "自动启动只能在运行守护进程的计算机上更改。",
+        },
+        Msg::ErrEnableDaemon => match lang {
+            En => "The daemon could not be enabled: {error}",
+            It => "Impossibile abilitare il daemon: {error}",
+            Es => "No se ha podido habilitar el daemon: {error}",
+            Fr => "Impossible d'activer le démon : {error}",
+            De => "Der Daemon konnte nicht aktiviert werden: {error}",
+            Zh => "无法启用守护进程：{error}",
         },
         Msg::WebApplyRemainingHint => match lang {
             En => "Matches tracks by order — best for files with the same track layout.",

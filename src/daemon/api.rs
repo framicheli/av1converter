@@ -2,7 +2,7 @@ use super::state::{SharedState, is_terminal, lock};
 use crate::analyzer::{DvMode, HdrType};
 use crate::config::{AppConfig, Encoder};
 use crate::disc::worker::DiscEvent;
-use crate::i18n::Msg;
+use crate::i18n::{Msg, t};
 pub use crate::queue::job::resolved_dv_mode;
 use crate::queue::job::{apply_to_remaining, apply_track_config};
 use crate::queue::{
@@ -413,7 +413,10 @@ pub fn job_tracks_set(shared: &SharedState, body: &Value) -> (u16, Value) {
             return (404, json!({"error": "unknown job id"}));
         };
         if !tracks_editable(&state, id, job) {
-            return (409, json!({"error": "job is encoding or already finished"}));
+            return (
+                409,
+                json!({"error": t(state.config.language, Msg::ErrJobNotEditable)}),
+            );
         }
 
         let audio_known: Vec<usize> = job.audio_tracks.iter().map(|t| t.index).collect();
@@ -595,14 +598,18 @@ pub fn queue_add(
         return (400, json!({"error": "missing 'path'"}));
     };
     let mode = body.get("mode").and_then(Value::as_str).unwrap_or("file");
+    let (browse_root, lang) = {
+        let state = lock(shared);
+        (
+            state.config.daemon.browse_root.clone(),
+            state.config.language,
+        )
+    };
     let _scan_guard = if mode == "folder_recursive" {
         match RecursiveScanGuard::acquire(shared) {
             Some(guard) => Some(guard),
             None => {
-                return (
-                    409,
-                    json!({"error": "another recursive folder scan is already running"}),
-                );
+                return (409, json!({"error": t(lang, Msg::ErrScanRunning)}));
             }
         }
     } else {
@@ -611,21 +618,11 @@ pub fn queue_add(
     let path = PathBuf::from(path);
     // Confinement answers first; the existence check runs only on paths
     // already inside the browse root.
-    let (browse_root, lang) = {
-        let state = lock(shared);
-        (
-            state.config.daemon.browse_root.clone(),
-            state.config.language,
-        )
-    };
     let Some(path) = confined_path(&path, &browse_root) else {
-        return (
-            403,
-            json!({"error": "path is outside the configured browse root"}),
-        );
+        return (403, json!({"error": t(lang, Msg::ErrOutsideBrowseRoot)}));
     };
     if !path.exists() {
-        return (400, json!({"error": "path does not exist"}));
+        return (400, json!({"error": t(lang, Msg::ErrPathMissing)}));
     }
 
     let mut files: Vec<PathBuf> = Vec::new();
@@ -634,13 +631,13 @@ pub fn queue_add(
         // every video file they find, including earlier outputs.
         "file" => {
             if !path.is_file() || !is_video_file(&path) {
-                return (400, json!({"error": "not a video file"}));
+                return (400, json!({"error": t(lang, Msg::ErrNotVideoFile)}));
             }
             files.push(path);
         }
         "folder" => {
             if !path.is_dir() {
-                return (400, json!({"error": "not a directory"}));
+                return (400, json!({"error": t(lang, Msg::ErrNotDirectory)}));
             }
             match std::fs::read_dir(&path) {
                 Ok(entries) => {
@@ -654,14 +651,15 @@ pub fn queue_add(
                 Err(e) => {
                     return (
                         400,
-                        json!({"error": format!("could not read directory: {e}")}),
+                        json!({"error": t(lang, Msg::ErrReadDirectory)
+                            .replace("{error}", &e.to_string())}),
                     );
                 }
             }
         }
         "folder_recursive" => {
             if !path.is_dir() {
-                return (400, json!({"error": "not a directory"}));
+                return (400, json!({"error": t(lang, Msg::ErrNotDirectory)}));
             }
             if browse_root.is_empty() {
                 let _ = collect_video_files_cancellable_result(&path, &mut files, shutdown);
@@ -688,10 +686,7 @@ pub fn queue_add(
         .collect();
 
     if files.is_empty() {
-        return (
-            400,
-            json!({"error": crate::i18n::t(lang, Msg::NoVideoFiles)}),
-        );
+        return (400, json!({"error": t(lang, Msg::NoVideoFiles)}));
     }
     files.sort();
 
@@ -737,7 +732,10 @@ pub fn queue_remove(shared: &SharedState, body: &Value) -> (u16, Value) {
         return (404, json!({"error": "unknown job id"}));
     }
     if state.in_active_session(id) {
-        return (409, json!({"error": "job is already encoding"}));
+        return (
+            409,
+            json!({"error": t(state.config.language, Msg::ErrJobEncoding)}),
+        );
     }
     // A `Ripping` job is owned by the disc worker; removing it would leave
     // the extraction running with no job to land on.
@@ -746,7 +744,10 @@ pub fn queue_remove(shared: &SharedState, body: &Value) -> (u16, Value) {
         .job_by_id(id)
         .is_some_and(|job| matches!(job.status, JobStatus::Ripping { .. }))
     {
-        return (409, json!({"error": "job is being ripped from the disc"}));
+        return (
+            409,
+            json!({"error": t(state.config.language, Msg::ErrJobRipping)}),
+        );
     }
     let was_ready = state
         .queue
@@ -789,7 +790,10 @@ pub fn queue_move_up(shared: &SharedState, body: &Value) -> (u16, Value) {
         return (404, json!({"error": "unknown job id"}));
     }
     if state.in_active_session(id) {
-        return (409, json!({"error": "job is already encoding"}));
+        return (
+            409,
+            json!({"error": t(state.config.language, Msg::ErrJobEncoding)}),
+        );
     }
     let moved = state.queue.move_ready_up(id);
     (200, json!({"moved": moved}))
@@ -885,7 +889,13 @@ pub fn queue_clear_finished(shared: &SharedState, body: &Value) -> (u16, Value) 
 
 /// Server-side file browser: list one directory level.
 pub fn fs_browse(shared: &SharedState, path: &str, show_hidden: bool) -> (u16, Value) {
-    let browse_root = lock(shared).config.daemon.browse_root.clone();
+    let (browse_root, lang) = {
+        let state = lock(shared);
+        (
+            state.config.daemon.browse_root.clone(),
+            state.config.language,
+        )
+    };
     let requested = if path.is_empty() {
         // With a root configured, that is where browsing starts.
         if browse_root.is_empty() {
@@ -900,14 +910,17 @@ pub fn fs_browse(shared: &SharedState, path: &str, show_hidden: bool) -> (u16, V
     };
 
     let Some(dir) = confined_path(&requested, &browse_root) else {
-        return (
-            403,
-            json!({"error": "path is outside the configured browse root"}),
-        );
+        return (403, json!({"error": t(lang, Msg::ErrOutsideBrowseRoot)}));
     };
 
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return (400, json!({"error": "cannot read directory"}));
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            return (
+                400,
+                json!({"error": t(lang, Msg::ErrReadDirectory).replace("{error}", &e.to_string())}),
+            );
+        }
     };
 
     let mut dirs: Vec<Value> = Vec::new();
@@ -1004,7 +1017,10 @@ pub fn discs_list(shared: &SharedState) -> (u16, Value) {
             return (503, json!({"error": "daemon is shutting down"}));
         }
         if state.disc.active {
-            return (409, json!({"error": "a disc operation is already running"}));
+            return (
+                409,
+                json!({"error": t(state.config.language, Msg::DiscOperationRunning)}),
+            );
         }
         state.disc.active = true;
         state.disc.listing = true;
@@ -1063,7 +1079,10 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
     let (config, drives) = {
         let state = lock(shared);
         if state.disc.active {
-            return (409, json!({"error": "a disc operation is already running"}));
+            return (
+                409,
+                json!({"error": t(state.config.language, Msg::DiscOperationRunning)}),
+            );
         }
         (state.config.clone(), state.disc.drives.clone())
     };
@@ -1074,7 +1093,7 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
         let Some(path) = confined_path(Path::new(folder), &config.daemon.browse_root) else {
             return (
                 403,
-                json!({"error": "path is outside the configured browse root"}),
+                json!({"error": t(config.language, Msg::ErrOutsideBrowseRoot)}),
             );
         };
         match crate::disc::DiscSource::folder(path) {
@@ -1104,7 +1123,10 @@ pub fn discs_scan(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Valu
         return (503, json!({"error": "daemon is shutting down"}));
     }
     if state.disc.active {
-        return (409, json!({"error": "a disc operation is already running"}));
+        return (
+            409,
+            json!({"error": t(state.config.language, Msg::DiscOperationRunning)}),
+        );
     }
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     if let Some(previous) = state.disc_worker.take() {
@@ -1150,7 +1172,10 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
     let (scanned_source, scanned_titles, config) = {
         let state = lock(shared);
         if state.disc.active {
-            return (409, json!({"error": "a disc operation is already running"}));
+            return (
+                409,
+                json!({"error": t(state.config.language, Msg::DiscOperationRunning)}),
+            );
         }
         (
             state.disc.scanned_source.clone(),
@@ -1170,7 +1195,7 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
     }) else {
         return (
             400,
-            json!({"error": "scan the disc before ripping from it"}),
+            json!({"error": t(config.language, Msg::ErrScanDiscFirst)}),
         );
     };
     // Only titles this server reported, and each of them once.
@@ -1206,12 +1231,15 @@ pub fn discs_rip(shared: &SharedState, disc_tx: &Sender<DiscEvent>, body: &Value
         return (503, json!({"error": "daemon is shutting down"}));
     }
     if state.disc.active {
-        return (409, json!({"error": "a disc operation is already running"}));
+        return (
+            409,
+            json!({"error": t(state.config.language, Msg::DiscOperationRunning)}),
+        );
     }
     if state.disc.scanned_source.as_ref() != Some(&source) {
         return (
             400,
-            json!({"error": "scan the disc before ripping from it"}),
+            json!({"error": t(config.language, Msg::ErrScanDiscFirst)}),
         );
     }
     let config = state.config.clone();
@@ -1557,7 +1585,7 @@ pub fn settings_service_post(
     if !local_request {
         return (
             403,
-            json!({"error": "autostart can only be changed locally"}),
+            json!({"error": t(lock(shared).config.language, Msg::ErrAutostartLocalOnly)}),
         );
     }
     if !crate::daemon::service::supported() {
@@ -1590,7 +1618,8 @@ pub fn settings_service_post(
                 if let Err(error) = config.save() {
                     return (
                         500,
-                        json!({"error": format!("failed to enable daemon: {error}")}),
+                        json!({"error": t(lock(shared).config.language, Msg::ErrEnableDaemon)
+                            .replace("{error}", &error.to_string())}),
                     );
                 }
                 lock(shared).config.daemon.enabled = true;
@@ -1863,7 +1892,13 @@ mod tests {
 
         let (code, body) = queue_remove(&shared, &serde_json::json!({"id": active_id}));
         assert_eq!(code, 409);
-        assert_eq!(body["error"], "job is already encoding");
+        assert_eq!(
+            body["error"],
+            crate::i18n::t(
+                crate::i18n::Language::English,
+                crate::i18n::Msg::ErrJobEncoding
+            )
+        );
     }
 
     #[test]

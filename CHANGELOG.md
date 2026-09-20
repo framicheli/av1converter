@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- The daemon's request errors — a path outside the browse root, a missing path, a file or folder that cannot be used, a job that is already encoding or being ripped, a busy disc drive, a disc that has not been scanned, and the autostart and daemon-enable refusals — are now shown in the configured language instead of English.
 - Counts and hints built from separate words — "{n} selected", "{n} chapters", the session summary notification and the Dolby Vision hint — are now single translated sentences, so they read correctly in every language instead of following English word order and punctuation.
 - The "(min …)" note next to a VMAF score, the QSV and AMF quality settings, the SVT-AV1 encoder name and the navigation label are now translated, in both the TUI and the web UI. A web request the daemon rejects without a message is also reported in your language.
 - Saving settings flushes the new `config.toml` directory entry to disk and clears the temporary files an interrupted save left next to it.
