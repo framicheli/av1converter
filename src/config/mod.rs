@@ -120,8 +120,17 @@ fn strip_path_separators(value: &mut String) {
 
 impl AppConfig {
     /// Load configuration from TOML file, or create default if not found.
+    /// Reports a parse failure on stderr, for the command-line entry points.
     pub fn load() -> Self {
-        Self::load_reporting().0
+        let (config, error) = Self::load_reporting();
+        if let Some(error) = error {
+            eprintln!(
+                "{} ({})",
+                crate::i18n::t(config.language, crate::i18n::Msg::ConfigLoadFailed),
+                error.lines().next().unwrap_or_default()
+            );
+        }
+        config
     }
 
     /// [`AppConfig::load`], plus the parse error when the file exists but
@@ -166,10 +175,6 @@ impl AppConfig {
                 // A file that failed to parse is left untouched, not
                 // overwritten with defaults.
                 warn!("Failed to load config: {e:?}. Using defaults.");
-                eprintln!(
-                    "Could not parse {}: {e}\nUsing defaults; the file was left untouched.",
-                    config_path.display()
-                );
                 (Self::default(), Some(e.to_string()))
             }
         })
