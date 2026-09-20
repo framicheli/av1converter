@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- Web UI: a fault while drawing the dashboard no longer claims the daemon is unreachable.
 - Web UI: screen readers now read out the question in a confirmation dialog.
 - Web UI: leaving the page with unsaved track choices now asks first, as unsaved settings already did.
 - Web UI: notifications work on browsers without popover support (Safari before 17), and a success message no longer replaces an error you have not dismissed.

@@ -268,7 +268,20 @@ async function poll() {
   pollInFlight = true;
   const seq = ++pollSeq;
   try {
-    const s = await api("/api/status", { signal: AbortSignal.timeout(POLL_TIMEOUT_MS) });
+    let s;
+    try {
+      s = await api("/api/status", { signal: AbortSignal.timeout(POLL_TIMEOUT_MS) });
+    } catch (e) {
+      // A refused token keeps its own message; every other failure reads as
+      // an unreachable daemon. The text is set before setOffline() reads it
+      // for the announcement.
+      setText(
+        $("offline-banner"),
+        e.unauthorized ? e.message : tr("offline", "Daemon unreachable — retrying…"),
+      );
+      setOffline(true);
+      return;
+    }
     setOffline(false);
     if (Object.keys(strings).length === 0) loadStrings().catch(() => {});
 
@@ -330,16 +343,6 @@ async function poll() {
     onDiscStatus(s.disc, seq);
 
     if (activeTab === "queue") await refreshQueue();
-  } catch (e) {
-    // A refused token is not an unreachable daemon. Reporting both as
-    // "unreachable" sent people hunting for a process that was answering fine.
-    // Runs once per second for the length of an outage. The text is set before
-    // setOffline() reads it for the announcement.
-    setText(
-      $("offline-banner"),
-      e.unauthorized ? e.message : tr("offline", "Daemon unreachable — retrying…"),
-    );
-    setOffline(true);
   } finally {
     pollInFlight = false;
     if (pollSkipped) {
