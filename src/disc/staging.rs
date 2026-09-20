@@ -69,9 +69,8 @@ fn prepare_private_root(root: &Path) -> std::io::Result<()> {
     }
 }
 
-/// The directory encoded output goes to. A rip refuses to start without one:
-/// `same_directory` would put the encode inside the staging directory that is
-/// deleted once the encode finishes.
+/// The directory encoded output goes to. A rip refuses to start without one;
+/// `same_directory` would place the encode inside the staging directory.
 pub fn require_destination(config: &AppConfig) -> Result<PathBuf, DiscError> {
     let configured = config
         .output
@@ -91,9 +90,8 @@ pub fn require_destination(config: &AppConfig) -> Result<PathBuf, DiscError> {
 /// Rip one title into a fresh staging directory and return the file it wrote,
 /// named after the disc.
 ///
-/// The steps before the rip are the ones that are worthless once forty minutes
-/// of extraction have already run: free space, and the disc still being the
-/// one that was scanned.
+/// Checked before the extraction starts: free space, and the disc still being
+/// the one that was scanned.
 pub fn rip_to_staging(
     bin: &Path,
     config: &AppConfig,
@@ -129,8 +127,8 @@ pub fn rip_to_staging(
         return Err(DiscError::InsufficientSpace);
     }
 
-    // `makemkvcon mkv` re-scans the disc, so a title id only means anything for
-    // the disc physically in the drive. A folder on disk cannot be swapped.
+    // `makemkvcon mkv` re-scans the disc; a title id refers to the disc
+    // physically in the drive. A folder on disk cannot be swapped.
     if let DiscSource::Drive(drive) = source {
         let present = super::list_drives(bin, cancel)?;
         if !present.iter().any(|current| {
@@ -265,8 +263,8 @@ pub fn discard_staged(root: &Path, file: &Path) {
 ///
 /// Runs at TUI and daemon startup and whenever a disc run settles, where a rip
 /// cut short by a kill has nothing left tracking its file. This process's own
-/// leftovers are swept like any other, since `jobs` names the directories it
-/// still needs. In the default root, a directory whose owner has exited is
+/// leftovers are swept like any other; `jobs` names the directories it still
+/// needs. In the default root, a directory whose owner has exited is
 /// removed whatever its age. Only subdirectories of the staging root are ever
 /// removed, never the root itself.
 pub fn sweep_orphans(config: &AppConfig, jobs: &[EncodingJob], min_age: Duration) {
@@ -402,7 +400,7 @@ fn create_staging_dir(root: &Path) -> Result<PathBuf, DiscError> {
 /// Free bytes on the filesystem holding `path`.
 ///
 /// The `statvfs` field widths differ per platform — `f_bavail` is 32-bit on
-/// macOS and 64-bit on Linux — so one of the two conversions is always a no-op.
+/// macOS and 64-bit on Linux — and one of the two conversions is a no-op.
 #[cfg(unix)]
 #[allow(clippy::useless_conversion)]
 fn available_bytes(path: &Path) -> Option<u64> {
@@ -418,8 +416,8 @@ fn available_bytes(path: &Path) -> Option<u64> {
     Some(u64::from(stat.f_bavail).saturating_mul(stat.f_frsize.into()))
 }
 
-/// Windows has no `statvfs`, and the check is a courtesy: `MakeMKV` still
-/// reports its own out-of-space failure.
+/// Windows has no `statvfs`; `MakeMKV` reports its own out-of-space
+/// failure.
 #[cfg(not(unix))]
 fn available_bytes(_path: &Path) -> Option<u64> {
     None

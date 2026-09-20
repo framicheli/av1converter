@@ -2,8 +2,8 @@
 //! pattern: one thread, one channel, drained by the event loop.
 //!
 //! The worker never waits on whoever consumes its events. A title that has
-//! finished extracting is announced and the next one starts immediately, so a
-//! slow consumer — analysis, then an encode — cannot stall the drive.
+//! finished extracting is announced and the next one starts immediately; a
+//! slow consumer — analysis, then an encode — does not stall the drive.
 
 use super::{DiscError, DiscSource, DiscTitle, staging};
 use crate::config::AppConfig;
@@ -59,9 +59,8 @@ pub fn spawn_scan(
 
 /// Extract `titles` one after another, reporting each file as it lands.
 ///
-/// One rip at a time: a single optical drive cannot usefully extract two
-/// titles at once. A title that fails ends the run — a disc that stopped
-/// reading rarely reads the next title either.
+/// One rip at a time, for the one optical drive. A title that fails ends the
+/// run.
 pub fn spawn_rips(
     bin: PathBuf,
     config: AppConfig,
@@ -95,8 +94,7 @@ pub fn spawn_rips(
         };
         for (index, title) in titles.iter().enumerate() {
             let progress_tx = tx.clone();
-            // A panic here ends the run with an error rather than leaving the
-            // caller waiting on a thread that is already gone.
+            // A panic here ends the run with an error.
             let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 staging::rip_to_staging(
                     &bin,
@@ -147,8 +145,7 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    /// Generous enough that a regression fails on the timeout instead of
-    /// hanging, and slack enough not to flake on a loaded CI machine.
+    /// Upper bound on a run these tests wait for.
     const TIMEOUT: Duration = Duration::from_secs(30);
 
     fn two_titles() -> Vec<DiscTitle> {
@@ -173,7 +170,7 @@ mod tests {
     }
 
     /// The drive starts the next title before the first one has been taken
-    /// off the channel, so a slow encode never holds the run up.
+    /// off the channel; a slow encode does not hold the run up.
     #[test]
     fn the_next_title_is_extracted_before_the_previous_one_is_consumed() {
         let base = std::env::temp_dir().join(format!(

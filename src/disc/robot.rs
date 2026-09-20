@@ -363,7 +363,7 @@ mod tests {
         assert_eq!(progress_percent(&fields("PRGV:0,0,0")), None);
         assert_eq!(progress_percent(&fields("PRGV:1")), None);
         assert_eq!(progress_percent(&fields(r#"PRGV:1,"x",2"#)), None);
-        // Overshoot is clamped rather than reported as 130%.
+        // Overshoot is clamped to 100%.
         assert_eq!(progress_percent(&fields("PRGV:0,90,65")), Some(100.0));
     }
 

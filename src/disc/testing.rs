@@ -6,8 +6,7 @@
 //! which is the route a real install takes.
 //!
 //! Unix only: the script is `/bin/sh`. Every test that uses it is gated
-//! `#[cfg(unix)]`, so the suite still runs — with the process-level tests
-//! skipped — on Windows.
+//! `#[cfg(unix)]`, and the process-level tests are skipped on Windows.
 
 use std::path::{Path, PathBuf};
 
@@ -95,8 +94,8 @@ pub fn fake_makemkvcon(dir: &Path, mode: &Fake) -> PathBuf {
         ),
         _ => String::new(),
     };
-    // Every subcommand is matched space-delimited, so a destination or source
-    // path containing "info" or "mkv" cannot answer with the wrong branch.
+    // Every subcommand is matched space-delimited; a destination or source
+    // path containing "info" or "mkv" does not match one.
     let script = format!(
         "#!/bin/sh\ncase \"$*\" in\n*disc:9999*)\n{drives}\n  exit 1 ;;\n\
          *\\ mkv\\ *)\n  for dest; do :; done\n{rip} ;;\n\
@@ -145,9 +144,9 @@ const DRIVE_LIST: &str = "  echo 'DRV:0,2,999,12,\"HL-DT-ST BD-RE WH16NS60\",\"T
 
 /// A four-episode DVD with a short extra, as `makemkvcon -r info` reports one.
 ///
-/// Written from `MakeMKV`'s documented robot format rather than captured from
-/// a drive: no optical hardware was available. Shapes and attribute ids match
-/// the format; the values are representative.
+/// Written from `MakeMKV`'s documented robot format, not captured from a
+/// drive. Shapes and attribute ids match the format; the values are
+/// representative.
 pub const DVD_SCAN: &str = r#"  echo 'MSG:1005,0,1,"MakeMKV v1.17.9 started","x"'
   echo 'DRV:0,2,999,12,"HL-DT-ST BD-RE WH16NS60","SEASON_1_DISC_2","/dev/sr0"'
   echo 'MSG:3007,0,0,"Using direct disc access mode","x"'
@@ -189,7 +188,7 @@ pub const DVD_SCAN: &str = r#"  echo 'MSG:1005,0,1,"MakeMKV v1.17.9 started","x"
 
 /// A Blu-ray feature with a commentary angle, quoted title included.
 ///
-/// Constructed the same way as [`DVD_SCAN`], and for the same reason.
+/// Constructed the same way as [`DVD_SCAN`].
 pub const BLURAY_SCAN: &str = r#"  echo 'MSG:3007,0,0,"Using direct disc access mode","x"'
   echo 'CINFO:1,6209,"Blu-ray disc"'
   echo 'CINFO:2,0,"THE_DISC"'

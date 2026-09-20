@@ -163,8 +163,8 @@ pub enum DiscError {
     KeyExpired,
     UnreadableDisc,
     InsufficientSpace,
-    /// The disc in the drive is no longer the one that was scanned, so the
-    /// title ids no longer mean anything.
+    /// The disc in the drive is no longer the one that was scanned, and the
+    /// title ids no longer refer to it.
     DiscChanged,
     /// No output directory is configured for the encode to be written to.
     NoDestination,
@@ -412,9 +412,9 @@ pub fn rip_title(
     ripped_file(dest, output_name.as_deref())
 }
 
-/// The file the rip produced: the name `MakeMKV` reported, stripped to a bare
-/// file name since it comes from disc metadata, and otherwise the only MKV in
-/// `dest`.
+/// The file the rip produced: the name `MakeMKV` reported, which comes from
+/// disc metadata and is stripped to a bare file name, and otherwise the only
+/// MKV in `dest`.
 fn ripped_file(dest: &Path, reported: Option<&str>) -> Result<PathBuf, DiscError> {
     if let Some(name) = reported.map(Path::new).and_then(Path::file_name) {
         let path = dest.join(name);
@@ -545,8 +545,8 @@ fn run_robot(
     crate::utils::child::ChildGuard::unregister(pid);
 
     // After wait (and process-group kill on cancel), the write end of the pipe
-    // should close. Join with a short grace so a stuck grandchild cannot pin a
-    // reader thread forever; abandon only after the deadline.
+    // closes. The reader is joined with a short grace and abandoned once the
+    // deadline passes.
     let join_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < join_deadline && !reader.is_finished() {
         std::thread::sleep(std::time::Duration::from_millis(50));
