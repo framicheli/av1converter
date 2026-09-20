@@ -79,7 +79,7 @@ pub fn render_shutting_down(f: &mut ratatui::Frame, lang: crate::i18n::Language)
 mod tests {
     use super::{
         render_confirm_dialog, render_disc_drives, render_dv_dialog, render_explorer, render_queue,
-        render_shutting_down, terminal_too_small,
+        render_shutting_down, render_track_config, terminal_too_small,
     };
     use crate::analyzer::{HdrType, VideoMetadata};
     use crate::app::{App, ConfirmAction, Entry, MessageKind, Screen, SelectionMode};
@@ -152,6 +152,37 @@ mod tests {
 
         assert!(screen.contains("Profile 5"));
         assert!(screen.contains("Use recommended"));
+    }
+
+    #[test]
+    fn a_long_notice_leaves_room_for_both_track_lists() {
+        let mut app = App::new();
+        let mut job = EncodingJob::new("movie.mkv".into());
+        job.status = JobStatus::AwaitingConfig;
+        job.audio_tracks = vec![crate::tracks::AudioTrack {
+            index: 1,
+            language: Some("eng".to_string()),
+            codec: "dts".to_string(),
+            channels: Some(6),
+            channel_layout: None,
+            title: None,
+            bitrate: None,
+            sample_rate: None,
+        }];
+        job.subtitle_tracks = vec![crate::tracks::SubtitleTrack {
+            index: 2,
+            language: Some("ita".to_string()),
+            codec: "subrip".to_string(),
+            title: None,
+            forced: false,
+        }];
+        app.queue.jobs.push(job);
+        app.set_message(&"a very long notice that wraps over several rows ".repeat(12));
+
+        let screen = rendered(80, 24, |frame| render_track_config(frame, &mut app));
+
+        assert!(screen.contains("1: eng"), "audio entry missing");
+        assert!(screen.contains("2: ita"), "subtitle entry missing");
     }
 
     #[test]

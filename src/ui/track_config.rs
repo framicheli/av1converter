@@ -126,6 +126,11 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             .saturating_add(2)
             .min(6)
     });
+    // The notice gives up rows to the track lists, which need a border pair
+    // plus one entry; stacked lists need that twice.
+    let reserved = 6 + if narrow { 5 + 6 } else { 3 + 3 };
+    let room = f.area().height.saturating_sub(2).saturating_sub(reserved);
+    let notice_rows = notice_rows.min(room.max(3));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
