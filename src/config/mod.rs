@@ -220,15 +220,19 @@ impl AppConfig {
         result.map_err(|e| AppError::Config(format!("Failed to write config file: {e}")))
     }
 
-    /// Copy `path` aside if it exists but cannot be parsed.
+    /// Copy `path` aside as `<name>.unreadable-<secs>[-<n>]` if it exists but
+    /// cannot be parsed.
     fn preserve_unreadable(path: &std::path::Path) -> Result<(), AppError> {
         if !path.exists() || Self::load_from_file(path).is_ok() {
             return Ok(());
         }
-        let backup = path.with_extension("toml.bak");
         let contents = std::fs::read(path).map_err(|e| {
             AppError::Config(format!("Could not read {} for backup: {e}", path.display()))
         })?;
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -236,22 +240,38 @@ impl AppConfig {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(&backup).map_err(|e| {
-            AppError::Config(format!(
-                "Refusing to overwrite the unreadable config at {}: could not create backup {} ({e})",
-                path.display(),
-                backup.display()
-            ))
-        })?;
-        if let Err(e) = file.write_all(&contents) {
-            let _ = std::fs::remove_file(&backup);
-            return Err(AppError::Config(format!(
-                "Could not write backup {}: {e}",
-                backup.display()
-            )));
+        for n in 0u32.. {
+            let suffix = if n == 0 {
+                format!("{name}.unreadable-{secs}")
+            } else {
+                format!("{name}.unreadable-{secs}-{n}")
+            };
+            let backup = path.with_file_name(suffix);
+            let mut file = match options.open(&backup) {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    return Err(AppError::Config(format!(
+                        "Refusing to overwrite the unreadable config at {}: could not create backup {} ({e})",
+                        path.display(),
+                        backup.display()
+                    )));
+                }
+            };
+            if let Err(e) = file.write_all(&contents) {
+                let _ = std::fs::remove_file(&backup);
+                return Err(AppError::Config(format!(
+                    "Could not write backup {}: {e}",
+                    backup.display()
+                )));
+            }
+            warn!("Kept the unreadable config as {}", backup.display());
+            return Ok(());
         }
-        warn!("Kept the unreadable config as {}", backup.display());
-        Ok(())
+        Err(AppError::Config(format!(
+            "Refusing to overwrite the unreadable config at {}: no free backup name",
+            path.display()
+        )))
     }
 
     /// Load configuration from a specific file
@@ -659,45 +679,64 @@ mod tests {
         assert_eq!(loaded.audio.default_mode, AudioMode::Copy);
     }
 
-    /// A config with a typo in it is kept.
+    /// The bytes of every config a user broke by hand survive the save that
+    /// overwrites it, including a second and a third one.
     #[test]
-    fn an_unreadable_config_is_preserved_before_it_is_overwritten() {
+    fn every_unreadable_config_is_preserved_before_it_is_overwritten() {
         let dir = std::env::temp_dir().join(format!("av1c_cfg_backup_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
-        let backup = dir.join("config.toml.bak");
+        let copies = || {
+            let mut kept: Vec<Vec<u8>> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .starts_with("config.toml.unreadable-")
+                })
+                .map(|entry| std::fs::read(entry).unwrap())
+                .collect();
+            kept.sort();
+            kept
+        };
 
         // A file that parses needs no copy.
-        std::fs::write(
-            &path,
-            toml::to_string_pretty(&AppConfig::default()).unwrap(),
-        )
-        .unwrap();
-        AppConfig::preserve_unreadable(&path).unwrap();
-        assert!(!backup.exists());
+        AppConfig::default().save_to_path(&path).unwrap();
+        assert!(copies().is_empty());
 
-        // One that does not is kept verbatim.
-        std::fs::write(&path, b"this is not = valid toml [[[").unwrap();
-        AppConfig::preserve_unreadable(&path).unwrap();
-        assert_eq!(
-            std::fs::read(&backup).unwrap(),
-            b"this is not = valid toml [[["
-        );
+        // Each one that does not is kept verbatim, under a name of its own.
+        let broken: [&[u8]; 3] = [
+            b"this is not = valid toml [[[",
+            b"another invalid config [[[",
+            b"a third invalid config [[[",
+        ];
+        for (n, contents) in broken.iter().enumerate() {
+            std::fs::write(&path, contents).unwrap();
+            AppConfig::default().save_to_path(&path).unwrap();
+            assert!(AppConfig::load_from_file(&path).is_ok());
+            let mut expected: Vec<Vec<u8>> =
+                broken[..=n].iter().map(|bytes| bytes.to_vec()).collect();
+            expected.sort();
+            assert_eq!(copies(), expected);
+        }
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(&backup).unwrap().permissions().mode() & 0o077,
-                0
-            );
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let entry = entry.unwrap().path();
+                assert_eq!(
+                    std::fs::metadata(&entry).unwrap().permissions().mode() & 0o077,
+                    0,
+                    "{} is readable by others",
+                    entry.display()
+                );
+            }
         }
-        std::fs::write(&path, b"another invalid config [[[").unwrap();
-        assert!(AppConfig::preserve_unreadable(&path).is_err());
-        assert_eq!(
-            std::fs::read(&backup).unwrap(),
-            b"this is not = valid toml [[["
-        );
 
         // A missing file is simply nothing to protect.
         std::fs::remove_file(&path).unwrap();

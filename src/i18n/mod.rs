@@ -2625,21 +2625,23 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         },
         Msg::ConfigLoadFailed => match lang {
             En => {
-                "config.toml could not be read; using defaults. Saving settings keeps the old file as config.toml.bak"
+                "config.toml could not be read; using defaults. Saving settings keeps the old file as a config.toml.unreadable-… copy"
             }
             It => {
-                "Impossibile leggere config.toml; uso i valori predefiniti. Salvando le impostazioni il vecchio file resta come config.toml.bak"
+                "Impossibile leggere config.toml; uso i valori predefiniti. Salvando le impostazioni il vecchio file resta come copia config.toml.unreadable-…"
             }
             Es => {
-                "No se pudo leer config.toml; se usan los valores predeterminados. Al guardar los ajustes, el archivo anterior se conserva como config.toml.bak"
+                "No se pudo leer config.toml; se usan los valores predeterminados. Al guardar los ajustes, el archivo anterior se conserva como copia config.toml.unreadable-…"
             }
             Fr => {
-                "Impossible de lire config.toml ; valeurs par défaut utilisées. L'enregistrement des paramètres conserve l'ancien fichier sous config.toml.bak"
+                "Impossible de lire config.toml ; valeurs par défaut utilisées. L'enregistrement des paramètres conserve l'ancien fichier en copie config.toml.unreadable-…"
             }
             De => {
-                "config.toml konnte nicht gelesen werden; es gelten die Standardwerte. Beim Speichern bleibt die alte Datei als config.toml.bak erhalten"
+                "config.toml konnte nicht gelesen werden; es gelten die Standardwerte. Beim Speichern bleibt die alte Datei als Kopie config.toml.unreadable-… erhalten"
             }
-            Zh => "无法读取 config.toml；正在使用默认值。保存设置时旧文件会保留为 config.toml.bak",
+            Zh => {
+                "无法读取 config.toml；正在使用默认值。保存设置时旧文件会保留为 config.toml.unreadable-… 副本"
+            }
         },
         Msg::EncoderUnavailable => match lang {
             En => {
