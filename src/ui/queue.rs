@@ -257,8 +257,9 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                     min_score,
                     threshold,
                 } => format!(
-                    "{}: VMAF {vmaf:.1} (min {min_score:.1}) < {threshold:.0} {}",
+                    "{}: VMAF {vmaf:.1} {} < {threshold:.0} {}",
                     t(lang, Msg::QualityWarning),
+                    t(lang, Msg::VmafMinScore).replace("{score}", &format!("{min_score:.1}")),
                     t(lang, Msg::ThresholdLabel)
                 ),
                 JobStatus::Skipped { reason } => translate_reason(lang, reason),
@@ -491,7 +492,10 @@ fn create_queue_item(
                     Style::default().fg(vmaf_color).add_modifier(bold_mod),
                 ),
                 Span::styled(
-                    format!(" (min {min_score:.1}) < {threshold:.0}"),
+                    format!(
+                        " {} < {threshold:.0}",
+                        t(lang, Msg::VmafMinScore).replace("{score}", &format!("{min_score:.1}"))
+                    ),
                     Style::default().fg(Color::Red).add_modifier(bold_mod),
                 ),
             ]))

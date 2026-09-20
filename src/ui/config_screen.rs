@@ -547,7 +547,7 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
     };
     match item.field {
         ConfigField::Language => config.language.display_name().to_string(),
-        ConfigField::Encoder => config.encoder.display_name().to_string(),
+        ConfigField::Encoder => config.encoder.display_name_in(config.language),
         ConfigField::QualityPreset => {
             quality_preset_name(config.language, config.quality_preset).to_string()
         }

@@ -172,7 +172,7 @@ async function api(path, options) {
     throw error;
   }
   if (!response.ok) {
-    const error = new Error(body.error || `HTTP ${response.status}`);
+    const error = new Error(body.error || trf("request_failed", { status: response.status }, "Request failed ({status})"));
     error.status = response.status;
     error.needsConfirm = body.needs_confirm === true;
     throw error;
@@ -555,7 +555,7 @@ function badgeText(st) {
     case "done_vmaf_failed": return `${tr("badge_done")} · ${tr("badge_vmaf_failed")}`;
     case "quality_warning": {
       const min = Number.isFinite(num(st.min_score))
-        ? ` (min ${pct(st.min_score)})`
+        ? ` ${trf("vmaf_min_score", { score: pct(st.min_score) })}`
         : "";
       const threshold = Number.isFinite(num(st.threshold))
         ? ` < ${num(st.threshold)} ${tr("threshold_label")}`
@@ -1942,7 +1942,7 @@ addEventListener("beforeunload", (event) => {
 // Native language names and product names are not translated — they read the
 // same in every locale.
 const LANGS = [["en", "English"], ["it", "Italiano"], ["es", "Español"], ["fr", "Français"], ["de", "Deutsch"], ["zh", "中文"]];
-const ENCODERS = [["SvtAv1", "SVT-AV1 (Software)"], ["Nvenc", "NVENC (NVIDIA)"], ["Qsv", "Quick Sync (Intel)"], ["Amf", "AMF (AMD)"]];
+const encoderOptions = () => [["SvtAv1", tr("encoder_svt_av1")], ["Nvenc", "NVENC (NVIDIA)"], ["Qsv", "Quick Sync (Intel)"], ["Amf", "AMF (AMD)"]];
 const NVENC_PRESETS = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"].map((p) => [p, p]);
 const CONTAINERS = ["mkv", "mp4", "webm"].map((c) => [c, c]);
 
@@ -1974,7 +1974,7 @@ function settingsFields(cfg) {
   const fields = [
     { group: tr("group_general") },
     { path: "language", label: tr("cfg_language"), type: "select", options: LANGS },
-    { path: "encoder", label: tr("cfg_encoder"), type: "select", options: ENCODERS, rebuild: true },
+    { path: "encoder", label: tr("cfg_encoder"), type: "select", options: encoderOptions(), rebuild: true },
     { path: "quality_preset", label: tr("cfg_quality_preset"), type: "select", options: presets(), rebuild: true },
     { group: tr("group_quality") },
     { path: "quality.vmaf_enabled", label: tr("cfg_vmaf_enabled"), type: "checkbox", rebuild: true },
@@ -1989,8 +1989,8 @@ function settingsFields(cfg) {
     ["crf", "CRF", 63],
     ...(cfg.encoder === "SvtAv1" ? [["film_grain", tr("cfg_film_grain"), 50]] : []),
     ["nvenc_cq", "NVENC CQ", 51],
-    ["qsv_quality", "QSV Quality", 51],
-    ["amf_quality", "AMF Quality", 51],
+    ["qsv_quality", tr("cfg_qsv_quality"), 51],
+    ["amf_quality", tr("cfg_amf_quality"), 51],
   ];
   for (const [tier, tierLabel] of rfTiers()) {
     for (const [metric, metricLabel, maximum] of presetMetrics) {

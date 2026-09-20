@@ -320,6 +320,10 @@ pub enum Msg {
     CfgFilmGrain,
     CfgQsvQuality,
     CfgAmfQuality,
+    EncoderSvtAv1,
+    VmafMinScore,
+    WebPrimaryNav,
+    WebRequestFailed,
     CfgOutputSuffix,
     CfgOutputContainer,
     CfgSameDirectory,
@@ -2439,6 +2443,33 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "AMF-Qualität",
             Zh => "AMF 质量",
         },
+        Msg::EncoderSvtAv1 => match lang {
+            En | It | Es => "SVT-AV1 (software)",
+            Fr => "SVT-AV1 (logiciel)",
+            De => "SVT-AV1 (Software)",
+            Zh => "SVT-AV1（软件）",
+        },
+        Msg::VmafMinScore => match lang {
+            En | It | Fr => "(min {score})",
+            Es => "(mín {score})",
+            De => "(Min. {score})",
+            Zh => "（最低 {score}）",
+        },
+        Msg::WebPrimaryNav => match lang {
+            En => "Primary",
+            It | Fr => "Principale",
+            Es => "Principal",
+            De => "Hauptnavigation",
+            Zh => "主导航",
+        },
+        Msg::WebRequestFailed => match lang {
+            En => "Request failed ({status})",
+            It => "Richiesta non riuscita ({status})",
+            Es => "La solicitud ha fallado ({status})",
+            Fr => "Échec de la requête ({status})",
+            De => "Anfrage fehlgeschlagen ({status})",
+            Zh => "请求失败（{status}）",
+        },
         Msg::CfgOutputSuffix => match lang {
             En => "Output Suffix",
             It => "Suffisso output",
@@ -3726,6 +3757,12 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("cfg_language", Msg::CfgLanguage),
     ("cfg_makemkvcon_path", Msg::CfgMakemkvconPath),
     ("cfg_nvenc_preset", Msg::CfgNvencPreset),
+    ("cfg_qsv_quality", Msg::CfgQsvQuality),
+    ("cfg_amf_quality", Msg::CfgAmfQuality),
+    ("encoder_svt_av1", Msg::EncoderSvtAv1),
+    ("vmaf_min_score", Msg::VmafMinScore),
+    ("nav_primary", Msg::WebPrimaryNav),
+    ("request_failed", Msg::WebRequestFailed),
     ("cfg_opus_bitrate", Msg::OpusBitratePerChannel),
     ("cfg_output_container", Msg::CfgOutputContainer),
     ("cfg_output_directory", Msg::WebCfgOutputDirectory),
@@ -3943,21 +3980,46 @@ mod tests {
         }
     }
 
+    /// Every `{…}` group in a string, in order of appearance.
+    fn placeholders(text: &str) -> Vec<&str> {
+        let mut found = Vec::new();
+        let mut rest = text;
+        while let Some(open) = rest.find('{') {
+            let Some(close) = rest[open..].find('}') else {
+                break;
+            };
+            found.push(&rest[open..=open + close]);
+            rest = &rest[open + close + 1..];
+        }
+        found
+    }
+
     /// Every translation keeps the placeholders the browser substitutes.
     #[test]
     fn placeholders_survive_every_translation() {
         for (key, msg) in WEB_KEYS {
-            let english = t(Language::English, *msg);
-            for name in ["{n}", "{profile}", "{path}"] {
-                if english.contains(name) {
-                    for &lang in &Language::ALL {
-                        assert!(
-                            t(lang, *msg).contains(name),
-                            "web key {key} loses {name} in {lang:?}"
-                        );
-                    }
-                }
+            let english = placeholders(t(Language::English, *msg));
+            if english.is_empty() {
+                continue;
+            }
+            for &lang in &Language::ALL {
+                let mut theirs = placeholders(t(lang, *msg));
+                let mut ours = english.clone();
+                theirs.sort_unstable();
+                ours.sort_unstable();
+                assert_eq!(
+                    ours, theirs,
+                    "web key {key} has placeholders {theirs:?} in {lang:?}, expected {ours:?}"
+                );
             }
         }
+    }
+
+    /// The placeholder scanner finds every group and ignores an unclosed one.
+    #[test]
+    fn placeholders_are_collected_in_order() {
+        assert_eq!(placeholders("{a} x {bb} y"), vec!["{a}", "{bb}"]);
+        assert_eq!(placeholders("no groups"), Vec::<&str>::new());
+        assert_eq!(placeholders("{n} and {open"), vec!["{n}"]);
     }
 }

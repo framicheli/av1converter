@@ -37,6 +37,15 @@ impl Encoder {
         }
     }
 
+    /// Display name in the active language. Only the SVT-AV1 label carries a
+    /// translated word; the others are brand names.
+    pub fn display_name_in(self, lang: crate::i18n::Language) -> String {
+        match self {
+            Encoder::SvtAv1 => crate::i18n::t(lang, crate::i18n::Msg::EncoderSvtAv1).to_string(),
+            other => other.display_name().to_string(),
+        }
+    }
+
     /// Maximum RF/CRF quality value for this encoder
     pub const fn max_quality(self) -> u8 {
         match self {

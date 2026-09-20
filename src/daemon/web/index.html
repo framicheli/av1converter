@@ -20,7 +20,7 @@
   <!-- Live region for phase changes. setText() in app.js writes it only when
        the text differs, so a poll carrying no change announces nothing. -->
   <span id="status-pill" class="pill" role="status" aria-live="polite" aria-atomic="true">…</span>
-  <nav aria-label="Primary" role="tablist">
+  <nav data-i18n-aria-label="nav_primary" aria-label="Primary" role="tablist">
     <button id="queue-tab" class="tab active" data-tab="queue" data-i18n="tab_queue"
             role="tab" aria-selected="true" aria-controls="tab-queue">Queue</button>
     <button id="settings-tab" class="tab" data-tab="settings" data-i18n="tab_settings"

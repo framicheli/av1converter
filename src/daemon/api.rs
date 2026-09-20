@@ -76,7 +76,7 @@ pub fn status(shared: &SharedState) -> Value {
 
     json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "encoder": state.config.encoder.display_name(),
+        "encoder": state.config.encoder.display_name_in(state.config.language),
         "language": state.config.language,
         "deps": {
             "ffmpeg": state.deps.ffmpeg,
