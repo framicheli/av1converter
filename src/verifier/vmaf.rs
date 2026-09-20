@@ -261,7 +261,67 @@ pub fn calculate_vmaf(
 
 #[cfg(test)]
 mod tests {
-    use super::{VmafResult, escape_filter_value, vmaf_failure};
+    use super::{VmafJson, VmafResult, escape_filter_value, vmaf_failure, wait_or_cancel};
+    use std::process::Stdio;
+    use std::sync::atomic::AtomicBool;
+
+    /// The mean, minimum and maximum come out of libvmaf's own JSON shape.
+    #[test]
+    fn libvmaf_json_yields_the_pooled_scores() {
+        let json = r#"{
+            "frames": [{"frameNum": 0, "metrics": {"vmaf": 93.5}}],
+            "pooled_metrics": {
+                "vmaf": {"min": 91.25, "max": 99.5, "mean": 96.125, "harmonic_mean": 96.0}
+            },
+            "aggregate_metrics": {}
+        }"#;
+
+        let parsed: VmafJson = serde_json::from_str(json).expect("libvmaf output parses");
+
+        assert!((parsed.pooled_metrics.vmaf.mean - 96.125).abs() < f64::EPSILON);
+        assert!((parsed.pooled_metrics.vmaf.min - 91.25).abs() < f64::EPSILON);
+        assert!((parsed.pooled_metrics.vmaf.max - 99.5).abs() < f64::EPSILON);
+    }
+
+    /// Output without the pooled block is refused rather than scored as zero.
+    #[test]
+    fn vmaf_json_without_pooled_metrics_is_refused() {
+        assert!(serde_json::from_str::<VmafJson>(r#"{"frames": []}"#).is_err());
+        assert!(serde_json::from_str::<VmafJson>(r#"{"pooled_metrics": {}}"#).is_err());
+        assert!(
+            serde_json::from_str::<VmafJson>(r#"{"pooled_metrics": {"vmaf": {"mean": 96.0}}}"#)
+                .is_err()
+        );
+    }
+
+    /// A finished child is reported with its status; a cancelled one is killed
+    /// and reported as no status at all.
+    #[cfg(unix)]
+    #[test]
+    fn waiting_returns_the_status_or_kills_on_cancel() {
+        // Spawned the way the pipeline does, so the cancel kills the child's
+        // own process group and not the test runner's.
+        let (mut quick, _quick) =
+            crate::utils::child::spawn(std::process::Command::new("true").stdin(Stdio::null()))
+                .expect("true");
+        let status = wait_or_cancel(&mut quick, &AtomicBool::new(false))
+            .expect("no wait error")
+            .expect("a finished child has a status");
+        assert!(status.success());
+
+        let (mut slow, _slow) = crate::utils::child::spawn(
+            std::process::Command::new("sleep")
+                .arg("30")
+                .stdin(Stdio::null()),
+        )
+        .expect("sleep");
+        let pid = slow.id();
+        assert!(matches!(
+            wait_or_cancel(&mut slow, &AtomicBool::new(true)),
+            Ok(None)
+        ));
+        assert!(!crate::utils::child::pid_alive(pid));
+    }
 
     /// The reported reason is not prefixed twice.
     #[test]

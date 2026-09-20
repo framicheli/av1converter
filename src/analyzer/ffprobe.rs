@@ -102,26 +102,11 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
     let dv_profile = dovi_entry.and_then(|v| dovi_u8(v, "dv_profile"));
     let dv_bl_compat = dovi_entry.and_then(|v| dovi_u8(v, "dv_bl_signal_compatibility_id"));
 
-    // A Dolby Vision stream without a readable profile can be IPT (profile 5)
-    // with no HDR10-compatible base. Refusing here avoids applying PQ tags
-    // without a tonemap and producing wrong colors.
-    if dovi_entry.is_some() && dv_profile.is_none() {
-        return Err(AppError::Analysis(
-            "Dolby Vision detected but dv_profile is missing; cannot choose a safe encode path"
-                .to_string(),
-        ));
-    }
-
-    // Determine HDR type
-    let hdr_type = if dovi_entry.is_some() {
-        HdrType::DolbyVision
-    } else {
-        match stream.color_transfer.as_deref() {
-            Some("smpte2084") => HdrType::Pq,
-            Some("arib-std-b67") => HdrType::Hlg,
-            _ => HdrType::Sdr,
-        }
-    };
+    let hdr_type = hdr_type_of(
+        dovi_entry.is_some(),
+        dv_profile,
+        stream.color_transfer.as_deref(),
+    )?;
 
     // HDR10 static metadata: prefer container/stream-level side data; for
     // PQ/DV sources without it, probe the first frame (SEI-carried metadata)
@@ -137,14 +122,10 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
     // `r_frame_rate` reports the field rate for interlaced streams and the
     // timebase ceiling for variable-frame-rate streams, and stands in only
     // when the average is absent or zero.
-    let (frame_rate_num, frame_rate_den) = [
+    let (frame_rate_num, frame_rate_den) = frame_rate_of(
         stream.avg_frame_rate.as_deref(),
         stream.r_frame_rate.as_deref(),
-    ]
-    .into_iter()
-    .map(parse_frame_rate)
-    .find(|&(num, _)| num > 0)
-    .unwrap_or((0, 1));
+    );
 
     let duration_secs = video_duration_secs(&stream, data.format.as_ref());
 
@@ -292,6 +273,43 @@ fn parse_timestamp_secs(value: &str) -> Option<f64> {
 }
 
 /// Parse frame rate from ffprobe format
+/// The HDR type of a stream, from its Dolby Vision side data and colour
+/// transfer.
+///
+/// Dolby Vision without a readable profile is refused: it can be IPT
+/// (profile 5) with no HDR10-compatible base, and tagging that as PQ without
+/// a tonemap produces wrong colours.
+fn hdr_type_of(
+    has_dovi: bool,
+    dv_profile: Option<u8>,
+    color_transfer: Option<&str>,
+) -> Result<HdrType, AppError> {
+    if has_dovi {
+        if dv_profile.is_none() {
+            return Err(AppError::Analysis(
+                "Dolby Vision detected but dv_profile is missing; cannot choose a safe encode path"
+                    .to_string(),
+            ));
+        }
+        return Ok(HdrType::DolbyVision);
+    }
+    Ok(match color_transfer {
+        Some("smpte2084") => HdrType::Pq,
+        Some("arib-std-b67") => HdrType::Hlg,
+        _ => HdrType::Sdr,
+    })
+}
+
+/// The average frame rate, falling back to the real one when the average is
+/// absent or zero, and to `0/1` when neither parses.
+fn frame_rate_of(average: Option<&str>, real: Option<&str>) -> (u32, u32) {
+    [average, real]
+        .into_iter()
+        .map(parse_frame_rate)
+        .find(|&(num, _)| num > 0)
+        .unwrap_or((0, 1))
+}
+
 fn parse_frame_rate(rate_str: Option<&str>) -> (u32, u32) {
     rate_str
         .and_then(|s| {
@@ -620,6 +638,67 @@ struct StreamDisposition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dolby Vision decides the type when its profile is readable, and is
+    /// refused when it is not; otherwise the colour transfer decides.
+    #[test]
+    fn the_hdr_type_follows_dolby_vision_then_the_colour_transfer() {
+        assert_eq!(
+            hdr_type_of(true, Some(8), Some("smpte2084")).unwrap(),
+            HdrType::DolbyVision
+        );
+        assert_eq!(
+            hdr_type_of(true, Some(5), None).unwrap(),
+            HdrType::DolbyVision
+        );
+        assert!(matches!(
+            hdr_type_of(true, None, Some("smpte2084")),
+            Err(AppError::Analysis(_))
+        ));
+        assert_eq!(
+            hdr_type_of(false, None, Some("smpte2084")).unwrap(),
+            HdrType::Pq
+        );
+        assert_eq!(
+            hdr_type_of(false, None, Some("arib-std-b67")).unwrap(),
+            HdrType::Hlg
+        );
+        assert_eq!(
+            hdr_type_of(false, None, Some("bt709")).unwrap(),
+            HdrType::Sdr
+        );
+        assert_eq!(hdr_type_of(false, None, None).unwrap(), HdrType::Sdr);
+        // A profile with no side data is not Dolby Vision.
+        assert_eq!(hdr_type_of(false, Some(8), None).unwrap(), HdrType::Sdr);
+    }
+
+    /// A well-formed `num/den` parses; anything else reads as unknown.
+    #[test]
+    fn frame_rates_parse_only_as_a_positive_fraction() {
+        assert_eq!(parse_frame_rate(Some("24000/1001")), (24000, 1001));
+        assert_eq!(parse_frame_rate(Some("25/1")), (25, 1));
+        assert_eq!(parse_frame_rate(Some("0/0")), (0, 1));
+        assert_eq!(parse_frame_rate(Some("30/0")), (0, 1));
+        assert_eq!(parse_frame_rate(Some("30")), (0, 1));
+        assert_eq!(parse_frame_rate(Some("-30/1")), (0, 1));
+        assert_eq!(parse_frame_rate(Some("a/b")), (0, 1));
+        assert_eq!(parse_frame_rate(Some("")), (0, 1));
+        assert_eq!(parse_frame_rate(None), (0, 1));
+    }
+
+    /// The real frame rate stands in only when the average gives nothing.
+    #[test]
+    fn the_real_frame_rate_only_fills_in_for_a_missing_average() {
+        assert_eq!(
+            frame_rate_of(Some("24000/1001"), Some("60/1")),
+            (24000, 1001)
+        );
+        assert_eq!(frame_rate_of(Some("0/0"), Some("60/1")), (60, 1));
+        assert_eq!(frame_rate_of(None, Some("60/1")), (60, 1));
+        assert_eq!(frame_rate_of(Some("nonsense"), Some("60/1")), (60, 1));
+        assert_eq!(frame_rate_of(None, None), (0, 1));
+        assert_eq!(frame_rate_of(Some("0/0"), Some("0/0")), (0, 1));
+    }
 
     #[test]
     fn unselectable_streams_count_extra_video_data_pictures_and_attachments() {

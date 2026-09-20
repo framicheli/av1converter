@@ -996,6 +996,76 @@ mod tests {
         }
     }
 
+    /// With no preference matching: audio keeps the first track, subtitles
+    /// keep none, and `select_all_fallback` or an empty preference list keeps
+    /// every track of both kinds.
+    #[test]
+    fn auto_select_falls_back_by_kind() {
+        let job_with_tracks = || {
+            let mut job = EncodingJob::new(PathBuf::from("movie.mkv"));
+            job.audio_tracks = vec![audio(0, "deu"), audio(1, "fra")];
+            job.subtitle_tracks = vec![subtitle(2, "deu"), subtitle(3, "fra")];
+            job
+        };
+        let audio_config = crate::config::AudioConfig::default();
+
+        // Preferences set, nothing matches.
+        let mut job = job_with_tracks();
+        auto_select_tracks(
+            &mut job,
+            &crate::config::TrackPresetConfig {
+                preferred_audio_languages: vec!["jpn".into()],
+                preferred_subtitle_languages: vec!["jpn".into()],
+                select_all_fallback: false,
+            },
+            &audio_config,
+        );
+        assert_eq!(job.track_selection.audio_indices, vec![0]);
+        assert_eq!(job.track_selection.subtitle_indices, Vec::<usize>::new());
+
+        // The same preferences with the fallback on.
+        let mut job = job_with_tracks();
+        auto_select_tracks(
+            &mut job,
+            &crate::config::TrackPresetConfig {
+                preferred_audio_languages: vec!["jpn".into()],
+                preferred_subtitle_languages: vec!["jpn".into()],
+                select_all_fallback: true,
+            },
+            &audio_config,
+        );
+        assert_eq!(job.track_selection.audio_indices, vec![0, 1]);
+        assert_eq!(job.track_selection.subtitle_indices, vec![2, 3]);
+
+        // No preferences at all.
+        let mut job = job_with_tracks();
+        auto_select_tracks(
+            &mut job,
+            &crate::config::TrackPresetConfig {
+                preferred_audio_languages: Vec::new(),
+                preferred_subtitle_languages: Vec::new(),
+                select_all_fallback: false,
+            },
+            &audio_config,
+        );
+        assert_eq!(job.track_selection.audio_indices, vec![0, 1]);
+        assert_eq!(job.track_selection.subtitle_indices, vec![2, 3]);
+
+        // Preferences set, nothing matches, and no tracks to fall back on.
+        let mut empty = EncodingJob::new(PathBuf::from("movie.mkv"));
+        auto_select_tracks(
+            &mut empty,
+            &crate::config::TrackPresetConfig {
+                preferred_audio_languages: vec!["jpn".into()],
+                preferred_subtitle_languages: vec!["jpn".into()],
+                select_all_fallback: false,
+            },
+            &audio_config,
+        );
+        assert_eq!(empty.track_selection.audio_indices, Vec::<usize>::new());
+        assert_eq!(empty.track_selection.subtitle_indices, Vec::<usize>::new());
+    }
+
     #[test]
     fn auto_select_matches_iso639_1_and_2_aliases() {
         let mut job = EncodingJob::new(PathBuf::from("movie.mkv"));
