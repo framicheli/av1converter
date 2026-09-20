@@ -1000,8 +1000,9 @@ pub fn strings(shared: &SharedState) -> Value {
     map.into()
 }
 
-// Disc ripping. The drive is attached to this machine; the browser only ever
-// names ids this server handed out, never a path or a device.
+// Disc ripping. The drive is attached to this machine; a drive or title is
+// named by an id this server handed out, and a disc folder or image by a path
+// confined to `browse_root`.
 
 /// Every drive `MakeMKV` reports, and the label of whatever is loaded. The ids
 /// in the response are the only ones the other endpoints accept.
