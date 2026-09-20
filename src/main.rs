@@ -200,7 +200,7 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
         }
     }
 
-    utils::init_daemon_logging();
+    let _log_guard = utils::init_daemon_logging();
     let _pid_guard = daemon::lifecycle::write_pid_file()?;
     // The API can browse the filesystem, queue encodes and rewrite the
     // configuration, and a token is minted on first start. The printed URL

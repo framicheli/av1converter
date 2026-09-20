@@ -39,8 +39,11 @@ pub fn pid_file() -> PathBuf {
     data_dir().join("daemon.pid")
 }
 
+/// Stdout and stderr of the detached daemon, holding whatever it prints before
+/// its log is open. Rewritten at every start; the daemon's own log is the
+/// rolling `daemon.log.<date>` next to it.
 pub fn log_file() -> PathBuf {
-    data_dir().join("daemon.log")
+    data_dir().join("daemon-startup.log")
 }
 
 /// The queue as it stood when the daemon last changed it.
@@ -277,8 +280,8 @@ pub fn spawn_background() -> io::Result<u32> {
 
     crate::utils::ensure_private_dir(&data_dir())?;
     let mut options = std::fs::OpenOptions::new();
-    options.create(true).append(true);
-    // The log holds the paths of everything the daemon touches, and is
+    options.create(true).write(true).truncate(true);
+    // The capture holds the paths of everything the daemon prints, and is
     // readable by its owner only.
     #[cfg(unix)]
     {
@@ -290,6 +293,7 @@ pub fn spawn_background() -> io::Result<u32> {
 
     let mut cmd = Command::new(std::env::current_exe()?);
     cmd.arg("--start-foreground")
+        .env(crate::utils::logger::BACKGROUND_ENV, "1")
         .stdin(Stdio::null())
         .stdout(log)
         .stderr(log_err)
