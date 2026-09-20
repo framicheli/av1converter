@@ -4,8 +4,8 @@
 
 const $ = (id) => document.getElementById(id);
 
-// Same rounding as format_file_size on the server, so both kinds of size on
-// the page read alike.
+// Same rounding as format_file_size on the server; both kinds of size on the
+// page read alike.
 function fmtBytes(n) {
   if (n == null) return "—";
   const KIB = 1024, MIB = 1024 * KIB, GIB = 1024 * MIB;
@@ -59,7 +59,7 @@ function toast(message, isError) {
   announce(message, isError);
   el.classList.remove("hidden");
   // Popovers share the browser's top layer with dialogs. Reopening moves an
-  // existing toast above a modal, so failures are never hidden by its backdrop.
+  // existing toast above a modal, clear of its backdrop.
   closePopover(el);
   if (popovers) el.showPopover();
   clearTimeout(toast.timer);
@@ -77,7 +77,8 @@ function hideToast() {
 $("toast-close").addEventListener("click", hideToast);
 
 // URL fragments never reach the HTTP server, proxy logs or Referer headers.
-// Storage can be disabled by privacy settings, so it is strictly best-effort.
+// Storage can be disabled by privacy settings, and every access is
+// best-effort.
 // Reads #token=… from the URL, stores it and strips it from the address bar.
 function tokenFromHash() {
   const fromUrl = new URLSearchParams(location.hash.slice(1)).get("token");
@@ -101,10 +102,9 @@ addEventListener("hashchange", () => {
 
 // ── Strings ─────────────────────────────────────────────────────────
 //
-// The language is whatever the config says, as it is for the TUI, so the map
-// is fetched once at startup rather than negotiated or switched at runtime.
-// Until it arrives — and if it never does, which means the API is unreachable
-// or unauthorized — the English written into index.html stands.
+// The language is whatever the config says, as it is for the TUI. The map is
+// fetched once at startup, not negotiated or switched at runtime. Until it
+// arrives, and if it never does, the English written into index.html stands.
 let strings = {};
 
 function tr(key, fallback) {
@@ -121,8 +121,7 @@ function trf(key, values, fallback) {
 }
 
 // Applies the map to everything index.html marked up. Attribute keys are
-// spelled out rather than derived so that only these three are ever settable
-// from a translation.
+// spelled out, and only these three are settable from a translation.
 function applyStrings(root = document) {
   for (const [attr, setter] of [
     ["data-i18n", (el, text) => { el.textContent = text; }],
@@ -163,9 +162,8 @@ async function api(path, options) {
     adoptToken(pendingToken);
     return api(path, options);
   }
-  // The stored token is deliberately kept. Dropping it here turned a single
-  // rejected request into a permanent logout, and it bought nothing: the only
-  // way back in is #token=… in the URL, which overwrites it regardless.
+  // The stored token is kept. The only way back in is #token=… in the URL,
+  // which overwrites it.
   if (response.status === 401) {
     const error = new Error(tr("unauthorized", "Unauthorized — open the UI with #token=… from your config"));
     error.unauthorized = true;
@@ -311,8 +309,8 @@ async function poll() {
       return;
     }
     setOffline(false);
-    // A restarted daemon numbers its queue from the start again, so the ids
-    // remembered for the track prompt no longer mean anything.
+    // A restarted daemon numbers its queue from the start again; the ids
+    // remembered for the track prompt no longer refer to those jobs.
     if (lastUptime != null && s.uptime_secs < lastUptime) {
       maxJobId = 0;
       trackPromptFloor = 0;
@@ -413,8 +411,8 @@ function updateWorkButtons() {
 
 // ── Batch summary ───────────────────────────────────────────────────
 //
-// The counts the daemon reports are cumulative for the session, so the strip
-// describes the last completed run rather than the queue as it stands. It is
+// The counts the daemon reports are cumulative for the session; the strip
+// describes the last completed run, not the queue as it stands. It is
 // dismissible, and a new batch starting re-arms it.
 
 let summaryDismissed = false;
@@ -429,7 +427,7 @@ $("summary-dismiss").addEventListener("click", () => {
 });
 
 // The daemon resets these totals when fresh work follows a settled queue,
-// before analysis starts, so failures during analysis belong to the new batch.
+// before analysis starts; failures during analysis belong to the new batch.
 function updateSummary(s) {
   const { converted, skipped, errors, cancelled = 0 } = s.counts;
   // A batch that started is a batch whose result has not been seen yet.
@@ -447,14 +445,14 @@ function updateSummary(s) {
     $("summary-skipped").textContent = skipped;
     $("summary-cancelled").textContent = cancelled;
     $("summary-errors").textContent = errors;
-    // The server's own string, so this reads identically to the tile above it.
+    // The server's own string, identical to the tile above it.
     $("summary-saved").textContent = s.total_space_saved.human;
     $("summary-time").textContent =
       s.elapsed_secs != null ? fmtDuration(s.elapsed_secs) : "—";
     $("summary-time-group").classList.toggle("hidden", s.elapsed_secs == null);
 
-    // Colour follows the worst outcome in the run, so 3 errors among 40
-    // conversions cannot read as a clean success at a glance.
+    // Colour follows the worst outcome in the run: 3 errors among 40
+    // conversions do not read as a clean success.
     summary.classList.toggle("has-errors", errors > 0);
     summary.classList.toggle("has-skips", errors === 0 && skipped > 0);
     $("summary-errors-group").classList.toggle("bad", errors > 0);
@@ -462,9 +460,8 @@ function updateSummary(s) {
     $("summary-cancelled-group").classList.toggle("hidden", cancelled === 0);
   }
 
-  // Announced only on the observed encoding → idle transition, so reloading
-  // the page — or a queue reloaded from disk at startup — does not replay a
-  // completion that already happened.
+  // Announced only on the observed encoding → idle transition; a page reload,
+  // or a queue reloaded from disk at startup, does not replay a completion.
   if (wasActive && finished) {
     // Headline names the outcome: completed, errored, or stopped.
     const headline = errors > 0 ? "summary_failed"
@@ -485,7 +482,7 @@ function updateSummary(s) {
   wasActive = s.counts.active > 0;
 }
 
-// No point polling a tab nobody is looking at; refresh as soon as it is again.
+// A hidden tab is not polled, and refreshes as soon as it is visible again.
 setInterval(() => {
   if (document.visibilityState === "visible") poll();
 }, 1000);
@@ -505,15 +502,14 @@ function loadStrings() {
   return loadStrings.pending;
 }
 
-// Strings first, so nothing renders in English and then flips a moment later.
-// If the fetch fails the page keeps the English in index.html and carries on:
-// an unreachable or unauthorized daemon is already reported by the poll, and
-// an untranslated UI beats a blank one. A later successful poll retries it.
+// Strings first: nothing renders in English and then flips a moment later. A
+// failed fetch leaves the English in index.html standing, and a later
+// successful poll retries the map.
 (async () => {
   try {
     await loadStrings();
   } catch {
-    // Left in English on purpose.
+    // The page stays in the English from index.html.
   }
   poll();
 })();
@@ -527,8 +523,8 @@ const BADGE_CLASS = {
   skipped: "", error: "error", quality_warning: "warn",
 };
 
-// Every status the API can report has a key, so the fall-through never has to
-// invent English from the wire value.
+// Every status the API can report has a key; the fall-through never shows a
+// raw wire value.
 const BADGE_KEY = {
   pending: "badge_pending", analyzing: "badge_analyzing",
   awaiting_config: "confirm_tracks", ready: "badge_ready",
@@ -583,9 +579,8 @@ function failedVmafText(st) {
   return `${score} < ${threshold}`;
 }
 
-// Rows are kept and updated in place, keyed by job id. Rebuilding the table on
-// every poll would throw away hover, focus and any text the user has selected,
-// once a second, for the whole length of an encode.
+// Rows are kept and updated in place, keyed by job id, which leaves hover,
+// focus and selected text alone for the length of an encode.
 const rows = new Map();
 const promptedTrackJobs = new Set();
 let openingTracks = false;
@@ -1440,9 +1435,8 @@ async function loadDir(path, takeFocus = false) {
   const list = $("browser-list");
   list.textContent = "";
 
-  // Each row is a <button> so it is reachable by Tab and activated by
-  // Enter/Space without a hand-rolled keydown handler. Rows that lead
-  // nowhere are disabled rather than dead click targets.
+  // Each row is a <button>, reachable by Tab and activated by Enter/Space.
+  // Rows that lead nowhere are disabled.
   const addEntry = (mark, label, kind, onclick, sizeText) => {
     const li = document.createElement("li");
     const button = document.createElement("button");
@@ -1592,8 +1586,8 @@ async function addToQueue(path, mode) {
 // stopped it — comes from the status poll, which is already running.
 
 let disc = null;
-// Raised while the file browser is up in place of this dialog, so the close
-// below leaves the state alone and does not call off a scan.
+// Raised while the file browser is up in place of this dialog; the close below
+// then leaves the state alone and does not call off a scan.
 let discBrowsing = false;
 
 $("btn-add-disc").addEventListener("click", openDisc);
@@ -1610,9 +1604,9 @@ $("disc-back").addEventListener("click", () => {
   discShapeRendered = null;
   renderDisc();
 });
-// Esc closes without going through the button, so the state is dropped on the
-// close event: the one place every path passes through. A scan this dialog
-// started and that is still running is called off.
+// Esc closes without going through the button; the state is dropped on the
+// close event, which every path passes through. A scan this dialog started and
+// that is still running is called off.
 $("disc-modal").addEventListener("close", () => {
   if (discBrowsing) return;
   // A rip closes this dialog on its way to the queue, where Cancel stops it.
@@ -1652,8 +1646,8 @@ async function openDisc() {
   if (disc === session) renderDisc();
 }
 
-// Two dialogs stack in the top layer in the order they were opened, so the
-// disc modal steps aside for the browser and comes back when it closes.
+// Two dialogs stack in the top layer in the order they were opened; the disc
+// modal steps aside for the browser and comes back when it closes.
 $("disc-folder").addEventListener("click", () => {
   if (!disc || offline) return;
   discBrowsing = true;
@@ -1725,15 +1719,15 @@ async function scanDisc(id) {
   if (disc === session) renderDisc();
 }
 
-// The last `disc` block from /api/status, so the dialog can render between
-// polls without asking for it again.
+// The last `disc` block from /api/status; the dialog renders between polls
+// without asking for it again.
 let discState = { active: false, scanning: false, titles: [], error: null };
 
 function onDiscStatus(state, seq) {
   discState = state ?? discState;
   // A requested scan ends its loading state only on a poll that started after
   // the scan request returned. The daemon marks the scan as running before it
-  // answers, so such a poll reports either the running scan or its result.
+  // answers, and such a poll reports either the running scan or its result.
   if (disc?.scanPending && seq > disc.statusAfter) {
     disc.loading = false;
     if (!discState.scanning) disc.scanPending = false;
@@ -1803,7 +1797,7 @@ function renderDiscBody() {
     return;
   }
   // Nothing picked yet: choose a drive, or the folder button in the footer.
-  // No drive at all is a note rather than a failure, since that button remains.
+  // No drive at all is a note, not a failure; that button remains.
   if (disc.drive == null && disc.folder == null) {
     if (disc.drives.length === 0) {
       if (!failure) body.appendChild(discNote(tr("disc_no_drive")));
@@ -1952,8 +1946,8 @@ const encoderOptions = () => [["SvtAv1", tr("encoder_svt_av1")], ["Nvenc", "NVEN
 const NVENC_PRESETS = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"].map((p) => [p, p]);
 const CONTAINERS = ["mkv", "mp4", "webm"].map((c) => [c, c]);
 
-// Built on each render rather than held in a const: the string map arrives
-// after this file is evaluated, so a const would capture the untranslated text.
+// Built on each render: the string map arrives after this file is
+// evaluated.
 const presets = () => [
   ["low", tr("qp_low")], ["medium", tr("qp_medium")],
   ["high", tr("qp_high")], ["custom", tr("qp_custom")],
@@ -1967,9 +1961,8 @@ const rfTiers = () => [
   ["uhd", tr("rf_uhd")], ["uhd_hdr", tr("rf_uhd_hdr")], ["uhd_dv", tr("rf_uhd_dv")],
 ];
 
-// The shape of this list mirrors the Rust config schema, but every label it
-// shows comes from the same key map the rest of the UI uses — not a second
-// English list that would have to be translated all over again.
+// The shape of this list mirrors the Rust config schema; every label it shows
+// comes from the same key map the rest of the UI uses.
 function settingsFields(cfg) {
   const local = Boolean(settingsAccess?.local);
   const localHint = local ? "" : tr("local_only_note");
@@ -2091,8 +2084,8 @@ function buildSettingsForm() {
     row.className = "field";
     const label = document.createElement("label");
     label.textContent = field.label;
-    // The path is already unique per field and stable across rebuilds, so it
-    // makes a better id than a counter that shifts when the form is rebuilt.
+    // The path is unique per field and stable across rebuilds, and serves as
+    // the element id.
     const inputId = `set-${field.path.replace(/\./g, "-")}`;
     label.htmlFor = inputId;
     row.appendChild(label);

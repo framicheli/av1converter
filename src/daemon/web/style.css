@@ -2,9 +2,8 @@
    monospace stack. Values render in text tokens; color marks status only.
 
    Every pair here is checked against WCAG AA: text at 4.5:1, boundaries and
-   the focus ring at 3:1. The surfaces sit close together on purpose — the
-   phosphor look depends on it — so --border is deliberately bright, because
-   it is the border, not the fill, that has to carry the 3:1 boundary. */
+   the focus ring at 3:1. The surfaces sit close together, and --border is
+   bright enough to carry the 3:1 boundary on its own. */
 
 :root {
   /* Checkboxes, select popups and scrollbars are drawn by the browser and
@@ -51,14 +50,14 @@ dialog { margin: auto; }
 }
 
 /* ── Focus ──────────────────────────────────────────────────────────
-   One rule for every focusable thing. :focus-visible so pointer users do
-   not get a ring on click, keyboard users always do. The offset keeps the
-   ring off the element's own border so both stay readable. */
+   One rule for every focusable thing. :focus-visible gives a ring to
+   keyboard users and not to pointer users on click. The offset keeps the
+   ring off the element's own border. */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-/* Rows sit flush in a scrolling list; an offset ring would be clipped. */
+/* Rows sit flush in a scrolling list, where an outer ring is clipped. */
 #browser-list button:focus-visible {
   outline-offset: -2px;
 }
@@ -138,16 +137,16 @@ progress.bar::-webkit-progress-value {
 }
 progress.bar::-moz-progress-bar { background: var(--accent); border-radius: 0 4px 4px 0; }
 progress.bar:indeterminate { background: repeating-linear-gradient(90deg, var(--track) 0 12px, var(--accent) 12px 16px); }
-/* Figures are rewritten once a second. Tabular digits stop the percentages,
-   sizes and ETA from jittering as their glyphs change width. */
+/* Figures are rewritten once a second. Tabular digits hold the percentages,
+   sizes and ETA at one width as their glyphs change. */
 .bar-meta, .tile-value, table, .badge, #browser-list .size {
   font-variant-numeric: tabular-nums;
 }
 .bar-meta { display: flex; justify-content: space-between; font-size: 12px; }
 
-/* The table is the workbench. Everything above it is status, so it reads as
-   one compact band: two tiles and both progress panels on a single row,
-   stacking only when there is genuinely no width for it. */
+/* The table is the workbench. Everything above it is status, in one compact
+   band: two tiles and both progress panels on a single row, stacking only
+   when there is no width for it. */
 .overview {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -181,8 +180,8 @@ button {
   border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
-  /* Flex toolbars default to shrink:1; with nowrap that clips the label past
-     the border instead of wrapping the button to the next row. */
+  /* Flex toolbars default to shrink:1, which with nowrap clips the label
+     past the border. The button wraps to the next row instead. */
   flex-shrink: 0;
   max-width: 100%;
 }
@@ -210,8 +209,7 @@ button:disabled, button[aria-disabled="true"] { opacity: 0.4; cursor: default; b
   padding: 10px 14px;
   font-variant-numeric: tabular-nums;
 }
-/* A run that errored is not a success, so the strip itself changes colour
-   rather than leaving one red number to be spotted among green ones. */
+/* A run that errored colours the whole strip, not one number in it. */
 .summary.has-errors { border-color: var(--bad); }
 .summary.has-skips { border-color: var(--warn); }
 
@@ -223,7 +221,7 @@ button:disabled, button[aria-disabled="true"] { opacity: 0.4; cursor: default; b
 .summary-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-2); }
 .summary-value { font-size: 16px; font-weight: 600; }
 .summary-figure.good .summary-value { color: var(--good); }
-/* Only once they are non-zero: a clean run should read clean. */
+/* Coloured only once they are non-zero; a clean run reads clean. */
 .summary-figure.warn .summary-value { color: var(--warn); }
 .summary-figure.bad .summary-value { color: var(--bad); }
 
@@ -252,8 +250,8 @@ tbody tr:last-child td, tbody tr:last-child th { border-bottom: none; }
   color: var(--ink-2);
   white-space: nowrap;
 }
-/* Interactive badges (e.g. Confirm tracks in the status column) must wrap
-   when the column is narrow; nowrap + a squeezed width paints text past the
+/* Interactive badges (e.g. Confirm tracks in the status column) wrap when the
+   column is narrow; nowrap plus a squeezed width paints text past the
    border. */
 button.badge {
   display: inline-block;
@@ -300,8 +298,8 @@ td.grew { color: var(--warn); }
   padding: 8px 14px;
 }
 /* German and French labels run half again as long as the English and wrap
-   inside this column; a compound long enough to beat the column on its own
-   breaks rather than pushing the control off the row. */
+   inside this column. A compound longer than the column breaks mid-word and
+   leaves the control on the row. */
 .field label { color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere; }
 .field input[type="text"], .field input[type="password"], .field input[type="number"], .field select {
   background: var(--track);
@@ -312,8 +310,7 @@ td.grew { color: var(--warn); }
   border-radius: 4px;
   max-width: 320px;
 }
-/* Accent border on focus, but the outline stays — removing it is what makes
-   a form untabbable for keyboard users. */
+/* Accent border on focus, with the outline still in place. */
 .field input:focus, .field select:focus { border-color: var(--accent); }
 .field input:invalid { border-color: var(--bad); }
 .field input:disabled, .field select:disabled { opacity: 0.55; cursor: not-allowed; }
@@ -394,8 +391,8 @@ fieldset.field-group > legend {
   flex: 1;
   min-height: 200px;
 }
-/* Rows are real <button>s, so keyboard focus and Enter/Space are free.
-   Stripped back to look like list rows rather than controls. */
+/* Rows are real <button>s, with keyboard focus and Enter/Space. Styled back
+   to look like list rows. */
 #browser-list button {
   width: 100%;
   padding: 6px 16px;
@@ -414,8 +411,8 @@ fieldset.field-group > legend {
 #browser-list button:disabled { color: var(--ink-2); opacity: 1; cursor: default; }
 #browser-list .size { margin-left: auto; font-size: 11px; color: var(--ink-2); }
 
-/* Filesystem marks: text, not emoji, so they inherit ink colour and are not
-   read out as picture names by a screen reader. */
+/* Filesystem marks: text, not emoji. They inherit ink colour, and a screen
+   reader does not read them as picture names. */
 #browser-list .mark {
   color: var(--ink-2);
   flex: none;
