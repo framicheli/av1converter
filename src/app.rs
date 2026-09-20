@@ -130,7 +130,7 @@ pub struct App {
     pub dir_entries: Vec<Entry>,
     pub explorer_index: usize,
     pub explorer_list_state: ListState,
-    // Queue state (replaces Vec<VideoFile>)
+    // Queue state
     pub queue: QueueState,
     pub queue_cursor: usize,
     pub queue_list_state: ListState,
@@ -574,8 +574,8 @@ impl App {
         self.current_screen = Screen::Finish;
     }
 
-    /// Drop cancel confirms once the matching work is already idle so Enter/y
-    /// cannot cancel finished work after auto-navigation to Finish.
+    /// Drop cancel confirms once the matching work is idle. Enter and y then
+    /// no longer cancel finished work after auto-navigation to Finish.
     pub fn dismiss_stale_cancel_confirm(&mut self) {
         let Some((action, _)) = self.confirm_dialog else {
             return;
@@ -959,8 +959,8 @@ impl App {
     }
 
     /// Probe the jobs at `indices` on a worker thread. Probes already running
-    /// keep going: a title that has just finished ripping joins them rather
-    /// than waiting for a round to end.
+    /// keep going: a title that has just finished ripping joins them without
+    /// waiting for a round to end.
     fn analyze_indices(&mut self, indices: &[usize]) {
         let non_utf8 = crate::i18n::t(self.config.language, crate::i18n::Msg::NonUtf8Path);
         let mut work: Vec<(usize, String)> = Vec::new();
@@ -1002,8 +1002,7 @@ impl App {
         thread::spawn(move || {
             let paths: Vec<Result<String, AppError>> =
                 work.iter().map(|(_, path)| Ok(path.clone())).collect();
-            // A panic here would otherwise leave the caller counting probes
-            // that never arrive.
+            // A panic in the batch is turned into one error per probe.
             let results = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 analyze_batch(&paths, &cancel_flag)
             }))
@@ -1354,9 +1353,8 @@ impl App {
 
         info!("Jobs to encode: {}", worker_jobs.len());
 
-        // Mirror the daemon: never arm an empty session. Temporary Ready jobs
-        // without a destination are skipped by filter_map above but would
-        // otherwise restart forever after Finished.
+        // Mirror the daemon: an empty session is never armed. Temporary Ready
+        // jobs without a destination are skipped by the filter_map above.
         if worker_jobs.is_empty() {
             let lang = self.config.language;
             for job in &mut self.queue.jobs {
@@ -1669,9 +1667,9 @@ impl App {
             .cloned()
             .collect();
 
-        // Each title is a queue job from the start, so the rip renders in the
-        // queue screen and shares its cancellation. The path is the title's
-        // name until the file it extracts to is known.
+        // Each title is a queue job from the start, renders in the queue
+        // screen and shares its cancellation. The path is the title's name
+        // until the file it extracts to is known.
         self.queue.reset_session_if_finished();
         self.disc_job_indices.clear();
         for title in &titles {
@@ -1766,8 +1764,7 @@ impl App {
                     }
                 }
                 // Probing starts now, while the drive moves on to the next
-                // title: that is what keeps peak disk at one rip plus one
-                // encode input.
+                // title; peak disk holds at one rip plus one encode input.
                 DiscEvent::TitleReady { index, path } => {
                     if let Some(&job_index) = self.disc_job_indices.get(index)
                         && let Some(job) = self.queue.jobs.get_mut(job_index)
@@ -2294,7 +2291,7 @@ mod tests {
         job.status = JobStatus::Ready;
         job.temporary = true;
         job.output_path = None;
-        // Enough fields that a naive filter would keep it Ready forever.
+        // A fully analysed job, missing only its destination.
         job.metadata = Some(crate::analyzer::VideoMetadata {
             width: 1920,
             height: 1080,

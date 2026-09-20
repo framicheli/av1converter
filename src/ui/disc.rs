@@ -209,8 +209,8 @@ pub fn render_disc_titles(f: &mut Frame, app: &mut App) {
         }
     }
 
-    // Track summaries for the title under the cursor: enough to tell a feature
-    // from a commentary angle before spending an hour on it.
+    // Track summaries for the title under the cursor, which tell a feature
+    // from a commentary angle.
     let detail = app.message.clone().unwrap_or_else(|| {
         app.disc_titles
             .get(app.disc_cursor)

@@ -29,8 +29,8 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             return;
         };
 
-        // Resolved so the row shows the bitrate the encoder is actually asked
-        // for, including already-Opus tracks, which are left alone.
+        // Resolved to the bitrate the encoder is asked for, including
+        // already-Opus tracks, which are left alone.
         let output = job.output_path.clone().unwrap_or_default();
         let plan = job
             .track_selection

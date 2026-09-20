@@ -517,8 +517,8 @@ fn create_result_item(
 
     // Output size and compression ratio
     let output_info = match (job.output_size, job.size_reduction()) {
-        // A negative percentage means the output grew, so the sign is printed
-        // rather than assumed.
+        // A negative percentage means the output grew; the sign is always
+        // printed.
         (Some(output), Some((_, percent))) => {
             format!(" → {} ({:+.1}%)", format_file_size(output), -percent)
         }
@@ -535,9 +535,9 @@ fn create_result_item(
         String::new()
     };
 
-    // `ListItem`/`Line::style` replace rather than patch, so `bold_mod` is
-    // folded into each arm's single outermost `.style()` call below rather
-    // than layered on afterwards.
+    // `ListItem`/`Line::style` replace the style instead of patching it, and
+    // `bold_mod` is folded into each arm's single outermost `.style()` call
+    // below.
     match &job.status {
         JobStatus::Done => {
             let mut spans = vec![

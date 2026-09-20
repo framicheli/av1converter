@@ -30,8 +30,8 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
         .margin(1)
         .split(f.area());
 
-    // Current path (truncated from the start so the current folder, at the
-    // end of the path, always stays visible even on narrow terminals)
+    // Current path, truncated from the start: the current folder, at the end
+    // of the path, stays visible on a narrow terminal.
     let path_text = app.current_dir.to_string_lossy();
     let available_width = chunks[0].width.saturating_sub(2) as usize; // minus borders
     let path = Paragraph::new(truncate_path_start(&path_text, available_width))

@@ -17,9 +17,9 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
 
     // The detail panel below the list always reflects the job at the cursor,
-    // not necessarily the one actively encoding. Give it extra height when
-    // showing static status text, since an `Error` can span several lines
-    // (ffmpeg's last few stderr lines) — the live gauge only ever needs one.
+    // not necessarily the one actively encoding. Static status text gets extra
+    // height: an `Error` can span several lines (ffmpeg's last few stderr
+    // lines), where the live gauge needs one.
     let detail_job = app.queue.jobs.get(app.queue_cursor);
     let is_live_gauge = matches!(
         detail_job.map(|j| &j.status),

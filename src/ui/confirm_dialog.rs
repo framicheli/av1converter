@@ -67,8 +67,8 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
     };
 
     // Calculate dialog area (wide/tall enough for longer, wrapped prompts).
-    // A centred dialog takes 40% of the height, so anything shorter than 18
-    // rows uses the whole frame to keep the prompt above the buttons.
+    // A centred dialog takes 40% of the height; a frame shorter than 18 rows
+    // is used whole, with the prompt above the buttons.
     let area = if f.area().width < 50 || f.area().height < 18 {
         f.area()
     } else {

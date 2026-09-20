@@ -203,9 +203,9 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
     utils::init_daemon_logging();
     let _pid_guard = daemon::lifecycle::write_pid_file()?;
     // The API can browse the filesystem, queue encodes and rewrite the
-    // configuration, so a token is minted on first start. The printed URL
-    // carries it, so one click authorises the browser. Done after the PID
-    // lock so two concurrent --start processes cannot each mint a token.
+    // configuration, and a token is minted on first start. The printed URL
+    // carries it, and following it authorises the browser. Minted under the
+    // PID lock, which serialises two concurrent --start processes.
     if config.daemon.auth_token.len() < 32 {
         let mut fresh = match load_config_for_save() {
             Ok(fresh) => fresh,
@@ -457,8 +457,8 @@ fn scan_discs_entry() {
     }
 }
 
-/// Directories `--purge` removes: config and daemon data. Deduped in case both
-/// resolve to the same path (no `HOME`/`XDG_*`, so both fall back to `.`).
+/// Directories `--purge` removes: config and daemon data, deduped. With no
+/// `HOME`/`XDG_*` both fall back to `.` and resolve to the same path.
 fn purge_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(dir) = config::AppConfig::config_path().parent() {
@@ -477,7 +477,8 @@ fn is_purge_yes(line: &str) -> bool {
 }
 
 /// `--purge`: delete configuration and daemon state after confirmation.
-/// English, like `--help`. Does not load the config, which would create one.
+/// English, like `--help`. Does not load the config; loading creates a
+/// missing file.
 fn purge_entry() {
     if let Some(pid) = daemon::lifecycle::running_pid() {
         eprintln!(
@@ -607,7 +608,7 @@ fn main() -> io::Result<()> {
     }));
 
     // First run detects the encoder by test-encoding a frame per candidate,
-    // which takes seconds; do it before the alternate screen hides the reason.
+    // which takes seconds. It runs before the alternate screen opens.
     if !config::AppConfig::config_path().exists() {
         println!(
             "{}",
@@ -780,7 +781,7 @@ fn handle_key(app: &mut App, key: KeyCode) {
     }
 
     // Global quit shortcut, available on every screen. Suppressed while typing
-    // in a Configuration text field so 'q' can still be entered as a character.
+    // in a Configuration text field, where 'q' is an ordinary character.
     if key == KeyCode::Char('q') && app.config_edit_buffer.is_none() {
         app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
         return;
@@ -857,9 +858,9 @@ fn handle_dv_dialog_key(app: &mut App, key: KeyCode) {
 }
 
 fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
-    // The dialog was already taken before this call. Gate cancel on live work
-    // so a confirm that raced with completion is a no-op, without treating the
-    // missing dialog itself as "stale".
+    // The dialog was already taken before this call. Cancel is gated on live
+    // work: a confirm that raced with completion is a no-op, and the missing
+    // dialog is not itself treated as stale.
     let still_active = match action {
         ConfirmAction::CancelEncoding => app.encoding_active,
         ConfirmAction::CancelAnalysis => app.analysis_receiver.is_some(),
@@ -931,8 +932,8 @@ fn handle_disc_key(app: &mut App, key: KeyCode) {
     if app.disc_state == app::DiscState::Cancelling {
         return;
     }
-    // While drives are still being discovered the list is empty and only Esc
-    // acts; Enter would otherwise land on the folder row.
+    // While drives are still being discovered the list is empty, only Esc
+    // acts, and Enter does not reach the folder row.
     if app.disc_state == app::DiscState::Discovering {
         if key == KeyCode::Esc {
             app.leave_disc_screen();
@@ -1526,8 +1527,8 @@ fn parse_lang_list(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Flip login autostart. Enabling saves the live config first so a port just
-/// typed in Settings is what the service binds, and sets `daemon.enabled`.
+/// Flip login autostart. Enabling saves the live config first, including a
+/// port just typed in Settings, and sets `daemon.enabled`.
 fn apply_autostart(app: &mut App, enable: bool) {
     let lang = app.config.language;
     if !daemon::service::supported() {
@@ -1714,7 +1715,7 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
 ///
 /// `Low`/`Medium`/`High` overwrite the per-tier presets; `Custom` keeps the
 /// user's own values. Toggling visibility of the RF rows can shrink the list,
-/// so the selection index is clamped afterward.
+/// and the selection index is clamped afterward.
 fn cycle_quality_preset(app: &mut App, increase: bool) {
     let next = if increase {
         app.config.quality_preset.next()
