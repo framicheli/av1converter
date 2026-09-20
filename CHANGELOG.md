@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- TUI: Settings shows a VMAF threshold with decimals, such as 93.25, instead of rounding it on screen.
 - TUI: a long notice on the track screen no longer squeezes the subtitle list down to nothing on an 80x24 terminal.
 - TUI: confirmation dialogs show their question again on terminals under 18 rows, where only the y/n line used to fit.
 - TUI: the file browser opened for a recursive folder scan now says "Select a folder (recursive)", as the web UI does.

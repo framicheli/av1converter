@@ -551,7 +551,7 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::QualityPreset => {
             quality_preset_name(config.language, config.quality_preset).to_string()
         }
-        ConfigField::VmafThreshold => format!("{:.0}", config.quality.vmaf_threshold),
+        ConfigField::VmafThreshold => config.quality.vmaf_threshold.to_string(),
         ConfigField::VmafEnabled => bool_display(config.language, config.quality.vmaf_enabled),
         ConfigField::DeleteSource => {
             bool_display(config.language, config.quality.delete_source_on_success)
@@ -967,6 +967,20 @@ fn config_group(field: ConfigField) -> Option<Msg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fractional_vmaf_threshold_keeps_its_decimals() {
+        let mut config = AppConfig::default();
+        config.quality.vmaf_threshold = 93.25;
+        let index = visible_config_items(&config)
+            .iter()
+            .position(|item| item.field == ConfigField::VmafThreshold)
+            .unwrap();
+
+        assert_eq!(get_config_value(&config, index), "93.25");
+        config.quality.vmaf_threshold = 95.0;
+        assert_eq!(get_config_value(&config, index), "95");
+    }
 
     #[test]
     fn daemon_tokens_are_masked_at_rest_and_while_editing() {
