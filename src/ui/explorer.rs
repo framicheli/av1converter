@@ -79,9 +79,8 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
 
     let title = match app.selection_mode {
         SelectionMode::File => t(lang, Msg::SelectVideoFile),
-        SelectionMode::Folder | SelectionMode::FolderRecursive | SelectionMode::SettingFolder => {
-            t(lang, Msg::SelectFolder)
-        }
+        SelectionMode::FolderRecursive => t(lang, Msg::WebSelectFolderRecursive),
+        SelectionMode::Folder | SelectionMode::SettingFolder => t(lang, Msg::SelectFolder),
         SelectionMode::DiscFolder => t(lang, Msg::DiscSelectFolder),
     };
 

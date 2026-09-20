@@ -21,7 +21,7 @@ use tracing::info;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Screen {
     Home,
-    FileExplorer { select_folder: bool },
+    FileExplorer,
     FileConfirm,
     DiscDrives,
     DiscTitles,
@@ -420,7 +420,7 @@ impl App {
             SelectionMode::Folder
         };
         self.refresh_dir_entries();
-        self.current_screen = Screen::FileExplorer { select_folder };
+        self.current_screen = Screen::FileExplorer;
     }
 
     /// Open the explorer in folder mode for the selected path setting,
@@ -431,9 +431,7 @@ impl App {
         }
         self.selection_mode = SelectionMode::SettingFolder;
         self.refresh_dir_entries();
-        self.current_screen = Screen::FileExplorer {
-            select_folder: true,
-        };
+        self.current_screen = Screen::FileExplorer;
     }
 
     pub fn navigate_to_track_config(&mut self) {
@@ -752,8 +750,7 @@ impl App {
                 .collect();
         }
         self.queue.jobs.truncate(batch_start);
-        let select_folder = self.selection_mode == SelectionMode::Folder;
-        self.current_screen = Screen::FileExplorer { select_folder };
+        self.current_screen = Screen::FileExplorer;
     }
 
     pub fn enter_directory(&mut self) {
@@ -1538,9 +1535,7 @@ impl App {
         if index == self.disc_drives.len() {
             self.selection_mode = SelectionMode::DiscFolder;
             self.refresh_dir_entries();
-            self.current_screen = Screen::FileExplorer {
-                select_folder: true,
-            };
+            self.current_screen = Screen::FileExplorer;
             return;
         }
         let Some(drive) = self.disc_drives.get(index).cloned() else {
@@ -2594,12 +2589,7 @@ mod tests {
             (Screen::FileConfirm, JobStatus::AwaitingConfig),
             (Screen::Configuration, JobStatus::AwaitingConfig),
             (Screen::Home, JobStatus::Done),
-            (
-                Screen::FileExplorer {
-                    select_folder: false,
-                },
-                JobStatus::Done,
-            ),
+            (Screen::FileExplorer, JobStatus::Done),
         ] {
             let mut app = App::new();
             let mut job = EncodingJob::new(PathBuf::from("a.mkv"));

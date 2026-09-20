@@ -684,7 +684,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             } else {
                 match app.current_screen {
                     Screen::Home => ui::render_home(f, app),
-                    Screen::FileExplorer { .. } => ui::render_explorer(f, app),
+                    Screen::FileExplorer => ui::render_explorer(f, app),
                     Screen::FileConfirm => ui::render_file_confirm(f, app),
                     Screen::DiscDrives => ui::render_disc_drives(f, app),
                     Screen::DiscTitles => ui::render_disc_titles(f, app),
@@ -778,7 +778,7 @@ fn handle_key(app: &mut App, key: KeyCode) {
 
     match &app.current_screen {
         Screen::Home => handle_home_key(app, key),
-        Screen::FileExplorer { .. } => handle_explorer_key(app, key),
+        Screen::FileExplorer => handle_explorer_key(app, key),
         Screen::FileConfirm => handle_file_confirm_key(app, key),
         Screen::DiscDrives | Screen::DiscTitles => handle_disc_key(app, key),
         Screen::TrackConfig => handle_track_config_key(app, key),
@@ -2183,7 +2183,7 @@ mod tests {
             .unwrap();
 
         handle_config_key(&mut app, KeyCode::Char('b'));
-        assert!(matches!(app.current_screen, Screen::FileExplorer { .. }));
+        assert!(matches!(app.current_screen, Screen::FileExplorer));
         assert_eq!(app.selection_mode, app::SelectionMode::SettingFolder);
         assert_eq!(app.current_dir, root);
 

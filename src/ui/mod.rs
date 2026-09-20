@@ -171,6 +171,16 @@ mod tests {
     }
 
     #[test]
+    fn a_recursive_folder_choice_says_so_in_the_explorer_title() {
+        let mut app = App::new();
+        app.selection_mode = SelectionMode::FolderRecursive;
+
+        let screen = rendered(80, 24, |frame| render_explorer(frame, &mut app));
+
+        assert!(screen.contains("Select a folder (recursive)"));
+    }
+
+    #[test]
     fn analysis_progress_excludes_pending_rips() {
         let mut app = App::new();
         let mut ripping = EncodingJob::new("ripping.mkv".into());
