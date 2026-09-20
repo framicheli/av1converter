@@ -4,12 +4,21 @@
 
 const $ = (id) => document.getElementById(id);
 
+// Same rounding as format_file_size on the server, so both kinds of size on
+// the page read alike.
 function fmtBytes(n) {
   if (n == null) return "—";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let v = n, u = 0;
-  while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
-  return `${v >= 10 || u === 0 ? Math.round(v) : v.toFixed(1)} ${units[u]}`;
+  const KIB = 1024, MIB = 1024 * KIB, GIB = 1024 * MIB;
+  if (n >= GIB) {
+    const h = Math.floor((n * 100) / GIB);
+    return `${Math.floor(h / 100)}.${String(h % 100).padStart(2, "0")} GiB`;
+  }
+  if (n >= MIB) {
+    const h = Math.floor((n * 10) / MIB);
+    return `${Math.floor(h / 10)}.${h % 10} MiB`;
+  }
+  if (n >= KIB) return `${Math.floor(n / KIB)} KiB`;
+  return `${n} B`;
 }
 
 function fmtDuration(secs) {

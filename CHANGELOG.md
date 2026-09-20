@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- Web UI: file sizes are written the same way everywhere on the page.
 - Web UI: choosing a named quality preset now shows the rate factors that preset uses, instead of the previous custom values, as the TUI does.
 - Web UI: a fault while drawing the dashboard no longer claims the daemon is unreachable.
 - Web UI: screen readers now read out the question in a confirmation dialog.
