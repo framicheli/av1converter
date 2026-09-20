@@ -700,9 +700,14 @@ mod tests {
 
     #[test]
     fn the_unit_carries_the_xdg_homes_of_the_installing_shell() {
+        let config_home = if cfg!(windows) {
+            "C:/srv/conf"
+        } else {
+            "/srv/conf"
+        };
         let env = unit_env(|name| match name {
             "PATH" => Some("/usr/bin".to_string()),
-            "XDG_CONFIG_HOME" => Some("/srv/conf".to_string()),
+            "XDG_CONFIG_HOME" => Some(config_home.to_string()),
             "XDG_DATA_HOME" => Some("relative/data".to_string()),
             _ => None,
         });
@@ -710,15 +715,15 @@ mod tests {
             env,
             [
                 ("PATH", "/usr/bin".to_string()),
-                ("XDG_CONFIG_HOME", "/srv/conf".to_string()),
+                ("XDG_CONFIG_HOME", config_home.to_string()),
             ]
         );
         let unit = systemd_unit(Path::new("/usr/bin/av1converter"), &env);
-        assert!(unit.contains("Environment=\"XDG_CONFIG_HOME=/srv/conf\"\n"));
+        assert!(unit.contains(&format!("Environment=\"XDG_CONFIG_HOME={config_home}\"\n")));
         let plist = launchd_plist(Path::new("/usr/bin/av1converter"), &env);
-        assert!(plist.contains(
-            "\t\t<key>PATH</key>\n\t\t<string>/usr/bin</string>\n\t\t<key>XDG_CONFIG_HOME</key>\n\t\t<string>/srv/conf</string>\n\t</dict>"
-        ));
+        assert!(plist.contains(&format!(
+            "\t\t<key>PATH</key>\n\t\t<string>/usr/bin</string>\n\t\t<key>XDG_CONFIG_HOME</key>\n\t\t<string>{config_home}</string>\n\t</dict>"
+        )));
     }
 
     #[test]
