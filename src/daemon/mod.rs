@@ -1866,7 +1866,7 @@ mod tests {
         assert!(matches!(jobs[0].status, JobStatus::Done));
         assert_eq!(jobs[0].path, root.canonicalize().unwrap().join("movie.mkv"));
         assert!(jobs[0].output_path.is_some());
-        assert!(!matches!(jobs[1].status, JobStatus::Error { .. }));
+        assert!(matches!(jobs[1].status, JobStatus::Analyzing));
         assert!(reprobe.iter().any(|(id, _)| *id == 2));
 
         // A root that is not mounted leaves every saved job as it was.

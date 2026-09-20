@@ -693,13 +693,13 @@ mod tests {
         let original = std::fs::File::open(&path).unwrap();
         let identity = SourceIdentity::from_metadata(&original.metadata().unwrap());
         assert!(identity.matches_path(path.to_str().unwrap()));
+        drop(original);
 
-        #[cfg(unix)]
-        {
-            std::fs::remove_file(&path).unwrap();
-            std::fs::write(&path, b"new").unwrap();
-            assert!(!identity.matches_path(path.to_str().unwrap()));
-        }
+        // A different length tells the replacement apart on every platform;
+        // Unix also sees the new inode.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"a replacement").unwrap();
+        assert!(!identity.matches_path(path.to_str().unwrap()));
 
         let _ = std::fs::remove_dir_all(dir);
     }

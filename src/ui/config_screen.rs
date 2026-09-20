@@ -1043,12 +1043,6 @@ mod tests {
 
     #[test]
     fn configuration_rows_cover_every_serialized_setting() {
-        let mut config = AppConfig {
-            quality_preset: QualityPreset::Custom,
-            ..AppConfig::default()
-        };
-        config.output.same_directory = false;
-
         let mut actual: Vec<String> = CONFIG_ITEMS
             .iter()
             .filter_map(|item| config_field_path(item.field))

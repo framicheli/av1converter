@@ -662,7 +662,10 @@ mod tests {
     #[test]
     fn the_progress_log_stands_in_for_an_unprobeable_output() {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        let missing = std::env::temp_dir().join("av1c_test_no_such_output.mkv");
+        let missing = std::env::temp_dir().join(format!(
+            "av1c_test_no_such_output_{}.mkv",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&missing);
         let output = missing.to_string_lossy().into_owned();
 

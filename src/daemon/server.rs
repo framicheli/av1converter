@@ -448,6 +448,15 @@ mod tests {
         const TOKEN: &str = "a-token-long-enough-to-be-a-real-one";
         let mut config = AppConfig::default();
         config.daemon.auth_token = TOKEN.to_string();
+        // A binary that cannot be found keeps the routing test off any
+        // makemkvcon installed on the machine running it.
+        config.disc.makemkvcon_path = Some(
+            std::env::temp_dir()
+                .join(format!("av1c_no_such_{}", std::process::id()))
+                .join("makemkvcon")
+                .to_string_lossy()
+                .into_owned(),
+        );
         let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(config)));
         let server = Arc::new(bind("127.0.0.1:0").expect("an ephemeral port"));
         let port = server.server_addr().to_ip().expect("an IP listener").port();

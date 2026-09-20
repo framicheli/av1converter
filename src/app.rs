@@ -2339,7 +2339,8 @@ mod tests {
 
     #[test]
     fn a_finished_job_records_its_output_size_immediately() {
-        let dir = std::env::temp_dir().join("av1c-finish-size-test");
+        let dir =
+            std::env::temp_dir().join(format!("av1c-finish-size-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let output = dir.join("out.mkv");
         std::fs::write(&output, b"12345").unwrap();
@@ -2868,7 +2869,11 @@ mod tests {
         assert_eq!(app.encoding_session_indices, vec![0]);
         assert_eq!(app.queue.config_job_index, 1);
         assert_eq!(app.current_screen, Screen::TrackConfig);
+        // The worker holds the sender; draining until it disconnects means the
+        // thread has ended and nothing is still reading the directory.
         app.cancel_flag.store(true, Ordering::Release);
+        let rx = app.progress_receiver.take().expect("a worker receiver");
+        while rx.recv().is_ok() {}
         let _ = std::fs::remove_dir_all(dir);
     }
 

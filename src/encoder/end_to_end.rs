@@ -209,6 +209,9 @@ fn a_failed_encode_leaves_the_destination_alone() {
     let input = dir.join("broken.mkv");
     std::fs::write(&input, b"this is not a video file").unwrap();
     let output = dir.join("broken_av1.mkv");
+    // Already in the destination, and no business of this encode.
+    let bystander = dir.join("notes.txt");
+    std::fs::write(&bystander, b"someone else's file").unwrap();
 
     let config = AppConfig {
         encoder: Encoder::SvtAv1,
@@ -235,12 +238,18 @@ fn a_failed_encode_leaves_the_destination_alone() {
         "a failed encode must not create the output"
     );
 
-    let remaining: Vec<String> = std::fs::read_dir(&dir)
+    assert_eq!(std::fs::read(&bystander).unwrap(), b"someone else's file");
+
+    let mut remaining: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(Result::ok)
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(remaining, vec!["broken.mkv".to_string()]);
+    remaining.sort();
+    assert_eq!(
+        remaining,
+        vec!["broken.mkv".to_string(), "notes.txt".to_string()]
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -386,6 +395,9 @@ fn lost_cover_art_or_subtitles_keep_the_source() {
     };
     let cover = dir.join("cover.jpg");
     let covered = dir.join("covered.mkv");
+    let font = dir.join("face.ttf");
+    let fonted = dir.join("fonted.mkv");
+    std::fs::write(&font, b"not a real font, but an attachment").unwrap();
     let ffmpeg = |args: &[&str]| {
         Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error", "-y"])
@@ -415,6 +427,20 @@ fn lost_cover_art_or_subtitles_keep_the_source() {
         "-metadata:s:t:0",
         "filename=cover.jpg",
         covered.to_str().unwrap(),
+    ]) && ffmpeg(&[
+        "-i",
+        clip.to_str().unwrap(),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-attach",
+        font.to_str().unwrap(),
+        "-metadata:s:t:0",
+        "mimetype=application/x-truetype-font",
+        "-metadata:s:t:0",
+        "filename=face.ttf",
+        fonted.to_str().unwrap(),
     ]);
     if !built {
         eprintln!("skipping: could not build the fixture clips");
@@ -445,6 +471,8 @@ fn lost_cover_art_or_subtitles_keep_the_source() {
     assert!(reason(&clip, vec![Some("mov_text")]).is_some());
     assert!(reason(&clip, vec![None]).is_some());
     assert!(reason(&covered, Vec::new()).is_some());
+    // An MKV output carries a font attachment through, so it is no reason.
+    assert_eq!(reason(&fonted, Vec::new()), None);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -853,20 +853,18 @@ mod tests {
 
     /// A symlink loop terminates, and a file reachable by two routes is
     /// collected once.
+    #[cfg(unix)]
     #[test]
     fn recursive_collection_survives_symlink_cycles() {
-        let root = std::env::temp_dir().join("av1c_scan_test");
+        let root = std::env::temp_dir().join(format!("av1c_scan_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let inner = root.join("inner");
         std::fs::create_dir_all(&inner).unwrap();
         std::fs::write(inner.join("clip.mkv"), b"x").unwrap();
 
-        #[cfg(unix)]
-        {
-            // inner/loop -> root, and a second route to the same file
-            std::os::unix::fs::symlink(&root, inner.join("loop")).unwrap();
-            std::os::unix::fs::symlink(&inner, root.join("alias")).unwrap();
-        }
+        // inner/loop -> root, and a second route to the same file
+        std::os::unix::fs::symlink(&root, inner.join("loop")).unwrap();
+        std::os::unix::fs::symlink(&inner, root.join("alias")).unwrap();
 
         let mut found = Vec::new();
         collect_video_files(&root, &mut found);

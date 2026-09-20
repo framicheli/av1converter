@@ -524,7 +524,19 @@ mod tests {
     fn a_fully_cancelled_session_reads_as_complete() {
         let mut state = QueueState::new();
         state.total_jobs_to_encode = 3;
-        state.encoding_progress_done = 3;
+        for _ in 0..3 {
+            let mut job = EncodingJob::new(PathBuf::from("cancelled.mkv"));
+            job.status = JobStatus::Skipped {
+                reason: "Cancelled".to_string(),
+            };
+            state.jobs.push(job);
+        }
+        state.count_cancelled(3);
+        state.encoding_progress_done = state.cancelled_count;
+
+        assert_eq!(state.cancelled_count, 3);
+        assert_eq!(state.skipped_count, 3);
+        assert!(state.all_completed());
         assert!((state.overall_progress() - 100.0).abs() < f64::EPSILON);
     }
 
@@ -1038,13 +1050,14 @@ mod tests {
     /// Savings from cleared jobs stay in the running total.
     #[test]
     fn cleared_savings_stay_counted() {
-        let mut state = QueueState::new();
-        state.jobs.push(finished_job(1000, 400));
-        assert_eq!(state.total_space_saved().0, 600);
+        let mut queue = crate::daemon::state::DaemonQueue::new();
+        let id = queue.push(finished_job(1000, 400));
+        assert_eq!(queue.state.total_space_saved().0, 600);
 
-        // Simulates what DaemonQueue::remove hands over on removal.
-        state.jobs.clear();
-        state.cleared_saved_bytes = 600;
-        assert_eq!(state.total_space_saved().0, 600);
+        assert!(queue.remove(id));
+        assert!(queue.state.jobs.is_empty());
+        assert_eq!(queue.state.cleared_saved_bytes, 600);
+        assert_eq!(queue.state.total_space_saved().0, 600);
+        assert!(!queue.remove(id));
     }
 }

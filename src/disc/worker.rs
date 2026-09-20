@@ -172,11 +172,14 @@ mod tests {
         ]
     }
 
-    /// A consumer that sits on the first finished title — an encode that has
-    /// not returned — must not stop the drive extracting the next one.
+    /// The drive starts the next title before the first one has been taken
+    /// off the channel, so a slow encode never holds the run up.
     #[test]
-    fn a_blocked_consumer_does_not_stall_the_next_rip() {
-        let base = std::env::temp_dir().join("av1c_disc_worker_interleave");
+    fn the_next_title_is_extracted_before_the_previous_one_is_consumed() {
+        let base = std::env::temp_dir().join(format!(
+            "av1c_disc_worker_interleave_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&base);
         let out = base.join("out");
         std::fs::create_dir_all(&out).unwrap();
@@ -247,7 +250,8 @@ mod tests {
     /// the partial file goes with it.
     #[test]
     fn cancelling_reports_cancelled_and_leaves_nothing_behind() {
-        let base = std::env::temp_dir().join("av1c_disc_worker_cancel");
+        let base =
+            std::env::temp_dir().join(format!("av1c_disc_worker_cancel_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let out = base.join("out");
         let staging = base.join("staging");
