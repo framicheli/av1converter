@@ -1297,8 +1297,26 @@ pub fn settings_access(shared: &SharedState, local_request: bool) -> Value {
         "autostart": crate::daemon::service::installed(),
         "auth_token_set": !lock(shared).config.daemon.auth_token.is_empty(),
         "setting_paths": crate::config::settings::SERIALIZED_SETTING_PATHS,
+        "preset_tables": preset_tables(),
         "local_only_paths": crate::config::settings::LOCAL_ONLY_SETTING_PATHS,
     })
+}
+
+/// The per-tier values each named quality preset writes into the config.
+fn preset_tables() -> Value {
+    let mut tables = serde_json::Map::new();
+    for preset in crate::config::QualityPreset::ALL {
+        if let Some(tables_for) = preset.presets() {
+            let name = serde_json::to_value(preset).unwrap_or(Value::Null);
+            if let Some(name) = name.as_str() {
+                tables.insert(
+                    name.to_string(),
+                    serde_json::to_value(tables_for).unwrap_or(Value::Null),
+                );
+            }
+        }
+    }
+    Value::Object(tables)
 }
 
 /// Overlay `patch` onto `base`: objects merge key by key, and any other value
@@ -1646,7 +1664,7 @@ mod tests {
     use super::queue_add;
     use super::{
         RecursiveScanGuard, queue, queue_cancel, queue_clear_finished, queue_move_up, queue_remove,
-        status, within_root,
+        settings_access, status, within_root,
     };
     use crate::config::AppConfig;
     #[cfg(unix)]
@@ -1656,6 +1674,22 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn settings_access_carries_the_named_preset_tables() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+
+        let body = settings_access(&shared, true);
+
+        let expected = serde_json::to_value(
+            crate::config::QualityPreset::High
+                .presets()
+                .expect("high is a named preset"),
+        )
+        .unwrap();
+        assert_eq!(body["preset_tables"]["high"], expected);
+        assert_eq!(body["preset_tables"]["custom"], serde_json::Value::Null);
+    }
 
     #[test]
     fn clearing_a_finished_rip_needs_confirmation() {

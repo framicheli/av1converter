@@ -2100,6 +2100,12 @@ function buildSettingsForm() {
       else if (field.nullable && input.value.trim() === "") parsed = null;
       else parsed = input.value;
       setPath(config, field.path, parsed);
+      // A named quality preset rewrites the per-tier values, as it does when
+      // the daemon loads or saves the configuration.
+      if (field.path === "quality_preset") {
+        const table = settingsAccess?.preset_tables?.[parsed];
+        if (table) config.presets = cloneConfig(table);
+      }
       if (field.immediateService) {
         input.disabled = true;
         try {
