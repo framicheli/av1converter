@@ -29,16 +29,30 @@ function announce(message, isError) {
   region.textContent = region.textContent === message ? `${message} ` : message;
 }
 
+// Popover support, absent in Safari before 17; there the toast is shown and
+// hidden by its class alone.
+const popovers = typeof HTMLElement.prototype.showPopover === "function";
+
+function closePopover(el) {
+  if (popovers && el.matches(":popover-open")) el.hidePopover();
+}
+
 function toast(message, isError) {
   const el = $("toast");
+  const unreadError = el.classList.contains("error") && !el.classList.contains("hidden");
+  // An error waits for its dismissal; a later success only announces itself.
+  if (!isError && unreadError) {
+    announce(message, false);
+    return;
+  }
   $("toast-message").textContent = message;
   el.classList.toggle("error", Boolean(isError));
   announce(message, isError);
   el.classList.remove("hidden");
   // Popovers share the browser's top layer with dialogs. Reopening moves an
   // existing toast above a modal, so failures are never hidden by its backdrop.
-  if (el.matches(":popover-open")) el.hidePopover();
-  el.showPopover();
+  closePopover(el);
+  if (popovers) el.showPopover();
   clearTimeout(toast.timer);
   if (!isError) toast.timer = setTimeout(hideToast, 4000);
 }
@@ -46,8 +60,9 @@ function toast(message, isError) {
 function hideToast() {
   clearTimeout(toast.timer);
   const el = $("toast");
-  if (el.matches(":popover-open")) el.hidePopover();
+  closePopover(el);
   el.classList.add("hidden");
+  el.classList.remove("error");
 }
 
 $("toast-close").addEventListener("click", hideToast);
