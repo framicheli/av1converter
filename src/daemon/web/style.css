@@ -1,20 +1,30 @@
-/* Dark terminal aesthetic matching the TUI: near-black surface, cyan accent,
-   monospace stack. Values render in text tokens; color marks status only. */
+/* Dark terminal aesthetic matching the TUI: near-black surface, mint accent,
+   monospace stack. Values render in text tokens; color marks status only.
+
+   Every pair here is checked against WCAG AA: text at 4.5:1, boundaries and
+   the focus ring at 3:1. The surfaces sit close together, and --border is
+   bright enough to carry the 3:1 boundary on its own. */
 
 :root {
-  --bg: #0d1117;
-  --panel: #161b22;
-  --border: #30363d;
-  --track: #21262d;
-  --ink: #e6edf3;
-  --ink-2: #8b949e;
-  --accent: #39c5cf;
-  --good: #3fb950;
-  --warn: #d29922;
-  --bad: #f85149;
+  /* Checkboxes, select popups and scrollbars are drawn by the browser and
+     follow this property, not the custom colours below. */
+  color-scheme: dark;
+
+  --bg: #080b10;
+  --panel: #111721;
+  --track: #1b232f;
+  --border: #78859a;
+  --ink: #eef3f9;
+  --ink-2: #a8b6c8;
+  --accent: #4fdcc0;
+  --good: #59d97a;
+  --warn: #e8b544;
+  --bad: #ff8b82;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
+h1, h2, h3 { font-size: inherit; font-weight: inherit; }
+html, body { overflow-x: clip; }
 
 body {
   background: var(--bg);
@@ -25,16 +35,31 @@ body {
 }
 
 .hidden { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .muted { color: var(--ink-2); }
 .center { text-align: center; }
 .spacer { flex: 1; }
+dialog { margin: auto; }
 
 .banner {
   background: var(--bad);
-  color: #0d1117;
+  color: var(--bg);
   text-align: center;
   padding: 4px 8px;
   font-weight: 600;
+}
+
+/* ── Focus ──────────────────────────────────────────────────────────
+   One rule for every focusable thing. :focus-visible gives a ring to
+   keyboard users and not to pointer users on click. The offset keeps the
+   ring off the element's own border. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Rows sit flush in a scrolling list, where an outer ring is clipped. */
+#browser-list button:focus-visible {
+  outline-offset: -2px;
 }
 
 /* ── Header ─────────────────────────────────────────────────────── */
@@ -57,7 +82,6 @@ header {
   color: var(--ink-2);
 }
 .pill.encoding { color: var(--accent); border-color: var(--accent); }
-.pill.paused { color: var(--warn); border-color: var(--warn); }
 
 nav { margin-left: auto; display: flex; gap: 4px; }
 .tab {
@@ -76,10 +100,6 @@ nav { margin-left: auto; display: flex; gap: 4px; }
   max-width: 1300px;
   margin: 0 auto;
   padding: 20px;
-  display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
-  gap: 20px;
-  align-items: start;
 }
 main { display: grid; gap: 16px; min-width: 0; }
 section { display: grid; gap: 16px; }
@@ -96,19 +116,44 @@ section { display: grid; gap: 16px; }
 .panel-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-2); }
 .filename { overflow-wrap: anywhere; }
 
-.bar {
+progress.bar {
+  display: block;
+  width: 100%;
+  appearance: none;
+  border: 0;
   background: var(--track);
   border-radius: 4px;
   height: 8px;
   overflow: hidden;
 }
-.bar-fill {
+progress.bar::-webkit-progress-bar { background: var(--track); }
+progress.bar:indeterminate::-webkit-progress-bar {
+  background: repeating-linear-gradient(90deg, var(--track) 0 12px, var(--accent) 12px 16px);
+}
+progress.bar::-webkit-progress-value {
   background: var(--accent);
-  height: 100%;
   border-radius: 0 4px 4px 0;
   transition: width 0.5s linear;
 }
+progress.bar::-moz-progress-bar { background: var(--accent); border-radius: 0 4px 4px 0; }
+progress.bar:indeterminate { background: repeating-linear-gradient(90deg, var(--track) 0 12px, var(--accent) 12px 16px); }
+/* Figures are rewritten once a second. Tabular digits hold the percentages,
+   sizes and ETA at one width as their glyphs change. */
+.bar-meta, .tile-value, table, .badge, #browser-list .size {
+  font-variant-numeric: tabular-nums;
+}
 .bar-meta { display: flex; justify-content: space-between; font-size: 12px; }
+
+/* The table is the workbench. Everything above it is status, in one compact
+   band: two tiles and both progress panels on a single row, stacking only
+   when there is no width for it. */
+.overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.overview .panel { padding: 10px 14px; }
 
 .tiles {
   display: grid;
@@ -122,12 +167,10 @@ section { display: grid; gap: 16px; }
   padding: 10px 14px;
 }
 .tile-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-2); }
-.tile-value { font-size: 22px; font-weight: 600; margin-top: 2px; }
-
-.meta-row { display: flex; gap: 24px; font-size: 12px; color: var(--ink-2); flex-wrap: wrap; }
+.tile-value { font-size: 20px; font-weight: 600; margin-top: 2px; }
 
 /* ── Toolbar & buttons ──────────────────────────────────────────── */
-.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
 button {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -136,19 +179,67 @@ button {
   padding: 5px 12px;
   border-radius: 6px;
   cursor: pointer;
+  white-space: nowrap;
+  /* Flex toolbars default to shrink:1, which with nowrap clips the label
+     past the border. The button wraps to the next row instead. */
+  flex-shrink: 0;
+  max-width: 100%;
 }
-button:hover { border-color: var(--accent); }
-button:disabled { opacity: 0.4; cursor: default; border-color: var(--border); }
-button.danger:hover { border-color: var(--bad); color: var(--bad); }
+/* One accented button per surface, on the action that commits the work.
+   Destructive actions carry their colour at rest, not only on hover. */
+button.primary:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button.danger:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+@media (hover: hover) {
+  button:hover { border-color: var(--accent); }
+  button.danger:hover { background: var(--track); }
+  #browser-list button:hover:not(:disabled) { background: var(--track); }
+}
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled, button[aria-disabled="true"] { opacity: 0.4; cursor: default; border-color: var(--border); }
+
+/* ── Batch summary ──────────────────────────────────────────────── */
+.summary {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  background: var(--panel);
+  border: 1px solid var(--good);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-variant-numeric: tabular-nums;
+}
+/* A run that errored colours the whole strip, not one number in it. */
+.summary.has-errors { border-color: var(--bad); }
+.summary.has-skips { border-color: var(--warn); }
+
+.summary-title { font-weight: 600; }
+.summary.has-errors .summary-title { color: var(--bad); }
+.summary.has-skips .summary-title { color: var(--warn); }
+
+.summary-figure { display: flex; align-items: baseline; gap: 6px; }
+.summary-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-2); }
+.summary-value { font-size: 16px; font-weight: 600; }
+.summary-figure.good .summary-value { color: var(--good); }
+/* Coloured only once they are non-zero; a clean run reads clean. */
+.summary-figure.warn .summary-value { color: var(--warn); }
+.summary-figure.bad .summary-value { color: var(--bad); }
+
+#summary-dismiss { margin-left: auto; }
 
 /* ── Queue table ────────────────────────────────────────────────── */
-.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+/* Containing block for the absolutely positioned .sr-only column labels. */
+.table-wrap { position: relative; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
 table { width: 100%; border-collapse: collapse; background: var(--panel); }
 th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
-th { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-2); font-weight: 500; }
-tbody tr:last-child td { border-bottom: none; }
-td.filecell { max-width: 320px; overflow-wrap: anywhere; }
-td .subline { font-size: 11px; color: var(--ink-2); }
+thead th { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ink-2); font-weight: 500; }
+/* Row headers are <th scope="row"> carrying the filename. They take none of
+   the uppercase column-label treatment above. */
+#queue-body th { font-weight: 400; color: inherit; }
+tbody tr:last-child td, tbody tr:last-child th { border-bottom: none; }
+.filecell { max-width: 320px; overflow-wrap: anywhere; }
+.subline { font-size: 11px; color: var(--ink-2); }
+.status-detail { margin-top: 4px; max-width: 42ch; color: var(--bad); font-size: 11px; overflow-wrap: anywhere; }
 
 .badge {
   display: inline-block;
@@ -159,6 +250,21 @@ td .subline { font-size: 11px; color: var(--ink-2); }
   color: var(--ink-2);
   white-space: nowrap;
 }
+/* Interactive badges (e.g. Confirm tracks in the status column) wrap when the
+   column is narrow; nowrap plus a squeezed width paints text past the
+   border. */
+button.badge {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 8px;
+  white-space: normal;
+  overflow-wrap: break-word;
+  text-align: center;
+  line-height: 1.3;
+  vertical-align: middle;
+  height: auto;
+  min-height: 0;
+}
 .badge.encoding, .badge.verifying, .badge.analyzing { color: var(--accent); border-color: var(--accent); }
 .badge.done { color: var(--good); border-color: var(--good); }
 .badge.warn { color: var(--warn); border-color: var(--warn); }
@@ -166,10 +272,18 @@ td .subline { font-size: 11px; color: var(--ink-2); }
 
 td.grew { color: var(--warn); }
 
-.row-bar { margin-top: 4px; width: 140px; }
-.row-bar .bar { height: 5px; }
+.row-bar { margin-top: 4px; width: 140px; height: 5px; }
 
-.iconbtn { padding: 2px 8px; font-size: 12px; }
+.iconbtn {
+  padding: 2px 8px;
+  font-size: 12px;
+  /* WCAG 2.2 target size (minimum) is 24px. The coarse-pointer block below
+     raises these to 44px. */
+  min-width: 24px;
+  min-height: 24px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 
 /* ── Settings form ──────────────────────────────────────────────── */
 #settings-form { display: grid; gap: 4px; }
@@ -183,8 +297,11 @@ td.grew { color: var(--warn); }
   border-radius: 6px;
   padding: 8px 14px;
 }
-.field label { color: var(--ink-2); font-size: 13px; }
-.field input[type="text"], .field input[type="number"], .field select {
+/* German and French labels run half again as long as the English and wrap
+   inside this column. A compound longer than the column breaks mid-word and
+   leaves the control on the row. */
+.field label { color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere; }
+.field input[type="text"], .field input[type="password"], .field input[type="number"], .field select {
   background: var(--track);
   border: 1px solid var(--border);
   color: var(--ink);
@@ -193,30 +310,49 @@ td.grew { color: var(--warn); }
   border-radius: 4px;
   max-width: 320px;
 }
-.field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
-.field-group {
+/* Accent border on focus, with the outline still in place. */
+.field input:focus, .field select:focus { border-color: var(--accent); }
+.field input:invalid { border-color: var(--bad); }
+.field input:disabled, .field select:disabled { opacity: 0.55; cursor: not-allowed; }
+.field-warning { grid-column: 2; color: var(--warn); font-size: 11px; max-width: 70ch; }
+fieldset.field-group {
+  border: 0;
+  display: grid;
+  gap: 4px;
   margin-top: 10px;
+}
+fieldset.field-group > legend {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--ink-2);
+  padding: 0 0 4px;
 }
+.field-hint { grid-column: 2; color: var(--ink-2); font-size: 11px; max-width: 70ch; }
+.field-browse { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.field-browse input { flex: 1; min-width: 0; }
+.field-browse button { align-self: stretch; }
 
 @media (max-width: 640px) {
   .field { grid-template-columns: 1fr; gap: 4px; }
+  .field-warning, .field-hint { grid-column: 1; }
 }
 
-/* ── File browser sidebar ───────────────────────────────────────── */
+/* ── File browser dialog ────────────────────────────────────────── */
 #browser {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
+  color: var(--ink);
+  padding: 0;
+  width: min(720px, calc(100% - 40px));
+  height: min(700px, calc(100% - 40px));
+}
+#browser[open] {
   display: flex;
   flex-direction: column;
-  position: sticky;
-  top: 20px;
-  max-height: calc(100vh - 40px);
 }
+#browser::backdrop { background: rgba(0, 0, 0, 0.6); }
 
 .browser-head {
   padding: 12px 16px;
@@ -226,74 +362,125 @@ td.grew { color: var(--warn); }
 }
 .browser-head .muted { font-size: 12px; overflow-wrap: anywhere; }
 
+/* Path segments, wrapping across lines on a deep path. Separators are drawn
+   with ::after and stay out of every button's accessible name. */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; }
+.crumbs .crumb {
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  padding: 1px 4px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+/* The root crumb is itself "/" and takes no separator. */
+.crumbs .crumb:not(:first-child):not(:last-child)::after { content: "/"; margin-left: 6px; color: var(--border); }
+/* Windows paths use backslashes, and the drive crumb takes one too. */
+.crumbs[data-sep="\\"] .crumb:not(:last-child)::after { content: "\\"; margin-left: 6px; color: var(--border); }
+.crumbs .crumb[aria-current] { color: var(--ink); opacity: 1; }
+@media (hover: hover) {
+  .crumbs .crumb:not(:disabled):hover { background: var(--track); color: var(--ink); border-color: transparent; }
+}
+
 #browser-list {
   list-style: none;
   overflow-y: auto;
   flex: 1;
   min-height: 200px;
 }
-#browser-list li {
+/* Rows are real <button>s, with keyboard focus and Enter/Space. Styled back
+   to look like list rows. */
+#browser-list button {
+  width: 100%;
   padding: 6px 16px;
-  cursor: pointer;
   display: flex;
   gap: 8px;
   align-items: baseline;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
-#browser-list li:hover { background: var(--track); }
-#browser-list li.disabled { color: var(--ink-2); cursor: default; }
-#browser-list li .size { margin-left: auto; font-size: 11px; color: var(--ink-2); }
+#browser-list button:disabled { color: var(--ink-2); opacity: 1; cursor: default; }
+#browser-list .size { margin-left: auto; font-size: 11px; color: var(--ink-2); }
+
+/* Filesystem marks: text, not emoji. They inherit ink colour, and a screen
+   reader does not read them as picture names. */
+#browser-list .mark {
+  color: var(--ink-2);
+  flex: none;
+  width: 2ch;
+}
+#browser-list button:disabled .mark { opacity: 0.5; }
 
 .browser-foot {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   padding: 10px 16px;
   border-top: 1px solid var(--border);
 }
 
-@media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; }
-  #browser { order: 2; position: static; max-height: none; }
-  #browser-list { max-height: 45vh; }
-}
-
-/* ── Track selection modal ──────────────────────────────────────── */
-.modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-  z-index: 20;
-}
-.modal-box {
+/* ── Track selection and disc dialogs ───────────────────────────── */
+#tracks-modal, #disc-modal, #confirm-modal {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  width: min(720px, 100%);
-  max-height: 85vh;
+  color: var(--ink);
+  padding: 0;
+  width: min(720px, calc(100% - 40px));
+  max-height: 85dvh;
+}
+#tracks-modal[open], #disc-modal[open], #confirm-modal[open] {
   display: flex;
   flex-direction: column;
 }
+#tracks-modal::backdrop, #disc-modal::backdrop, #confirm-modal::backdrop { background: rgba(0, 0, 0, 0.6); }
+
 .modal-head, .modal-foot {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 12px 16px;
+  flex-shrink: 0;
 }
 .modal-head { border-bottom: 1px solid var(--border); font-weight: 600; }
-.modal-head span:first-child { overflow-wrap: anywhere; flex: 1; }
-.modal-foot { border-top: 1px solid var(--border); font-size: 12px; }
-.modal-body { overflow-y: auto; padding: 8px 16px 16px; }
+.modal-head > h2 { overflow-wrap: anywhere; flex: 1; }
+/* Filename sits beside the task name in the dialog heading. */
+#tracks-filename { font-weight: 400; }
+/* Takes a full row of the wrapping footer, below the checkbox it describes. */
+#tracks-apply-hint { flex-basis: 100%; }
+.modal-foot { border-top: 1px solid var(--border); font-size: 12px; flex-wrap: wrap; }
+.modal-foot button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.apply-remaining { display: flex; align-items: center; gap: 6px; }
+.modal-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 16px 16px; }
 
 .track-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--ink-2);
   margin: 14px 0 6px;
+}
+.track-group button {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .track-row {
   display: flex;
@@ -315,19 +502,81 @@ td.grew { color: var(--warn); }
   font: inherit;
   font-size: 12px;
 }
-.track-row select:focus { outline: none; border-color: var(--accent); }
+.track-row select:focus { border-color: var(--accent); }
 .track-target { font-size: 11px; color: var(--accent); white-space: nowrap; }
+
+/* ── Disc import ────────────────────────────────────────────────── */
+.disc-drive {
+  display: block;
+  width: 100%;
+  margin: 4px 0;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.disc-error { color: var(--bad); overflow-wrap: anywhere; }
 
 /* ── Toast ──────────────────────────────────────────────────────── */
 .toast {
   position: fixed;
+  top: auto;
+  right: 12px;
   bottom: 20px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 12px;
+  margin: 0 auto;
+  width: fit-content;
   background: var(--panel);
   border: 1px solid var(--accent);
   border-radius: 6px;
   padding: 8px 20px;
   z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow-wrap: anywhere;
 }
 .toast.error { border-color: var(--bad); color: var(--bad); }
+.toast .iconbtn { margin-left: auto; }
+
+@media (max-width: 640px) {
+  .layout { padding: 12px; }
+  #browser { width: calc(100% - 16px); height: calc(100% - 16px); }
+  .browser-foot .spacer { flex-basis: 100%; }
+  .browser-foot button { flex: 1; }
+  .toolbar button {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
+  }
+
+  /* The Opus target label wraps onto its own line below the track name and
+     its select. */
+  .track-row { flex-wrap: wrap; }
+  .track-target { order: 1; flex-basis: 100%; white-space: normal; }
+  .track-target:empty { display: none; }
+
+  /* The filename column stays in view while the rest of the row scrolls.
+     overflow-wrap:anywhere leaves a one-character min-content width, which the
+     auto table layout shrinks to; min-width holds the column open. */
+  #queue-table th:first-child,
+  #queue-body th:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    min-width: 11rem;
+    max-width: 45vw;
+    background: var(--panel);
+    box-shadow: 1px 0 var(--border);
+  }
+}
+
+@media (pointer: coarse) {
+  button, input, select { min-height: 44px; }
+  .iconbtn { min-width: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  progress.bar::-webkit-progress-value { transition: none; }
+}
+
+#queue-table td.size-cell { white-space: nowrap; }

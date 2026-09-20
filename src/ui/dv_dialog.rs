@@ -30,7 +30,7 @@ pub fn render_dv_dialog(f: &mut Frame, app: &App) {
     let is_p5 = dv_profile == Some(5);
     let recommended = usize::from(is_p5);
 
-    let area = centered_rect(76, 60, f.area());
+    let area = centered_rect(90, 85, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -44,30 +44,35 @@ pub fn render_dv_dialog(f: &mut Frame, app: &App) {
         );
     f.render_widget(block, area);
 
+    let profile_str = dv_profile.map_or_else(String::new, |p| format!("  [P{p}]"));
+    let text_width = area.width.saturating_sub(4);
+    let header_rows = super::common::wrapped_rows(&format!("{filename}{profile_str}"), text_width)
+        .saturating_add(1)
+        .saturating_add(super::common::wrapped_rows(
+            t(lang, Msg::DvDialogPrompt),
+            text_width,
+        ));
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // file + prompt
-            Constraint::Length(3), // option 1
-            Constraint::Length(3), // option 2
-            Constraint::Min(0),    // profile 5 warning
-            Constraint::Length(1), // help
+            Constraint::Length(header_rows), // file + prompt
+            Constraint::Length(3),           // option 1
+            Constraint::Length(3),           // option 2
+            Constraint::Min(0),              // profile 5 warning
+            Constraint::Length(1),           // help
         ])
         .margin(2)
         .split(area);
 
     // File name + prompt
-    let profile_str = dv_profile.map_or_else(String::new, |p| format!("  [P{p}]"));
     let header = Paragraph::new(vec![
         Line::from(vec![
             Span::styled(filename, Style::default().fg(Color::Cyan)),
             Span::styled(profile_str, Style::default().fg(Color::Magenta)),
         ]),
         Line::raw(""),
-        Line::from(Span::styled(
-            t(lang, Msg::DvDialogPrompt),
-            Style::default().fg(Color::White),
-        )),
+        Line::from(Span::styled(t(lang, Msg::DvDialogPrompt), Style::default())),
     ])
     .wrap(Wrap { trim: true });
     f.render_widget(header, chunks[0]);
@@ -92,7 +97,7 @@ pub fn render_dv_dialog(f: &mut Frame, app: &App) {
                 .bg(Color::Magenta)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default()
         };
 
         let option = Paragraph::new(vec![
@@ -124,9 +129,13 @@ pub fn render_dv_dialog(f: &mut Frame, app: &App) {
 
     let help = Line::from(vec![
         Span::styled("↑↓/1-2", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Select))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Select))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}", t(lang, Msg::Confirm))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Confirm))),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::UseRecommended))),
+        Span::styled("q", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
     ]);
     f.render_widget(Paragraph::new(help).alignment(Alignment::Center), chunks[4]);
 }

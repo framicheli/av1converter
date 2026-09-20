@@ -1,110 +1,192 @@
+# Publishing to crates.io is manual: run cargo publish --locked from the release commit.
 name: Release
 
 on:
-    push:
-        branches:
-            - main
+  push:
+    branches: [main]
 
 jobs:
-    check-version:
-        runs-on: ubuntu-latest
-        outputs:
-            should_release: ${{ steps.check.outputs.should_release }}
-        steps:
-            - uses: actions/checkout@v4
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Check version tag
+        id: check
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+          if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q .; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
 
-            - name: Check if version tag exists
-              id: check
-              run: |
-                  VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
-                  if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q .; then
-                      echo "should_release=false" >> $GITHUB_OUTPUT
-                  else
-                      echo "should_release=true" >> $GITHUB_OUTPUT
-                  fi
+  quality:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - run: cargo fmt -- --check
+      - run: cargo clippy --all-targets -- -W clippy::pedantic -D warnings
+      - run: cargo test --all-targets
+      - run: cargo install cargo-audit --version 0.22.2 --locked && cargo audit
 
-    build:
-        needs: check-version
-        if: needs.check-version.outputs.should_release == 'true'
-        name: Build ${{ matrix.target }}
-        runs-on: ${{ matrix.os }}
-        strategy:
-            matrix:
-                include:
-                    - os: ubuntu-latest
-                      target: x86_64-unknown-linux-musl
-                      binary: av1converter
-                      artifact: av1converter-x86_64-unknown-linux-musl
-                    - os: macos-latest
-                      target: x86_64-apple-darwin
-                      binary: av1converter
-                      artifact: av1converter-x86_64-apple-darwin
-                    - os: macos-latest
-                      target: aarch64-apple-darwin
-                      binary: av1converter
-                      artifact: av1converter-aarch64-apple-darwin
-                    - os: windows-latest
-                      target: x86_64-pc-windows-msvc
-                      binary: av1converter.exe
-                      artifact: av1converter-x86_64-pc-windows-msvc.exe
+  build:
+    needs: [check-version, quality]
+    if: needs.check-version.outputs.should_release == 'true'
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binary: av1converter
+            artifact: av1converter-x86_64-unknown-linux-musl
+            linux_packages: true
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            binary: av1converter
+            artifact: av1converter-x86_64-apple-darwin
+            linux_packages: false
+          - os: macos-15
+            target: aarch64-apple-darwin
+            binary: av1converter
+            artifact: av1converter-aarch64-apple-darwin
+            linux_packages: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: av1converter.exe
+            artifact: av1converter-x86_64-pc-windows-msvc.exe
+            linux_packages: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Install Linux packaging tools
+        if: matrix.linux_packages
+        run: sudo apt-get update && sudo apt-get install -y musl-tools rpm
+      - name: Build
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+          mkdir -p dist
+          install -m 0755 "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.artifact }}"
+          "dist/${{ matrix.artifact }}" --version
+          tar -C dist -czf "dist/${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}"
+          if [ "${{ matrix.linux_packages }}" = true ]; then
+            packaging/package-linux.sh "dist/${{ matrix.artifact }}" "$VERSION" dist
+            dpkg-deb --info "dist/av1converter_${VERSION}_amd64.deb"
+            rpm -qip "dist/av1converter-${VERSION}-1.x86_64.rpm"
+          fi
+          rm "dist/${{ matrix.artifact }}"
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.artifact }}"
+          & "dist/${{ matrix.artifact }}" --version
+          Compress-Archive -Path "dist/${{ matrix.artifact }}" -DestinationPath "dist/${{ matrix.artifact }}.zip"
+          Remove-Item "dist/${{ matrix.artifact }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
 
-        steps:
-            - uses: actions/checkout@v4
+  release:
+    needs: [check-version, build]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create checksums
+        working-directory: dist
+        run: sha256sum av1converter* > SHA256SUMS
+      - name: Tag release
+        id: tag
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+          echo "name=v$VERSION" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+          files: |
+            dist/av1converter*
+            dist/SHA256SUMS
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          VERSION="${TAG#v}"
+          ARM=$(awk '$2 == "av1converter-aarch64-apple-darwin.tar.gz" {print $1}' dist/SHA256SUMS)
+          INTEL=$(awk '$2 == "av1converter-x86_64-apple-darwin.tar.gz" {print $1}' dist/SHA256SUMS)
+          LINUX=$(awk '$2 == "av1converter-x86_64-unknown-linux-musl.tar.gz" {print $1}' dist/SHA256SUMS)
+          [ -n "$ARM" ] && [ -n "$INTEL" ] && [ -n "$LINUX" ]
+          git clone --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/framicheli/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cat > tap/Formula/av1converter.rb <<EOF
+          class Av1converter < Formula
+            desc "Batch-convert video files to AV1 using FFmpeg"
+            homepage "https://github.com/framicheli/av1converter"
+            version "$VERSION"
+            license "MIT"
 
-            - uses: dtolnay/rust-toolchain@stable
-              with:
-                  targets: ${{ matrix.target }}
+            depends_on "ffmpeg"
 
-            - name: Install musl tools
-              if: matrix.target == 'x86_64-unknown-linux-musl'
-              run: sudo apt-get install -y musl-tools
+            on_macos do
+              on_arm do
+                url "https://github.com/framicheli/av1converter/releases/download/$TAG/av1converter-aarch64-apple-darwin.tar.gz"
+                sha256 "$ARM"
+              end
 
-            - name: Build
-              run: cargo build --release --target ${{ matrix.target }}
+              on_intel do
+                url "https://github.com/framicheli/av1converter/releases/download/$TAG/av1converter-x86_64-apple-darwin.tar.gz"
+                sha256 "$INTEL"
+              end
+            end
 
-            - name: Rename binary
-              shell: bash
-              run: mv target/${{ matrix.target }}/release/${{ matrix.binary }} target/${{ matrix.target }}/release/${{ matrix.artifact }}
+            on_linux do
+              on_intel do
+                url "https://github.com/framicheli/av1converter/releases/download/$TAG/av1converter-x86_64-unknown-linux-musl.tar.gz"
+                sha256 "$LINUX"
+              end
+            end
 
-            - name: Upload artifact
-              uses: actions/upload-artifact@v4
-              with:
-                  name: ${{ matrix.artifact }}
-                  path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
+            def install
+              bin.install Dir["av1converter-*"].first => "av1converter"
+            end
 
-    release:
-        needs: [check-version, build]
-        if: needs.check-version.outputs.should_release == 'true'
-        runs-on: ubuntu-latest
-        permissions:
-            contents: write
-        steps:
-            - uses: actions/checkout@v4
-
-            - uses: actions/download-artifact@v4
-              with:
-                  merge-multiple: true
-
-            - name: Get tag name
-              id: tag
-              run: |
-                  VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
-                  echo "name=v$VERSION" >> $GITHUB_OUTPUT
-
-            - name: Create and push tag
-              run: |
-                  git config user.name "github-actions[bot]"
-                  git config user.email "github-actions[bot]@users.noreply.github.com"
-                  git tag ${{ steps.tag.outputs.name }}
-                  git push origin ${{ steps.tag.outputs.name }}
-
-            - name: Create GitHub Release
-              uses: softprops/action-gh-release@v2
-              with:
-                  tag_name: ${{ steps.tag.outputs.name }}
-                  generate_release_notes: true
-                  files: |
-                      av1converter-x86_64-unknown-linux-musl
-                      av1converter-x86_64-apple-darwin
-                      av1converter-aarch64-apple-darwin
-                      av1converter-x86_64-pc-windows-msvc.exe
+            test do
+              assert_match "av1converter #{version}", shell_output("#{bin}/av1converter --version")
+            end
+          end
+          EOF
+          git -C tap config user.name "github-actions[bot]"
+          git -C tap config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C tap add Formula/av1converter.rb
+          git -C tap diff --cached --quiet || git -C tap commit -m "av1converter $VERSION"
+          git -C tap push

@@ -1,5 +1,5 @@
-#[cfg(not(target_os = "macos"))]
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +37,15 @@ impl Encoder {
         }
     }
 
+    /// Display name in the active language. Only the SVT-AV1 label carries a
+    /// translated word; the others are brand names.
+    pub fn display_name_in(self, lang: crate::i18n::Language) -> String {
+        match self {
+            Encoder::SvtAv1 => crate::i18n::t(lang, crate::i18n::Msg::EncoderSvtAv1).to_string(),
+            other => other.display_name().to_string(),
+        }
+    }
+
     /// Maximum RF/CRF quality value for this encoder
     pub const fn max_quality(self) -> u8 {
         match self {
@@ -59,126 +68,67 @@ impl std::fmt::Display for Encoder {
     }
 }
 
+/// Longest a test encode may run before its encoder counts as unavailable.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Detect available AV1 encoder
 ///
-/// Priority: Hardware > Software (SVT-AV1)
+/// Priority: the first hardware encoder that encodes a test frame, else SVT-AV1.
 pub fn detect_encoder() -> Encoder {
-    // macOS: No hardware AV1 encoding support yet
-    #[cfg(target_os = "macos")]
-    {
-        Encoder::SvtAv1
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        if has_nvidia_av1() {
-            Encoder::Nvenc
-        } else if has_intel_av1() {
-            Encoder::Qsv
-        } else if has_amd_av1() {
-            Encoder::Amf
-        } else {
-            Encoder::SvtAv1
-        }
-    }
+    [Encoder::Nvenc, Encoder::Qsv, Encoder::Amf]
+        .into_iter()
+        .find(|encoder| encodes_a_frame(encoder.ffmpeg_name()))
+        .unwrap_or(Encoder::SvtAv1)
 }
 
-// Hardware detection functions
-
-#[cfg(not(target_os = "macos"))]
-fn has_nvidia_av1() -> bool {
-    let output = match Command::new("nvidia-smi")
-        .args(["--query-gpu=name", "--format=csv,noheader"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return false,
+/// Whether `FFmpeg` encodes one frame with the named encoder on this machine
+/// within [`PROBE_TIMEOUT`].
+fn encodes_a_frame(name: &str) -> bool {
+    let mut command = Command::new("ffmpeg");
+    command
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:size=256x256:duration=0.1",
+            "-frames:v",
+            "1",
+            "-c:v",
+            name,
+            "-f",
+            "null",
+            "-",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let Ok((mut child, _child)) = crate::utils::child::spawn(&mut command) else {
+        return false;
     };
-
-    let gpu_name = String::from_utf8_lossy(&output.stdout).to_lowercase();
-
-    // RTX 40/50 series and Ada Lovelace architecture support AV1 encoding
-    ["rtx 40", "rtx 50", "ada", "l40", "l4"]
-        .iter()
-        .any(|p| gpu_name.contains(p))
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => {
+                crate::utils::child::kill_and_wait(&mut child);
+                return false;
+            }
+        }
+    }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn has_intel_av1() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        // Check for Intel Arc GPU
-        if let Ok(output) = Command::new("lspci").output() {
-            let lspci = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if lspci.contains("intel") && lspci.contains("arc") {
-                return true;
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::encodes_a_frame;
 
-        // Check VA-API for AV1 encode
-        if let Ok(output) = Command::new("vainfo").output() {
-            let vainfo = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if vainfo.contains("vaentrypointencslice") && vainfo.contains("av1") {
-                return true;
-            }
-        }
+    #[test]
+    fn an_encoder_ffmpeg_cannot_run_is_not_detected() {
+        assert!(!encodes_a_frame("av1_no_such_encoder"));
     }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(output) = Command::new("wmic")
-            .args(["path", "win32_VideoController", "get", "name"])
-            .output()
-        {
-            let gpu_info = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if gpu_info.contains("intel") && gpu_info.contains("arc") {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-#[cfg(not(target_os = "macos"))]
-fn has_amd_av1() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        // Check for RDNA3 GPUs (RX 7000 series)
-        if let Ok(output) = Command::new("lspci").output() {
-            let lspci = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if lspci.contains("amd") || lspci.contains("radeon") {
-                let rdna3 = ["navi 31", "navi 32", "navi 33", "rx 7"];
-                if rdna3.iter().any(|p| lspci.contains(p)) {
-                    return true;
-                }
-            }
-        }
-
-        // Check VA-API
-        if let Ok(output) = Command::new("vainfo").output() {
-            let vainfo = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if vainfo.contains("radeon")
-                && vainfo.contains("vaentrypointencslice")
-                && vainfo.contains("av1")
-            {
-                return true;
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(output) = Command::new("wmic")
-            .args(["path", "win32_VideoController", "get", "name"])
-            .output()
-        {
-            let gpu_info = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if gpu_info.contains("rx 7") {
-                return true;
-            }
-        }
-    }
-
-    false
 }

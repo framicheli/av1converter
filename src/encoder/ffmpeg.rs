@@ -1,7 +1,8 @@
 use crate::encoder::command_builder::{EncodingParams, build_ffmpeg_args};
+use crate::i18n::{Msg, t};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -9,11 +10,9 @@ use std::time::Duration;
 
 static JOB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Scratch path an in-progress encode is written to, alongside the real output.
-///
-/// The final extension is preserved so `FFmpeg` still infers the container from
-/// it. Encoding here and renaming on success means the destination file is only
-/// ever touched by an encode that actually finished.
+/// Scratch path an in-progress encode is written to, alongside the real output
+/// and keeping its extension so `FFmpeg` still infers the container. Published
+/// to the destination by [`publish_partial`] once the encode finishes.
 fn partial_output_path(output: &str, tag: &str) -> String {
     let path = Path::new(output);
     let parent = path.parent().unwrap_or(Path::new("."));
@@ -26,6 +25,54 @@ fn partial_output_path(output: &str, tag: &str) -> String {
         None => format!("{stem}.part.{tag}"),
     };
     parent.join(name).to_string_lossy().into_owned()
+}
+
+pub(crate) use crate::utils::child::pid_alive;
+
+/// Scratch files left next to `output` by an encode that never finished, as
+/// produced by [`partial_output_path`]. The match is by shape — both halves of
+/// the `{pid}_{counter}` tag must be digits, and a file that merely contains
+/// `.part.` is not scratch — and the tagged pid must no longer be running.
+pub fn orphaned_partials(output: &Path) -> Vec<PathBuf> {
+    let (Some(parent), Some(stem)) = (output.parent(), output.file_stem().and_then(|s| s.to_str()))
+    else {
+        return Vec::new();
+    };
+    let prefix = format!("{stem}.part.");
+    let suffix = output
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|ext| format!(".{ext}"));
+
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                return false;
+            };
+            let Some(rest) = name.strip_prefix(&prefix) else {
+                return false;
+            };
+            let tag = match suffix.as_deref() {
+                Some(suffix) => match rest.strip_suffix(suffix) {
+                    Some(tag) => tag,
+                    None => return false,
+                },
+                None => rest,
+            };
+            matches!(tag.split_once('_'), Some((pid, uid))
+                if !pid.is_empty()
+                    && !uid.is_empty()
+                    && pid.bytes().all(|b| b.is_ascii_digit())
+                    && uid.bytes().all(|b| b.is_ascii_digit())
+                    && pid.parse::<u32>().is_ok_and(|pid| !pid_alive(pid)))
+        })
+        .map(|entry| entry.path())
+        .collect()
 }
 
 /// Whether both paths designate the same file: literally equal, or resolving to
@@ -57,6 +104,7 @@ pub enum EncodeResult {
 }
 
 /// Encode a video file using `FFmpeg`
+#[allow(clippy::too_many_lines)]
 pub fn encode_video(
     params: &EncodingParams,
     progress_callback: Option<ProgressCallback>,
@@ -64,20 +112,16 @@ pub fn encode_video(
     duration: f64,
     total_frames: f64,
 ) -> EncodeResult {
-    // FFmpeg cannot edit a file in place, and a run that started anyway would
-    // end up renaming its own output over the source. Refuse before spawning.
+    // FFmpeg cannot edit a file in place; refuse before spawning.
     if is_same_file(Path::new(&params.input), Path::new(&params.output)) {
-        return EncodeResult::Error(
-            "Output path is the same as the input file; check the output suffix and container"
-                .to_string(),
-        );
+        return EncodeResult::Error(t(params.lang, Msg::ErrOutputIsInput).to_string());
     }
     if path_occupied(Path::new(&params.output)) {
-        return EncodeResult::Error("Output already exists; refusing to overwrite it".to_string());
+        return EncodeResult::Error(t(params.lang, Msg::ErrOutputExists).to_string());
     }
 
-    // Reserve a unique sibling before giving it to FFmpeg. A predictable
-    // `.part` name could itself be a real source file, which `-y` would erase.
+    // Reserved with `create_new` before FFmpeg sees it; `-y` never erases a
+    // real file sitting at the `.part` name.
     let (partial, tag) = loop {
         let uid = JOB_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tag = format!("{}_{}", std::process::id(), uid);
@@ -116,7 +160,7 @@ pub fn encode_video(
     args.insert(2, "-progress".to_string());
     args.insert(3, progress_file.to_string_lossy().to_string());
 
-    // Redirect stderr to a temp file to avoid pipe buffer deadlock
+    // stderr goes to a temp file, not a pipe.
     let stderr_path = match crate::utils::scratch_path(&format!("av1c_stderr_{tag}.txt")) {
         Ok(path) => path,
         Err(e) => {
@@ -135,13 +179,13 @@ pub fn encode_video(
     };
 
     // Start FFmpeg
-    let mut child = match Command::new("ffmpeg")
+    let mut ffmpeg = Command::new("ffmpeg");
+    ffmpeg
         .args(&args)
         .stdout(Stdio::null())
-        .stderr(Stdio::from(stderr_file))
-        .spawn()
-    {
-        Ok(c) => c,
+        .stderr(Stdio::from(stderr_file));
+    let (mut child, _child) = match crate::utils::child::spawn(&mut ffmpeg) {
+        Ok(spawned) => spawned,
         Err(e) => {
             let _ = std::fs::remove_file(&progress_file);
             let _ = std::fs::remove_file(&stderr_path);
@@ -150,39 +194,89 @@ pub fn encode_video(
         }
     };
 
-    // Run encoding loop
-    let result = run_encode_loop(
-        &mut child,
-        &progress_file,
-        duration,
-        total_frames,
-        progress_callback,
-        cancel_flag,
-        &partial,
-        &stderr_path,
-        params.remux_only.then(|| params.input.clone()).as_ref(),
-    );
+    // A panic in the loop still kills ffmpeg and removes the scratch file.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_encode_loop(
+            &mut child,
+            &progress_file,
+            duration,
+            total_frames,
+            progress_callback,
+            cancel_flag,
+            &partial,
+            &stderr_path,
+            params.remux_only.then(|| params.input.clone()).as_ref(),
+            params.lang,
+        )
+    }))
+    .unwrap_or_else(|_| {
+        crate::utils::child::kill_and_wait(&mut child);
+        let _ = std::fs::remove_file(&partial);
+        EncodeResult::Error("encode panicked".to_string())
+    });
 
     // Cleanup
     let _ = std::fs::remove_file(&progress_file);
     let _ = std::fs::remove_file(&stderr_path);
 
+    // A cancel that wins the race against a successful ffmpeg exit is reported
+    // as Cancelled and leaves no finished output behind.
+    let result = if matches!(result, EncodeResult::Success) && cancel_flag.load(Ordering::Acquire) {
+        let _ = std::fs::remove_file(&partial);
+        EncodeResult::Cancelled
+    } else {
+        result
+    };
+
     // The scratch file becomes the output only now, when the encode is known to
-    // have succeeded. Failure and cancellation already removed it.
-    if matches!(result, EncodeResult::Success) {
-        if path_occupied(Path::new(&params.output)) {
-            let _ = std::fs::remove_file(&partial);
-            return EncodeResult::Error(
-                "Output appeared while encoding; refusing to overwrite it".to_string(),
-            );
-        }
-        if let Err(e) = std::fs::rename(&partial, &params.output) {
-            let _ = std::fs::remove_file(&partial);
-            return EncodeResult::Error(format!("Failed to move the encoded file into place: {e}"));
-        }
+    // have succeeded. Failure and cancellation already removed it. `hard_link`
+    // fails with `AlreadyExists` instead of replacing an existing destination;
+    // filesystems without hard links fall back to an exclusive create+copy,
+    // which never clobbers a destination that appears mid-publish.
+    if matches!(result, EncodeResult::Success)
+        && let Err(message) = publish_partial(&partial, &params.output, params.lang)
+    {
+        let _ = std::fs::remove_file(&partial);
+        return EncodeResult::Error(message);
     }
 
     result
+}
+
+/// Move `partial` onto `output` without ever replacing an existing file.
+fn publish_partial(partial: &str, output: &str, lang: crate::i18n::Language) -> Result<(), String> {
+    match std::fs::hard_link(partial, output) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(partial);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(t(lang, Msg::ErrOutputAppeared).to_string())
+        }
+        Err(_) => {
+            // Exclusive create: fails atomically if the destination exists.
+            match OpenOptions::new().write(true).create_new(true).open(output) {
+                Ok(mut dest) => {
+                    let copy = File::open(partial)
+                        .and_then(|mut src| std::io::copy(&mut src, &mut dest).map(|_| ()));
+                    match copy {
+                        Ok(()) => {
+                            let _ = std::fs::remove_file(partial);
+                            Ok(())
+                        }
+                        Err(e) => {
+                            let _ = std::fs::remove_file(output);
+                            Err(format!("Failed to move the encoded file into place: {e}"))
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    Err(t(crate::i18n::Language::English, Msg::ErrOutputAppeared).to_string())
+                }
+                Err(e) => Err(format!("Failed to move the encoded file into place: {e}")),
+            }
+        }
+    }
 }
 
 /// Run the encoding loop with progress updates
@@ -198,6 +292,7 @@ fn run_encode_loop(
     output: &str,
     stderr_path: &Path,
     remux_input: Option<&String>,
+    lang: crate::i18n::Language,
 ) -> EncodeResult {
     // For remux jobs, estimate the final output size from the source file size.
     let remux_input_size = remux_input
@@ -207,9 +302,8 @@ fn run_encode_loop(
 
     loop {
         // Check cancellation
-        if cancel_flag.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
+        if cancel_flag.load(Ordering::Acquire) {
+            crate::utils::child::kill_and_wait(child);
             let _ = std::fs::remove_file(output);
             return EncodeResult::Cancelled;
         }
@@ -223,14 +317,14 @@ fn run_encode_loop(
                     cb(progress);
                 }
             }
-        } else if let Some(content) = read_progress_tail(progress_file) {
+        } else if let Some(content) = read_file_tail(progress_file) {
             // Encode: derive progress from the processed timestamp vs. duration.
             // FFmpeg versions differ in which out_time field they emit.
             let progress = if let Some(time_secs) = latest_progress_time_secs(&content) {
                 Some(if duration > 0.0 {
                     (time_secs / duration * 100.0).min(100.0)
                 } else {
-                    // Duration unknown: advance slowly so UI shows activity (caps at 99%)
+                    // Duration unknown: advances slowly, capped at 99%.
                     (time_secs / 7200.0 * 100.0).min(99.0)
                 })
             } else if total_frames > 0.0 {
@@ -252,46 +346,105 @@ fn run_encode_loop(
         // Check if FFmpeg finished
         match child.try_wait() {
             Ok(Some(status)) => {
-                if !status.success() {
-                    let stderr = std::fs::read_to_string(stderr_path).unwrap_or_default();
-
+                crate::utils::child::ChildGuard::unregister(child.id());
+                // A zero exit covers encodes FFmpeg ended early after a
+                // tolerated read error.
+                let short = status
+                    .success()
+                    .then(|| {
+                        encoded_seconds(output, progress_file, duration, total_frames, cancel_flag)
+                            .and_then(|encoded| shortfall(duration, encoded))
+                    })
+                    .flatten();
+                if let Some(missing) = short {
                     let _ = std::fs::remove_file(output);
-
-                    let error_msg = if stderr.is_empty() {
-                        format!("ffmpeg failed with status: {status}")
-                    } else {
-                        let last_lines: Vec<&str> = stderr.lines().rev().take(5).collect();
-                        format!(
-                            "ffmpeg failed: {}",
-                            last_lines.into_iter().rev().collect::<Vec<_>>().join("\n")
-                        )
-                    };
-
-                    return EncodeResult::Error(error_msg);
+                    return EncodeResult::Error(with_stderr(
+                        &t(lang, Msg::ErrEncodeShort)
+                            .replace("{missing}", &format!("{missing:.0}"))
+                            .replace("{duration}", &format!("{duration:.0}")),
+                        stderr_path,
+                    ));
+                }
+                if !status.success() {
+                    let _ = std::fs::remove_file(output);
+                    return EncodeResult::Error(with_stderr(
+                        &t(lang, Msg::ErrFfmpegFailed).replace("{status}", &status.to_string()),
+                        stderr_path,
+                    ));
+                }
+                // ffmpeg exited after the last cancel poll; honour a late cancel.
+                if cancel_flag.load(Ordering::Acquire) {
+                    let _ = std::fs::remove_file(output);
+                    return EncodeResult::Cancelled;
                 }
                 return EncodeResult::Success;
             }
             Ok(None) => {
-                // Remux copies finish quickly, so poll more often to collect
-                // enough progress samples for a meaningful ETA.
+                // Remux copies finish quickly and are polled more often.
                 let poll_ms = if remux_input_size.is_some() { 100 } else { 250 };
                 thread::sleep(Duration::from_millis(poll_ms));
             }
             Err(e) => {
+                crate::utils::child::kill_and_wait(child);
+                let _ = std::fs::remove_file(output);
                 return EncodeResult::Error(format!("Failed to check ffmpeg status: {e}"));
             }
         }
     }
 }
 
-/// Read the last few progress blocks from `-progress` output.
-///
-/// `FFmpeg` appends a block roughly twice a second and never truncates, so a
-/// feature-length encode leaves megabytes behind. Only the most recent block
-/// matters, and re-reading and re-parsing the whole file four times a second
-/// would cost more as the encode goes on.
-fn read_progress_tail(path: &Path) -> Option<String> {
-    /// Comfortably more than one block, so a full block is always in view.
+/// `message`, followed by the last few lines `FFmpeg` wrote to stderr.
+fn with_stderr(message: &str, stderr_path: &Path) -> String {
+    let stderr = read_file_tail(stderr_path).unwrap_or_default();
+    let last_lines: Vec<&str> = stderr.lines().rev().take(5).collect();
+    if last_lines.is_empty() {
+        return message.to_string();
+    }
+    format!(
+        "{message}: {}",
+        last_lines.into_iter().rev().collect::<Vec<_>>().join("\n")
+    )
+}
+
+/// Seconds of source the encode covered, read from the finished file, and from
+/// the `-progress` log when ffprobe reports no duration.
+fn encoded_seconds(
+    output: &str,
+    progress_file: &Path,
+    duration: f64,
+    total_frames: f64,
+    cancel: &AtomicBool,
+) -> Option<f64> {
+    if let Some(secs) = crate::analyzer::ffprobe::probe_duration_secs(output, cancel) {
+        return Some(secs);
+    }
+
+    let content = read_file_tail(progress_file)?;
+    match latest_progress_time_secs(&content) {
+        Some(secs) => Some(secs),
+        // Some sources (e.g. Dolby Vision) report out_time=N/A throughout.
+        None if total_frames > 0.0 && duration > 0.0 => {
+            Some(latest_progress_frame(&content)? / total_frames * duration)
+        }
+        None => None,
+    }
+}
+
+/// Seconds of the source missing from a finished encode, beyond the tolerated
+/// drift between a container's stated duration and its streams.
+fn shortfall(duration: f64, encoded: f64) -> Option<f64> {
+    if duration <= 0.0 {
+        return None;
+    }
+    let slack = (duration * 0.005).max(2.0);
+    (duration - encoded > slack).then_some(duration - encoded)
+}
+
+/// Read the last few progress blocks from `-progress` output. `FFmpeg` appends
+/// a block roughly twice a second and never truncates; only the tail of the
+/// file is read.
+pub(crate) fn read_file_tail(path: &Path) -> Option<String> {
+    /// Comfortably more than one block, which always covers a whole block.
     const WINDOW: usize = 8192;
 
     let mut file = File::open(path).ok()?;
@@ -301,8 +454,8 @@ fn read_progress_tail(path: &Path) -> Option<String> {
 
     let mut buf = Vec::with_capacity(WINDOW);
     file.read_to_end(&mut buf).ok()?;
-    // The window can start mid-line; parsing is per-line, so a partial first
-    // line is simply ignored by the callers.
+    // The window can start mid-line; parsing is per-line and a partial first
+    // line is ignored.
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
@@ -361,19 +514,66 @@ fn parse_out_time_secs(line: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_same_file, latest_progress_frame, latest_progress_time_secs, partial_output_path,
+        encoded_seconds, is_same_file, latest_progress_frame, latest_progress_time_secs,
+        partial_output_path, publish_partial, read_file_tail, shortfall,
     };
     use std::path::Path;
 
-    /// The scratch file sits next to the real output and keeps its extension,
-    /// so `FFmpeg` still picks the right muxer and the rename stays on one
-    /// filesystem. Crucially it is never the destination path itself.
+    #[test]
+    fn publishing_never_overwrites_an_existing_output() {
+        let dir = std::env::temp_dir().join(format!("av1c_publish_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let partial = dir.join("out.part.mkv");
+        let output = dir.join("out.mkv");
+        std::fs::write(&partial, b"encoded").unwrap();
+        std::fs::write(&output, b"someone else's file").unwrap();
+
+        let result = publish_partial(
+            partial.to_str().unwrap(),
+            output.to_str().unwrap(),
+            crate::i18n::Language::English,
+        );
+        assert_eq!(
+            result,
+            Err(crate::i18n::t(
+                crate::i18n::Language::English,
+                crate::i18n::Msg::ErrOutputAppeared
+            )
+            .to_string())
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"someone else's file");
+
+        std::fs::remove_file(&output).unwrap();
+        publish_partial(
+            partial.to_str().unwrap(),
+            output.to_str().unwrap(),
+            crate::i18n::Language::English,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"encoded");
+        assert!(!partial.exists());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn the_current_process_counts_as_alive() {
+        assert!(super::pid_alive(std::process::id()));
+    }
+
+    /// The scratch file sits next to the real output, keeps its extension, and
+    /// is never the destination path itself.
     #[test]
     fn partial_path_is_a_distinct_sibling_with_the_same_extension() {
         let output = "/media/films/movie_av1.mkv";
         let partial = partial_output_path(output, "123_4");
 
-        assert_eq!(partial, "/media/films/movie_av1.part.123_4.mkv");
+        assert_eq!(
+            Path::new(&partial),
+            Path::new("/media/films/movie_av1.part.123_4.mkv")
+        );
         assert_ne!(partial, output);
         assert_eq!(Path::new(&partial).parent(), Path::new(output).parent());
         assert_eq!(Path::new(&partial).extension().unwrap(), "mkv");
@@ -382,8 +582,8 @@ mod tests {
     #[test]
     fn partial_path_handles_an_extensionless_output() {
         assert_eq!(
-            partial_output_path("/tmp/movie", "123_4"),
-            "/tmp/movie.part.123_4"
+            Path::new(&partial_output_path("/tmp/movie", "123_4")),
+            Path::new("/tmp/movie.part.123_4")
         );
     }
 
@@ -409,6 +609,79 @@ mod tests {
 
         assert!(is_same_file(&path, &indirect));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_tail_stays_bounded_and_keeps_the_end() {
+        let path =
+            std::env::temp_dir().join(format!("av1c_test_file_tail_{}.log", std::process::id()));
+        std::fs::write(&path, format!("{}the end", "x".repeat(9000))).unwrap();
+
+        let tail = read_file_tail(&path).unwrap();
+        assert_eq!(tail.len(), 8192);
+        assert!(tail.ends_with("the end"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn progress_file(name: &str, content: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("av1c_test_{name}_{}.txt", std::process::id()));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    /// An encode that stopped minutes into an hour-long source is not a success.
+    #[test]
+    fn a_truncated_encode_is_detected() {
+        assert_eq!(shortfall(3600.0, 240.0), Some(3360.0));
+    }
+
+    /// Two minutes missing from a two-hour source is a truncated encode.
+    #[test]
+    fn two_minutes_short_of_two_hours_is_detected() {
+        assert_eq!(shortfall(7200.0, 7080.0), Some(120.0));
+    }
+
+    /// A complete encode, and one a hair short of the container duration, pass.
+    #[test]
+    fn a_complete_encode_reports_nothing_missing() {
+        assert_eq!(shortfall(3600.0, 3600.0), None);
+        assert_eq!(shortfall(3600.0, 3583.0), None);
+        assert_eq!(shortfall(1.0, 0.958), None);
+    }
+
+    /// An unknown source duration leaves nothing to compare against.
+    #[test]
+    fn an_unknown_duration_skips_the_check() {
+        assert_eq!(shortfall(0.0, 240.0), None);
+    }
+
+    /// With no output to probe, the progress log stands in — via `out_time`, or
+    /// via the frame count when the source reports `out_time=N/A`.
+    #[test]
+    fn the_progress_log_stands_in_for_an_unprobeable_output() {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let missing = std::env::temp_dir().join(format!(
+            "av1c_test_no_such_output_{}.mkv",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&missing);
+        let output = missing.to_string_lossy().into_owned();
+
+        let timed = progress_file("timed", "out_time_us=240000000\nprogress=end\n");
+        let framed = progress_file("framed", "frame=1440\nout_time=N/A\nprogress=end\n");
+
+        assert_eq!(
+            encoded_seconds(&output, &timed, 3600.0, 0.0, &cancel),
+            Some(240.0)
+        );
+        assert_eq!(
+            encoded_seconds(&output, &framed, 3600.0, 86_400.0, &cancel),
+            Some(60.0)
+        );
+
+        let _ = std::fs::remove_file(timed);
+        let _ = std::fs::remove_file(framed);
     }
 
     #[test]

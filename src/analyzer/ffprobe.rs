@@ -3,7 +3,14 @@ use crate::error::AppError;
 use crate::tracks::{AudioTrack, SubtitleTrack};
 use serde::Deserialize;
 use serde_json::Value;
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+const FFPROBE_TIMEOUT: Duration = Duration::from_mins(2);
+const FFPROBE_STDOUT_LIMIT: u64 = 16 * 1024 * 1024;
+const FFPROBE_STDERR_LIMIT: u64 = 4 * 1024 * 1024;
 
 /// Full analysis result with all tracks
 #[derive(Debug)]
@@ -11,37 +18,67 @@ pub struct AnalysisResult {
     pub metadata: VideoMetadata,
     pub audio_tracks: Vec<AudioTrack>,
     pub subtitle_tracks: Vec<SubtitleTrack>,
+    pub source_identity: crate::queue::SourceIdentity,
 }
 
 /// Analyze a video file using ffprobe
-pub fn analyze(input_path: &str) -> Result<AnalysisResult, AppError> {
-    let metadata = analyze_video_stream(input_path)?;
-    let (audio_tracks, subtitle_tracks) = analyze_tracks(input_path)?;
+pub fn analyze(input_path: &str, cancel: &AtomicBool) -> Result<AnalysisResult, AppError> {
+    let source_identity = crate::queue::SourceIdentity::from_path(input_path)
+        .map_err(|e| AppError::Analysis(format!("Could not inspect source: {e}")))?;
+    let metadata = analyze_video_stream(input_path, cancel)?;
+    let (audio_tracks, subtitle_tracks) = analyze_tracks(input_path, cancel)?;
+    if !source_identity.matches_path(input_path) {
+        return Err(AppError::Analysis(
+            "Source changed while it was being analyzed; add it again".to_string(),
+        ));
+    }
 
     Ok(AnalysisResult {
         metadata,
         audio_tracks,
         subtitle_tracks,
+        source_identity,
     })
 }
 
-/// Analyze the primary video stream
-fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
+/// Duration of the first video stream of the file as it stands on disk, from
+/// the stream, its `DURATION` tag, or the container. `None` when ffprobe
+/// cannot say.
+pub fn probe_duration_secs(path: &str, cancel: &AtomicBool) -> Option<f64> {
     let args = [
         "-v",
         "error",
         "-select_streams",
-        "v:0",
-        // `stream_side_data_list` must be selected as its own section:
-        // `stream=side_data_list` yields entries with no fields on FFmpeg 7+
+        "V:0",
         "-show_entries",
-        "stream=width,height,pix_fmt,color_primaries,color_transfer,color_space,codec_name,r_frame_rate,avg_frame_rate,bit_rate,duration:stream_side_data_list:format=duration,bit_rate",
+        "stream=width,height,duration:stream_tags=DURATION:format=duration",
+        "-of",
+        "json",
+        path,
+    ];
+
+    let output = run_ffprobe(&args, cancel).ok()?;
+    let data: FfprobeOutput = serde_json::from_str(&output).ok()?;
+    let stream = data.streams.into_iter().next()?;
+    let secs = video_duration_secs(&stream, data.format.as_ref());
+    (secs > 0.0).then_some(secs)
+}
+
+/// Analyze the primary video stream
+fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMetadata, AppError> {
+    let args = [
+        "-v",
+        "error",
+        "-select_streams",
+        "V:0",
+        "-show_entries",
+        "stream=width,height,pix_fmt,color_primaries,color_transfer,color_space,codec_name,r_frame_rate,avg_frame_rate,bit_rate,duration:stream_tags=DURATION:stream_side_data_list:format=duration,bit_rate",
         "-of",
         "json",
         input_path,
     ];
 
-    let output = run_ffprobe(&args)?;
+    let output = run_ffprobe(&args, cancel)?;
     let data: FfprobeOutput = serde_json::from_str(&output)
         .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe output: {e}")))?;
 
@@ -49,7 +86,7 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
         .streams
         .into_iter()
         .next()
-        .ok_or_else(|| AppError::Analysis("No video stream found".to_string()))?;
+        .ok_or(AppError::NoVideoStream)?;
 
     // Check for Dolby Vision by inspecting the side_data_type field
     let dovi_entry = stream.side_data_list.as_ref().and_then(|list| {
@@ -62,22 +99,14 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
                 })
         })
     });
-    let dv_profile = dovi_entry.and_then(|v| {
-        v.get("dv_profile")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|p| u8::try_from(p).ok())
-    });
+    let dv_profile = dovi_entry.and_then(|v| dovi_u8(v, "dv_profile"));
+    let dv_bl_compat = dovi_entry.and_then(|v| dovi_u8(v, "dv_bl_signal_compatibility_id"));
 
-    // Determine HDR type
-    let hdr_type = if dovi_entry.is_some() {
-        HdrType::DolbyVision
-    } else {
-        match stream.color_transfer.as_deref() {
-            Some("smpte2084") => HdrType::Pq,
-            Some("arib-std-b67") => HdrType::Hlg,
-            _ => HdrType::Sdr,
-        }
-    };
+    let hdr_type = hdr_type_of(
+        dovi_entry.is_some(),
+        dv_profile,
+        stream.color_transfer.as_deref(),
+    )?;
 
     // HDR10 static metadata: prefer container/stream-level side data; for
     // PQ/DV sources without it, probe the first frame (SEI-carried metadata)
@@ -86,43 +115,41 @@ fn analyze_video_stream(input_path: &str) -> Result<VideoMetadata, AppError> {
         .as_deref()
         .and_then(parse_hdr10_static);
     if hdr10_static.is_none() && matches!(hdr_type, HdrType::Pq | HdrType::DolbyVision) {
-        hdr10_static = probe_frame_hdr10_static(input_path);
+        hdr10_static = probe_frame_hdr10_static(input_path, cancel);
     }
 
-    // Parse frame rate
-    let (frame_rate_num, frame_rate_den) = parse_frame_rate(
-        stream
-            .r_frame_rate
-            .as_deref()
-            .or(stream.avg_frame_rate.as_deref()),
+    // Parse frame rate. `avg_frame_rate` carries the playback rate;
+    // `r_frame_rate` reports the field rate for interlaced streams and the
+    // timebase ceiling for variable-frame-rate streams, and stands in only
+    // when the average is absent or zero.
+    let (frame_rate_num, frame_rate_den) = frame_rate_of(
+        stream.avg_frame_rate.as_deref(),
+        stream.r_frame_rate.as_deref(),
     );
 
-    // Parse duration — prefer format-level, fall back to stream-level
-    let stream_duration = stream
-        .duration
-        .as_deref()
-        .and_then(|d| d.parse::<f64>().ok())
-        .filter(|&d| d > 0.0);
-    let duration_secs = data
-        .format
-        .as_ref()
-        .and_then(|f| f.duration.as_deref())
-        .and_then(|d| d.parse::<f64>().ok())
-        .filter(|&d| d > 0.0)
-        .or(stream_duration)
-        .unwrap_or(0.0);
+    let duration_secs = video_duration_secs(&stream, data.format.as_ref());
 
     Ok(VideoMetadata {
         width: stream.width,
         height: stream.height,
         hdr_type,
         dv_profile,
+        dv_bl_compat,
         hdr10_static,
         codec_name: stream.codec_name.unwrap_or_else(|| "unknown".to_string()),
         frame_rate_num,
         frame_rate_den,
         duration_secs,
     })
+}
+
+/// Read a small integer field from a DOVI configuration record.
+fn dovi_u8(entry: &Value, key: &str) -> Option<u8> {
+    let value = entry.get(key)?;
+    if let Some(n) = value.as_u64() {
+        return u8::try_from(n).ok();
+    }
+    value.as_str().and_then(|s| s.trim().parse::<u8>().ok())
 }
 
 /// Parse an ffprobe rational like `"35400/50000"` (or a plain number) to f64.
@@ -184,12 +211,12 @@ fn parse_hdr10_static(side_data: &[Value]) -> Option<Hdr10StaticMetadata> {
 
 /// Probe the first video frame for SEI-carried HDR10 static metadata
 /// (sources that don't expose it at container level). Best-effort.
-fn probe_frame_hdr10_static(input_path: &str) -> Option<Hdr10StaticMetadata> {
+fn probe_frame_hdr10_static(input_path: &str, cancel: &AtomicBool) -> Option<Hdr10StaticMetadata> {
     let args = [
         "-v",
         "error",
         "-select_streams",
-        "v:0",
+        "V:0",
         "-read_intervals",
         "%+#1",
         "-show_entries",
@@ -199,7 +226,7 @@ fn probe_frame_hdr10_static(input_path: &str) -> Option<Hdr10StaticMetadata> {
         input_path,
     ];
 
-    let output = run_ffprobe(&args).ok()?;
+    let output = run_ffprobe(&args, cancel).ok()?;
     let data: FramesOutput = serde_json::from_str(&output).ok()?;
     data.frames
         .iter()
@@ -207,7 +234,79 @@ fn probe_frame_hdr10_static(input_path: &str) -> Option<Hdr10StaticMetadata> {
         .find_map(parse_hdr10_static)
 }
 
-/// Parse frame rate from ffprobe format
+/// Duration of the primary video stream: its own duration or Matroska
+/// `DURATION` tag, else the container duration, which spans every stream.
+fn video_duration_secs(stream: &VideoStream, format: Option<&FormatInfo>) -> f64 {
+    let positive = |secs: f64| (secs.is_finite() && secs > 0.0).then_some(secs);
+    stream
+        .duration
+        .as_deref()
+        .and_then(|d| d.parse::<f64>().ok())
+        .and_then(positive)
+        .or_else(|| {
+            stream
+                .tags
+                .as_ref()
+                .and_then(|tags| tags.duration.as_deref())
+                .and_then(parse_timestamp_secs)
+                .and_then(positive)
+        })
+        .or_else(|| {
+            format
+                .and_then(|f| f.duration.as_deref())
+                .and_then(|d| d.parse::<f64>().ok())
+                .and_then(positive)
+        })
+        .unwrap_or(0.0)
+}
+
+/// Parse an `HH:MM:SS.fraction` timestamp into seconds.
+fn parse_timestamp_secs(value: &str) -> Option<f64> {
+    let mut parts = value.trim().split(':');
+    let hours = parts.next()?.parse::<f64>().ok()?;
+    let minutes = parts.next()?.parse::<f64>().ok()?;
+    let seconds = parts.next()?.parse::<f64>().ok()?;
+    parts
+        .next()
+        .is_none()
+        .then_some(hours * 3600.0 + minutes * 60.0 + seconds)
+}
+
+/// The HDR type of a stream, from its Dolby Vision side data and colour
+/// transfer.
+///
+/// Dolby Vision without a readable profile is refused.
+fn hdr_type_of(
+    has_dovi: bool,
+    dv_profile: Option<u8>,
+    color_transfer: Option<&str>,
+) -> Result<HdrType, AppError> {
+    if has_dovi {
+        if dv_profile.is_none() {
+            return Err(AppError::Analysis(
+                "Dolby Vision detected but dv_profile is missing; cannot choose a safe encode path"
+                    .to_string(),
+            ));
+        }
+        return Ok(HdrType::DolbyVision);
+    }
+    Ok(match color_transfer {
+        Some("smpte2084") => HdrType::Pq,
+        Some("arib-std-b67") => HdrType::Hlg,
+        _ => HdrType::Sdr,
+    })
+}
+
+/// The average frame rate, falling back to the real one when the average is
+/// absent or zero, and to `0/1` when neither parses.
+fn frame_rate_of(average: Option<&str>, real: Option<&str>) -> (u32, u32) {
+    [average, real]
+        .into_iter()
+        .map(parse_frame_rate)
+        .find(|&(num, _)| num > 0)
+        .unwrap_or((0, 1))
+}
+
 fn parse_frame_rate(rate_str: Option<&str>) -> (u32, u32) {
     rate_str
         .and_then(|s| {
@@ -225,7 +324,10 @@ fn parse_frame_rate(rate_str: Option<&str>) -> (u32, u32) {
 }
 
 /// Analyze audio and subtitle tracks
-fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrack>), AppError> {
+fn analyze_tracks(
+    input_path: &str,
+    cancel: &AtomicBool,
+) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrack>), AppError> {
     let args = [
         "-v",
         "error",
@@ -238,7 +340,7 @@ fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrac
         input_path,
     ];
 
-    let output = run_ffprobe(&args)?;
+    let output = run_ffprobe(&args, cancel)?;
     let audio_data: AllStreamsOutput = serde_json::from_str(&output)
         .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe audio output: {e}")))?;
 
@@ -254,7 +356,7 @@ fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrac
         input_path,
     ];
 
-    let output_sub = run_ffprobe(&args_sub)?;
+    let output_sub = run_ffprobe(&args_sub, cancel)?;
     let sub_data: AllStreamsOutput = serde_json::from_str(&output_sub)
         .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe subtitle output: {e}")))?;
 
@@ -294,12 +396,85 @@ fn analyze_tracks(input_path: &str) -> Result<(Vec<AudioTrack>, Vec<SubtitleTrac
     Ok((audio_tracks, subtitle_tracks))
 }
 
+/// Pixel format of the first video stream of `path`. `None` when ffprobe
+/// cannot say.
+pub fn probe_video_pix_fmt(path: &str, cancel: &AtomicBool) -> Option<String> {
+    let args = [
+        "-v",
+        "error",
+        "-select_streams",
+        "V:0",
+        "-show_entries",
+        "stream=pix_fmt",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        path,
+    ];
+    let output = run_ffprobe(&args, cancel).ok()?;
+    let pix_fmt = output.lines().next()?.trim();
+    (!pix_fmt.is_empty() && pix_fmt != "unknown").then(|| pix_fmt.to_string())
+}
+
+/// Streams of a file that an encode does not pick by track selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnselectableStreams {
+    /// Attached pictures such as cover art.
+    pub pictures: usize,
+    /// Attachment streams such as fonts.
+    pub attachments: usize,
+    /// Video streams after the first, data streams, and streams of any other
+    /// kind.
+    pub other: usize,
+}
+
+/// Count the streams of `path` that track selection does not cover. `None`
+/// when ffprobe cannot say.
+pub fn probe_unselectable_streams(path: &str, cancel: &AtomicBool) -> Option<UnselectableStreams> {
+    let args = [
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_type:stream_disposition=attached_pic",
+        "-of",
+        "json",
+        path,
+    ];
+    let output = run_ffprobe(&args, cancel).ok()?;
+    let data: AllStreamsOutput = serde_json::from_str(&output).ok()?;
+    Some(unselectable_streams(&data.streams))
+}
+
+fn unselectable_streams(streams: &[RawStream]) -> UnselectableStreams {
+    let mut counts = UnselectableStreams {
+        pictures: 0,
+        attachments: 0,
+        other: 0,
+    };
+    let mut videos = 0usize;
+    for stream in streams {
+        let picture = stream
+            .disposition
+            .as_ref()
+            .and_then(|d| d.attached_pic)
+            .unwrap_or(0)
+            != 0;
+        match stream.codec_type.as_deref() {
+            _ if picture => counts.pictures += 1,
+            Some("video") => videos += 1,
+            Some("audio" | "subtitle") => {}
+            Some("attachment") => counts.attachments += 1,
+            _ => counts.other += 1,
+        }
+    }
+    counts.other += videos.saturating_sub(1);
+    counts
+}
+
 /// Run ffprobe with arguments
-fn run_ffprobe(args: &[&str]) -> Result<String, AppError> {
-    let output = Command::new("ffprobe")
-        .args(args)
-        .output()
-        .map_err(|e| AppError::Analysis(format!("Failed to execute ffprobe: {e}")))?;
+fn run_ffprobe(args: &[&str], cancel: &AtomicBool) -> Result<String, AppError> {
+    let mut command = Command::new("ffprobe");
+    command.args(args);
+    let output = run_command(&mut command, cancel, FFPROBE_TIMEOUT)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -307,6 +482,81 @@ fn run_ffprobe(args: &[&str]) -> Result<String, AppError> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Run a probe, aborting it on cancellation or once `timeout` elapses.
+fn run_command(
+    command: &mut Command,
+    cancel: &AtomicBool,
+    timeout: Duration,
+) -> Result<std::process::Output, AppError> {
+    if cancel.load(Ordering::Acquire) {
+        return Err(AppError::Cancelled);
+    }
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let (mut child, _child) = crate::utils::child::spawn(command)
+        .map_err(|e| AppError::Analysis(format!("Failed to execute ffprobe: {e}")))?;
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let stdout_reader = std::thread::spawn(move || read_capped(&mut stdout, FFPROBE_STDOUT_LIMIT));
+    let stderr_reader = std::thread::spawn(move || read_capped(&mut stderr, FFPROBE_STDERR_LIMIT));
+    let started = Instant::now();
+    let status = loop {
+        if cancel.load(Ordering::Acquire) || started.elapsed() >= timeout {
+            let cancelled = cancel.load(Ordering::Acquire);
+            crate::utils::child::kill_and_wait(&mut child);
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err(if cancelled {
+                AppError::Cancelled
+            } else {
+                AppError::Analysis("ffprobe timed out".to_string())
+            });
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                crate::utils::child::ChildGuard::unregister(child.id());
+                break status;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => {
+                crate::utils::child::kill_and_wait(&mut child);
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(AppError::Analysis(format!(
+                    "Failed to wait for ffprobe: {e}"
+                )));
+            }
+        }
+    };
+    let (stdout, stdout_limited) = stdout_reader
+        .join()
+        .map_err(|_| AppError::Analysis("ffprobe stdout reader panicked".to_string()))?
+        .map_err(|e| AppError::Analysis(format!("Failed to read ffprobe stdout: {e}")))?;
+    let (stderr, stderr_limited) = stderr_reader
+        .join()
+        .map_err(|_| AppError::Analysis("ffprobe stderr reader panicked".to_string()))?
+        .map_err(|e| AppError::Analysis(format!("Failed to read ffprobe stderr: {e}")))?;
+    if stdout_limited || stderr_limited {
+        return Err(AppError::Analysis(
+            "ffprobe produced too much output; refusing to exhaust memory".to_string(),
+        ));
+    }
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn read_capped(reader: &mut impl Read, limit: u64) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut bytes = Vec::new();
+    reader.take(limit + 1).read_to_end(&mut bytes)?;
+    let exceeded = bytes.len() as u64 > limit;
+    if exceeded {
+        bytes.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    }
+    Ok((bytes, exceeded))
 }
 
 // JSON deserialization structures
@@ -332,6 +582,13 @@ struct VideoStream {
     avg_frame_rate: Option<String>,
     side_data_list: Option<Vec<Value>>,
     duration: Option<String>,
+    tags: Option<VideoTags>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoTags {
+    #[serde(rename = "DURATION")]
+    duration: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -352,6 +609,7 @@ struct AllStreamsOutput {
 
 #[derive(Debug, Deserialize)]
 struct RawStream {
+    codec_type: Option<String>,
     codec_name: Option<String>,
     channels: Option<u16>,
     channel_layout: Option<String>,
@@ -367,15 +625,120 @@ struct StreamTags {
     title: Option<String>,
 }
 
-/// Stream disposition flags (only the forced flag is currently used)
+/// Stream disposition flags
 #[derive(Debug, Deserialize)]
 struct StreamDisposition {
     forced: Option<u8>,
+    attached_pic: Option<u8>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dolby Vision decides the type when its profile is readable, and is
+    /// refused when it is not; otherwise the colour transfer decides.
+    #[test]
+    fn the_hdr_type_follows_dolby_vision_then_the_colour_transfer() {
+        assert_eq!(
+            hdr_type_of(true, Some(8), Some("smpte2084")).unwrap(),
+            HdrType::DolbyVision
+        );
+        assert_eq!(
+            hdr_type_of(true, Some(5), None).unwrap(),
+            HdrType::DolbyVision
+        );
+        assert!(matches!(
+            hdr_type_of(true, None, Some("smpte2084")),
+            Err(AppError::Analysis(_))
+        ));
+        assert_eq!(
+            hdr_type_of(false, None, Some("smpte2084")).unwrap(),
+            HdrType::Pq
+        );
+        assert_eq!(
+            hdr_type_of(false, None, Some("arib-std-b67")).unwrap(),
+            HdrType::Hlg
+        );
+        assert_eq!(
+            hdr_type_of(false, None, Some("bt709")).unwrap(),
+            HdrType::Sdr
+        );
+        assert_eq!(hdr_type_of(false, None, None).unwrap(), HdrType::Sdr);
+        // A profile with no side data is not Dolby Vision.
+        assert_eq!(hdr_type_of(false, Some(8), None).unwrap(), HdrType::Sdr);
+    }
+
+    /// A well-formed `num/den` parses; anything else reads as unknown.
+    #[test]
+    fn frame_rates_parse_only_as_a_positive_fraction() {
+        assert_eq!(parse_frame_rate(Some("24000/1001")), (24000, 1001));
+        assert_eq!(parse_frame_rate(Some("25/1")), (25, 1));
+        assert_eq!(parse_frame_rate(Some("0/0")), (0, 1));
+        assert_eq!(parse_frame_rate(Some("30/0")), (0, 1));
+        assert_eq!(parse_frame_rate(Some("30")), (0, 1));
+        assert_eq!(parse_frame_rate(Some("-30/1")), (0, 1));
+        assert_eq!(parse_frame_rate(Some("a/b")), (0, 1));
+        assert_eq!(parse_frame_rate(Some("")), (0, 1));
+        assert_eq!(parse_frame_rate(None), (0, 1));
+    }
+
+    /// The real frame rate stands in only when the average gives nothing.
+    #[test]
+    fn the_real_frame_rate_only_fills_in_for_a_missing_average() {
+        assert_eq!(
+            frame_rate_of(Some("24000/1001"), Some("60/1")),
+            (24000, 1001)
+        );
+        assert_eq!(frame_rate_of(Some("0/0"), Some("60/1")), (60, 1));
+        assert_eq!(frame_rate_of(None, Some("60/1")), (60, 1));
+        assert_eq!(frame_rate_of(Some("nonsense"), Some("60/1")), (60, 1));
+        assert_eq!(frame_rate_of(None, None), (0, 1));
+        assert_eq!(frame_rate_of(Some("0/0"), Some("0/0")), (0, 1));
+    }
+
+    #[test]
+    fn unselectable_streams_count_extra_video_data_pictures_and_attachments() {
+        let json = r#"{
+            "stream_groups": [{"streams": [{"codec_type": "video"}, {"codec_type": "data"}]}],
+            "streams": [
+                {"codec_type": "video", "disposition": {"attached_pic": 0}},
+                {"codec_type": "audio", "disposition": {"attached_pic": 0}},
+                {"codec_type": "subtitle", "disposition": {"attached_pic": 0}},
+                {"codec_type": "video", "disposition": {"attached_pic": 1}},
+                {"codec_type": "attachment"},
+                {"codec_type": "video", "disposition": {"attached_pic": 0}},
+                {"codec_type": "data", "disposition": {"attached_pic": 0}}
+            ]
+        }"#;
+        let data: AllStreamsOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            unselectable_streams(&data.streams),
+            UnselectableStreams {
+                pictures: 1,
+                attachments: 1,
+                other: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn a_single_video_stream_with_audio_and_subtitles_has_nothing_unselectable() {
+        let json = r#"{"streams": [
+            {"codec_type": "video", "disposition": {"attached_pic": 0}},
+            {"codec_type": "audio", "disposition": {"attached_pic": 0}},
+            {"codec_type": "subtitle", "disposition": {"attached_pic": 0}}
+        ]}"#;
+        let data: AllStreamsOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            unselectable_streams(&data.streams),
+            UnselectableStreams {
+                pictures: 0,
+                attachments: 0,
+                other: 0,
+            }
+        );
+    }
 
     #[test]
     fn parses_hdr10_static_from_real_ffprobe_json() {
@@ -409,6 +772,49 @@ mod tests {
         );
     }
 
+    /// A Matroska video stream carries its length only as a tag; the container
+    /// duration also spans an audio track that runs past the video.
+    #[test]
+    fn source_duration_is_the_video_stream_not_the_container() {
+        let parse = |json: &str| {
+            let data: FfprobeOutput = serde_json::from_str(json).unwrap();
+            let stream = data.streams.into_iter().next().unwrap();
+            video_duration_secs(&stream, data.format.as_ref())
+        };
+        let mkv = r#"{"streams": [{"width": 320, "height": 240,
+            "tags": {"DURATION": "00:01:40.000000000"}}],
+            "format": {"duration": "104.005000"}}"#;
+        assert!((parse(mkv) - 100.0).abs() < 1e-9);
+
+        let mp4 = r#"{"streams": [{"width": 320, "height": 240, "duration": "99.5"}],
+            "format": {"duration": "104.0"}}"#;
+        assert!((parse(mp4) - 99.5).abs() < 1e-9);
+
+        let untagged = r#"{"streams": [{"width": 320, "height": 240}],
+            "format": {"duration": "104.0"}}"#;
+        assert!((parse(untagged) - 104.0).abs() < 1e-9);
+
+        let infinite = r#"{"streams": [{"width": 320, "height": 240,
+            "tags": {"DURATION": "inf:00:00"}}],
+            "format": {"duration": "104.0"}}"#;
+        assert!((parse(infinite) - 104.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dovi_record_carries_the_base_layer_compatibility_id() {
+        let entry: Value = serde_json::from_str(
+            r#"{"side_data_type": "DOVI configuration record", "dv_profile": 8, "dv_bl_signal_compatibility_id": 4}"#,
+        )
+        .unwrap();
+        assert_eq!(dovi_u8(&entry, "dv_profile"), Some(8));
+        assert_eq!(dovi_u8(&entry, "dv_bl_signal_compatibility_id"), Some(4));
+        let as_string: Value = serde_json::from_str(
+            r#"{"side_data_type": "DOVI configuration record", "dv_profile": "5"}"#,
+        )
+        .unwrap();
+        assert_eq!(dovi_u8(&as_string, "dv_profile"), Some(5));
+    }
+
     #[test]
     fn missing_mastering_display_yields_none() {
         let side_data: Vec<Value> = serde_json::from_str(
@@ -416,5 +822,32 @@ mod tests {
         )
         .unwrap();
         assert!(parse_hdr10_static(&side_data).is_none());
+    }
+
+    #[test]
+    fn probe_output_reader_stops_at_its_memory_limit() {
+        let mut input = std::io::Cursor::new(b"12345");
+        let (bytes, exceeded) = read_capped(&mut input, 4).unwrap();
+        assert_eq!(bytes, b"1234");
+        assert!(exceeded);
+    }
+
+    /// Cancellation is reported as its own error, not as an stderr message.
+    #[test]
+    fn a_cancelled_probe_reports_cancellation_exactly() {
+        let cancel = AtomicBool::new(true);
+        let error =
+            run_command(&mut Command::new("ffprobe"), &cancel, FFPROBE_TIMEOUT).unwrap_err();
+        assert!(matches!(error, AppError::Cancelled));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_process_is_killed_at_its_deadline() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exec sleep 5"]);
+        let cancel = AtomicBool::new(false);
+        let error = run_command(&mut command, &cancel, Duration::from_millis(10)).unwrap_err();
+        assert!(error.to_string().contains("timed out"));
     }
 }

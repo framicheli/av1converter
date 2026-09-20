@@ -1,12 +1,9 @@
 pub mod selection;
 
-/// The selected subtitle tracks, in the order they will be written.
-///
-/// `subtitle_indices` drives `-map 0:s:N` while [`subtitle_codecs_for`] drives
-/// the matching `-c:s:N`, and the two are only in step if both are ordered the
-/// same way. `TrackSelection::resolve` sorts the indices; this sorts the tracks
-/// to match, so neither side depends on the order ffprobe happened to report
-/// the streams in.
+/// The selected subtitle tracks, sorted by index — the order they will be
+/// written. `TrackSelection::resolve` sorts the indices the same way, and the
+/// `-map 0:s:N` and `-c:s:N` lists follow that order whatever order ffprobe
+/// reported.
 pub fn selected_subtitles(tracks: &[SubtitleTrack], indices: &[usize]) -> Vec<SubtitleTrack> {
     let mut selected: Vec<SubtitleTrack> = tracks
         .iter()
@@ -17,15 +14,17 @@ pub fn selected_subtitles(tracks: &[SubtitleTrack], indices: &[usize]) -> Vec<Su
     selected
 }
 
-/// The subtitle codec to write for a given output container.
+/// The subtitle codec to write for each selected track in a given output
+/// container, or `None` for a track the container cannot hold.
 ///
-/// Text subtitle formats differ between Matroska, WebM, and MP4. Convert only
-/// the text tracks that the target container cannot hold; bitmap subtitles
-/// remain copies so an unsupported combination fails instead of disappearing.
+/// Matroska holds every format except teletext and CEA-608 captions, which are
+/// left out; `mov_text` is converted to SRT there. `WebM`
+/// holds only `WebVTT`, and MP4 only `mov_text` and DVD bitmaps: other text
+/// tracks are converted, other bitmap tracks are left out.
 pub fn subtitle_codecs_for(
     output: &std::path::Path,
     selected: &[SubtitleTrack],
-) -> Vec<&'static str> {
+) -> Vec<Option<&'static str>> {
     let extension = output
         .extension()
         .and_then(|e| e.to_str())
@@ -33,23 +32,25 @@ pub fn subtitle_codecs_for(
     selected
         .iter()
         .map(|track| {
-            let codec = track.codec.as_str();
+            let is = |name: &str| track.codec.eq_ignore_ascii_case(name);
             let text = ["ass", "mov_text", "ssa", "srt", "subrip", "text", "webvtt"]
-                .iter()
-                .any(|candidate| codec.eq_ignore_ascii_case(candidate));
+                .into_iter()
+                .any(is);
             match extension.to_ascii_lowercase().as_str() {
-                "mkv" if codec.eq_ignore_ascii_case("mov_text") => "srt",
-                "webm" if text && !codec.eq_ignore_ascii_case("webvtt") => "webvtt",
-                "mp4" | "m4v" | "mov" if text && !codec.eq_ignore_ascii_case("mov_text") => {
-                    "mov_text"
-                }
-                _ => "copy",
+                "mkv" if is("mov_text") => Some("srt"),
+                "mkv" if is("dvb_teletext") || is("eia_608") => None,
+                "webm" if is("webvtt") => Some("copy"),
+                "webm" if text => Some("webvtt"),
+                "mp4" | "m4v" | "mov" if is("mov_text") || is("dvd_subtitle") => Some("copy"),
+                "mp4" | "m4v" | "mov" if text => Some("mov_text"),
+                "webm" | "mp4" | "m4v" | "mov" => None,
+                _ => Some("copy"),
             }
         })
         .collect()
 }
 
-pub use selection::{AudioStreamPlan, OutputTracks, TrackSelection};
+pub use selection::{AudioStreamPlan, OpusLayout, OutputTracks, TrackSelection};
 
 #[cfg(test)]
 mod tests {
@@ -73,8 +74,8 @@ mod tests {
         }
     }
 
-    /// `-map 0:s:N` follows the sorted indices, so the codec list has to as
-    /// well — even when ffprobe reported the streams out of order.
+    /// The codec list follows the sorted indices, matching `-map 0:s:N`, even
+    /// when ffprobe reported the streams out of order.
     #[test]
     fn selected_subtitles_are_ordered_by_index() {
         let tracks = [sub_at(2, "subrip"), sub_at(0, "hdmv_pgs_subtitle")];
@@ -84,12 +85,27 @@ mod tests {
             selected.iter().map(|t| t.index).collect::<Vec<_>>(),
             vec![0, 2]
         );
-        // ...which is what puts `copy` on stream 0 and `mov_text` on stream 1.
+        // Output stream 0 is left out and `mov_text` lands on stream 1.
         assert_eq!(
             subtitle_codecs_for(Path::new("out.mp4"), &selected),
-            ["copy", "mov_text"]
+            [None, Some("mov_text")]
         );
         assert!(selected_subtitles(&tracks, &[]).is_empty());
+    }
+
+    #[test]
+    fn teletext_and_cea608_are_left_out_of_matroska() {
+        assert_eq!(
+            subtitle_codecs_for(
+                Path::new("x.mkv"),
+                &[
+                    sub("dvb_teletext"),
+                    sub("eia_608"),
+                    sub("hdmv_pgs_subtitle")
+                ]
+            ),
+            [None, None, Some("copy")]
+        );
     }
 
     #[test]
@@ -99,41 +115,62 @@ mod tests {
 
         assert_eq!(
             subtitle_codecs_for(Path::new("out.mkv"), &mov_text),
-            ["srt"]
+            [Some("srt")]
         );
         assert_eq!(
             subtitle_codecs_for(Path::new("out.MKV"), &mov_text),
-            ["srt"]
+            [Some("srt")]
         );
         assert_eq!(
             subtitle_codecs_for(Path::new("out.mp4"), &mov_text),
-            ["copy"]
+            [Some("copy")]
         );
         assert_eq!(
             subtitle_codecs_for(Path::new("out.mp4"), &subrip),
-            ["mov_text"]
+            [Some("mov_text")]
         );
         assert_eq!(
             subtitle_codecs_for(Path::new("out.webm"), &subrip),
-            ["webvtt"]
+            [Some("webvtt")]
         );
         assert_eq!(
             subtitle_codecs_for(Path::new("out.webm"), &[sub("webvtt")]),
-            ["copy"]
+            [Some("copy")]
         );
-        assert_eq!(subtitle_codecs_for(Path::new("out.mkv"), &subrip), ["copy"]);
+        assert_eq!(
+            subtitle_codecs_for(Path::new("out.mkv"), &subrip),
+            [Some("copy")]
+        );
         assert!(subtitle_codecs_for(Path::new("out.mkv"), &[]).is_empty());
 
         let mixed = [sub("mov_text"), sub("hdmv_pgs_subtitle")];
         assert_eq!(
             subtitle_codecs_for(Path::new("out.mkv"), &mixed),
-            ["srt", "copy"]
+            [Some("srt"), Some("copy")]
+        );
+    }
+
+    /// Bitmap subtitles are left out of a container that cannot hold them.
+    #[test]
+    fn unsupported_bitmap_subtitles_are_left_out() {
+        let bitmaps = [sub("hdmv_pgs_subtitle"), sub("dvd_subtitle")];
+        assert_eq!(
+            subtitle_codecs_for(Path::new("out.webm"), &bitmaps),
+            [None, None]
+        );
+        assert_eq!(
+            subtitle_codecs_for(Path::new("out.mp4"), &bitmaps),
+            [None, Some("copy")]
+        );
+        assert_eq!(
+            subtitle_codecs_for(Path::new("out.mkv"), &bitmaps),
+            [Some("copy"), Some("copy")]
         );
     }
 }
 
 /// Audio track information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AudioTrack {
     pub index: usize,
     pub language: Option<String>,
@@ -177,7 +214,7 @@ impl AudioTrack {
             || "N/A".to_string(),
             |b| {
                 if b >= 1_000_000 {
-                    // Convert to kbps first (fits in u32 for any real-world bitrate)
+                    // Bitrate in kbps.
                     let kbps = u32::try_from(b / 1000).unwrap_or(u32::MAX);
                     format!("{:.1} Mbps", f64::from(kbps) / 1000.0)
                 } else {
@@ -197,7 +234,7 @@ impl AudioTrack {
 }
 
 /// Subtitle track information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SubtitleTrack {
     pub index: usize,
     pub language: Option<String>,

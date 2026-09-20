@@ -1,0 +1,1045 @@
+//! Staging a ripped title: free space, disc recheck, a private directory per
+//! rip, the rename that gives the file the disc's name, and the cleanup rules
+//! for the temporary file afterwards.
+
+use super::{DiscError, DiscSource, DiscTitle, RipProgress};
+use crate::config::AppConfig;
+use crate::queue::{EncodingJob, JobStatus};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
+use tracing::{info, warn};
+
+/// Prefix of every staging subdirectory. The sweeps delete only these.
+const STAGING_PREFIX: &str = "rip-";
+
+/// File written into every staging subdirectory when it is created.
+const STAGING_MARKER: &str = ".av1converter-staging";
+
+/// Hex digits in the random part of a staging directory name.
+const STAGING_RANDOM_HEX: usize = 16;
+
+/// Free space required beyond the title's own size.
+const SPACE_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// How recently a staging directory must have been written to count as an
+/// active rip belonging to another process. Thirty minutes covers makemkvcon's
+/// read-retry loops on a damaged disc, which write nothing while they run.
+pub const ACTIVE_RIP_WINDOW: Duration = Duration::from_mins(30);
+
+/// The configured staging directory, if one is set.
+fn configured_root(config: &AppConfig) -> Option<&str> {
+    config
+        .disc
+        .staging_directory
+        .as_deref()
+        .map(str::trim)
+        .filter(|dir| !dir.is_empty())
+}
+
+/// The staging root: the configured directory, or a per-user one under the
+/// system temp directory.
+pub fn staging_root(config: &AppConfig) -> PathBuf {
+    configured_root(config).map_or_else(default_staging_root, PathBuf::from)
+}
+
+fn default_staging_root() -> PathBuf {
+    #[cfg(unix)]
+    // SAFETY: geteuid is always safe.
+    let name = format!("av1converter-staging-{}", unsafe { libc::geteuid() });
+    #[cfg(not(unix))]
+    let name = "av1converter-staging".to_string();
+    std::env::temp_dir().join(name)
+}
+
+/// Create `root` as a directory only this user can enter, or accept it when it
+/// already is one.
+fn prepare_private_root(root: &Path) -> std::io::Result<()> {
+    match crate::utils::create_private_dir(root) {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
+        _ => {}
+    }
+    if crate::utils::is_private_dir(root) {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            "it is not a private directory owned by this user",
+        ))
+    }
+}
+
+/// The directory encoded output goes to. A rip refuses to start without one;
+/// a staged rip ignores `same_directory`.
+pub fn require_destination(config: &AppConfig) -> Result<PathBuf, DiscError> {
+    let configured = config
+        .output
+        .output_directory
+        .as_deref()
+        .map(str::trim)
+        .filter(|dir| !dir.is_empty())
+        .ok_or(DiscError::NoDestination)?;
+    let path = PathBuf::from(configured);
+    if path.is_dir() {
+        Ok(path)
+    } else {
+        Err(DiscError::NoDestination)
+    }
+}
+
+/// Rip one title into a fresh staging directory and return the file it wrote,
+/// named after the disc.
+///
+/// Checked before the extraction starts: free space, and the disc still being
+/// the one that was scanned.
+pub fn rip_to_staging(
+    bin: &Path,
+    config: &AppConfig,
+    source: &DiscSource,
+    title: &DiscTitle,
+    on_progress: impl FnMut(RipProgress),
+    cancel: &AtomicBool,
+) -> Result<PathBuf, DiscError> {
+    require_destination(config)?;
+
+    let root = staging_root(config);
+    let prepared = if configured_root(config).is_some() {
+        std::fs::create_dir_all(&root)
+    } else {
+        prepare_private_root(&root)
+    };
+    prepared.map_err(|e| {
+        DiscError::Failed(format!(
+            "could not create the staging directory {}: {e}",
+            root.display()
+        ))
+    })?;
+
+    // A title whose size did not parse (`size_bytes == 0`) is estimated from
+    // its duration at the top Blu-ray video rate of 40 Mbit/s.
+    let estimated_bytes = if title.size_bytes == 0 {
+        title.duration.as_secs().saturating_mul(5 * 1024 * 1024)
+    } else {
+        title.size_bytes
+    };
+    let needed = estimated_bytes.saturating_add(SPACE_HEADROOM_BYTES);
+    if available_bytes(&root).is_some_and(|free| free < needed) {
+        return Err(DiscError::InsufficientSpace);
+    }
+
+    // `makemkvcon mkv` re-scans the disc; a title id refers to the disc
+    // physically in the drive. A folder on disk cannot be swapped.
+    if let DiscSource::Drive(drive) = source {
+        let present = super::list_drives(bin, cancel)?;
+        if !present.iter().any(|current| {
+            current.id == drive.id
+                && current.name == drive.name
+                && current.disc_label == drive.disc_label
+        }) {
+            return Err(DiscError::DiscChanged);
+        }
+    }
+
+    let dir = create_staging_dir(&root)?;
+    let ripped = match super::rip_title(bin, source, title.id, &dir, on_progress, cancel) {
+        Ok(path) => path,
+        Err(e) => {
+            // A partial MKV is indistinguishable from a good one later.
+            discard_dir(&dir);
+            return Err(e);
+        }
+    };
+
+    let named = dir.join(staged_name(source.label(), title.id));
+    if let Err(e) = std::fs::rename(&ripped, &named) {
+        warn!(
+            "Could not rename {} to {}: {e}",
+            ripped.display(),
+            named.display()
+        );
+        return Ok(ripped);
+    }
+    Ok(named)
+}
+
+/// Re-scan a drive before the first title is extracted, and return the source
+/// with the drive as it is listed now. Title ids are only meaningful for the
+/// disc that was scanned; a same-label swap is caught when an expected id or
+/// name is missing.
+pub fn confirm_titles(
+    bin: &Path,
+    source: &DiscSource,
+    titles: &[DiscTitle],
+    cancel: &AtomicBool,
+) -> Result<DiscSource, DiscError> {
+    let DiscSource::Drive(drive) = source else {
+        return Ok(source.clone());
+    };
+    let scan = super::scan_titles(bin, source, cancel)?;
+    if titles.iter().any(|want| {
+        !scan.titles.iter().any(|have| {
+            have.id == want.id
+                && have.name == want.name
+                && have.duration == want.duration
+                && have.size_bytes == want.size_bytes
+        })
+    }) {
+        return Err(DiscError::DiscChanged);
+    }
+    super::list_drives(bin, cancel)?
+        .into_iter()
+        .find(|current| current.id == drive.id && current.name == drive.name)
+        .map(DiscSource::Drive)
+        .ok_or(DiscError::DiscChanged)
+}
+
+/// `<disc label>_t<NN>.mkv`, in place of `MakeMKV`'s `title_t00.mkv`.
+fn staged_name(disc_label: Option<&str>, title_id: u32) -> String {
+    format!("{}_t{title_id:02}.mkv", sanitize_label(disc_label))
+}
+
+/// A disc label reduced to one path component.
+fn sanitize_label(label: Option<&str>) -> String {
+    let cleaned: String = label
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.' | '(' | ')' | '\'' | ',') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(80)
+        .collect();
+    let trimmed = cleaned.trim_matches([' ', '.', '_']);
+    if trimmed.is_empty() {
+        "disc".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Delete the staging file of every temporary job whose encode has finished.
+///
+/// | Status | Staging file |
+/// |---|---|
+/// | `Done`, `DoneWithVmaf` | deleted with its directory |
+/// | `DoneVmafFailed`, `QualityWarning`, `Error`, `Skipped` | kept, its path still on the job |
+pub fn cleanup_finished(root: &Path, jobs: &mut [EncodingJob]) {
+    for path in release_finished(jobs) {
+        discard_staged(root, &path);
+    }
+}
+
+/// Mark the staging file of every finished temporary job as released and
+/// return those files. The caller deletes them with [`discard_staged`], which
+/// can run outside any lock the jobs live under.
+pub fn release_finished(jobs: &mut [EncodingJob]) -> Vec<PathBuf> {
+    let mut released = Vec::new();
+    for job in jobs.iter_mut().filter(|job| job.temporary) {
+        if !matches!(job.status, JobStatus::Done | JobStatus::DoneWithVmaf { .. }) {
+            continue;
+        }
+        released.push(job.path.clone());
+        job.temporary = false;
+    }
+    released
+}
+
+/// Delete the staging directory holding `file`, when that directory is a
+/// staging directory directly under `root`.
+pub fn discard_staged(root: &Path, file: &Path) {
+    if let Some(dir) = file
+        .parent()
+        .filter(|dir| dir.parent() == Some(root) && is_staging_dir(dir))
+    {
+        discard_dir(dir);
+    }
+}
+
+/// Delete staging directories that no job points into and that nothing has
+/// written to for `min_age`.
+///
+/// Runs at TUI and daemon startup and whenever a disc run settles, where a rip
+/// cut short by a kill has nothing left tracking its file. This process's own
+/// leftovers are swept like any other; `jobs` names the directories it still
+/// needs. In the default root, a directory whose owner has exited is
+/// removed whatever its age. Only subdirectories of the staging root are ever
+/// removed, never the root itself.
+pub fn sweep_orphans(config: &AppConfig, jobs: &[EncodingJob], min_age: Duration) {
+    sweep_root(
+        &staging_root(config),
+        configured_root(config).is_none(),
+        jobs,
+        min_age,
+    );
+}
+
+/// [`sweep_orphans`] over `root`, which is the default staging root when
+/// `default_root` is set.
+fn sweep_root(root: &Path, default_root: bool, jobs: &[EncodingJob], min_age: Duration) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+
+    let live: HashSet<PathBuf> = jobs
+        .iter()
+        .filter(|job| job.temporary)
+        .filter_map(|job| job.path.parent().map(Path::to_path_buf))
+        .collect();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || !is_staging_dir(&path) || live.contains(&path) {
+            continue;
+        }
+        if owner_pid(&path)
+            .is_some_and(|pid| pid != std::process::id() && crate::utils::child::pid_alive(pid))
+        {
+            info!(
+                "Leaving staging directory {} of a running process",
+                path.display()
+            );
+            continue;
+        }
+        if default_root && owner_pid(&path).is_some() {
+            info!(
+                "Removing staging directory {} of a process that has exited",
+                path.display()
+            );
+            discard_dir(&path);
+            continue;
+        }
+        // A directory another process is still ripping into. Unreadable
+        // timestamps count as recent and the directory stays.
+        match last_written(&path) {
+            Some(age) if age >= min_age => {
+                info!("Removing orphaned staging directory {}", path.display());
+                discard_dir(&path);
+            }
+            Some(_) => info!("Leaving active staging directory {}", path.display()),
+            None => warn!(
+                "Leaving staging directory {}: its timestamps are unreadable",
+                path.display()
+            ),
+        }
+    }
+}
+
+/// A directory named `rip-<pid>-<16 hex digits>` that holds the staging marker.
+fn is_staging_dir(dir: &Path) -> bool {
+    let named = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix(STAGING_PREFIX))
+        .and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(pid, random)| {
+            !pid.is_empty()
+                && pid.bytes().all(|b| b.is_ascii_digit())
+                && random.len() == STAGING_RANDOM_HEX
+                && random
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        });
+    named && dir.join(STAGING_MARKER).is_file()
+}
+
+/// The process id in a `rip-<pid>-<random>` directory name.
+fn owner_pid(dir: &Path) -> Option<u32> {
+    dir.file_name()?
+        .to_str()?
+        .strip_prefix(STAGING_PREFIX)?
+        .split_once('-')?
+        .0
+        .parse()
+        .ok()
+}
+
+fn discard_dir(dir: &Path) {
+    if let Err(e) = std::fs::remove_dir_all(dir) {
+        warn!("Could not remove {}: {e}", dir.display());
+    }
+}
+
+/// Time since the newest write anywhere in `dir`, itself included.
+fn last_written(dir: &Path) -> Option<Duration> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let newest = entries
+        .flatten()
+        .filter_map(|entry| entry.metadata().ok()?.modified().ok())
+        .chain(std::fs::metadata(dir).ok()?.modified().ok())
+        .max()?;
+    newest.elapsed().ok()
+}
+
+/// A directory under `root` that no other process can already hold, named
+/// `rip-<pid>-<random>` after the process that owns it and holding the staging
+/// marker.
+fn create_staging_dir(root: &Path) -> Result<PathBuf, DiscError> {
+    for _ in 0..8 {
+        let random = crate::utils::random_hex(STAGING_RANDOM_HEX / 2).map_err(DiscError::Failed)?;
+        let candidate = root.join(format!("{STAGING_PREFIX}{}-{random}", std::process::id()));
+        if crate::utils::create_private_dir(&candidate).is_ok() {
+            if let Err(e) = std::fs::write(candidate.join(STAGING_MARKER), b"") {
+                discard_dir(&candidate);
+                return Err(DiscError::Failed(format!(
+                    "could not write to the staging directory {}: {e}",
+                    candidate.display()
+                )));
+            }
+            return Ok(candidate);
+        }
+    }
+    Err(DiscError::Failed(format!(
+        "could not create a staging directory in {}",
+        root.display()
+    )))
+}
+
+/// Free bytes on the filesystem holding `path`.
+///
+/// The `statvfs` field widths differ per platform — `f_bavail` is 32-bit on
+/// macOS and 64-bit on Linux — and one of the two conversions is a no-op.
+#[cfg(unix)]
+#[allow(clippy::useless_conversion)]
+fn available_bytes(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c_path` is a NUL-terminated string and `stat` is a live
+    // `statvfs` the call only writes to.
+    if unsafe { libc::statvfs(c_path.as_ptr(), &raw mut stat) } != 0 {
+        return None;
+    }
+    Some(u64::from(stat.f_bavail).saturating_mul(stat.f_frsize.into()))
+}
+
+/// Windows has no `statvfs`; `MakeMKV` reports its own out-of-space
+/// failure.
+#[cfg(not(unix))]
+fn available_bytes(_path: &Path) -> Option<u64> {
+    None
+}
+
+/// A staging directory of process `pid` under `root` with one file in it, as
+/// a finished rip leaves it. Returns the file.
+#[cfg(test)]
+pub(crate) fn staged_rip(root: &Path, pid: u32) -> PathBuf {
+    let random = crate::utils::random_hex(STAGING_RANDOM_HEX / 2).unwrap();
+    let dir = root.join(format!("{STAGING_PREFIX}{pid}-{random}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(STAGING_MARKER), b"").unwrap();
+    let file = dir.join("DISC_t00.mkv");
+    std::fs::write(&file, b"rip").unwrap();
+    file
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{DiscConfig, OutputConfig};
+
+    #[cfg(unix)]
+    use super::super::testing::{Fake, fake_makemkvcon};
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("av1c_staging_{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn config_with_root(root: &Path) -> AppConfig {
+        AppConfig {
+            disc: DiscConfig {
+                staging_directory: Some(root.to_string_lossy().into_owned()),
+                ..DiscConfig::default()
+            },
+            ..AppConfig::default()
+        }
+    }
+
+    /// The drive and title the shared fake reports, as a caller holds them
+    /// after a listing and a scan.
+    #[cfg(unix)]
+    fn disc(label: &str) -> (DiscSource, DiscTitle) {
+        (
+            DiscSource::Drive(super::super::DiscDrive {
+                id: 0,
+                name: "HL-DT-ST BD-RE WH16NS60".to_string(),
+                disc_label: Some(label.to_string()),
+            }),
+            DiscTitle {
+                id: 0,
+                name: "Blade Runner, The \"Final\" Cut".to_string(),
+                duration: Duration::from_secs(7051),
+                size_bytes: 29_715_223_808,
+                chapters: 32,
+                tracks: Vec::new(),
+            },
+        )
+    }
+
+    use super::staged_rip;
+
+    /// Process id no running process has.
+    const DEAD_PID: u32 = u32::MAX;
+
+    fn temporary_job(path: PathBuf, status: JobStatus) -> EncodingJob {
+        let mut job = EncodingJob::new(path);
+        job.temporary = true;
+        job.status = status;
+        job
+    }
+
+    #[test]
+    fn labels_become_one_safe_path_component() {
+        assert_eq!(
+            staged_name(Some("Blade Runner, Final Cut"), 3),
+            "Blade Runner, Final Cut_t03.mkv"
+        );
+        // Separators become underscores, and the leading ones are trimmed off.
+        assert_eq!(
+            staged_name(Some("../../etc/passwd"), 0),
+            "etc_passwd_t00.mkv"
+        );
+        assert_eq!(staged_name(Some("  "), 12), "disc_t12.mkv");
+        assert_eq!(staged_name(None, 1), "disc_t01.mkv");
+        // Non-ASCII titles are names, not garbage to strip.
+        assert_eq!(staged_name(Some("紅い眼鏡"), 2), "紅い眼鏡_t02.mkv");
+        assert!(!staged_name(Some(&"x".repeat(500)), 0).contains(std::path::MAIN_SEPARATOR));
+    }
+
+    #[test]
+    fn a_rip_needs_a_destination_outside_staging() {
+        let root = scratch("destination");
+        let mut config = config_with_root(&root);
+        assert_eq!(require_destination(&config), Err(DiscError::NoDestination));
+
+        config.output.output_directory = Some(String::new());
+        assert_eq!(require_destination(&config), Err(DiscError::NoDestination));
+
+        config.output.output_directory = Some(root.join("nope").to_string_lossy().into_owned());
+        assert_eq!(require_destination(&config), Err(DiscError::NoDestination));
+
+        let out = root.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        config.output.output_directory = Some(out.to_string_lossy().into_owned());
+        assert_eq!(require_destination(&config), Ok(out));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// One case per row of the cleanup table.
+    #[test]
+    fn only_a_finished_encode_takes_its_staging_file_with_it() {
+        let root = scratch("cleanup");
+        let cases = [
+            (JobStatus::Done, false),
+            (JobStatus::DoneWithVmaf { score: 96.0 }, false),
+            (
+                JobStatus::DoneVmafFailed {
+                    reason: "no libvmaf".to_string(),
+                },
+                true,
+            ),
+            (
+                JobStatus::QualityWarning {
+                    vmaf: 80.0,
+                    min_score: 70.0,
+                    threshold: 90.0,
+                },
+                true,
+            ),
+            (
+                JobStatus::Error {
+                    message: "ffmpeg died".to_string(),
+                },
+                true,
+            ),
+            (
+                JobStatus::Skipped {
+                    reason: "already AV1".to_string(),
+                },
+                true,
+            ),
+            (JobStatus::Ready, true),
+        ];
+
+        let mut jobs: Vec<EncodingJob> = cases
+            .iter()
+            .map(|(status, _)| temporary_job(staged_rip(&root, DEAD_PID), status.clone()))
+            .collect();
+        // A user's own file is never touched, whatever its status.
+        let own = root.join("mine.mkv");
+        std::fs::write(&own, b"mine").unwrap();
+        jobs.push(EncodingJob::new(own.clone()));
+        jobs.last_mut().unwrap().status = JobStatus::Done;
+
+        cleanup_finished(&root, &mut jobs);
+
+        for (job, (status, kept)) in jobs.iter().zip(cases.iter()) {
+            assert_eq!(
+                job.path.exists(),
+                *kept,
+                "{status:?} should {} its staging file",
+                if *kept { "keep" } else { "delete" }
+            );
+            assert_eq!(job.temporary, *kept);
+            assert!(
+                !job.source_deleted,
+                "a staging copy is not the user's source"
+            );
+            // A kept file is only useful if its directory is still there.
+            assert_eq!(job.path.parent().unwrap().is_dir(), *kept);
+        }
+        assert!(own.exists(), "a job of the user's own is not staging");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rip whose encode could not be verified stays staged across a restart
+    /// and the cleanup that follows it.
+    #[test]
+    fn an_unverified_encode_keeps_its_rip_after_a_restart() {
+        let root = scratch("unverified");
+        let output = root.join("DISC_t00_av1.mkv");
+        std::fs::write(&output, b"encoded").unwrap();
+        let mut job = temporary_job(staged_rip(&root, DEAD_PID), JobStatus::Verifying);
+        job.output_path = Some(output);
+        let mut queue = crate::queue::state::PersistedQueue::default();
+        queue.state.jobs.push(job);
+
+        crate::queue::state::resume(&mut queue);
+        cleanup_finished(&root, &mut queue.state.jobs);
+
+        let job = &queue.state.jobs[0];
+        assert!(matches!(job.status, JobStatus::DoneVmafFailed { .. }));
+        assert!(job.temporary);
+        assert!(job.path.exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Cleanup runs on every tick; the second one has nothing left to do.
+    #[test]
+    fn cleanup_is_repeatable() {
+        let root = scratch("repeat");
+        let mut jobs = vec![temporary_job(staged_rip(&root, DEAD_PID), JobStatus::Done)];
+        cleanup_finished(&root, &mut jobs);
+        cleanup_finished(&root, &mut jobs);
+        assert!(!jobs[0].path.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Only a staging directory directly under the root is deleted.
+    #[test]
+    fn only_staging_directories_under_the_root_are_discarded() {
+        let root = scratch("confine");
+        let other = scratch("confine_outside");
+        let victim = staged_rip(&other, DEAD_PID);
+        discard_staged(&root, &victim);
+        assert!(victim.exists());
+        discard_staged(&root, Path::new("rip-victim/x.mkv"));
+        let ours = staged_rip(&root, DEAD_PID);
+        discard_staged(&root, &ours);
+        assert!(!ours.parent().unwrap().exists());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn the_sweep_removes_only_unreferenced_staging_directories() {
+        let root = scratch("sweep");
+        let referenced = staged_rip(&root, DEAD_PID);
+        let orphan = staged_rip(&root, DEAD_PID);
+        let finished = staged_rip(&root, DEAD_PID);
+        let stranger = root.join("not-a-rip");
+        std::fs::create_dir_all(&stranger).unwrap();
+        let loose = root.join("loose.mkv");
+        std::fs::write(&loose, b"x").unwrap();
+
+        let jobs = vec![
+            temporary_job(referenced.clone(), JobStatus::Ready),
+            // Already cleaned up: not temporary, so its directory is fair game.
+            EncodingJob::new(finished.clone()),
+        ];
+
+        sweep_orphans(&config_with_root(&root), &jobs, Duration::ZERO);
+
+        assert!(referenced.exists(), "a queued rip is not an orphan");
+        assert!(!orphan.exists());
+        assert!(!finished.exists());
+        assert!(stranger.is_dir(), "only `rip-` directories are ours");
+        assert!(loose.exists(), "the staging root itself is never emptied");
+        assert!(root.is_dir());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// User directories that only look like staging directories survive a sweep
+    /// that removes a real one next to them.
+    #[test]
+    fn the_sweep_leaves_look_alike_directories_alone() {
+        let root = scratch("look_alike");
+        let user_dir = |name: &str| {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("holiday.mkv"), b"mine").unwrap();
+            dir
+        };
+        let concert = user_dir("rip-concert");
+        let summer = user_dir("rip-123-summer");
+        let unmarked = user_dir(&format!("rip-{DEAD_PID}-0123456789abcdef"));
+        let ours = staged_rip(&root, DEAD_PID);
+
+        sweep_orphans(&config_with_root(&root), &[], Duration::ZERO);
+
+        assert!(concert.join("holiday.mkv").exists());
+        assert!(summer.join("holiday.mkv").exists());
+        assert!(unmarked.join("holiday.mkv").exists());
+        assert!(!ours.exists());
+
+        discard_staged(&root, &unmarked.join("holiday.mkv"));
+        assert!(unmarked.join("holiday.mkv").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A new staging directory carries the name and marker the sweep requires.
+    #[test]
+    fn a_new_staging_directory_is_recognised_as_one() {
+        let root = scratch("create");
+        let dir = create_staging_dir(&root).unwrap();
+        assert!(dir.join(STAGING_MARKER).is_file());
+        assert!(is_staging_dir(&dir));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Another process's rip in progress is left alone.
+    #[test]
+    fn the_sweep_leaves_an_active_rip_alone() {
+        let root = scratch("active");
+        let active = staged_rip(&root, DEAD_PID);
+        sweep_orphans(&config_with_root(&root), &[], ACTIVE_RIP_WINDOW);
+        assert!(active.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A directory named after a running process is left alone; one named after
+    /// a process that is gone is swept.
+    #[cfg(unix)]
+    #[test]
+    fn the_sweep_leaves_a_running_owners_rip_alone() {
+        let root = scratch("owner");
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        let (mut owner, guard) = crate::utils::child::spawn(&mut command).unwrap();
+        let running = staged_rip(&root, owner.id());
+        let gone = staged_rip(&root, DEAD_PID);
+
+        sweep_orphans(&config_with_root(&root), &[], Duration::ZERO);
+
+        assert!(running.exists());
+        assert!(!gone.exists());
+        let _ = owner.kill();
+        let _ = owner.wait();
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An unset staging directory still resolves somewhere usable.
+    #[test]
+    fn the_staging_root_falls_back_to_the_temp_directory() {
+        let root = staging_root(&AppConfig::default());
+        assert!(root.starts_with(std::env::temp_dir()));
+        assert_ne!(root, std::env::temp_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staging_root_must_be_private_to_this_user() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let base = scratch("private_root");
+        let fresh = base.join("fresh");
+        prepare_private_root(&fresh).unwrap();
+        let mode = std::fs::metadata(&fresh).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        prepare_private_root(&fresh).unwrap();
+
+        let shared = base.join("shared");
+        std::fs::DirBuilder::new()
+            .mode(0o755)
+            .create(&shared)
+            .unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(prepare_private_root(&shared).is_err());
+
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&fresh, &link).unwrap();
+        assert!(prepare_private_root(&link).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// This process's own leftovers are swept once no job points into them.
+    #[test]
+    fn our_own_staging_directory_is_swept_when_no_job_needs_it() {
+        let default_root = scratch("own_leftover");
+        let ours = staged_rip(&default_root, std::process::id());
+
+        sweep_root(&default_root, true, &[], ACTIVE_RIP_WINDOW);
+
+        assert!(!ours.parent().unwrap().exists());
+
+        let live = staged_rip(&default_root, std::process::id());
+        let mut job = EncodingJob::new(live.clone());
+        job.temporary = true;
+        sweep_root(&default_root, true, &[job], ACTIVE_RIP_WINDOW);
+        assert!(
+            live.parent().unwrap().exists(),
+            "a directory a job still needs is kept"
+        );
+        let _ = std::fs::remove_dir_all(&default_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_owners_fresh_rip_in_the_default_root_is_swept() {
+        let dead_owners_rip = |root: &Path| staged_rip(root, DEAD_PID);
+
+        let configured = scratch("dead_owner_configured");
+        let kept = dead_owners_rip(&configured);
+        sweep_orphans(&config_with_root(&configured), &[], ACTIVE_RIP_WINDOW);
+        assert!(kept.exists(), "a configured root keeps a fresh directory");
+        let _ = std::fs::remove_dir_all(&configured);
+
+        let default_root = scratch("dead_owner_default");
+        let swept = dead_owners_rip(&default_root);
+        sweep_root(&default_root, true, &[], ACTIVE_RIP_WINDOW);
+        assert!(!swept.exists());
+        let _ = std::fs::remove_dir_all(&default_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn free_space_is_reported_for_a_real_directory() {
+        assert!(available_bytes(&std::env::temp_dir()).is_some());
+        assert!(available_bytes(Path::new("/av1c/does/not/exist")).is_none());
+    }
+
+    /// The whole sequence: a private directory under the root, the disc's name
+    /// on the file, and progress on the way.
+    #[cfg(unix)]
+    #[test]
+    fn a_rip_lands_in_its_own_directory_under_the_disc_name() {
+        let base = scratch("rip");
+        let root = base.join("staging");
+        let out = base.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let mut config = config_with_root(&root);
+        config.output.output_directory = Some(out.to_string_lossy().into_owned());
+
+        let (source, title) = disc("THE_DISC");
+        let bin = fake_makemkvcon(&base, &Fake::Rip);
+        let mut seen = 0;
+        let file = rip_to_staging(
+            &bin,
+            &config,
+            &source,
+            &title,
+            |_| seen += 1,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert_eq!(seen, 1);
+        assert_eq!(file.file_name().unwrap(), "THE_DISC_t00.mkv");
+        assert!(file.is_file());
+        let dir = file.parent().unwrap();
+        assert!(is_staging_dir(dir));
+        assert_eq!(dir.parent().unwrap(), root);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A folder source never asks which disc is in the drive: the fake's drive
+    /// listing fails, and the rip still lands.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_rip_never_looks_at_the_drives() {
+        let base = scratch("folder");
+        let out = base.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let root = base.join("staging");
+        let mut config = config_with_root(&root);
+        config.output.output_directory = Some(out.to_string_lossy().into_owned());
+
+        let ripped = base.join("THE_DISC");
+        std::fs::create_dir_all(ripped.join("BDMV")).unwrap();
+        let source = DiscSource::folder(&ripped).unwrap();
+        let bin = fake_makemkvcon(&base, &Fake::FolderScan);
+        assert_eq!(
+            super::super::list_drives(&bin, &AtomicBool::new(false)),
+            Err(DiscError::NoDrive),
+            "the fake has no drive to check against"
+        );
+
+        let (_, title) = disc("THE_DISC");
+        let file = rip_to_staging(
+            &bin,
+            &config,
+            &source,
+            &title,
+            |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert_eq!(file.file_name().unwrap(), "THE_DISC_t00.mkv");
+        assert!(file.is_file());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A swapped disc invalidates the title ids the rip was asked for.
+    #[cfg(unix)]
+    #[test]
+    fn a_different_disc_aborts_before_any_extraction() {
+        let base = scratch("swapped");
+        let out = base.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let root = base.join("staging");
+        let mut config = config_with_root(&root);
+        config.output.output_directory = Some(out.to_string_lossy().into_owned());
+
+        let (source, title) = disc("A_DIFFERENT_DISC");
+        let bin = fake_makemkvcon(&base, &Fake::Rip);
+        let result = rip_to_staging(
+            &bin,
+            &config,
+            &source,
+            &title,
+            |_| {},
+            &AtomicBool::new(false),
+        );
+
+        assert_eq!(result, Err(DiscError::DiscChanged));
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A disc swapped for one with the same title ids and names, but
+    /// different titles, is caught.
+    #[cfg(unix)]
+    #[test]
+    fn confirm_titles_rejects_a_title_of_a_different_length() {
+        let base = scratch("confirm_length");
+        let bin = fake_makemkvcon(&base, &Fake::Rip);
+        let (source, mut title) = disc("THE_DISC");
+        title.duration = Duration::from_mins(97);
+        assert_eq!(
+            confirm_titles(&bin, &source, &[title.clone()], &AtomicBool::new(false)),
+            Err(DiscError::DiscChanged)
+        );
+
+        title.duration = Duration::from_secs(7051);
+        title.size_bytes = 999_999;
+        assert_eq!(
+            confirm_titles(&bin, &source, &[title], &AtomicBool::new(false)),
+            Err(DiscError::DiscChanged)
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Same drive and title id, different name: a reprint with the same label.
+    #[cfg(unix)]
+    #[test]
+    fn confirm_titles_rejects_a_name_that_is_not_on_the_disc() {
+        let base = scratch("confirm");
+        let bin = fake_makemkvcon(&base, &Fake::Rip);
+        let (source, mut title) = disc("THE_DISC");
+        title.name = "Not On The Disc".to_string();
+        assert_eq!(
+            confirm_titles(&bin, &source, &[title], &AtomicBool::new(false)),
+            Err(DiscError::DiscChanged)
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The drive a rip starts from is the one listed now, not the one listed
+    /// before the disc loaded.
+    #[cfg(unix)]
+    #[test]
+    fn confirm_titles_returns_the_drive_as_listed_now() {
+        let base = scratch("confirm_now");
+        let bin = fake_makemkvcon(&base, &Fake::Rip);
+        let (source, title) = disc("THE_DISC");
+        let DiscSource::Drive(drive) = &source else {
+            unreachable!()
+        };
+        let stale = DiscSource::Drive(super::super::DiscDrive {
+            disc_label: None,
+            ..drive.clone()
+        });
+        assert_eq!(
+            confirm_titles(&bin, &stale, &[title], &AtomicBool::new(false)),
+            Ok(source)
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A rip that fails takes its half-written file with it.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_rip_leaves_no_partial_behind() {
+        let base = scratch("partial");
+        let out = base.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let root = base.join("staging");
+        let mut config = config_with_root(&root);
+        config.output.output_directory = Some(out.to_string_lossy().into_owned());
+
+        let (source, title) = disc("THE_DISC");
+        let bin = fake_makemkvcon(&base, &Fake::RipFails);
+        let result = rip_to_staging(
+            &bin,
+            &config,
+            &source,
+            &title,
+            |_| {},
+            &AtomicBool::new(false),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            0,
+            "the staging directory of a failed rip is deleted"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A staged job's encode never lands in the directory that gets deleted.
+    #[test]
+    fn a_staged_job_encodes_outside_its_staging_directory() {
+        let root = scratch("output");
+        let file = staged_rip(&root, DEAD_PID);
+        let mut job = temporary_job(file.clone(), JobStatus::Ready);
+        let config = OutputConfig {
+            same_directory: true,
+            output_directory: Some("/library".to_string()),
+            ..OutputConfig::default()
+        };
+
+        job.generate_output_path(&config);
+        let output = job.output_path.clone().unwrap();
+        assert_eq!(output, PathBuf::from("/library/DISC_t00_av1.mkv"));
+        assert!(!output.starts_with(&root));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

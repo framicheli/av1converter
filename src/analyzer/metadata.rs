@@ -1,5 +1,5 @@
 /// HDR type classification
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum HdrType {
     /// Standard Dynamic Range
     #[default]
@@ -30,7 +30,7 @@ impl HdrType {
 }
 
 /// How to handle Dolby Vision sources when re-encoding to AV1
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum DvMode {
     /// Carry the DV RPU into the AV1 stream (DV profile 10, SVT-AV1 only)
     KeepDolbyVision,
@@ -40,9 +40,8 @@ pub enum DvMode {
 }
 
 impl DvMode {
-    /// Recommended mode for a given DV profile. Profile 5 has no
-    /// HDR10-compatible base layer, so tone-mapping to HDR10 is the safer
-    /// default; cross-compatible profiles (7/8) keep DV losslessly.
+    /// Recommended mode for a given DV profile: HDR10 for profile 5, keep-DV
+    /// for the cross-compatible profiles (7/8).
     pub fn recommended_for(dv_profile: Option<u8>) -> Self {
         if dv_profile == Some(5) {
             DvMode::ToHdr10
@@ -53,7 +52,7 @@ impl DvMode {
 }
 
 /// HDR10 static metadata (mastering display + content light level)
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Hdr10StaticMetadata {
     /// Display primaries as CIE 1931 xy chromaticity coordinates
     pub red: (f64, f64),
@@ -98,13 +97,16 @@ impl Hdr10StaticMetadata {
 }
 
 /// Video metadata from analysis
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VideoMetadata {
     pub width: u32,
     pub height: u32,
     pub hdr_type: HdrType,
     /// Dolby Vision profile (5, 7, 8, ...) when the source carries DV
     pub dv_profile: Option<u8>,
+    /// Dolby Vision base-layer compatibility id: 1 = HDR10, 2 = SDR, 4 = HLG
+    #[serde(default)]
+    pub dv_bl_compat: Option<u8>,
     /// HDR10 static metadata, when present in the source
     pub hdr10_static: Option<Hdr10StaticMetadata>,
     pub codec_name: String,

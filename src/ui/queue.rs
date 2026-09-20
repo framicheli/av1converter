@@ -1,8 +1,8 @@
 use super::common::{get_vmaf_color, translate_reason};
-use crate::app::App;
+use crate::app::{App, DiscState};
 use crate::i18n::{Language, Msg, t};
 use crate::queue::JobStatus;
-use crate::utils::format_duration;
+use crate::utils::{format_duration, format_file_size};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -10,26 +10,42 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
 };
+use std::fmt::Write;
 
 #[allow(clippy::too_many_lines)]
 pub fn render_queue(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
 
     // The detail panel below the list always reflects the job at the cursor,
-    // not necessarily the one actively encoding. Give it extra height when
-    // showing static status text, since an `Error` can span several lines
-    // (ffmpeg's last few stderr lines) — the live gauge only ever needs one.
+    // not necessarily the one actively encoding. Static status text gets extra
+    // height: an `Error` can span several lines (ffmpeg's last few stderr
+    // lines), where the live gauge needs one.
     let detail_job = app.queue.jobs.get(app.queue_cursor);
     let is_live_gauge = matches!(
         detail_job.map(|j| &j.status),
-        Some(JobStatus::Encoding { .. })
+        Some(JobStatus::Encoding { .. } | JobStatus::Ripping { .. })
     );
-    let detail_height = if is_live_gauge { 3 } else { 7 };
+    let detail_height = if is_live_gauge {
+        3
+    } else if matches!(
+        detail_job.map(|job| &job.status),
+        Some(JobStatus::Error { .. })
+    ) {
+        (f.area().height / 2).clamp(7, 12)
+    } else {
+        7
+    };
 
+    let notice_rows = app.message.as_deref().map_or(0, |msg| {
+        crate::ui::common::wrapped_rows(msg, f.area().width.saturating_sub(4))
+            .saturating_add(2)
+            .min(6)
+    });
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
+            Constraint::Length(notice_rows),
             Constraint::Min(5),
             Constraint::Length(detail_height),
             Constraint::Length(3),
@@ -45,19 +61,32 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
             .queue
             .jobs
             .iter()
-            .filter(|j| !matches!(j.status, JobStatus::Analyzing))
+            .filter(|job| {
+                !matches!(
+                    job.status,
+                    JobStatus::Pending | JobStatus::Ripping { .. } | JobStatus::Analyzing
+                )
+            })
             .count();
         let total = app.queue.jobs.len();
         format!("{} ({analyzed}/{total})", t(lang, Msg::AnalyzingFilesTitle))
     } else if app.encoding_active {
         if let Some(job) = app.queue.jobs.get(app.queue.current_job_index) {
-            if matches!(job.status, JobStatus::Encoding { .. }) {
+            if matches!(
+                job.status,
+                JobStatus::Encoding { .. } | JobStatus::Verifying
+            ) {
                 let current_number = (app.queue.encoding_progress_done + 1).min(total_to_encode);
+                let phase = if matches!(job.status, JobStatus::Verifying) {
+                    t(lang, Msg::StatusVerifying)
+                } else {
+                    t(lang, Msg::Encoding)
+                };
                 format!(
                     "[{}/{}] {}: {}",
                     current_number,
                     total_to_encode,
-                    t(lang, Msg::Encoding),
+                    phase,
                     job.filename()
                 )
             } else {
@@ -77,6 +106,33 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
         format!("{} ({done}/{total})", t(lang, Msg::ConversionQueue))
     };
 
+    // The overall percentage and the space saved keep their room; the job
+    // description is truncated to whatever the title row has left.
+    let mut suffix = String::new();
+    if total_to_encode > 0 {
+        let _ = write!(suffix, " · {:.0}%", app.queue.overall_progress());
+    }
+    let (saved, saved_human) = app.queue.total_space_saved();
+    if saved != 0 {
+        let label = if saved < 0 {
+            Msg::TotalSpaceIncreased
+        } else {
+            Msg::TotalSpaceSaved
+        };
+        let _ = write!(
+            suffix,
+            " · {}: {}",
+            t(lang, label),
+            saved_human.trim_start_matches('-')
+        );
+    }
+    let inner_width = usize::from(chunks[0].width.saturating_sub(2));
+    let head_width = inner_width.saturating_sub(Line::raw(&suffix).width());
+    let title_text = format!(
+        "{}{suffix}",
+        crate::ui::common::truncate_end(&title_text, head_width)
+    );
+
     let title = Paragraph::new(title_text)
         .style(
             Style::default()
@@ -90,6 +146,19 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 .border_style(Style::default().fg(Color::DarkGray)),
         );
     f.render_widget(title, chunks[0]);
+
+    if let Some(ref msg) = app.message {
+        let color = crate::ui::common::message_color(app.message_kind);
+        let notice = Paragraph::new(msg.as_str())
+            .style(Style::default().fg(color))
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(color)),
+            );
+        f.render_widget(notice, chunks[1]);
+    }
 
     // File list
     let items: Vec<ListItem> = app
@@ -118,7 +187,7 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
             .title(format!(" {} ", t(lang, Msg::Files))),
     );
     app.queue_list_state.select(Some(app.queue_cursor));
-    f.render_stateful_widget(list, chunks[1], &mut app.queue_list_state);
+    f.render_stateful_widget(list, chunks[2], &mut app.queue_list_state);
 
     // Detail panel for the job at the cursor
     if let Some(job) = detail_job {
@@ -151,7 +220,24 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
                 .ratio(progress.clamp(0.0, 100.0) / 100.0)
                 .label(label);
-            f.render_widget(gauge, chunks[2]);
+            f.render_widget(gauge, chunks[3]);
+        } else if let JobStatus::Ripping { progress } = &job.status {
+            let label = if app.disc_state == DiscState::Cancelling {
+                t(lang, Msg::Cancelling)
+            } else {
+                t(lang, Msg::StatusRipping)
+            };
+            let gauge = Gauge::default()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray))
+                        .title(format!(" {} ", job.filename())),
+                )
+                .gauge_style(Style::default().fg(Color::Magenta).bg(Color::DarkGray))
+                .ratio(progress.clamp(0.0, 100.0) / 100.0)
+                .label(format!("{progress:.1}%  |  {label}"));
+            f.render_widget(gauge, chunks[3]);
         } else {
             let status_text = match &job.status {
                 JobStatus::Analyzing => t(lang, Msg::StatusAnalyzing).to_string(),
@@ -166,55 +252,142 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 JobStatus::DoneVmafFailed { reason } => {
                     format!("{} (VMAF: {reason})", t(lang, Msg::Complete))
                 }
-                JobStatus::QualityWarning { vmaf, threshold } => format!(
-                    "{}: VMAF {vmaf:.1} < {threshold:.0} {}",
+                JobStatus::QualityWarning {
+                    vmaf,
+                    min_score,
+                    threshold,
+                } => format!(
+                    "{}: VMAF {vmaf:.1} {} < {threshold:.0} {}",
                     t(lang, Msg::QualityWarning),
+                    t(lang, Msg::VmafMinScore).replace("{score}", &format!("{min_score:.1}")),
                     t(lang, Msg::ThresholdLabel)
                 ),
                 JobStatus::Skipped { reason } => translate_reason(lang, reason),
                 JobStatus::Error { message } => message.clone(),
-                // Handled by the `if let Encoding` branch above; unreachable here.
-                JobStatus::Encoding { .. } => String::new(),
+                // Handled by the gauge branches above; unreachable here.
+                JobStatus::Encoding { .. } | JobStatus::Ripping { .. } => String::new(),
+            };
+            let status_text = if matches!(
+                job.status,
+                JobStatus::Done | JobStatus::DoneWithVmaf { .. } | JobStatus::DoneVmafFailed { .. }
+            ) && let Some((saved, percent)) = job.size_reduction()
+                && percent >= 0.0
+            {
+                format!(
+                    "{status_text} — {}: {} ({percent:.1}%)",
+                    t(lang, Msg::ReductionLabel),
+                    format_file_size(saved)
+                )
+            } else {
+                status_text
             };
             let status = Paragraph::new(status_text)
                 .alignment(Alignment::Center)
                 .wrap(Wrap { trim: true })
+                .scroll((app.detail_scroll, 0))
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::DarkGray))
                         .title(format!(" {} ", t(lang, Msg::Status))),
                 );
-            f.render_widget(status, chunks[2]);
+            f.render_widget(status, chunks[3]);
         }
     }
 
     // Help
-    let help_text = if app.analysis_receiver.is_some() || app.encoding_active {
-        Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::Cancel))),
-            Span::styled("q", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}", t(lang, Msg::Quit))),
-        ])
+    let mut help_spans = vec![
+        Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+    ];
+    if app.has_jobs_awaiting_config() {
+        help_spans.push(Span::styled("Enter", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::WebConfirmTracks)
+        )));
+    } else if !app.work_active() {
+        help_spans.push(Span::styled("Enter", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Continue))));
+    }
+    if app.is_track_configurable(app.queue_cursor) {
+        help_spans.push(Span::styled("t", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::WebTracksTitle)
+        )));
+    }
+    help_spans.push(Span::styled("a", Style::default().fg(Color::Yellow)));
+    help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::AddToQueue))));
+    if app.can_clear_finished() {
+        help_spans.push(Span::styled("C", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::WebClearFinished)
+        )));
+    }
+    if app.can_remove_job(app.queue_cursor) {
+        help_spans.push(Span::styled("x", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::WebRemoveFromQueue)
+        )));
+    }
+    if app.queue.can_move_ready_up(app.queue_cursor) {
+        help_spans.push(Span::styled("K", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::MoveUp))));
+    }
+    if app.disc_state == DiscState::Cancelling {
+        help_spans.push(Span::styled(
+            t(lang, Msg::Cancelling),
+            Style::default().fg(Color::Yellow),
+        ));
+        help_spans.push(Span::raw("  "));
+    } else if app.work_active() {
+        help_spans.push(Span::styled("Esc", Style::default().fg(Color::Yellow)));
+        let cancel_action = if app.disc_operation_active() {
+            Msg::CancelDiscTitle
+        } else if app.analysis_receiver.is_some() {
+            Msg::CancelAnalysisTitle
+        } else {
+            Msg::CancelEncodingTitle
+        };
+        help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, cancel_action))));
     } else {
-        Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}  ", t(lang, Msg::Continue))),
-            Span::styled("q", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(" {}", t(lang, Msg::Quit))),
-        ])
-    };
+        help_spans.push(Span::styled("Esc", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))));
+    }
+    if app.analysis_receiver.is_some() && app.disc_operation_active() {
+        help_spans.push(Span::styled("A", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::CancelAnalysisTitle)
+        )));
+    }
+    if app.encoding_active && (app.disc_operation_active() || app.analysis_receiver.is_some()) {
+        help_spans.push(Span::styled("E", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::CancelEncodingTitle)
+        )));
+    }
+    help_spans.push(Span::styled(
+        "PgUp/PgDn",
+        Style::default().fg(Color::Yellow),
+    ));
+    help_spans.push(Span::raw(format!(
+        "\u{a0}{}  ",
+        t(lang, Msg::ScrollDetails)
+    )));
+    help_spans.push(Span::styled("q", Style::default().fg(Color::Yellow)));
+    help_spans.push(Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))));
+    let help_text = Line::from(help_spans);
 
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE))
         .wrap(Wrap { trim: true });
-    f.render_widget(help, chunks[3]);
+    f.render_widget(help, chunks[4]);
 }
 
 fn create_queue_item(
@@ -255,6 +428,11 @@ fn create_queue_item(
             ListItem::new(format!("{prefix}▶ {name} {progress:.1}%{crf_str}"))
                 .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod))
         }
+        JobStatus::Ripping { progress } => ListItem::new(format!(
+            "{prefix}⟳ {name} {} {progress:.1}%",
+            t(lang, Msg::StatusRipping)
+        ))
+        .style(Style::default().fg(Color::Magenta).add_modifier(bold_mod)),
         JobStatus::Verifying => ListItem::new(format!(
             "{prefix}◈ {name} {}",
             t(lang, Msg::StatusVerifying)
@@ -290,12 +468,19 @@ fn create_queue_item(
             translate_reason(lang, reason)
         ))
         .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
+        // Only the first line of a multi-line message; a `ListItem` renders
+        // one row per embedded newline. The detail panel wraps the full text.
         JobStatus::Error { message } => ListItem::new(format!(
-            "{prefix}✗ {name} {}: {message}",
-            t(lang, Msg::Error)
+            "{prefix}✗ {name} {}: {}",
+            t(lang, Msg::Error),
+            message.lines().next().unwrap_or_default()
         ))
         .style(Style::default().fg(Color::Red).add_modifier(bold_mod)),
-        JobStatus::QualityWarning { vmaf, threshold } => {
+        JobStatus::QualityWarning {
+            vmaf,
+            min_score,
+            threshold,
+        } => {
             let vmaf_color = get_vmaf_color(*vmaf);
             ListItem::new(Line::from(vec![
                 Span::styled(
@@ -307,7 +492,10 @@ fn create_queue_item(
                     Style::default().fg(vmaf_color).add_modifier(bold_mod),
                 ),
                 Span::styled(
-                    format!(" < {threshold:.0}"),
+                    format!(
+                        " {} < {threshold:.0}",
+                        t(lang, Msg::VmafMinScore).replace("{score}", &format!("{min_score:.1}"))
+                    ),
                     Style::default().fg(Color::Red).add_modifier(bold_mod),
                 ),
             ]))

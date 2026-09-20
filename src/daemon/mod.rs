@@ -1,10 +1,11 @@
 pub mod api;
 pub mod lifecycle;
 pub mod server;
+pub mod service;
 pub mod state;
 
-use crate::analyzer::{self, AnalysisResult, DvMode, HdrType, is_av1_codec};
-use crate::config::{AppConfig, AudioMode, Encoder};
+use crate::analyzer::{self, AnalysisResult, HdrType, is_av1_codec};
+use crate::config::{AppConfig, AudioMode};
 use crate::error::AppError;
 use crate::i18n::{Msg, t};
 use crate::queue::{
@@ -14,7 +15,7 @@ use crate::queue::{
 use crate::utils::DependencyStatus;
 use state::{DaemonState, EncodeSession, SharedState, is_terminal, lock};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,24 +25,61 @@ use tracing::{info, warn};
 const TICK: Duration = Duration::from_millis(250);
 /// How long shutdown waits for the worker to acknowledge cancellation.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
-/// Requests are served concurrently: a recursive scan or a listing of a slow
-/// network mount would otherwise stall the dashboard poll behind it.
+/// How long shutdown waits for in-flight HTTP requests before leaving their
+/// threads detached.
+const HTTP_JOIN_GRACE: Duration = Duration::from_secs(5);
+/// Number of HTTP worker threads.
 const SERVER_THREADS: usize = 4;
+
+/// Bind the web server and append the bound address to `pid_path`.
+fn start_server_at(
+    listen: &str,
+    pid_path: &std::path::Path,
+) -> Result<tiny_http::Server, AppError> {
+    let server = server::bind(listen)?;
+    if let Some(bound) = server.server_addr().to_ip() {
+        lifecycle::append_listen(pid_path, &bound.to_string()).map_err(|e| {
+            AppError::CommandExecution(format!(
+                "Failed to record the listen address in {}: {e}",
+                pid_path.display()
+            ))
+        })?;
+    }
+    Ok(server)
+}
+
+/// Bind the web server and record the bound address `--status` reads.
+fn start_server(listen: &str) -> Result<tiny_http::Server, AppError> {
+    start_server_at(listen, &lifecycle::pid_file())
+}
+
+/// Stop the prober and kill tracked child processes after a startup failure.
+fn abort_startup(shutdown: &Arc<AtomicBool>) {
+    shutdown.store(true, Ordering::SeqCst);
+    crate::utils::child::kill_all();
+}
 
 /// Run the headless daemon: web server + encoding orchestrator.
 /// Blocks until SIGINT/SIGTERM.
+#[allow(clippy::too_many_lines)]
 pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
-    if !DependencyStatus::check() {
+    let encoder_name = config.encoder.ffmpeg_name();
+    let deps = state::Capabilities {
+        ffmpeg: DependencyStatus::check(),
+        vmaf: DependencyStatus::vmaf_available(),
+        opus: DependencyStatus::libopus_available(),
+        encoder: DependencyStatus::encoder_available(encoder_name),
+    };
+    if !deps.ffmpeg {
         warn!("ffmpeg or ffprobe was not found on PATH; encoding will fail");
     }
-    if config.quality.vmaf_enabled && !DependencyStatus::vmaf_available() {
+    if config.quality.vmaf_enabled && !deps.vmaf {
         warn!("VMAF is enabled but this FFmpeg build has no libvmaf; verification will fail");
     }
-    if config.audio.default_mode == AudioMode::Opus && !DependencyStatus::libopus_available() {
+    if config.audio.default_mode == AudioMode::Opus && !deps.opus {
         warn!("Audio is set to Opus but this FFmpeg build has no libopus; encoding will fail");
     }
-    let encoder_name = config.encoder.ffmpeg_name();
-    if !DependencyStatus::encoder_available(encoder_name) {
+    if !deps.encoder {
         println!(
             "{} ({encoder_name})",
             t(config.language, Msg::EncoderUnavailable)
@@ -52,61 +90,99 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     let lang = config.language;
     let listen = config.daemon.listen_address();
 
-    // Anyone who can reach the port can queue encodes, rewrite the settings and
-    // browse the filesystem, so say so plainly when that is more than this host.
-    if config.daemon.binds_publicly() && config.daemon.auth_token.is_empty() {
-        println!("{}", t(lang, Msg::DaemonPublicNoToken));
-        warn!("Daemon is reachable from the network with no auth_token set");
+    // Plain HTTP: the token and media paths travel unencrypted.
+    if config.daemon.refuses_public_bind() {
+        return Err(AppError::CommandExecution(
+            t(config.language, Msg::DaemonPublicHttpRefused).to_string(),
+        ));
+    }
+    if config.daemon.binds_publicly() && config.daemon.browse_root.trim().is_empty() {
+        return Err(AppError::CommandExecution(
+            t(config.language, Msg::BrowseRootRequired).to_string(),
+        ));
+    }
+    if config.daemon.binds_publicly() {
+        warn!("Daemon is network-facing over plain HTTP; use HTTPS termination or a trusted LAN");
     }
 
-    let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(config)));
+    let queue_file = lifecycle::queue_file();
+    let (mut state, reprobe) = restore_state(config, &queue_file);
+    state.deps = deps;
+    let shared: SharedState = Arc::new(Mutex::new(state));
     let (analysis_tx, analysis_rx) = mpsc::channel::<(u64, Result<AnalysisResult, AppError>)>();
     let (probe_tx, probe_rx) = mpsc::channel::<(u64, String)>();
     let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>();
+    // One channel for every disc run: the handlers start runs, this loop
+    // applies what they report.
+    let (disc_tx, disc_rx) = mpsc::channel::<crate::disc::worker::DiscEvent>();
 
-    // One long-lived prober rather than a thread per add request: each probe
-    // forks ffprobe of its own, and a client adding several folders at once
-    // must not be able to decide how many of those run at a time.
-    //
-    // Because it is shared, it must not be possible to kill: a panic on one
-    // malformed file would otherwise take analysis down for the rest of the
-    // daemon's life, leaving every later file stuck in `Analyzing` with nothing
-    // reported. The panic is caught, blamed on the file that caused it, and the
-    // next one is picked up.
-    {
+    // One long-lived prober handles every add request, one file at a time. A
+    // panic is caught, blamed on the file that caused it, and the next file
+    // picked up.
+    let shutdown = Arc::new(AtomicBool::new(false));
+    lock(&shared).shutting_down = shutdown.clone();
+    let analysis_handle = {
         let analysis_tx = analysis_tx.clone();
+        let shutdown = shutdown.clone();
+        let shared = shared.clone();
         thread::spawn(move || {
             for (id, path) in probe_rx {
+                // Shutdown is read under the lock the shutdown path cancels
+                // the current flag under.
+                let cancel = {
+                    let mut state = lock(&shared);
+                    if shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let Some(cancel) = claim_probe(&mut state, id) else {
+                        continue;
+                    };
+                    cancel
+                };
+                let _span =
+                    crate::queue::worker::job_span(id, std::path::Path::new(&path)).entered();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    analyzer::analyze(&path)
+                    analyzer::analyze(&path, &cancel)
                 }))
-                .unwrap_or_else(|_| {
-                    Err(AppError::Analysis(format!("Analysis panicked on {path}")))
-                });
+                .unwrap_or_else(|_| Err(AppError::AnalysisPanicked(path.clone())));
                 if analysis_tx.send((id, result)).is_err() {
                     break;
                 }
             }
-        });
+        })
+    };
+
+    // Now that the prober is listening, hand back the reloaded files that
+    // never got analyzed.
+    for request in reprobe {
+        if probe_tx.send(request).is_err() {
+            warn!("Analysis is not running; reloaded files will stay unanalyzed");
+            break;
+        }
     }
 
-    let shutdown = Arc::new(AtomicBool::new(false));
-    {
+    let handler = {
         let shutdown = shutdown.clone();
         ctrlc::set_handler(move || {
             if shutdown.swap(true, Ordering::SeqCst) {
-                // Second signal: force exit
+                // Second signal: kill every tracked ffmpeg/makemkvcon child
+                // and exit.
+                crate::utils::child::kill_all();
                 std::process::exit(1);
             }
         })
-        .map_err(|e| AppError::CommandExecution(format!("Failed to set signal handler: {e}")))?;
-    }
-
-    let server = Arc::new(server::bind(&listen)?);
-    // Deliberately the bare address, not `url()`: in background mode this
-    // process's stdout is the daemon log file, and the token has no business
-    // being written there. The tokenised URL is printed to the terminal by
-    // whoever started us.
+        .map_err(|e| AppError::CommandExecution(format!("Failed to set signal handler: {e}")))
+    };
+    let server = Arc::new(match handler.and_then(|()| start_server(&listen)) {
+        Ok(server) => server,
+        Err(e) => {
+            abort_startup(&shutdown);
+            return Err(e);
+        }
+    });
+    // The bare address, not `url()`: in background mode stdout is the daemon
+    // log file, which carries no token. The tokenised URL is printed to the
+    // terminal by whoever started this process.
     println!("{} http://{listen}", t(lang, Msg::DaemonListening));
     info!("Web UI listening on http://{listen}");
     let server_handles: Vec<_> = (0..SERVER_THREADS)
@@ -114,12 +190,16 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
             let server = server.clone();
             let shared = shared.clone();
             let probe_tx = probe_tx.clone();
+            let disc_tx = disc_tx.clone();
             let shutdown = shutdown.clone();
-            thread::spawn(move || server::serve(&server, &shared, &probe_tx, &shutdown))
+            thread::spawn(move || server::serve(&server, &shared, &probe_tx, &disc_tx, &shutdown))
         })
         .collect();
 
     // Main orchestrator loop: owns analysis and worker result application.
+    let mut last_saved = Vec::new();
+    let mut last_save_warning = None;
+    let mut disc_was_active = false;
     while !shutdown.load(Ordering::SeqCst) {
         match analysis_rx.recv_timeout(TICK) {
             Ok((id, result)) => apply_analysis_result(&shared, id, result),
@@ -134,7 +214,50 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
             apply_worker_message(&shared, msg);
         }
 
+        while let Ok(event) = disc_rx.try_recv() {
+            apply_disc_event(&shared, &probe_tx, event);
+        }
+
+        // Deletion runs with the lock released.
+        let (released, root) = {
+            let mut state = lock(&shared);
+            (
+                crate::disc::staging::release_finished(&mut state.queue.state.jobs),
+                crate::disc::staging::staging_root(&state.config),
+            )
+        };
+        for path in released {
+            crate::disc::staging::discard_staged(&root, &path);
+        }
+        sweep_after_disc_run(
+            &shared,
+            &mut disc_was_active,
+            crate::disc::staging::ACTIVE_RIP_WINDOW,
+        );
         maybe_start_session(&shared, &worker_tx);
+        persist_queue(
+            &shared,
+            &queue_file,
+            &mut last_saved,
+            &mut last_save_warning,
+        );
+    }
+
+    // Probes and a drive listing wait on ffprobe and makemkvcon; both are
+    // cancelled before the HTTP threads are joined.
+    {
+        let state = lock(&shared);
+        state.analysis_cancel.store(true, Ordering::Release);
+        state.disc.cancel();
+    }
+
+    // HTTP stops accepting once `shutdown` is set, and is joined before the
+    // worker handles are taken: an in-flight rip is stored and then cancelled,
+    // never spawned after `take()`. A thread still blocked on a stalled client
+    // after `HTTP_JOIN_GRACE` is left detached.
+    let http_joined = join_within(server_handles, HTTP_JOIN_GRACE);
+    if !http_joined {
+        warn!("HTTP requests still in flight after the shutdown grace; not waiting for them");
     }
 
     // Graceful shutdown: cancel any running encode and wait for the worker
@@ -142,19 +265,34 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
     let cancelling = {
         let state = lock(&shared);
         if let Some(session) = state.session.as_ref().filter(|_| state.encoding_active) {
-            session.cancel_flag.store(true, Ordering::Relaxed);
+            session.cancel_flag.store(true, Ordering::Release);
             true
         } else {
             false
         }
     };
+
+    // A rip is waited out the same way; makemkvcon is a child of this
+    // process.
+    if lock(&shared).disc.active {
+        lock(&shared).disc.cancel();
+        println!("{}", t(lang, Msg::DaemonShuttingDown));
+        let deadline = Instant::now() + SHUTDOWN_GRACE;
+        while Instant::now() < deadline && lock(&shared).disc.active {
+            match disc_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(event) => apply_disc_event(&shared, &probe_tx, event),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    }
     if cancelling {
         println!("{}", t(lang, Msg::DaemonShuttingDown));
         let deadline = Instant::now() + SHUTDOWN_GRACE;
         while Instant::now() < deadline {
             match worker_rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(msg) => {
-                    let done = matches!(msg, WorkerMessage::Cancelled);
+                    let done = matches!(msg, WorkerMessage::Cancelled | WorkerMessage::Finished);
                     apply_worker_message(&shared, msg);
                     if done {
                         break;
@@ -166,34 +304,470 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         }
     }
 
-    for handle in server_handles {
-        let _ = handle.join();
+    if lock(&shared).disc.active {
+        warn!("shutdown grace elapsed; killing leftover child processes");
     }
+    // Always reap child process groups: analysis-only ffprobe may still be
+    // alive, and children run in their own PGID, which a parent exit does not
+    // reap.
+    crate::utils::child::kill_all();
+    let (encode_worker, disc_worker) = {
+        let mut state = lock(&shared);
+        (state.encode_worker.take(), state.disc_worker.take())
+    };
+    let mut worker_handles = Vec::new();
+    if let Some(handle) = encode_worker {
+        worker_handles.push(handle);
+    }
+    if let Some(handle) = disc_worker {
+        worker_handles.push(handle);
+    }
+    if !join_within(worker_handles, SHUTDOWN_GRACE) {
+        warn!("encode/disc workers did not finish within the shutdown grace");
+    }
+    drain_shutdown_channels(&shared, &worker_rx, &disc_rx, &probe_tx);
+
+    // The queue is saved as it stands; the next start settles unfinished jobs
+    // with `queue::state::resume`.
+    persist_queue(
+        &shared,
+        &queue_file,
+        &mut last_saved,
+        &mut last_save_warning,
+    );
+    // The analyzer owns ffprobe children; kill_all already reaped them.
+    // Detached HTTP threads may still hold `probe_tx` clones, and the prober
+    // is joined with a grace window.
+    drop(probe_tx);
+    if !join_within(vec![analysis_handle], HTTP_JOIN_GRACE) {
+        warn!("analysis prober still running after shutdown grace; abandoning join");
+    }
+    crate::utils::remove_scratch_dir_if_empty();
     Ok(())
 }
 
+/// Join `handles`, waiting at most `grace` for them to finish. Returns whether
+/// every one was joined.
+fn join_within(handles: Vec<thread::JoinHandle<()>>, grace: Duration) -> bool {
+    let deadline = Instant::now() + grace;
+    while Instant::now() < deadline && !handles.iter().all(thread::JoinHandle::is_finished) {
+        thread::sleep(Duration::from_millis(50));
+    }
+    let mut joined = true;
+    for handle in handles {
+        if handle.is_finished() {
+            let _ = handle.join();
+        } else {
+            joined = false;
+        }
+    }
+    joined
+}
+
+/// Sweep orphaned staging directories once `disc.active` has gone false since
+/// the last call. The sweep runs with the lock released.
+fn sweep_after_disc_run(shared: &SharedState, was_active: &mut bool, min_age: Duration) {
+    let snapshot = {
+        let state = lock(shared);
+        let settled = *was_active && !state.disc.active;
+        *was_active = state.disc.active;
+        settled.then(|| {
+            let staged: Vec<EncodingJob> = state
+                .queue
+                .state
+                .jobs
+                .iter()
+                .filter(|job| job.temporary)
+                .cloned()
+                .collect();
+            (state.config.clone(), staged)
+        })
+    };
+    if let Some((config, staged)) = snapshot {
+        crate::disc::staging::sweep_orphans(&config, &staged, min_age);
+    }
+}
+
+/// Apply leftover worker/disc messages after join, then settle anything still
+/// in flight.
+fn drain_shutdown_channels(
+    shared: &SharedState,
+    worker_rx: &Receiver<WorkerMessage>,
+    disc_rx: &Receiver<crate::disc::worker::DiscEvent>,
+    probe_tx: &Sender<(u64, String)>,
+) {
+    while let Ok(msg) = worker_rx.try_recv() {
+        apply_worker_message(shared, msg);
+    }
+    while let Ok(event) = disc_rx.try_recv() {
+        apply_disc_event(shared, probe_tx, event);
+    }
+    if lock(shared).encoding_active {
+        apply_worker_message(shared, WorkerMessage::Cancelled);
+    }
+}
+
+/// Build the starting state from the queue this daemon last wrote. Returns the
+/// state to run with, and the reloaded files that were never analyzed, for the
+/// caller to hand back to the prober.
+fn restore_state(
+    config: AppConfig,
+    queue_file: &std::path::Path,
+) -> (DaemonState, Vec<(u64, String)>) {
+    let (mut restored, unreadable_queue) = crate::queue::state::load(queue_file);
+    let browse_root = config.daemon.browse_root.clone();
+    let root = if browse_root.is_empty() {
+        None
+    } else {
+        match std::path::PathBuf::from(&browse_root).canonicalize() {
+            Ok(root) => Some(root),
+            Err(e) => {
+                warn!(
+                    "browse_root {browse_root} cannot be resolved ({e}); saved jobs are kept as they are"
+                );
+                None
+            }
+        }
+    };
+    if let Some(root) = root {
+        // Missing files resolve through their deepest existing folder.
+        let confine = |path: &std::path::Path| {
+            api::resolve_through_existing(path).filter(|resolved| resolved.starts_with(&root))
+        };
+        for job in &mut restored.state.jobs {
+            // Staged rips live in the staging directory, outside any browse root.
+            let source = if job.temporary {
+                Some(job.path.clone())
+            } else {
+                confine(&job.path)
+            };
+            let output = job
+                .output_path
+                .as_ref()
+                .and_then(|output| Some(confine(output.parent()?)?.join(output.file_name()?)));
+            if source.is_none() || (job.output_path.is_some() && output.is_none()) {
+                // The queue API includes paths, so completed history is dropped
+                // too when a newly tightened root excludes it.
+                job.path = std::path::PathBuf::from("<outside browse_root>");
+                job.output_path = None;
+                if !is_terminal(&job.status) {
+                    job.status = JobStatus::Error {
+                        message: "Saved job is outside the configured browse root".to_string(),
+                    };
+                }
+            } else if let Some(source) = source {
+                // The resolved paths that passed confinement, not the spellings.
+                job.path = source;
+                if job.output_path.is_some() {
+                    job.output_path = output;
+                }
+            }
+        }
+    }
+    crate::queue::state::resume(&mut restored);
+    let restored_jobs = restored.state.jobs.len();
+
+    let reprobe: Vec<(u64, String)> = crate::queue::state::needs_analysis(&restored)
+        .into_iter()
+        .filter_map(|(index, path)| restored.ids.get(index).map(|&id| (id, path)))
+        .collect();
+
+    let mut state = DaemonState::new(config);
+    state.queue = state::DaemonQueue::from_persisted(restored);
+    state.unreadable_queue = unreadable_queue;
+    // A rip cut short by a kill has nothing left tracking its file.
+    crate::disc::staging::sweep_orphans(
+        &state.config,
+        &state.queue.state.jobs,
+        crate::disc::staging::ACTIVE_RIP_WINDOW,
+    );
+    for (id, _) in &reprobe {
+        if let Some(job) = state.queue.job_by_id_mut(*id) {
+            job.status = JobStatus::Analyzing;
+        }
+    }
+    if restored_jobs > 0 {
+        info!(
+            "Reloaded {restored_jobs} job(s) from {} ({} to re-analyze)",
+            queue_file.display(),
+            reprobe.len()
+        );
+    }
+    (state, reprobe)
+}
+
+/// The size of a freshly ripped title's file, read outside the state lock.
+fn ripped_size(event: &crate::disc::worker::DiscEvent) -> Option<u64> {
+    match event {
+        crate::disc::worker::DiscEvent::TitleReady { path, .. } => {
+            std::fs::metadata(path).ok().map(|m| m.len())
+        }
+        _ => None,
+    }
+}
+
+/// Apply one event from a disc run, and hand each extracted file straight to
+/// the prober: the drive moves on to the next title while this one is probed.
+fn apply_disc_event(
+    shared: &SharedState,
+    probe_tx: &Sender<(u64, String)>,
+    event: crate::disc::worker::DiscEvent,
+) {
+    use crate::disc::worker::DiscEvent;
+
+    let ripped_size = ripped_size(&event);
+    let mut ready = None;
+    {
+        let mut state = lock(shared);
+        let lang = state.config.language;
+        match event {
+            DiscEvent::TitlesFound(scan) => {
+                state.disc.disc_type = scan.disc_type;
+                // A scan that settles with zero titles reports as an error.
+                if scan.titles.is_empty() {
+                    state.disc.error = Some(t(lang, Msg::DiscNoTitles).to_string());
+                }
+                state.disc.titles = scan.titles;
+                state.disc.settle();
+            }
+            DiscEvent::Ripping { index, progress } => {
+                if let Some(id) = state.disc.job_ids.get(index).copied()
+                    && let Some(job) = state.queue.job_by_id_mut(id)
+                    && matches!(job.status, JobStatus::Ripping { .. })
+                {
+                    job.status = JobStatus::Ripping { progress };
+                }
+            }
+            DiscEvent::TitleReady { index, path } => {
+                if let Some(id) = state.disc.job_ids.get(index).copied()
+                    && let Some(job) = state.queue.job_by_id_mut(id)
+                    && matches!(job.status, JobStatus::Ripping { .. })
+                {
+                    job.source_size = ripped_size;
+                    if let Some(text) = path.to_str().map(str::to_string) {
+                        job.path = path;
+                        job.status = JobStatus::Analyzing;
+                        ready = Some((id, text));
+                    } else {
+                        // A path the queue file cannot carry is kept in its
+                        // lossy form, which every later save can write.
+                        job.path = std::path::PathBuf::from(path.to_string_lossy().into_owned());
+                        job.status = JobStatus::Error {
+                            message: "File path contains non-UTF-8 characters".to_string(),
+                        };
+                        state.queue.state.error_count += 1;
+                    }
+                }
+            }
+            DiscEvent::Error { index, error } => {
+                let message = error.message(lang);
+                info!("Disc run stopped: {message}");
+                let ids = state.disc.job_ids.clone();
+                for (position, id) in ids.into_iter().enumerate() {
+                    let failed = position == index;
+                    let Some(job) = state.queue.job_by_id_mut(id) else {
+                        continue;
+                    };
+                    if !matches!(job.status, JobStatus::Ripping { .. }) {
+                        continue;
+                    }
+                    job.status = if failed {
+                        JobStatus::Error {
+                            message: message.clone(),
+                        }
+                    } else {
+                        JobStatus::Skipped {
+                            reason: message.clone(),
+                        }
+                    };
+                    if failed {
+                        state.queue.state.error_count += 1;
+                    } else {
+                        state.queue.state.skipped_count += 1;
+                    }
+                }
+                state.disc.error = Some(message);
+                state.disc.settle();
+            }
+            DiscEvent::Cancelled => {
+                let ids = state.disc.job_ids.clone();
+                for id in ids {
+                    if let Some(job) = state.queue.job_by_id_mut(id)
+                        && matches!(job.status, JobStatus::Ripping { .. })
+                    {
+                        job.status = JobStatus::Skipped {
+                            reason: "Cancelled".to_string(),
+                        };
+                        state.queue.state.count_cancelled(1);
+                    }
+                }
+                state.disc.settle();
+            }
+            DiscEvent::Finished => state.disc.settle(),
+        }
+    }
+
+    if let Some((id, path)) = ready
+        && probe_tx.send((id, path)).is_err()
+    {
+        let mut state = lock(shared);
+        if let Some(job) = state.queue.job_by_id_mut(id) {
+            job.status = JobStatus::Error {
+                message: "Analysis is not running".to_string(),
+            };
+        }
+        state.queue.state.error_count += 1;
+    }
+}
+
+/// Write the queue out if its serialized form changed since the last write.
+/// The only save call site: handlers and worker messages mutate the queue
+/// behind the mutex without saving. `JobStatus::Encoding` does not persist its
+/// percentage, and a running encode does not churn the file.
+///
+/// The comparison re-serializes the queue once per tick.
+fn persist_queue(
+    shared: &SharedState,
+    path: &std::path::Path,
+    last_saved: &mut Vec<u8>,
+    last_warning: &mut Option<Instant>,
+) {
+    let json = {
+        let state = lock(shared);
+        let snapshot = state.queue.as_persistable();
+        match serde_json::to_vec_pretty(&snapshot) {
+            Ok(json) => json,
+            Err(e) => {
+                if last_warning.is_none_or(|at| at.elapsed() >= Duration::from_mins(1)) {
+                    warn!("The queue cannot be written: {e}");
+                    *last_warning = Some(Instant::now());
+                }
+                return;
+            }
+        }
+    };
+    if json == *last_saved {
+        return;
+    }
+    match crate::queue::state::save_serialized(path, &json) {
+        Ok(()) => {
+            *last_saved = json;
+            *last_warning = None;
+        }
+        // Retried every tick, but logged only once per outage.
+        Err(e) => {
+            if last_warning.is_none_or(|at| at.elapsed() >= Duration::from_mins(1)) {
+                warn!("Could not save the queue to {}: {e}", path.display());
+                *last_warning = Some(Instant::now());
+            }
+        }
+    }
+}
+
+/// Install a fresh analysis cancel flag for probing job `id`, or `None` when
+/// the job was removed or no longer awaits analysis.
+fn claim_probe(state: &mut DaemonState, id: u64) -> Option<Arc<AtomicBool>> {
+    if !state
+        .queue
+        .job_by_id(id)
+        .is_some_and(|job| job.status.awaits_analysis())
+    {
+        return None;
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    state.analysis_cancel = cancel.clone();
+    Some(cancel)
+}
+
 /// Queue new files and hand them to the prober.
+///
+/// Returns `(added, duplicates, filtered)` where `filtered` covers paths
+/// rejected for reasons other than already being queued (e.g. outside the
+/// live browse root).
+#[allow(clippy::too_many_lines)]
 fn add_paths(
     shared: &SharedState,
     probe_tx: &Sender<(u64, String)>,
     paths: Vec<std::path::PathBuf>,
-) -> (usize, usize) {
-    let requested = paths.len();
-    let mut added = 0;
+    browse_root: &str,
+) -> (usize, usize, usize) {
+    let mut added: usize = 0;
+    let mut duplicates: usize = 0;
+    let mut filtered: usize = 0;
     let mut to_analyze: Vec<(u64, String)> = Vec::new();
+    let requested = paths.len();
+
+    // Canonicalization and identity reads touch the filesystem and run with
+    // no lock held. Under the lock we also compare filesystem identities so
+    // two spellings of the same inode cannot both queue.
+    let queued_paths: Vec<std::path::PathBuf> = lock(shared)
+        .queue
+        .jobs_with_ids()
+        .filter(|(_, job)| !is_terminal(&job.status))
+        .map(|(_, job)| job.path.clone())
+        .collect();
+    let mut existing: std::collections::HashSet<std::path::PathBuf> = queued_paths
+        .iter()
+        .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+        .collect();
+    let mut existing_ids: std::collections::HashSet<crate::queue::SourceIdentity> = queued_paths
+        .iter()
+        .filter_map(|path| crate::queue::SourceIdentity::from_path(path).ok())
+        .collect();
+    let canonical_paths: Vec<(
+        std::path::PathBuf,
+        std::path::PathBuf,
+        Option<crate::queue::SourceIdentity>,
+    )> = paths
+        .into_iter()
+        .map(|path| {
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            let identity = crate::queue::SourceIdentity::from_path(&canonical).ok();
+            (canonical, path, identity)
+        })
+        .collect();
+
     {
         let mut state = lock(shared);
-        // Paths already queued and not yet finished are skipped
-        let mut existing: std::collections::HashSet<std::path::PathBuf> = state
+        if state
+            .shutting_down
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return (0, 0, requested);
+        }
+        state.queue.state.reset_session_if_finished();
+        for (_, job) in state
             .queue
             .jobs_with_ids()
             .filter(|(_, job)| !is_terminal(&job.status))
-            .map(|(_, job)| job.path.canonicalize().unwrap_or_else(|_| job.path.clone()))
-            .collect();
+        {
+            if !queued_paths.contains(&job.path) {
+                existing.insert(job.path.clone());
+                if let Ok(identity) = crate::queue::SourceIdentity::from_path(&job.path) {
+                    existing_ids.insert(identity);
+                }
+            }
+        }
 
-        for path in paths {
-            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-            if !existing.insert(canonical) {
+        // `paths` were confined against `browse_root`. A live root that differs
+        // was stored resolved by the settings API and is compared by prefix.
+        let live_root = std::path::PathBuf::from(&state.config.daemon.browse_root);
+        let root_changed = state.config.daemon.browse_root != browse_root;
+
+        for (canonical, path, identity) in canonical_paths {
+            if root_changed
+                && !live_root.as_os_str().is_empty()
+                && !canonical.starts_with(&live_root)
+            {
+                filtered += 1;
+                continue;
+            }
+            let path_dup = !existing.insert(canonical);
+            let id_dup = identity
+                .as_ref()
+                .is_some_and(|id| !existing_ids.insert(id.clone()));
+            if path_dup || id_dup {
+                duplicates += 1;
                 continue;
             }
             let mut job = EncodingJob::new(path);
@@ -214,10 +788,8 @@ fn add_paths(
         }
     }
 
-    // A job handed over is a job that will be reported on. If the prober is
-    // gone the queue must say so, rather than leaving jobs in `Analyzing`
-    // forever — a status that never resolves and, being non-terminal, would go
-    // on blocking every future attempt to add the same file.
+    // A dead prober is reported on the jobs themselves; they leave the
+    // non-terminal `Analyzing` state, which blocks re-adds of the same file.
     let mut orphaned: Vec<u64> = Vec::new();
     let mut requests = to_analyze.into_iter();
     for request in requests.by_ref() {
@@ -240,16 +812,17 @@ fn add_paths(
                     message: "Analysis is not running".to_string(),
                 };
                 state.queue.state.error_count += 1;
-                added -= 1;
+                added = added.saturating_sub(1);
+                filtered += 1;
             }
         }
     }
 
-    (added, requested - added)
+    (added, duplicates, filtered)
 }
 
 /// Apply one finished analysis: mirror the TUI's `apply_analysis_results`,
-/// then resolve the Dolby Vision mode non-interactively and wait for the WebUI
+/// then resolve the Dolby Vision mode non-interactively and wait for the `WebUI`
 /// track confirmation.
 fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisResult, AppError>) {
     let mut state = lock(shared);
@@ -257,49 +830,68 @@ fn apply_analysis_result(shared: &SharedState, id: u64, result: Result<AnalysisR
     let track_config = state.config.tracks.clone();
     let audio_config = state.config.audio.clone();
     let encoder = state.config.encoder;
+    let lang = state.config.language;
+    let shutting_down = state.shutting_down.load(Ordering::SeqCst);
 
     // The job may have been removed while analysis was running
     let Some(job) = state.queue.job_by_id_mut(id) else {
         return;
     };
+    if !job.status.awaits_analysis() {
+        return;
+    }
 
     match result {
         Ok(analysis) => {
             let is_av1 = is_av1_codec(&analysis.metadata.codec_name);
             let hdr_type = analysis.metadata.hdr_type;
             let dv_profile = analysis.metadata.dv_profile;
+            job.source_size = Some(analysis.source_identity.size_bytes());
+            job.source_identity = Some(analysis.source_identity);
             job.metadata = Some(analysis.metadata);
             job.audio_tracks = analysis.audio_tracks;
             job.subtitle_tracks = analysis.subtitle_tracks;
             job.remux_only = is_av1;
             auto_select_tracks(job, &track_config, &audio_config);
             job.generate_output_path(&output_config);
-            // Hardware encoders cannot write the DV RPU, so those jobs are
-            // resolved to HDR10 (mirrors `App::maybe_open_dv_dialog`)
+            if job.temporary && job.output_path.is_none() {
+                job.status = JobStatus::Error {
+                    message: crate::disc::DiscError::NoDestination.message(lang),
+                };
+                state.queue.state.error_count += 1;
+                return;
+            }
+            // Mirrors `App::maybe_open_dv_dialog`, shared with the web API.
             if !is_av1 && hdr_type == HdrType::DolbyVision {
-                job.dv_mode = Some(if encoder == Encoder::SvtAv1 {
-                    DvMode::recommended_for(dv_profile)
-                } else {
-                    DvMode::ToHdr10
-                });
+                job.dv_mode = Some(api::resolved_dv_mode(encoder, dv_profile));
             }
             job.status = JobStatus::AwaitingConfig;
             info!("Analyzed {}", job.path.display());
             make_output_paths_unique(&mut state.queue.state.jobs);
         }
+        // A daemon stop leaves the job analysing; `queue::state::resume`
+        // probes it again on the next start.
+        Err(AppError::Cancelled) if shutting_down => {}
+        Err(AppError::Cancelled) => {
+            job.status = JobStatus::Skipped {
+                reason: "Cancelled".to_string(),
+            };
+            state.queue.state.count_cancelled(1);
+        }
         Err(e) => {
             job.status = JobStatus::Error {
-                message: e.to_string(),
+                message: e.message(lang),
             };
             state.queue.state.error_count += 1;
         }
     }
 }
 
-/// Start a new encode session if idle, not paused, and jobs are ready.
+/// Start a new encode session if idle and jobs are ready.
+#[allow(clippy::too_many_lines)]
 fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) {
     let mut state = lock(shared);
-    if state.encoding_active || state.paused {
+    if state.encoding_active {
         return;
     }
 
@@ -307,6 +899,7 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
     let audio_config = state.config.audio.clone();
     let mut job_ids: Vec<u64> = Vec::new();
     let mut worker_jobs: Vec<WorkerJob> = Vec::new();
+    let mut without_destination: Vec<u64> = Vec::new();
     for (id, job) in state.queue.jobs_with_ids() {
         if !matches!(job.status, JobStatus::Ready) {
             continue;
@@ -314,14 +907,26 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         let Some(metadata) = job.metadata.clone() else {
             continue;
         };
-        let output = job.output_path.clone().unwrap_or_else(|| {
-            let stem = job.path.file_stem().unwrap_or_default().to_string_lossy();
-            let parent = job.path.parent().unwrap_or(std::path::Path::new("."));
-            parent.join(format!(
-                "{}{}.{}",
-                stem, output_config.suffix, output_config.container
-            ))
-        });
+        let Some(source_identity) = job.source_identity.clone() else {
+            continue;
+        };
+        // A ripped file has no next-to-the-source fallback: that is the staging
+        // directory.
+        let output = match job.output_path.clone() {
+            Some(output) => output,
+            None if job.temporary => {
+                without_destination.push(id);
+                continue;
+            }
+            None => {
+                let stem = job.path.file_stem().unwrap_or_default().to_string_lossy();
+                let parent = job.path.parent().unwrap_or(std::path::Path::new("."));
+                parent.join(format!(
+                    "{}{}.{}",
+                    stem, output_config.suffix, output_config.container
+                ))
+            }
+        };
         let selected_subs = crate::tracks::selected_subtitles(
             &job.subtitle_tracks,
             &job.track_selection.subtitle_indices,
@@ -329,37 +934,62 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         worker_jobs.push(WorkerJob {
             index: worker_jobs.len(),
             subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
-            input: job.path.clone(),
-            output,
-            metadata,
             tracks: job
                 .track_selection
-                .resolve(&job.audio_tracks, &audio_config),
+                .resolve_for(&job.audio_tracks, &audio_config, &output),
+            input: job.path.clone(),
+            output,
+            source_identity,
+            metadata,
             dv_mode: job.dv_mode.unwrap_or_default(),
             remux_only: job.remux_only,
         });
         job_ids.push(id);
+        break;
+    }
+
+    let lang = state.config.language;
+    for id in without_destination {
+        if let Some(job) = state.queue.job_by_id_mut(id) {
+            job.status = JobStatus::Error {
+                message: crate::disc::DiscError::NoDestination.message(lang),
+            };
+            state.queue.state.error_count += 1;
+        }
     }
 
     if worker_jobs.is_empty() {
         return;
     }
-    info!("Starting encode session with {} job(s)", worker_jobs.len());
+    info!("Starting encode session with one job");
 
-    for &id in &job_ids {
+    let ready = state
+        .queue
+        .state
+        .jobs
+        .iter()
+        .filter(|job| matches!(job.status, JobStatus::Ready))
+        .count();
+    state.queue.state.total_jobs_to_encode = state.queue.state.encoding_progress_done + ready;
+    // The elapsed clock counts encoding time only; the idle gap since the
+    // last session ended is shifted out of it.
+    let now = Instant::now();
+    match (state.queue.state.start_time, state.queue.state.end_time) {
+        (Some(start), Some(end)) => {
+            state.queue.state.start_time = Some(start + now.duration_since(end));
+        }
+        (None, _) => state.queue.state.start_time = Some(now),
+        (Some(_), None) => {}
+    }
+    state.queue.state.end_time = None;
+    if let Some(&id) = job_ids.first() {
+        if let Some(index) = state.queue.index_of(id) {
+            state.queue.state.current_job_index = index;
+        }
         if let Some(job) = state.queue.job_by_id_mut(id) {
-            job.status = JobStatus::Pending;
+            job.status = JobStatus::Encoding { progress: 0.0 };
         }
     }
-
-    // Progress and ETA are reported for the session that is actually running.
-    // Carrying totals or a start time across sessions would leave the dashboard
-    // measuring against jobs that finished hours ago, with all the idle time in
-    // between counted as encoding time.
-    state.queue.state.total_jobs_to_encode = worker_jobs.len();
-    state.queue.state.encoding_progress_done = 0;
-    state.queue.state.start_time = Some(Instant::now());
-    state.queue.state.end_time = None;
 
     let cancel_flag = Arc::new(AtomicBool::new(false));
     state.session = Some(EncodeSession {
@@ -370,12 +1000,10 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
 
     let config = state.config.clone();
     let tx = worker_tx.clone();
-    thread::spawn(move || {
-        // `run_worker` already contains a panic per job, so this is the
-        // last-resort net for a panic outside one. It matters because the
-        // channel cannot signal it: this daemon keeps its own sender alive, so
-        // a dead worker never disconnects, it just stops talking — and the
-        // session would stay open forever, blocking every later one.
+    state.encode_worker = Some(thread::spawn(move || {
+        // `run_worker` catches a panic per job; this covers one outside any
+        // job. The channel never reports it: this daemon holds its own sender
+        // alive, and a dead worker stops talking without disconnecting.
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_worker(worker_jobs, &config, &cancel_flag, &tx);
         }))
@@ -384,11 +1012,12 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
             warn!("Encode worker panicked; ending the session");
             let _ = tx.send(WorkerMessage::Cancelled);
         }
-    });
+    }));
 }
 
 /// Apply one worker message: mirrors the TUI's `process_progress_messages`,
 /// but translates the session-local index to a stable job id first.
+#[allow(clippy::too_many_lines)]
 fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
     let mut state = lock(shared);
     let Some(session_ids) = state.session.as_ref().map(|s| s.job_ids.clone()) else {
@@ -396,13 +1025,16 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
     };
     let id_for = |idx: usize| session_ids.get(idx).copied();
 
+    let mut pending_size: Option<(u64, std::path::PathBuf)> = None;
     match msg {
         WorkerMessage::Progress(idx, progress) => {
             if let Some(id) = id_for(idx) {
                 if let Some(index) = state.queue.index_of(id) {
                     state.queue.state.current_job_index = index;
                 }
-                if let Some(job) = state.queue.job_by_id_mut(id) {
+                if let Some(job) = state.queue.job_by_id_mut(id)
+                    && matches!(job.status, JobStatus::Encoding { .. })
+                {
                     job.status = JobStatus::Encoding { progress };
                 }
             }
@@ -413,23 +1045,27 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
             }
         }
         WorkerMessage::Done(idx) => {
-            finish_job(&mut state, id_for(idx), JobStatus::Done);
+            pending_size = finish_job(&mut state, id_for(idx), JobStatus::Done);
         }
         WorkerMessage::DoneWithVmaf(idx, score) => {
-            finish_job(&mut state, id_for(idx), JobStatus::DoneWithVmaf { score });
+            pending_size = finish_job(&mut state, id_for(idx), JobStatus::DoneWithVmaf { score });
         }
         WorkerMessage::DoneVmafFailed(idx, reason) => {
-            finish_job(
+            pending_size = finish_job(
                 &mut state,
                 id_for(idx),
                 JobStatus::DoneVmafFailed { reason },
             );
         }
-        WorkerMessage::QualityWarning(idx, vmaf, threshold) => {
-            finish_job(
+        WorkerMessage::QualityWarning(idx, vmaf, min_score, threshold) => {
+            pending_size = finish_job(
                 &mut state,
                 id_for(idx),
-                JobStatus::QualityWarning { vmaf, threshold },
+                JobStatus::QualityWarning {
+                    vmaf,
+                    min_score,
+                    threshold,
+                },
             );
         }
         WorkerMessage::Error(idx, message) => {
@@ -444,11 +1080,19 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
                 job.source_deleted = true;
             }
         }
-        WorkerMessage::SourceKeptLowVmaf(idx, vmaf) => {
+        WorkerMessage::SourceKeptLowVmaf(idx, vmaf, _min) => {
             if let Some(job) = id_for(idx).and_then(|id| state.queue.job_by_id_mut(id)) {
                 job.source_kept_vmaf = Some(vmaf);
             }
         }
+        WorkerMessage::SourceKept(idx, reason) => {
+            if let Some(job) = id_for(idx).and_then(|id| state.queue.job_by_id_mut(id)) {
+                job.source_kept_reason = Some(reason);
+            }
+        }
+        // A daemon stop leaves session jobs as they are; `queue::state::resume`
+        // settles them on the next start.
+        WorkerMessage::Cancelled if state.shutting_down.load(Ordering::SeqCst) => {}
         WorkerMessage::Cancelled => {
             for &id in &session_ids {
                 if let Some(job) = state.queue.job_by_id_mut(id)
@@ -457,13 +1101,13 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
                     job.status = JobStatus::Skipped {
                         reason: "Cancelled".to_string(),
                     };
-                    state.queue.state.skipped_count += 1;
-                    // A cancelled job is done as far as the session goes, so
-                    // progress still reaches 100% instead of stalling short.
+                    state.queue.state.count_cancelled(1);
+                    // A cancelled job counts as done for the session.
                     state.queue.state.encoding_progress_done += 1;
                 }
             }
         }
+        WorkerMessage::Finished => {}
     }
 
     // Session over when every job in it reached a terminal state
@@ -473,30 +1117,549 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
             .job_by_id(id)
             .is_none_or(|job| is_terminal(&job.status))
     });
-    if all_done {
+    let encode_worker = if all_done {
         state.encoding_active = false;
         state.session = None;
+        // Set on every session end, not only a fully settled queue.
         state.queue.state.end_time = Some(Instant::now());
-        info!("Encode session finished");
+        info!("Encode job finished");
+        state.encode_worker.take()
+    } else {
+        None
+    };
+    drop(state);
+
+    if let Some((id, path)) = pending_size {
+        let size = std::fs::metadata(&path).ok().map(|m| m.len());
+        if let Some(job) = lock(shared).queue.job_by_id_mut(id) {
+            job.output_size = size;
+        }
+    }
+    if let Some(handle) = encode_worker {
+        let _ = handle.join();
     }
 }
 
-/// Mark a session job as successfully finished and record the output size.
-fn finish_job(state: &mut DaemonState, id: Option<u64>, status: JobStatus) {
-    let Some(job) = id.and_then(|id| state.queue.job_by_id_mut(id)) else {
-        return;
-    };
+/// Mark a session job as successfully finished. Returns `(id, path)` so the
+/// caller can `metadata` the output without holding the daemon mutex.
+fn finish_job(
+    state: &mut DaemonState,
+    id: Option<u64>,
+    status: JobStatus,
+) -> Option<(u64, std::path::PathBuf)> {
+    let id = id?;
+    let job = state.queue.job_by_id_mut(id)?;
+    let output_path = job.output_path.clone();
     job.status = status;
-    if let Some(ref output_path) = job.output_path {
-        job.output_size = std::fs::metadata(output_path).ok().map(|m| m.len());
-    }
     state.queue.state.converted_count += 1;
     state.queue.state.encoding_progress_done += 1;
+    output_path.map(|path| (id, path))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ripped file whose name is not UTF-8 does not stop the queue from
+    /// being saved.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_ripped_path_still_lets_the_queue_be_saved() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (probe_tx, _probe_rx) = mpsc::channel();
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("Title 0"));
+            job.status = JobStatus::Ripping { progress: 0.0 };
+            job.temporary = true;
+            let id = state.queue.push(job);
+            state.disc.job_ids = vec![id];
+            state.disc.active = true;
+            id
+        };
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            crate::disc::worker::DiscEvent::TitleReady {
+                index: 0,
+                path: std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![0xff])),
+            },
+        );
+
+        let state = lock(&shared);
+        assert!(matches!(
+            state.queue.job_by_id(id).unwrap().status,
+            JobStatus::Error { .. }
+        ));
+        let snapshot = state.queue.as_persistable();
+        assert!(
+            serde_json::to_vec_pretty(&snapshot).is_ok(),
+            "the queue must stay writable"
+        );
+    }
+
+    /// A shutdown leaves a running rip as it is, for `resume` to settle.
+    #[test]
+    fn a_shutdown_leaves_a_running_rip_for_the_next_start() {
+        let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (probe_tx, _probe_rx) = mpsc::channel();
+        let (_worker_tx, worker_rx) = mpsc::channel();
+        let (_disc_tx, disc_rx) = mpsc::channel();
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("Title 0"));
+            job.status = JobStatus::Ripping { progress: 40.0 };
+            job.temporary = true;
+            let id = state.queue.push(job);
+            state.disc.job_ids = vec![id];
+            state.disc.active = true;
+            id
+        };
+
+        drain_shutdown_channels(&shared, &worker_rx, &disc_rx, &probe_tx);
+
+        let state = lock(&shared);
+        let job = state.queue.job_by_id(id).unwrap();
+        let JobStatus::Ripping { progress } = job.status else {
+            panic!("a rip stays a rip across a shutdown");
+        };
+        assert!((progress - 40.0).abs() < f64::EPSILON);
+        assert!(job.temporary);
+        assert_eq!(state.queue.state.cancelled_count, 0);
+    }
+
+    /// A listen address already in use fails startup.
+    #[test]
+    fn a_busy_address_fails_startup() {
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let busy = held.local_addr().unwrap().to_string();
+        let dir = std::env::temp_dir().join(format!("av1c_startup_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_path = dir.join("daemon.pid");
+        std::fs::write(&pid_path, format!("{}", std::process::id())).unwrap();
+
+        let Err(refused) = start_server_at(&busy, &pid_path) else {
+            panic!("a busy address must not bind");
+        };
+
+        assert!(matches!(refused, AppError::CommandExecution(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bound address that cannot be recorded fails startup instead of
+    /// leaving the parent without a port to read.
+    #[test]
+    fn an_unrecordable_listen_address_fails_startup() {
+        let dir = std::env::temp_dir().join(format!("av1c_record_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let missing = dir.join("daemon.pid");
+
+        let Err(refused) = start_server_at("127.0.0.1:0", &missing) else {
+            panic!("an unrecordable address must not start");
+        };
+
+        assert!(matches!(refused, AppError::CommandExecution(_)));
+
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&missing, format!("{}", std::process::id())).unwrap();
+        let Ok(server) = start_server_at("127.0.0.1:0", &missing) else {
+            panic!("a free address with a writable PID file starts");
+        };
+        let recorded = std::fs::read_to_string(&missing).unwrap();
+        assert_eq!(
+            recorded.lines().nth(1).unwrap(),
+            server.server_addr().to_ip().unwrap().to_string()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed startup kills the children the prober already spawned.
+    #[test]
+    fn a_failed_startup_kills_tracked_children() {
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        let Ok((mut child, guard)) = crate::utils::child::spawn(&mut command) else {
+            eprintln!("skipping: sleep is not available");
+            return;
+        };
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        abort_startup(&shutdown);
+
+        assert!(shutdown.load(Ordering::SeqCst));
+        let mut exit = None;
+        for _ in 0..100 {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    exit = Some(status);
+                    break;
+                }
+                _ => thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        let killed = exit.is_some();
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(guard);
+        assert!(killed, "the sleeping child outlived the failed startup");
+    }
+
+    /// A kept source with a reason reaches the queue rows the web UI reads.
+    #[test]
+    fn a_kept_source_reason_reaches_the_queue_rows() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut job = EncodingJob::new(std::path::PathBuf::from("kept.mkv"));
+        job.status = JobStatus::Encoding { progress: 90.0 };
+        let id = state.queue.push(job);
+        state.session = Some(EncodeSession {
+            job_ids: vec![id],
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        });
+        state.encoding_active = true;
+        let shared = Arc::new(Mutex::new(state));
+
+        apply_worker_message(
+            &shared,
+            WorkerMessage::SourceKept(0, crate::encoder::KeepReason::Symlink),
+        );
+
+        assert_eq!(
+            lock(&shared).queue.state.jobs[0].source_kept_reason,
+            Some(crate::encoder::KeepReason::Symlink)
+        );
+        assert_eq!(
+            crate::daemon::api::queue(&shared)["jobs"][0]["source_kept_reason"],
+            "the source is a symbolic link"
+        );
+    }
+
+    #[test]
+    fn a_finished_job_leaves_the_run_open_for_the_next_ready_job() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut active = EncodingJob::new(std::path::PathBuf::from("active.mkv"));
+        active.status = JobStatus::Encoding { progress: 50.0 };
+        let active_id = state.queue.push(active);
+        let mut waiting = EncodingJob::new(std::path::PathBuf::from("waiting.mkv"));
+        waiting.status = JobStatus::Ready;
+        state.queue.push(waiting);
+        state.queue.state.total_jobs_to_encode = 2;
+        state.session = Some(EncodeSession {
+            job_ids: vec![active_id],
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        });
+        state.encoding_active = true;
+        let shared = Arc::new(Mutex::new(state));
+
+        apply_worker_message(&shared, WorkerMessage::Done(0));
+
+        let state = lock(&shared);
+        assert!(!state.encoding_active);
+        // The pause marker is set; the next session start clears it and
+        // subtracts the gap from the elapsed clock.
+        assert!(state.queue.state.end_time.is_some());
+        assert_eq!(state.queue.state.encoding_progress_done, 1);
+        assert!(matches!(state.queue.state.jobs[1].status, JobStatus::Ready));
+    }
+
+    /// The dashboard reads `current_job_index` from the moment a session
+    /// starts, before the first progress line arrives.
+    #[test]
+    fn a_started_session_points_current_job_at_the_encoding_job() {
+        let dir = std::env::temp_dir().join(format!("av1c_session_start_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("ready.mkv");
+        std::fs::write(&source, b"source").unwrap();
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (worker_tx, _worker_rx) = mpsc::channel();
+        {
+            let mut state = lock(&shared);
+            let mut done = EncodingJob::new(std::path::PathBuf::from("done.mkv"));
+            done.status = JobStatus::Done;
+            state.queue.push(done);
+            let mut ready = EncodingJob::new(source.clone());
+            ready.status = JobStatus::Ready;
+            ready.metadata = Some(crate::analyzer::VideoMetadata {
+                width: 1920,
+                height: 1080,
+                hdr_type: crate::analyzer::HdrType::Sdr,
+                dv_profile: None,
+                dv_bl_compat: None,
+                hdr10_static: None,
+                codec_name: "hevc".to_string(),
+                frame_rate_num: 24,
+                frame_rate_den: 1,
+                duration_secs: 1.0,
+            });
+            // An identity taken from the directory does not match the file;
+            // the worker thread reports an error at once.
+            ready.source_identity = Some(crate::queue::SourceIdentity::from_metadata(
+                &std::fs::metadata(&dir).unwrap(),
+            ));
+            state.queue.push(ready);
+        }
+
+        maybe_start_session(&shared, &worker_tx);
+
+        let state = lock(&shared);
+        assert!(state.encoding_active);
+        assert_eq!(state.queue.state.current_job_index, 1);
+        assert!(matches!(
+            state.queue.state.jobs[1].status,
+            JobStatus::Encoding { .. }
+        ));
+        drop(state);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_ready_rip_without_an_output_path_fails_instead_of_waiting() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (worker_tx, _worker_rx) = mpsc::channel();
+        let id = {
+            let mut state = lock(&shared);
+            let mut rip =
+                EncodingJob::new(std::path::PathBuf::from("/staging/rip-1-a/DISC_t00.mkv"));
+            rip.status = JobStatus::Ready;
+            rip.temporary = true;
+            rip.metadata = Some(crate::analyzer::VideoMetadata {
+                width: 1920,
+                height: 1080,
+                hdr_type: crate::analyzer::HdrType::Sdr,
+                dv_profile: None,
+                dv_bl_compat: None,
+                hdr10_static: None,
+                codec_name: "hevc".to_string(),
+                frame_rate_num: 24,
+                frame_rate_den: 1,
+                duration_secs: 1.0,
+            });
+            rip.source_identity = Some(crate::queue::SourceIdentity::from_metadata(
+                &std::fs::metadata(std::env::temp_dir()).unwrap(),
+            ));
+            state.queue.push(rip)
+        };
+
+        maybe_start_session(&shared, &worker_tx);
+
+        let state = lock(&shared);
+        assert!(!state.encoding_active);
+        assert!(matches!(
+            state.queue.job_by_id(id).unwrap().status,
+            JobStatus::Error { .. }
+        ));
+        assert_eq!(state.queue.state.error_count, 1);
+    }
+
+    #[test]
+    fn a_probe_holds_the_flag_cancel_sets_and_skips_settled_jobs() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut waiting = EncodingJob::new(std::path::PathBuf::from("a.mkv"));
+        waiting.status = JobStatus::Analyzing;
+        let waiting = state.queue.push(waiting);
+        let mut cancelled = EncodingJob::new(std::path::PathBuf::from("b.mkv"));
+        cancelled.status = JobStatus::Skipped {
+            reason: "Cancelled".to_string(),
+        };
+        let cancelled = state.queue.push(cancelled);
+        state.analysis_cancel.store(true, Ordering::Release);
+
+        let cancel = claim_probe(&mut state, waiting).expect("an analyzing job is probed");
+        assert!(!cancel.load(Ordering::Relaxed));
+        state.analysis_cancel.store(true, Ordering::Release);
+        assert!(
+            cancel.load(Ordering::Relaxed),
+            "cancel reaches the running probe"
+        );
+        assert!(claim_probe(&mut state, cancelled).is_none());
+        assert!(claim_probe(&mut state, 999).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_ripped_title_with_a_non_utf8_path_is_marked_error() {
+        use crate::disc::worker::DiscEvent;
+        use std::os::unix::ffi::OsStringExt;
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (probe_tx, probe_rx) = mpsc::channel();
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("Title 0"));
+            job.status = JobStatus::Ripping { progress: 0.0 };
+            job.temporary = true;
+            let id = state.queue.push(job);
+            state.disc.job_ids = vec![id];
+            state.disc.active = true;
+            id
+        };
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::TitleReady {
+                index: 0,
+                path: std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![0xff])),
+            },
+        );
+
+        let state = lock(&shared);
+        assert!(matches!(
+            state.queue.job_by_id(id).unwrap().status,
+            JobStatus::Error { .. }
+        ));
+        assert_eq!(state.queue.state.error_count, 1);
+        assert!(probe_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_run_stopped_by_an_error_does_not_count_its_titles_as_cancelled() {
+        use crate::disc::DiscError;
+        use crate::disc::worker::DiscEvent;
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (probe_tx, _probe_rx) = mpsc::channel();
+        let ids: Vec<u64> = {
+            let mut state = lock(&shared);
+            let ids = ["Title 0", "Title 1", "Title 2"]
+                .iter()
+                .map(|name| {
+                    let mut job = EncodingJob::new(std::path::PathBuf::from(*name));
+                    job.status = JobStatus::Ripping { progress: 0.0 };
+                    job.temporary = true;
+                    state.queue.push(job)
+                })
+                .collect();
+            state.disc.job_ids = ids;
+            state.disc.active = true;
+            state.disc.job_ids.clone()
+        };
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::Error {
+                index: 0,
+                error: DiscError::DiscChanged,
+            },
+        );
+
+        let state = lock(&shared);
+        let message = DiscError::DiscChanged.message(state.config.language);
+        assert!(matches!(
+            state.queue.job_by_id(ids[0]).unwrap().status,
+            JobStatus::Error { .. }
+        ));
+        for id in &ids[1..] {
+            assert!(matches!(
+                &state.queue.job_by_id(*id).unwrap().status,
+                JobStatus::Skipped { reason } if *reason == message
+            ));
+        }
+        assert_eq!(state.queue.state.cancelled_count, 0);
+        assert_eq!(state.queue.state.skipped_count, 2);
+    }
+
+    /// An extracted title is repointed at its file and handed to the prober
+    /// right away, while the drive carries on with the next one.
+    #[test]
+    fn a_ripped_title_goes_straight_to_the_prober() {
+        use crate::disc::worker::DiscEvent;
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let (probe_tx, probe_rx) = mpsc::channel();
+        let ids: Vec<u64> = {
+            let mut state = lock(&shared);
+            let ids = ["Title 0", "Title 1"]
+                .iter()
+                .map(|name| {
+                    let mut job = EncodingJob::new(std::path::PathBuf::from(*name));
+                    job.status = JobStatus::Ripping { progress: 0.0 };
+                    job.temporary = true;
+                    state.queue.push(job)
+                })
+                .collect();
+            state.disc.job_ids = ids;
+            state.disc.active = true;
+            state.disc.job_ids.clone()
+        };
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::Ripping {
+                index: 0,
+                progress: 42.0,
+            },
+        );
+        assert!(matches!(
+            lock(&shared).queue.job_by_id(ids[0]).unwrap().status,
+            JobStatus::Ripping { progress } if (progress - 42.0).abs() < f64::EPSILON
+        ));
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::TitleReady {
+                index: 0,
+                path: std::path::PathBuf::from("/staging/rip-a/DISC_t00.mkv"),
+            },
+        );
+        assert_eq!(
+            probe_rx.try_recv().unwrap(),
+            (ids[0], "/staging/rip-a/DISC_t00.mkv".to_string())
+        );
+        assert!(matches!(
+            lock(&shared).queue.job_by_id(ids[0]).unwrap().status,
+            JobStatus::Analyzing
+        ));
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::Ripping {
+                index: 0,
+                progress: 99.0,
+            },
+        );
+        assert!(
+            matches!(
+                lock(&shared).queue.job_by_id(ids[0]).unwrap().status,
+                JobStatus::Analyzing
+            ),
+            "late rip progress must not overwrite a title that already extracted"
+        );
+        // The run is not over: the second title is still to come.
+        assert!(lock(&shared).disc.active);
+
+        apply_disc_event(
+            &shared,
+            &probe_tx,
+            DiscEvent::Error {
+                index: 1,
+                error: crate::disc::DiscError::UnreadableDisc,
+            },
+        );
+        let state = lock(&shared);
+        assert!(matches!(
+            state.queue.job_by_id(ids[1]).unwrap().status,
+            JobStatus::Error { .. }
+        ));
+        assert!(!state.disc.active, "a failure ends the run");
+        assert!(state.disc.error.is_some());
+        assert_eq!(state.queue.state.error_count, 1);
+        // A title that never became a file is not left waiting to be encoded
+        // from one: only the extracted title is still in flight, at the prober.
+        assert!(
+            state.queue.state.jobs.iter().all(|job| !matches!(
+                job.status,
+                JobStatus::Ripping { .. } | JobStatus::Ready | JobStatus::Pending
+            )),
+            "a failed extraction left a job queued against a file that was never written"
+        );
+    }
 
     #[test]
     fn add_paths_reserves_each_source_once() {
@@ -512,13 +1675,373 @@ mod tests {
             add_paths(
                 &shared,
                 &tx,
-                vec![path.clone(), dir.join(".").join("movie.mkv")]
+                vec![path.clone(), dir.join(".").join("movie.mkv")],
+                ""
             ),
-            (1, 1)
+            (1, 1, 0)
         );
-        assert_eq!(add_paths(&shared, &tx, vec![path]), (0, 1));
+        assert_eq!(add_paths(&shared, &tx, vec![path], ""), (0, 1, 0));
         assert_eq!(lock(&shared).queue.state.jobs.len(), 1);
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn adding_after_finished_queue_starts_fresh_totals() {
+        let dir = std::env::temp_dir().join(format!("av1c_daemon_fresh_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("new.mkv");
+        std::fs::write(&path, b"not a real video").unwrap();
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        {
+            let mut state = lock(&shared);
+            let mut old = EncodingJob::new(std::path::PathBuf::from("/tmp/old.mkv"));
+            old.status = JobStatus::Error {
+                message: "old failure".to_string(),
+            };
+            state.queue.push(old);
+            state.queue.state.converted_count = 7;
+            state.queue.state.skipped_count = 9;
+            state.queue.state.error_count = 3;
+        }
+        let (tx, _rx) = mpsc::channel();
+
+        assert_eq!(add_paths(&shared, &tx, vec![path], ""), (1, 0, 0));
+        let state = lock(&shared);
+        assert_eq!(state.queue.state.converted_count, 0);
+        assert_eq!(state.queue.state.skipped_count, 0);
+        assert_eq!(state.queue.state.error_count, 0);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restored_jobs_outside_the_new_root_are_never_resumed() {
+        let base = std::env::temp_dir().join(format!("av1c_restore_root_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let source = outside.join("movie.mkv");
+        let output = outside.join("movie_av1.mkv");
+        let partial = outside.join("movie_av1.part.123_4.mkv");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(&partial, b"partial").unwrap();
+
+        let staged = outside.join("DISC_t00.mkv");
+        std::fs::write(&staged, b"staged").unwrap();
+
+        let mut queue = crate::queue::QueueState::new();
+        let mut job = EncodingJob::new(source);
+        job.output_path = Some(output);
+        job.status = JobStatus::Encoding { progress: 50.0 };
+        queue.jobs.push(job);
+        let mut rip = EncodingJob::new(staged.clone());
+        rip.status = JobStatus::Ready;
+        rip.temporary = true;
+        rip.metadata = Some(crate::analyzer::VideoMetadata {
+            width: 1920,
+            height: 1080,
+            hdr_type: crate::analyzer::HdrType::Sdr,
+            dv_profile: None,
+            dv_bl_compat: None,
+            hdr10_static: None,
+            codec_name: "hevc".to_string(),
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            duration_secs: 1.0,
+        });
+        rip.source_identity = Some(crate::queue::SourceIdentity::from_metadata(
+            &std::fs::metadata(&staged).unwrap(),
+        ));
+        queue.jobs.push(rip);
+        let queue_file = base.join("queue.json");
+        crate::queue::state::save(
+            &queue_file,
+            &crate::queue::QueueRef {
+                state: &queue,
+                ids: &[1, 2],
+                next_id: 3,
+            },
+        )
+        .unwrap();
+        let config = AppConfig {
+            daemon: crate::config::DaemonConfig {
+                browse_root: root.to_string_lossy().into_owned(),
+                ..crate::config::DaemonConfig::default()
+            },
+            disc: crate::config::DiscConfig {
+                staging_directory: Some(base.join("staging").to_string_lossy().into_owned()),
+                ..crate::config::DiscConfig::default()
+            },
+            ..AppConfig::default()
+        };
+
+        let (state, reprobe) = restore_state(config, &queue_file);
+        assert!(matches!(
+            state.queue.state.jobs[0].status,
+            JobStatus::Error { .. }
+        ));
+        assert!(reprobe.is_empty());
+        assert!(
+            partial.exists(),
+            "resume must not delete files outside browse_root"
+        );
+        assert!(matches!(state.queue.state.jobs[1].status, JobStatus::Ready));
+        assert_eq!(state.queue.state.jobs[1].path, staged);
+        assert!(staged.exists());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn an_unreadable_queue_file_is_reported_in_the_status() {
+        let base = std::env::temp_dir().join(format!("av1c_restore_bad_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let queue_file = base.join("queue.json");
+        std::fs::write(&queue_file, b"{not json").unwrap();
+        let config = AppConfig {
+            disc: crate::config::DiscConfig {
+                staging_directory: Some(base.join("staging").to_string_lossy().into_owned()),
+                ..crate::config::DiscConfig::default()
+            },
+            ..AppConfig::default()
+        };
+
+        let (state, _) = restore_state(config, &queue_file);
+        let kept = state.unreadable_queue.clone().expect("the file is kept");
+        assert_eq!(std::fs::read(&kept).unwrap(), b"{not json");
+        let shared: SharedState = Arc::new(Mutex::new(state));
+        assert_eq!(
+            api::status(&shared)["unreadable_queue"],
+            serde_json::json!(kept.display().to_string())
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn restored_jobs_whose_files_are_gone_keep_their_paths() {
+        let base = std::env::temp_dir().join(format!("av1c_restore_gone_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let output = root.join("movie_av1.mkv");
+        std::fs::write(&output, b"encoded").unwrap();
+
+        let mut queue = crate::queue::QueueState::new();
+        let mut done = EncodingJob::new(root.join("movie.mkv"));
+        done.output_path = Some(output);
+        done.status = JobStatus::Done;
+        queue.jobs.push(done);
+        let mut pending = EncodingJob::new(root.join("gone").join("other.mkv"));
+        pending.status = JobStatus::Pending;
+        queue.jobs.push(pending);
+        let queue_file = base.join("queue.json");
+        crate::queue::state::save(
+            &queue_file,
+            &crate::queue::QueueRef {
+                state: &queue,
+                ids: &[1, 2],
+                next_id: 3,
+            },
+        )
+        .unwrap();
+        let config_with_root = |browse_root: &std::path::Path| AppConfig {
+            daemon: crate::config::DaemonConfig {
+                browse_root: browse_root.to_string_lossy().into_owned(),
+                ..crate::config::DaemonConfig::default()
+            },
+            disc: crate::config::DiscConfig {
+                staging_directory: Some(base.join("staging").to_string_lossy().into_owned()),
+                ..crate::config::DiscConfig::default()
+            },
+            ..AppConfig::default()
+        };
+
+        let (state, reprobe) = restore_state(config_with_root(&root), &queue_file);
+        let jobs = &state.queue.state.jobs;
+        assert!(matches!(jobs[0].status, JobStatus::Done));
+        assert_eq!(jobs[0].path, root.canonicalize().unwrap().join("movie.mkv"));
+        assert!(jobs[0].output_path.is_some());
+        assert!(matches!(jobs[1].status, JobStatus::Analyzing));
+        assert!(reprobe.iter().any(|(id, _)| *id == 2));
+
+        // A root that is not mounted leaves every saved job as it was.
+        let (state, _) = restore_state(config_with_root(&base.join("unmounted")), &queue_file);
+        let jobs = &state.queue.state.jobs;
+        assert!(matches!(jobs[0].status, JobStatus::Done));
+        assert_eq!(jobs[0].path, root.join("movie.mkv"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_stopped_daemon_saves_the_session_for_the_next_start() {
+        let dir =
+            std::env::temp_dir().join(format!("av1c_shutdown_persist_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let queue_file = dir.join("queue.json");
+
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        {
+            let mut state = lock(&shared);
+            let id = state
+                .queue
+                .push(EncodingJob::new(std::path::PathBuf::from("/tmp/movie.mkv")));
+            state.queue.job_by_id_mut(id).unwrap().status = JobStatus::Pending;
+            state.session = Some(EncodeSession {
+                job_ids: vec![id],
+                cancel_flag: Arc::new(AtomicBool::new(true)),
+            });
+            state.encoding_active = true;
+            state.shutting_down.store(true, Ordering::SeqCst);
+        }
+
+        apply_worker_message(&shared, WorkerMessage::Cancelled);
+        let mut last_saved = Vec::new();
+        let mut last_warning = None;
+        persist_queue(&shared, &queue_file, &mut last_saved, &mut last_warning);
+
+        let (mut saved, _) = crate::queue::state::load(&queue_file);
+        assert!(matches!(saved.state.jobs[0].status, JobStatus::Pending));
+        crate::queue::state::resume(&mut saved);
+        assert!(!is_terminal(&saved.state.jobs[0].status));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_late_analysis_error_does_not_overwrite_a_failed_job() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("gone.mkv"));
+            job.status = JobStatus::Error {
+                message: "probe failed".to_string(),
+            };
+            state.queue.push(job)
+        };
+        apply_analysis_result(&shared, id, Err(AppError::Analysis("late".to_string())));
+        let state = lock(&shared);
+        assert!(matches!(
+            &state.queue.job_by_id(id).unwrap().status,
+            JobStatus::Error { message } if message == "probe failed"
+        ));
+        assert_eq!(state.queue.state.error_count, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_settled_disc_run_sweeps_orphaned_staging_directories() {
+        let root = std::env::temp_dir().join(format!("av1c_settle_sweep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let orphan = crate::disc::staging::staged_rip(&root, u32::MAX);
+
+        let mut config = AppConfig::default();
+        config.disc.staging_directory = Some(root.to_string_lossy().into_owned());
+        let shared = Arc::new(Mutex::new(DaemonState::new(config)));
+        let mut was_active = false;
+
+        sweep_after_disc_run(&shared, &mut was_active, Duration::ZERO);
+        assert!(orphan.exists(), "no run has settled yet");
+        lock(&shared).disc.active = true;
+        sweep_after_disc_run(&shared, &mut was_active, Duration::ZERO);
+        assert!(orphan.exists(), "the run is still going");
+        lock(&shared).disc.settle();
+        sweep_after_disc_run(&shared, &mut was_active, Duration::ZERO);
+        assert!(!orphan.exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn joining_http_threads_gives_up_after_the_grace() {
+        let quick = thread::spawn(|| {});
+        let stuck = thread::spawn(|| thread::sleep(Duration::from_secs(2)));
+        assert!(!join_within(vec![quick, stuck], Duration::from_millis(200)));
+        assert!(join_within(
+            vec![thread::spawn(|| {})],
+            Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn draining_a_daemon_stop_leaves_an_encoding_job_for_resume() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("movie.mkv"));
+            job.status = JobStatus::Encoding { progress: 40.0 };
+            let id = state.queue.push(job);
+            state.session = Some(EncodeSession {
+                job_ids: vec![id],
+                cancel_flag: Arc::new(AtomicBool::new(true)),
+            });
+            state.encoding_active = true;
+            state.shutting_down.store(true, Ordering::SeqCst);
+            id
+        };
+        let (worker_tx, worker_rx) = mpsc::channel();
+        drop(worker_tx);
+        let (disc_tx, disc_rx) = mpsc::channel();
+        drop(disc_tx);
+        let (probe_tx, _probe_rx) = mpsc::channel();
+
+        drain_shutdown_channels(&shared, &worker_rx, &disc_rx, &probe_tx);
+
+        assert!(matches!(
+            lock(&shared).queue.job_by_id(id).unwrap().status,
+            JobStatus::Encoding { .. }
+        ));
+    }
+
+    #[test]
+    fn a_stop_during_analysis_leaves_the_job_for_resume() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("movie.mkv"));
+            job.status = JobStatus::Analyzing;
+            state.shutting_down.store(true, Ordering::SeqCst);
+            state.queue.push(job)
+        };
+        apply_analysis_result(&shared, id, Err(AppError::Cancelled));
+        assert!(matches!(
+            lock(&shared).queue.job_by_id(id).unwrap().status,
+            JobStatus::Analyzing
+        ));
+    }
+
+    #[test]
+    fn draining_shutdown_skips_a_job_still_marked_encoding() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let id = {
+            let mut state = lock(&shared);
+            let mut job = EncodingJob::new(std::path::PathBuf::from("movie.mkv"));
+            job.status = JobStatus::Encoding { progress: 40.0 };
+            let id = state.queue.push(job);
+            state.session = Some(EncodeSession {
+                job_ids: vec![id],
+                cancel_flag: Arc::new(AtomicBool::new(true)),
+            });
+            state.encoding_active = true;
+            id
+        };
+        let (worker_tx, worker_rx) = mpsc::channel();
+        drop(worker_tx);
+        let (disc_tx, disc_rx) = mpsc::channel();
+        drop(disc_tx);
+        let (probe_tx, _probe_rx) = mpsc::channel();
+
+        drain_shutdown_channels(&shared, &worker_rx, &disc_rx, &probe_tx);
+
+        let state = lock(&shared);
+        assert!(matches!(
+            &state.queue.job_by_id(id).unwrap().status,
+            JobStatus::Skipped { reason } if reason == "Cancelled"
+        ));
+        assert!(!state.encoding_active);
     }
 }

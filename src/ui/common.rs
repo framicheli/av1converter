@@ -1,9 +1,51 @@
+use crate::app::MessageKind;
 use crate::i18n::{Language, Msg, t};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::Line,
     widgets::ListItem,
 };
+
+/// Rows `text` fills when word-wrapped to `width` cells. Words break at
+/// spaces; a word wider than the row breaks between characters, as ratatui
+/// wraps it.
+pub fn wrapped_rows(text: &str, width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    let rows: usize = text
+        .lines()
+        .map(|line| {
+            let mut rows = 1;
+            let mut used = 0;
+            for word in line.split(' ').filter(|word| !word.is_empty()) {
+                let word_width = Line::raw(word).width();
+                if used > 0 && used + 1 + word_width <= width {
+                    used += 1 + word_width;
+                    continue;
+                }
+                if used > 0 {
+                    rows += 1;
+                    used = 0;
+                }
+                if word_width <= width {
+                    used = word_width;
+                    continue;
+                }
+                let mut buf = [0u8; 4];
+                for ch in word.chars() {
+                    let ch_width = Line::raw(&*ch.encode_utf8(&mut buf)).width();
+                    if used + ch_width > width {
+                        rows += 1;
+                        used = 0;
+                    }
+                    used += ch_width;
+                }
+            }
+            rows
+        })
+        .sum();
+    u16::try_from(rows).unwrap_or(u16::MAX)
+}
 
 /// Translate a job status `reason` string for display.
 ///
@@ -55,6 +97,35 @@ pub fn get_vmaf_color(score: f64) -> Color {
     }
 }
 
+pub fn message_color(kind: MessageKind) -> Color {
+    match kind {
+        MessageKind::Info => Color::Cyan,
+        MessageKind::Success => Color::Green,
+        MessageKind::Warning => Color::Yellow,
+        MessageKind::Error => Color::Red,
+    }
+}
+
+/// Fit `text` to terminal-cell width, replacing the dropped tail with "…".
+pub fn truncate_end(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if Line::raw(text).width() <= max_width {
+        return text.to_string();
+    }
+    let mut kept = String::new();
+    for character in text.chars() {
+        let candidate = format!("{kept}{character}…");
+        if Line::raw(&candidate).width() > max_width {
+            break;
+        }
+        kept.push(character);
+    }
+    kept.push('…');
+    kept
+}
+
 /// Create a menu item with selection styling
 pub fn create_menu_item(text: &str, index: usize, selected: usize) -> ListItem<'static> {
     let style = if index == selected {
@@ -62,27 +133,32 @@ pub fn create_menu_item(text: &str, index: usize, selected: usize) -> ListItem<'
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
+        Style::default()
     };
 
     let prefix = if index == selected { "> " } else { "  " };
     ListItem::new(format!("{prefix}{text}")).style(style)
 }
 
-/// Get quality description for VMAF score
-pub fn get_quality_description(lang: Language, score: f64) -> &'static str {
-    let msg = if score >= 95.0 {
-        Msg::QualExcellent
-    } else if score >= 90.0 {
-        Msg::QualVeryGood
-    } else if score >= 85.0 {
-        Msg::QualGood
-    } else if score >= 80.0 {
-        Msg::QualFair
-    } else if score >= 70.0 {
-        Msg::QualPoor
-    } else {
-        Msg::QualBad
-    };
-    t(lang, msg)
+pub use crate::i18n::quality_description as get_quality_description;
+
+#[cfg(test)]
+mod tests {
+    use super::{truncate_end, wrapped_rows};
+
+    #[test]
+    fn a_text_wider_than_the_room_keeps_its_start() {
+        assert_eq!(truncate_end("[1/3] Encoding: movie.mkv", 10), "[1/3] Enc…");
+        assert_eq!(truncate_end("short", 10), "short");
+        assert_eq!(truncate_end("abc", 0), "");
+        assert_eq!(truncate_end("字字字", 4), "字…");
+    }
+
+    #[test]
+    fn a_long_cjk_word_fills_rows_by_whole_characters() {
+        assert_eq!(wrapped_rows(&"字".repeat(41), 41), 3);
+        assert_eq!(wrapped_rows(&"字".repeat(20), 41), 1);
+        assert_eq!(wrapped_rows(&"a".repeat(82), 41), 2);
+        assert_eq!(wrapped_rows("word word", 4), 2);
+    }
 }

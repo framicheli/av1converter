@@ -33,6 +33,14 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
     let Some(job) = app.queue.jobs.first() else {
         return;
     };
+    let (heading, heading_color) = match &job.status {
+        JobStatus::Error { .. } => (Msg::Error, Color::Red),
+        JobStatus::Skipped { .. } => (Msg::Skipped, Color::Yellow),
+        JobStatus::DoneVmafFailed { .. } | JobStatus::QualityWarning { .. } => {
+            (Msg::QualityWarning, Color::Yellow)
+        }
+        _ => (Msg::ConversionComplete, Color::Green),
+    };
     let elapsed_str = app
         .queue
         .elapsed_time()
@@ -41,9 +49,9 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
 
     let mut lines = vec![
         Line::from(vec![Span::styled(
-            t(lang, Msg::ConversionComplete),
+            t(lang, heading),
             Style::default()
-                .fg(Color::Green)
+                .fg(heading_color)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
@@ -94,7 +102,11 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
                 ),
             ]));
         }
-        JobStatus::QualityWarning { vmaf, threshold } => {
+        JobStatus::QualityWarning {
+            vmaf,
+            min_score,
+            threshold,
+        } => {
             let vmaf_color = get_vmaf_color(*vmaf);
             lines.push(Line::from(vec![
                 Span::styled(
@@ -113,8 +125,23 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
                     Style::default().fg(vmaf_color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" ({}: {threshold:.0})", t(lang, Msg::ThresholdLabel)),
+                    format!(
+                        " (min {min_score:.1}, {}: {threshold:.0})",
+                        t(lang, Msg::ThresholdLabel)
+                    ),
                     Style::default().fg(Color::Red),
+                ),
+            ]));
+        }
+        JobStatus::DoneVmafFailed { reason } => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{}: ", t(lang, Msg::Status)),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{}: {reason}", t(lang, Msg::QualityWarning)),
+                    Style::default().fg(Color::Yellow),
                 ),
             ]));
         }
@@ -169,15 +196,33 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
         ]));
     }
     if let Some((saved, percent)) = job.size_reduction() {
+        let grew = percent < 0.0;
+        let amount = if grew {
+            job.output_size
+                .zip(job.source_size)
+                .map_or(0, |(output, source)| output.saturating_sub(source))
+        } else {
+            saved
+        };
         lines.push(Line::from(vec![
             Span::styled(
-                format!("{}: ", t(lang, Msg::ReductionLabel)),
+                format!(
+                    "{}: ",
+                    t(
+                        lang,
+                        if grew {
+                            Msg::SizeIncrease
+                        } else {
+                            Msg::ReductionLabel
+                        }
+                    )
+                ),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                format!("{} ({:.1}%)", format_file_size(saved), percent),
+                format!("{} ({:.1}%)", format_file_size(amount), percent.abs()),
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(if grew { Color::Red } else { Color::Green })
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -189,14 +234,9 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
             t(lang, Msg::SourceFileDeleted),
             Style::default().fg(Color::Yellow),
         )]));
-    } else if let Some(vmaf) = job.source_kept_vmaf {
+    } else if job.source_kept_vmaf.is_some() || job.source_kept_reason.is_some() {
         lines.push(Line::from(vec![Span::styled(
-            format!(
-                "{} (VMAF {:.1} < {:.0})",
-                t(lang, Msg::SourceKept),
-                vmaf,
-                app.config.quality.vmaf_threshold
-            ),
+            source_kept_text(job, lang),
             Style::default().fg(Color::DarkGray),
         )]));
     }
@@ -213,6 +253,7 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
 
     let summary = Paragraph::new(lines)
         .alignment(Alignment::Center)
+        .scroll((app.detail_scroll, 0))
         .wrap(Wrap { trim: true })
         .block(
             Block::default()
@@ -224,10 +265,14 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
 
     // Help
     let help_text = Line::from(vec![
+        Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::ScrollDetails))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::NewConversion))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::NewConversion))),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
         Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}", t(lang, Msg::Quit))),
+        Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
     ]);
 
     let help = Paragraph::new(help_text)
@@ -240,11 +285,13 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
 #[allow(clippy::too_many_lines)]
 fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
+    let detail_height = f.area().height.saturating_sub(17).clamp(5, 12);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(7),
             Constraint::Min(5),
+            Constraint::Length(detail_height),
             Constraint::Length(3),
         ])
         .margin(1)
@@ -257,12 +304,26 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
         .elapsed_time()
         .map(format_duration)
         .unwrap_or_default();
+    let (heading, heading_color) = if app.queue.error_count > 0 {
+        (Msg::Errors, Color::Red)
+    } else if app.queue.skipped_count > 0
+        || app.queue.jobs.iter().any(|job| {
+            matches!(
+                job.status,
+                JobStatus::QualityWarning { .. } | JobStatus::DoneVmafFailed { .. }
+            )
+        })
+    {
+        (Msg::Summary, Color::Yellow)
+    } else {
+        (Msg::ConversionComplete, Color::Green)
+    };
 
     let mut summary_lines = vec![
         Line::from(vec![Span::styled(
-            t(lang, Msg::ConversionComplete),
+            t(lang, heading),
             Style::default()
-                .fg(Color::Green)
+                .fg(heading_color)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
@@ -278,8 +339,17 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
             Span::raw(format!(
                 "{}: {}",
                 t(lang, Msg::Skipped),
-                app.queue.skipped_count
+                app.queue.skipped_count - app.queue.cancelled_count
             )),
+            Span::raw(if app.queue.cancelled_count > 0 {
+                format!(
+                    "   {}: {}",
+                    t(lang, Msg::Cancelled),
+                    app.queue.cancelled_count
+                )
+            } else {
+                String::new()
+            }),
             Span::raw("   "),
             Span::styled("✗ ", Style::default().fg(Color::Red)),
             Span::raw(format!(
@@ -290,16 +360,27 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
         ]),
     ];
 
-    if total_saved > 0 {
+    if total_saved != 0 {
+        let grew = total_saved < 0;
         summary_lines.push(Line::from(vec![
             Span::styled(
-                format!("{}: ", t(lang, Msg::TotalSpaceSaved)),
+                format!(
+                    "{}: ",
+                    t(
+                        lang,
+                        if grew {
+                            Msg::TotalSpaceIncreased
+                        } else {
+                            Msg::TotalSpaceSaved
+                        }
+                    )
+                ),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                saved_str,
+                saved_str.trim_start_matches('-').to_string(),
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(if grew { Color::Red } else { Color::Green })
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -343,23 +424,84 @@ fn render_multi_file_finish(f: &mut Frame, app: &mut App) {
     app.finish_list_state.select(Some(app.finish_cursor));
     f.render_stateful_widget(list, chunks[1], &mut app.finish_list_state);
 
+    if let Some(job) = app.queue.jobs.get(app.finish_cursor) {
+        let detail = Paragraph::new(result_detail(job, lang))
+            .wrap(Wrap { trim: true })
+            .scroll((app.detail_scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(format!(" {} ", t(lang, Msg::Status))),
+            );
+        f.render_widget(detail, chunks[2]);
+    }
+
     // Help
     let help_text = Line::from(vec![
         Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
+        Span::styled("PgUp/PgDn", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::ScrollDetails))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::NewConversion))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::NewConversion))),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
         Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}", t(lang, Msg::Quit))),
+        Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
     ]);
 
     let help = Paragraph::new(help_text)
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE))
         .wrap(Wrap { trim: true });
-    f.render_widget(help, chunks[2]);
+    f.render_widget(help, chunks[3]);
 }
 
+/// "Source kept" with the reason: the VMAF score that failed the job's
+/// threshold (the mean, or the minimum when only the minimum is below it), or
+/// the recorded keep reason of a job that met the threshold.
+fn source_kept_text(job: &crate::queue::EncodingJob, lang: Language) -> String {
+    let kept = t(lang, Msg::SourceKept);
+    if let Some(reason) = job.source_kept_reason {
+        return format!("{kept} ({})", t(lang, reason.msg()));
+    }
+    match job.status {
+        JobStatus::QualityWarning {
+            vmaf,
+            min_score,
+            threshold,
+        } => {
+            let score = if vmaf < threshold {
+                format!("VMAF {vmaf:.1}")
+            } else {
+                format!("VMAF min {min_score:.1}")
+            };
+            format!("{kept} ({score} < {threshold})")
+        }
+        _ => kept.to_string(),
+    }
+}
+
+fn result_detail(job: &crate::queue::EncodingJob, lang: Language) -> String {
+    match &job.status {
+        JobStatus::Done => t(lang, Msg::Success).to_string(),
+        JobStatus::DoneWithVmaf { score } => format!("VMAF {score:.1}"),
+        JobStatus::DoneVmafFailed { reason } => reason.clone(),
+        JobStatus::Skipped { reason } => super::common::translate_reason(lang, reason),
+        JobStatus::Error { message } => message.clone(),
+        JobStatus::QualityWarning {
+            vmaf,
+            min_score,
+            threshold,
+        } => {
+            format!("VMAF {vmaf:.1} (min {min_score:.1}) < {threshold:.0}")
+        }
+        _ => t(lang, Msg::Unknown).to_string(),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 fn create_result_item(
     job: &crate::queue::EncodingJob,
     is_cursor: bool,
@@ -375,8 +517,8 @@ fn create_result_item(
 
     // Output size and compression ratio
     let output_info = match (job.output_size, job.size_reduction()) {
-        // A negative percentage means the output grew, so the sign is printed
-        // rather than assumed.
+        // A negative percentage means the output grew; the sign is always
+        // printed.
         (Some(output), Some((_, percent))) => {
             format!(" → {} ({:+.1}%)", format_file_size(output), -percent)
         }
@@ -387,15 +529,15 @@ fn create_result_item(
     // Source deletion info
     let source_info = if job.source_deleted {
         format!(" [{}]", t(lang, Msg::SourceDeletedTag))
-    } else if job.source_kept_vmaf.is_some() {
+    } else if job.source_kept_vmaf.is_some() || job.source_kept_reason.is_some() {
         format!(" [{}]", t(lang, Msg::SourceKeptTag))
     } else {
         String::new()
     };
 
-    // `ListItem`/`Line::style` replace rather than patch, so `bold_mod` is
-    // folded into each arm's single outermost `.style()` call below rather
-    // than layered on afterwards.
+    // `ListItem`/`Line::style` replace the style instead of patching it, and
+    // `bold_mod` is folded into each arm's single outermost `.style()` call
+    // below.
     match &job.status {
         JobStatus::Done => {
             let mut spans = vec![
@@ -436,14 +578,25 @@ fn create_result_item(
             }
             ListItem::new(Line::from(spans)).style(Style::default().add_modifier(bold_mod))
         }
+        JobStatus::DoneVmafFailed { reason } => ListItem::new(format!(
+            "{prefix}⚠ {name} ({})",
+            super::common::translate_reason(lang, reason)
+        ))
+        .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
         JobStatus::Skipped { reason } => ListItem::new(format!(
             "{prefix}⊘ {name} ({})",
             super::common::translate_reason(lang, reason)
         ))
         .style(Style::default().fg(Color::Yellow).add_modifier(bold_mod)),
-        JobStatus::Error { message } => ListItem::new(format!("{prefix}✗ {name}: {message}"))
-            .style(Style::default().fg(Color::Red).add_modifier(bold_mod)),
-        JobStatus::QualityWarning { vmaf, threshold } => {
+        JobStatus::Error { .. } => {
+            ListItem::new(format!("{prefix}✗ {name}: {}", t(lang, Msg::Error)))
+                .style(Style::default().fg(Color::Red).add_modifier(bold_mod))
+        }
+        JobStatus::QualityWarning {
+            vmaf,
+            min_score,
+            threshold,
+        } => {
             let vmaf_color = get_vmaf_color(*vmaf);
             let mut spans = vec![
                 Span::styled(format!("{prefix}⚠ "), Style::default().fg(Color::Yellow)),
@@ -455,7 +608,10 @@ fn create_result_item(
                     Style::default().fg(vmaf_color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" < {threshold:.0} {}", t(lang, Msg::ThresholdLabel)),
+                    format!(
+                        " (min {min_score:.1}) < {threshold:.0} {}",
+                        t(lang, Msg::ThresholdLabel)
+                    ),
                     Style::default().fg(Color::Red),
                 ),
             ];
@@ -469,5 +625,53 @@ fn create_result_item(
         }
         _ => ListItem::new(format!("{prefix}? {name}"))
             .style(Style::default().fg(Color::DarkGray).add_modifier(bold_mod)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_kept_text;
+    use crate::encoder::KeepReason;
+    use crate::i18n::Language;
+    use crate::queue::{EncodingJob, JobStatus};
+
+    fn job_with(status: JobStatus) -> EncodingJob {
+        let mut job = EncodingJob::new(std::path::PathBuf::from("clip.mkv"));
+        job.status = status;
+        job
+    }
+
+    #[test]
+    fn a_kept_source_names_the_score_below_the_jobs_threshold() {
+        let min_failed = job_with(JobStatus::QualityWarning {
+            vmaf: 96.0,
+            min_score: 80.25,
+            threshold: 95.5,
+        });
+        let mean_failed = job_with(JobStatus::QualityWarning {
+            vmaf: 93.0,
+            min_score: 70.0,
+            threshold: 95.0,
+        });
+
+        assert_eq!(
+            source_kept_text(&min_failed, Language::English),
+            "Source kept (VMAF min 80.2 < 95.5)"
+        );
+        assert_eq!(
+            source_kept_text(&mean_failed, Language::English),
+            "Source kept (VMAF 93.0 < 95)"
+        );
+    }
+
+    #[test]
+    fn a_passing_job_that_kept_its_source_names_the_reason() {
+        let mut job = job_with(JobStatus::DoneWithVmaf { score: 97.0 });
+        job.source_kept_reason = Some(KeepReason::AudioTranscoded);
+
+        assert_eq!(
+            source_kept_text(&job, Language::English),
+            "Source kept (audio was transcoded and VMAF does not verify it)"
+        );
     }
 }

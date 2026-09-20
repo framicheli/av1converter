@@ -1,28 +1,36 @@
 //! Background daemon lifecycle: detaching from the terminal, the PID file,
 //! and stopping a running instance.
 //!
-//! Daemonization is Unix-only; on other platforms `--daemon` falls back to
-//! running in the foreground.
+//! Daemonization is Unix-only; on other platforms use `--start-foreground`.
 
 use std::fs::File;
-use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::io::Read;
+use std::io::{self, Write};
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
-/// How long the parent waits for the detached child before declaring startup
-/// failed (it exits immediately on e.g. a port already in use).
-const SPAWN_GRACE: Duration = Duration::from_millis(600);
-/// How long `stop` waits for the daemon to exit. Must exceed the daemon's
-/// own `SHUTDOWN_GRACE` so a running encode can be cancelled cleanly.
-const STOP_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long the parent waits for the detached child to bind its listener
+/// before declaring startup failed.
+#[cfg(unix)]
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long `stop` waits for the daemon to exit. Covers the daemon's
+/// `HTTP_JOIN_GRACE`, then its `SHUTDOWN_GRACE` for a rip, an encode and the
+/// worker join, and the final queue save.
+#[cfg(unix)]
+const STOP_TIMEOUT: Duration = Duration::from_secs(45);
+/// How long `lock_pid_file` waits out a lock held for a moment by a
+/// `locked_pid` probe.
+#[cfg(unix)]
+const PID_LOCK_WAIT: Duration = Duration::from_secs(1);
 
-/// Data directory for the PID file and background log
+/// Data directory for the PID file, queue and background log
 /// (same location the debug logger uses).
-fn data_dir() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
+pub fn data_dir() -> PathBuf {
+    crate::config::env_dir("XDG_DATA_HOME")
+        .or_else(|| crate::config::env_dir("HOME").map(|home| home.join(".local/share")))
+        .or_else(|| crate::config::env_dir("LOCALAPPDATA"))
         .unwrap_or_else(|| PathBuf::from("."))
         .join("av1converter")
 }
@@ -31,8 +39,16 @@ pub fn pid_file() -> PathBuf {
     data_dir().join("daemon.pid")
 }
 
+/// Stdout and stderr of the detached daemon, holding whatever it prints before
+/// its log is open. Rewritten at every start; the daemon's own log is the
+/// rolling `daemon.log.<date>` next to it.
 pub fn log_file() -> PathBuf {
-    data_dir().join("daemon.log")
+    data_dir().join("daemon-startup.log")
+}
+
+/// The queue as it stood when the daemon last changed it.
+pub fn queue_file() -> PathBuf {
+    data_dir().join("queue.json")
 }
 
 /// PID recorded in the file while another process holds its daemon lock.
@@ -58,72 +74,204 @@ fn locked_pid(path: &std::path::Path) -> Option<u32> {
     }
     let mut contents = String::new();
     file.read_to_string(&mut contents).ok()?;
-    contents.trim().parse().ok()
+    contents.lines().next()?.trim().parse().ok()
 }
 
 #[cfg(not(unix))]
 fn locked_pid(path: &std::path::Path) -> Option<u32> {
-    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+    std::fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Append the bound socket address as the second line of the PID file.
+pub(crate) fn append_listen(path: &std::path::Path, listen: &str) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    writeln!(file)?;
+    file.write_all(listen.as_bytes())?;
+    file.sync_all()
+}
+
+/// The socket address the running daemon bound, from the PID file.
+pub fn running_listen() -> Option<std::net::SocketAddr> {
+    running_pid()?;
+    listen_in(&pid_file())
+}
+
+fn listen_in(path: &std::path::Path) -> Option<std::net::SocketAddr> {
+    std::fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .nth(1)?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// PID recorded in the locked PID file, if that process is still alive.
 /// An unlocked file is stale even if its old PID has since been reused.
+/// Without file locks, a file with no readable PID is removed once it is more
+/// than 5 seconds old.
 pub fn running_pid() -> Option<u32> {
-    let pid = locked_pid(&pid_file())?;
-    alive(pid).then_some(pid)
+    let path = pid_file();
+    let Some(pid) = locked_pid(&path) else {
+        #[cfg(not(unix))]
+        if std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| {
+                t.elapsed()
+                    .is_ok_and(|age| age > std::time::Duration::from_secs(5))
+            })
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+        return None;
+    };
+    if alive(pid) {
+        Some(pid)
+    } else {
+        #[cfg(not(unix))]
+        let _ = std::fs::remove_file(path);
+        None
+    }
 }
 
+/// Lock the PID file at `path`. A lock won on an inode a departing daemon has
+/// already unlinked is dropped and the path opened again. A lock held briefly
+/// by a probe is waited out for up to [`PID_LOCK_WAIT`].
 #[cfg(unix)]
 fn lock_pid_file(path: &std::path::Path, pid: u32) -> io::Result<File> {
     use std::os::fd::AsRawFd;
 
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)?;
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "another daemon owns the PID file",
-        ));
+    let deadline = Instant::now() + PID_LOCK_WAIT;
+    loop {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let busy = io::Error::last_os_error()
+                .raw_os_error()
+                .is_some_and(|code| code == libc::EAGAIN || code == libc::EWOULDBLOCK);
+            if busy && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "another daemon owns the PID file",
+            ));
+        }
+        if !is_linked_at(&file, path)? {
+            continue;
+        }
+        file.set_len(0)?;
+        file.write_all(pid.to_string().as_bytes())?;
+        file.sync_all()?;
+        return Ok(file);
     }
-    file.set_len(0)?;
-    file.write_all(pid.to_string().as_bytes())?;
-    file.sync_all()?;
-    Ok(file)
+}
+
+/// Whether `file` is the inode currently linked at `path`.
+#[cfg(unix)]
+fn is_linked_at(file: &File, path: &std::path::Path) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let open = file.metadata()?;
+    match std::fs::metadata(path) {
+        Ok(linked) => Ok(open.ino() == linked.ino() && open.dev() == linked.dev()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(not(unix))]
 fn lock_pid_file(path: &std::path::Path, pid: u32) -> io::Result<File> {
-    let mut file = File::create(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)?;
     file.write_all(pid.to_string().as_bytes())?;
     file.sync_all()?;
     Ok(file)
 }
 
+/// Owns the PID file for the lifetime of the daemon.
+pub struct PidGuard {
+    _file: File,
+    path: PathBuf,
+}
+
+impl Drop for PidGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Write and exclusively hold the PID file for the lifetime of the daemon.
-pub fn write_pid_file() -> io::Result<File> {
+pub fn write_pid_file() -> io::Result<PidGuard> {
     crate::utils::ensure_private_dir(&data_dir())?;
-    lock_pid_file(&pid_file(), std::process::id())
+    let path = pid_file();
+    let file = lock_pid_file(&path, std::process::id())?;
+    Ok(PidGuard { _file: file, path })
 }
 
 #[cfg(unix)]
-fn alive(pid: u32) -> bool {
+pub(crate) fn alive(pid: u32) -> bool {
     // Signal 0 performs the permission/existence check without signalling
     unsafe { libc::kill(pid.cast_signed(), 0) == 0 }
 }
 
-/// Liveness cannot be probed without a signal API, so a recorded PID is taken
-/// at face value: reporting "not running" for a daemon that is up would be
-/// worse than occasionally trusting a stale PID file.
-#[cfg(not(unix))]
-fn alive(_pid: u32) -> bool {
-    true
+/// Whether `pid` is a running process with this executable's image name.
+/// A `tasklist` that cannot run counts as alive.
+#[cfg(windows)]
+pub(crate) fn alive(pid: u32) -> bool {
+    let expected_image = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+    let Some(output) = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+    else {
+        return true;
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.trim_matches('"').split("\",\"");
+            Some((fields.next()?, fields.next()?.parse::<u32>().ok()?))
+        })
+        .any(|(image, found)| image_matches(image, &expected_image) && found == pid)
 }
 
-/// Re-exec ourselves as `--daemon-foreground`, detached in a new session with
+/// Whether an image name reported by `tasklist` names `expected`, ignoring
+/// case. `tasklist` can cut long names; a cut name of at least 25 characters
+/// that starts `expected` matches.
+#[cfg(any(test, windows))]
+fn image_matches(reported: &str, expected: &str) -> bool {
+    let reported = reported.to_ascii_lowercase();
+    let expected = expected.to_ascii_lowercase();
+    reported == expected || (reported.chars().count() >= 25 && expected.starts_with(&reported))
+}
+
+#[cfg(all(not(unix), not(windows)))]
+pub(crate) fn alive(_pid: u32) -> bool {
+    false
+}
+
+/// Re-exec ourselves as `--start-foreground`, detached in a new session with
 /// stdio redirected to [`log_file`]. Returns the daemon PID.
 #[cfg(unix)]
 pub fn spawn_background() -> io::Result<u32> {
@@ -132,9 +280,9 @@ pub fn spawn_background() -> io::Result<u32> {
 
     crate::utils::ensure_private_dir(&data_dir())?;
     let mut options = std::fs::OpenOptions::new();
-    options.create(true).append(true);
-    // The daemon logs the paths of everything it touches; that is the user's
-    // business and nobody else's.
+    options.create(true).write(true).truncate(true);
+    // The capture holds the paths of everything the daemon prints, and is
+    // readable by its owner only.
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -144,13 +292,14 @@ pub fn spawn_background() -> io::Result<u32> {
     let log_err = log.try_clone()?;
 
     let mut cmd = Command::new(std::env::current_exe()?);
-    cmd.arg("--daemon-foreground")
+    cmd.arg("--start-foreground")
+        .env(crate::utils::logger::BACKGROUND_ENV, "1")
         .stdin(Stdio::null())
         .stdout(log)
         .stderr(log_err)
         .current_dir("/");
-    // New session: no controlling terminal, so closing the shell that
-    // launched us cannot HUP the daemon.
+    // New session: no controlling terminal, and no HUP when the launching
+    // shell closes.
     unsafe {
         cmd.pre_exec(|| {
             if libc::setsid() == -1 {
@@ -161,19 +310,39 @@ pub fn spawn_background() -> io::Result<u32> {
     }
     let mut child = cmd.spawn()?;
 
-    // An immediate exit means startup failed (disabled in config, port in
-    // use, …); the reason is in the log file.
-    std::thread::sleep(SPAWN_GRACE);
-    if child.try_wait()?.is_some() {
-        return Err(io::Error::other("daemon exited during startup"));
-    }
+    // An exit before the listen address is recorded means startup failed
+    // (disabled in config, port in use, …); the reason is in the log file.
+    wait_for_listen(&mut child, &pid_file(), STARTUP_TIMEOUT)?;
     Ok(child.id())
+}
+
+/// Wait until `child` holds the PID lock at `path` and has recorded its bound
+/// address there, failing if it exits first or `timeout` passes.
+#[cfg(unix)]
+fn wait_for_listen(
+    child: &mut std::process::Child,
+    path: &std::path::Path,
+    timeout: Duration,
+) -> io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child.try_wait()?.is_some() {
+            return Err(io::Error::other("daemon exited during startup"));
+        }
+        if locked_pid(path) == Some(child.id()) && listen_in(path).is_some() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::other("daemon did not start listening in time"));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[cfg(not(unix))]
 pub fn spawn_background() -> io::Result<u32> {
     Err(io::Error::other(
-        "background mode is only supported on Unix; use --daemon-foreground",
+        "background mode is only supported on Unix; use --start-foreground",
     ))
 }
 
@@ -181,12 +350,23 @@ pub fn spawn_background() -> io::Result<u32> {
 /// shutdown grace period cancelling a running encode).
 #[cfg(unix)]
 pub fn stop(pid: u32) -> io::Result<()> {
+    stop_at(&pid_file(), pid)
+}
+
+/// Send SIGTERM to `pid` while it holds the lock on the PID file at `path`,
+/// and wait until it no longer holds it. A PID that no longer holds the lock
+/// is not signalled.
+#[cfg(unix)]
+fn stop_at(path: &std::path::Path, pid: u32) -> io::Result<()> {
+    if locked_pid(path) != Some(pid) {
+        return Ok(());
+    }
     if unsafe { libc::kill(pid.cast_signed(), libc::SIGTERM) } != 0 {
         return Err(io::Error::last_os_error());
     }
     let deadline = Instant::now() + STOP_TIMEOUT;
     while Instant::now() < deadline {
-        if !alive(pid) {
+        if locked_pid(path) != Some(pid) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -201,6 +381,26 @@ pub fn stop(_pid: u32) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_cut_tasklist_image_name_still_names_this_executable() {
+        let expected = "av1converter-8cdc7a6885f2f4cc.exe";
+        assert!(super::image_matches(
+            "AV1CONVERTER-8CDC7A6885F2F4CC.EXE",
+            expected
+        ));
+        assert!(super::image_matches(
+            "av1converter-8cdc7a6885f2f4cc.e",
+            expected
+        ));
+        assert!(super::image_matches("av1converter.exe", "av1converter.exe"));
+        assert!(!super::image_matches("av1converter.exe", expected));
+        assert!(!super::image_matches("av1", expected));
+        assert!(!super::image_matches(
+            "other-8cdc7a6885f2f4cc.exe",
+            expected
+        ));
+    }
+
     use super::*;
 
     #[cfg(unix)]
@@ -211,7 +411,134 @@ mod tests {
         let guard = lock_pid_file(&path, std::process::id()).unwrap();
         assert_eq!(locked_pid(&path), Some(std::process::id()));
         drop(guard);
+        // A child forked concurrently by another test briefly inherits open
+        // descriptors until exec applies O_CLOEXEC; wait out that window.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while locked_pid(&path).is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(locked_pid(&path), None);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_does_not_signal_a_pid_that_no_longer_holds_the_lock() {
+        let path = std::env::temp_dir().join(format!("av1c_pid_stop_{}", std::process::id()));
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        std::fs::write(&path, child.id().to_string()).unwrap();
+
+        stop_at(&path, child.id()).unwrap();
+
+        let still_running = child.try_wait().unwrap().is_none();
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(path);
+        assert!(still_running);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_momentary_probe_lock_does_not_refuse_the_daemon() {
+        use std::os::fd::AsRawFd;
+
+        let path = std::env::temp_dir().join(format!("av1c_pid_probe_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, b"").unwrap();
+        let probe = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert_eq!(unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX) }, 0);
+
+        // The probe is released once the daemon's attempt is under way, so the
+        // attempt has to wait for the lock rather than fail on it.
+        let (attempting, about_to_lock) = std::sync::mpsc::channel();
+        let locking = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                attempting.send(()).unwrap();
+                lock_pid_file(&path, std::process::id())
+            })
+        };
+        about_to_lock.recv().unwrap();
+        drop(probe);
+
+        let guard = locking.join().unwrap().unwrap();
+        let refused = lock_pid_file(&path, std::process::id()).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists);
+
+        drop(guard);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pid_file_replaced_after_opening_is_not_the_linked_one() {
+        let path = std::env::temp_dir().join(format!("av1c_pid_inode_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let stale = lock_pid_file(&path, std::process::id()).unwrap();
+        assert!(is_linked_at(&stale, &path).unwrap());
+        std::fs::remove_file(&path).unwrap();
+        assert!(!is_linked_at(&stale, &path).unwrap());
+        drop(lock_pid_file(&path, std::process::id()).unwrap());
+        assert!(!is_linked_at(&stale, &path).unwrap());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_waits_for_the_recorded_listen_address() {
+        let path = std::env::temp_dir().join(format!("av1c_pid_startup_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let mut exited = std::process::Command::new("sh")
+            .args(["-c", "exit 1"])
+            .spawn()
+            .unwrap();
+        assert!(wait_for_listen(&mut exited, &path, Duration::from_secs(5)).is_err());
+
+        let mut running = std::process::Command::new("sleep")
+            .arg("10")
+            .spawn()
+            .unwrap();
+        let _guard = lock_pid_file(&path, running.id()).unwrap();
+        assert!(wait_for_listen(&mut running, &path, Duration::from_millis(300)).is_err());
+        append_listen(&path, "127.0.0.1:9124").unwrap();
+        assert!(wait_for_listen(&mut running, &path, Duration::from_secs(5)).is_ok());
+
+        let _ = running.kill();
+        let _ = running.wait();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn the_listen_address_rides_on_the_second_line() {
+        let path = std::env::temp_dir().join(format!("av1c_pid_listen_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let _guard = lock_pid_file(&path, std::process::id()).unwrap();
+        assert_eq!(listen_in(&path), None);
+        append_listen(&path, "127.0.0.1:9123").unwrap();
+        assert_eq!(locked_pid(&path), Some(std::process::id()));
+        assert_eq!(listen_in(&path), Some("127.0.0.1:9123".parse().unwrap()));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn pid_guard_removes_its_file_on_drop() {
+        let path = std::env::temp_dir().join(format!("av1c_pid_guard_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let file = lock_pid_file(&path, std::process::id()).unwrap();
+        let guard = PidGuard {
+            _file: file,
+            path: path.clone(),
+        };
+        assert!(path.exists());
+        drop(guard);
+        assert!(!path.exists());
     }
 }

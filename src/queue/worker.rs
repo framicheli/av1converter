@@ -1,6 +1,8 @@
 use crate::analyzer::{DvMode, VideoMetadata};
 use crate::config::AppConfig;
-use crate::encoder::{self, FullEncodeResult};
+use crate::encoder::{self, FullEncodeResult, KeepReason};
+use crate::i18n::{Msg, t};
+use crate::queue::SourceIdentity;
 use crate::tracks::OutputTracks;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,14 +24,19 @@ pub enum WorkerMessage {
     DoneVmafFailed(usize, String),
     /// Error occurred
     Error(usize, String),
-    /// Quality below threshold
-    QualityWarning(usize, f64, f64),
+    /// Quality below threshold (index, mean, min, threshold)
+    QualityWarning(usize, f64, f64, f64),
     /// Encoding was cancelled
     Cancelled,
+    /// Every job assigned to this worker session has finished
+    Finished,
     /// Source file was deleted after successful encoding
     SourceDeleted(usize),
-    /// Source file was kept because VMAF was below the configured threshold
-    SourceKeptLowVmaf(usize, f64),
+    /// Source file was kept: VMAF mean and/or min was below the threshold
+    /// (index, mean, min)
+    SourceKeptLowVmaf(usize, f64, f64),
+    /// Source file was kept although VMAF met the threshold
+    SourceKept(usize, KeepReason),
 }
 
 /// Data needed by the worker thread for one job
@@ -38,17 +45,25 @@ pub struct WorkerJob {
     pub index: usize,
     pub input: PathBuf,
     pub output: PathBuf,
+    pub source_identity: SourceIdentity,
     pub metadata: VideoMetadata,
     /// Audio and subtitle streams to write, already resolved from the user's
     /// selection into output order
     pub tracks: OutputTracks,
     pub dv_mode: DvMode,
     pub remux_only: bool,
-    /// Per-output-stream subtitle codecs (`copy`, or a compatible conversion).
-    pub subtitle_codecs: Vec<&'static str>,
+    /// Per-selected-track subtitle codecs (`copy`, a compatible conversion, or
+    /// `None` for a track the container cannot hold).
+    pub subtitle_codecs: Vec<Option<&'static str>>,
+}
+
+/// The span every line about job `index` carries: its queue id and its file.
+pub fn job_span(id: impl std::fmt::Display, file: &std::path::Path) -> tracing::Span {
+    tracing::info_span!("job", id = %id, file = %file.display())
 }
 
 /// Run the encoding worker in a separate thread
+#[allow(clippy::too_many_lines)]
 pub fn run_worker(
     jobs: Vec<WorkerJob>,
     config: &AppConfig,
@@ -56,31 +71,38 @@ pub fn run_worker(
     tx: &Sender<WorkerMessage>,
 ) {
     for job in jobs {
-        if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+        if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
             let _ = tx.send(WorkerMessage::Cancelled);
-            break;
+            return;
         }
-
+        let _span = job_span(job.index, &job.input).entered();
         let _ = tx.send(WorkerMessage::Progress(job.index, 0.0));
 
         let tx_progress = tx.clone();
         let idx = job.index;
 
-        let input_str = job.input.to_str().unwrap_or("").to_string();
-        let output_str = job.output.to_str().unwrap_or("").to_string();
+        // The pipeline takes `&str` paths; a non-UTF-8 path is reported as a
+        // job error.
+        let (Some(input_str), Some(output_str)) = (job.input.to_str(), job.output.to_str()) else {
+            let _ = tx.send(WorkerMessage::Error(
+                job.index,
+                t(config.language, Msg::ErrPathNotUtf8)
+                    .replace("{path}", &job.input.display().to_string()),
+            ));
+            continue;
+        };
+        let input_str = input_str.to_string();
+        let output_str = output_str.to_string();
 
         let tx_verifying = tx.clone();
         let verifying_idx = job.index;
 
-        // A panic here must end this job, not the worker. Nothing supervises
-        // this thread: the daemon holds its own copy of the sender, so a dead
-        // worker does not even close the channel — it just goes quiet, leaving
-        // the session permanently unfinished and the daemon unable to ever
-        // start another one. Blame the file being worked on and carry on.
+        // A pipeline panic becomes a per-job error and the session continues.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             encoder::run_encoding_pipeline(
                 &input_str,
                 &output_str,
+                &job.source_identity,
                 &job.metadata,
                 job.tracks,
                 job.dv_mode,
@@ -97,44 +119,247 @@ pub fn run_worker(
             )
         }))
         .unwrap_or_else(|_| {
-            FullEncodeResult::Error(format!("Encoding panicked on {}", job.input.display()))
+            FullEncodeResult::Error(
+                t(config.language, Msg::ErrEncodePanicked)
+                    .replace("{path}", &job.input.display().to_string()),
+            )
         });
 
-        match result {
-            FullEncodeResult::Success => {
-                let _ = tx.send(WorkerMessage::Done(job.index));
+        if !report_result(tx, job.index, &job.input, result, config) {
+            return;
+        }
+    }
+    let _ = tx.send(WorkerMessage::Finished);
+}
+
+/// Turn one pipeline result into the messages the UIs read. Returns `false`
+/// when the session was cancelled and no further job runs.
+fn report_result(
+    tx: &Sender<WorkerMessage>,
+    index: usize,
+    input: &std::path::Path,
+    result: FullEncodeResult,
+    config: &AppConfig,
+) -> bool {
+    match result {
+        FullEncodeResult::Success => {
+            let _ = tx.send(WorkerMessage::Done(index));
+        }
+        FullEncodeResult::SuccessWithVmaf {
+            vmaf,
+            source_deleted,
+            keep_reason,
+        } => {
+            let score = vmaf.score;
+            if source_deleted {
+                let _ = tx.send(WorkerMessage::SourceDeleted(index));
             }
-            FullEncodeResult::SuccessWithVmaf {
-                vmaf,
-                source_deleted,
-            } => {
-                let score = vmaf.score;
-                if source_deleted {
-                    let _ = tx.send(WorkerMessage::SourceDeleted(job.index));
-                }
-                let _ = tx.send(WorkerMessage::DoneWithVmaf(job.index, score));
+            if let Some(reason) = keep_reason {
+                let _ = tx.send(WorkerMessage::SourceKept(index, reason));
             }
-            FullEncodeResult::VmafFailed { message } => {
-                let _ = tx.send(WorkerMessage::DoneVmafFailed(job.index, message));
-            }
-            FullEncodeResult::Cancelled => {
-                let _ = tx.send(WorkerMessage::Cancelled);
-                break;
-            }
-            FullEncodeResult::Error(e) => {
-                let _ = tx.send(WorkerMessage::Error(job.index, e));
-            }
-            FullEncodeResult::QualityWarning { vmaf, threshold } => {
-                let score = vmaf.score;
+            let _ = tx.send(WorkerMessage::DoneWithVmaf(index, score));
+        }
+        FullEncodeResult::VmafFailed { message } => {
+            let _ = tx.send(WorkerMessage::DoneVmafFailed(index, message));
+        }
+        FullEncodeResult::Cancelled => {
+            let _ = tx.send(WorkerMessage::Cancelled);
+            return false;
+        }
+        FullEncodeResult::Error(e) => {
+            let _ = tx.send(WorkerMessage::Error(index, e));
+        }
+        FullEncodeResult::QualityWarning { vmaf, threshold } => {
+            if config.quality.delete_source_on_success {
                 info!(
-                    "Source file kept: {} (VMAF {:.1} < {:.0})",
-                    job.input.display(),
-                    score,
+                    "Source file kept: {} (VMAF mean {:.1}, min {:.1}, threshold {})",
+                    input.display(),
+                    vmaf.score,
+                    vmaf.min_score,
                     threshold
                 );
-                let _ = tx.send(WorkerMessage::SourceKeptLowVmaf(job.index, score));
-                let _ = tx.send(WorkerMessage::QualityWarning(job.index, score, threshold));
+            }
+            report_low_vmaf(
+                tx,
+                index,
+                vmaf.score,
+                vmaf.min_score,
+                threshold,
+                config.quality.delete_source_on_success,
+            );
+        }
+    }
+    true
+}
+
+/// Report a job whose VMAF mean or minimum is below `threshold`: a
+/// [`WorkerMessage::SourceKeptLowVmaf`] when source deletion is enabled, then
+/// a [`WorkerMessage::QualityWarning`].
+fn report_low_vmaf(
+    tx: &Sender<WorkerMessage>,
+    index: usize,
+    mean: f64,
+    min: f64,
+    threshold: f64,
+    deletion_enabled: bool,
+) {
+    if deletion_enabled {
+        let _ = tx.send(WorkerMessage::SourceKeptLowVmaf(index, mean, min));
+    }
+    let _ = tx.send(WorkerMessage::QualityWarning(index, mean, min, threshold));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_worker_session_reports_completion() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        run_worker(
+            Vec::new(),
+            &AppConfig::default(),
+            &Arc::new(AtomicBool::new(false)),
+            &tx,
+        );
+
+        assert!(matches!(rx.recv().unwrap(), WorkerMessage::Finished));
+    }
+
+    /// A line logged inside the job span carries the job id and its file.
+    #[test]
+    fn log_lines_inside_a_job_span_name_the_job() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Captured(Arc<Mutex<Vec<u8>>>);
+        impl Write for Captured {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
             }
         }
+
+        let captured = Captured(Arc::new(Mutex::new(Vec::new())));
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let _span = super::job_span(7, std::path::Path::new("/movies/a film.mkv")).entered();
+            tracing::info!("Deleted source file");
+        });
+
+        let logged = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            logged.contains("job{id=7 file=/movies/a film.mkv}"),
+            "{logged}"
+        );
+        assert!(logged.contains("Deleted source file"), "{logged}");
+    }
+
+    /// Each pipeline result turns into its own messages, in order, and only
+    /// a cancellation ends the session.
+    #[test]
+    fn every_pipeline_result_maps_to_its_messages() {
+        use crate::encoder::KeepReason;
+        use crate::verifier::VmafResult;
+
+        let vmaf = VmafResult {
+            score: 97.0,
+            min_score: 96.0,
+            max_score: 99.0,
+        };
+        let config = AppConfig::default();
+        let report = |result| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let carry_on = report_result(&tx, 7, std::path::Path::new("in.mkv"), result, &config);
+            drop(tx);
+            (carry_on, rx.iter().collect::<Vec<WorkerMessage>>())
+        };
+
+        let (carry_on, messages) = report(FullEncodeResult::Success);
+        assert!(carry_on);
+        assert!(matches!(messages[..], [WorkerMessage::Done(7)]));
+
+        let (carry_on, messages) = report(FullEncodeResult::SuccessWithVmaf {
+            vmaf: vmaf.clone(),
+            source_deleted: true,
+            keep_reason: None,
+        });
+        assert!(carry_on);
+        assert!(matches!(
+            messages[..],
+            [
+                WorkerMessage::SourceDeleted(7),
+                WorkerMessage::DoneWithVmaf(7, 97.0)
+            ]
+        ));
+
+        let (_, messages) = report(FullEncodeResult::SuccessWithVmaf {
+            vmaf: vmaf.clone(),
+            source_deleted: false,
+            keep_reason: Some(KeepReason::Symlink),
+        });
+        assert!(matches!(
+            messages[..],
+            [
+                WorkerMessage::SourceKept(7, KeepReason::Symlink),
+                WorkerMessage::DoneWithVmaf(7, 97.0)
+            ]
+        ));
+
+        let (_, messages) = report(FullEncodeResult::VmafFailed {
+            message: "no libvmaf".to_string(),
+        });
+        assert!(
+            matches!(&messages[..], [WorkerMessage::DoneVmafFailed(7, message)] if message == "no libvmaf")
+        );
+
+        let (_, messages) = report(FullEncodeResult::Error("boom".to_string()));
+        assert!(matches!(&messages[..], [WorkerMessage::Error(7, e)] if e == "boom"));
+
+        let (carry_on, messages) = report(FullEncodeResult::Cancelled);
+        assert!(!carry_on, "a cancellation ends the session");
+        assert!(matches!(messages[..], [WorkerMessage::Cancelled]));
+
+        // With deletion off, only the warning is sent.
+        let (carry_on, messages) = report(FullEncodeResult::QualityWarning {
+            vmaf: vmaf.clone(),
+            threshold: 98.0,
+        });
+        assert!(carry_on);
+        assert!(matches!(
+            messages[..],
+            [WorkerMessage::QualityWarning(7, 97.0, 96.0, 98.0)]
+        ));
+    }
+
+    #[test]
+    fn a_low_vmaf_reports_the_kept_source_only_when_deletion_is_on() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        report_low_vmaf(&tx, 3, 96.0, 80.0, 95.0, true);
+        report_low_vmaf(&tx, 4, 96.0, 80.0, 95.0, false);
+        drop(tx);
+        let messages: Vec<WorkerMessage> = rx.iter().collect();
+
+        assert_eq!(messages.len(), 3);
+        assert!(matches!(
+            messages[0],
+            WorkerMessage::SourceKeptLowVmaf(3, 96.0, 80.0)
+        ));
+        assert!(matches!(
+            messages[1],
+            WorkerMessage::QualityWarning(3, 96.0, 80.0, 95.0)
+        ));
+        assert!(matches!(
+            messages[2],
+            WorkerMessage::QualityWarning(4, 96.0, 80.0, 95.0)
+        ));
     }
 }

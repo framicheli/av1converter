@@ -2,6 +2,7 @@ mod analyzer;
 mod app;
 mod config;
 mod daemon;
+mod disc;
 mod encoder;
 mod error;
 mod i18n;
@@ -13,51 +14,142 @@ mod verifier;
 
 use app::{App, ConfirmAction, Screen, TrackFocus};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    cursor::Show,
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend, widgets::Clear};
-use std::io;
-use std::time::Duration;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
-use crate::app::HOME_MENU;
 use crate::i18n::{Msg, t};
 
 const USAGE: &str = "\
 Usage: av1converter [OPTION]
 
   (no option)          start the interactive TUI
-  --daemon             run the web-UI daemon in the background (must be enabled in Settings)
-  --daemon-foreground  run the daemon in the foreground, logging to stdout
-  --stop               stop the background daemon
+  --start              start the web-UI daemon in the background (Unix; must be enabled in Settings)
+  --start-foreground   start the daemon in the foreground, logging to stdout
+  --restart            stop the daemon gracefully, then start it again (Unix)
+  --stop               stop the background daemon (Unix)
   --status             show whether the daemon is running
+  --install-service    start the daemon at login (Linux/macOS)
+  --uninstall-service  stop starting the daemon at login
+  --scan-discs         list optical drives and the titles on the loaded disc
+  --purge              delete configuration and daemon state after confirmation
   --help               show this help
   --version            show the version
+
+Legacy aliases: --daemon is --start; --daemon-foreground is --start-foreground
 ";
 
+#[derive(Debug, PartialEq)]
 enum Cli {
     Tui,
-    Daemon,
-    DaemonForeground,
+    Start,
+    StartForeground,
+    Restart,
     Stop,
     Status,
+    InstallService,
+    UninstallService,
+    ScanDiscs,
+    Purge,
     Help,
     Version,
-    Unknown(String),
 }
 
-fn parse_cli() -> Cli {
-    match std::env::args().nth(1).as_deref() {
-        None => Cli::Tui,
-        Some("--daemon") => Cli::Daemon,
-        Some("--daemon-foreground") => Cli::DaemonForeground,
-        Some("--stop") => Cli::Stop,
-        Some("--status") => Cli::Status,
-        Some("--help" | "-h") => Cli::Help,
-        Some("--version" | "-V") => Cli::Version,
-        Some(other) => Cli::Unknown(other.to_string()),
+const FLAGS: &[&str] = &[
+    "--start",
+    "--start-foreground",
+    "--restart",
+    "--daemon",
+    "--daemon-foreground",
+    "--stop",
+    "--status",
+    "--install-service",
+    "--uninstall-service",
+    "--scan-discs",
+    "--purge",
+    "--help",
+    "-h",
+    "--version",
+    "-V",
+];
+
+fn parse_flag(arg: &str) -> Option<Cli> {
+    Some(match arg {
+        "--start" | "--daemon" => Cli::Start,
+        "--start-foreground" | "--daemon-foreground" => Cli::StartForeground,
+        "--restart" => Cli::Restart,
+        "--stop" => Cli::Stop,
+        "--status" => Cli::Status,
+        "--install-service" => Cli::InstallService,
+        "--uninstall-service" => Cli::UninstallService,
+        "--scan-discs" => Cli::ScanDiscs,
+        "--purge" => Cli::Purge,
+        "--help" | "-h" => Cli::Help,
+        "--version" | "-V" => Cli::Version,
+        _ => return None,
+    })
+}
+
+fn parse_cli(args: impl IntoIterator<Item = impl AsRef<str>>) -> Result<Cli, String> {
+    let mut args = args.into_iter();
+    let Some(first) = args.next() else {
+        return Ok(Cli::Tui);
+    };
+    let first = first.as_ref();
+    let Some(cli) = parse_flag(first) else {
+        return Err(unknown_arg_message(first));
+    };
+    if let Some(extra) = args.next() {
+        return Err(format!(
+            "Unexpected extra argument: {}\n{USAGE}",
+            extra.as_ref()
+        ));
     }
+    Ok(cli)
+}
+
+fn unknown_arg_message(arg: &str) -> String {
+    match suggest_flag(arg) {
+        Some(flag) => format!("Unknown argument: {arg}\nDid you mean `{flag}`?\n{USAGE}"),
+        None => format!("Unknown argument: {arg}\n{USAGE}"),
+    }
+}
+
+fn suggest_flag(arg: &str) -> Option<&'static str> {
+    if arg.len() < 2 {
+        return None;
+    }
+    let mut best: Option<(&'static str, usize)> = None;
+    for flag in FLAGS {
+        let d = edit_distance(arg, flag);
+        if (1..=2).contains(&d) && best.is_none_or(|(_, bd)| d < bd) {
+            best = Some((flag, d));
+        }
+    }
+    best.map(|(flag, _)| flag)
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, &ca) in a.iter().enumerate() {
+        let mut curr = vec![i + 1];
+        for (j, &cb) in b.iter().enumerate() {
+            curr.push(if ca == cb {
+                prev[j]
+            } else {
+                1 + prev[j].min(prev[j + 1]).min(curr[j])
+            });
+        }
+        prev = curr;
+    }
+    prev[b.len()]
 }
 
 /// Headless daemon entry: refuses to start unless enabled in the config or if
@@ -75,23 +167,23 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
         std::process::exit(1);
     }
 
-    // Anyone who can reach the port can browse the filesystem, queue encodes
-    // and rewrite the configuration. Minting a token on first start costs the
-    // user one click on the printed URL and closes that by default; leaving it
-    // open would hand the same access to every process on the machine.
-    if config.daemon.auth_token.is_empty() {
-        config.daemon.auth_token =
-            config::DaemonConfig::generate_token().map_err(io::Error::other)?;
-        if let Err(e) = config.save() {
-            eprintln!("{} ({e})", t(lang, Msg::SaveFailed));
-            std::process::exit(1);
-        }
-        println!("{}", t(lang, Msg::DaemonTokenGenerated));
+    if config.daemon.refuses_public_bind() {
+        eprintln!("{}", t(lang, Msg::DaemonPublicHttpRefused));
+        std::process::exit(1);
+    }
+    if config.daemon.binds_publicly() && config.daemon.browse_root.trim().is_empty() {
+        eprintln!("{}", t(lang, Msg::BrowseRootRequired));
+        std::process::exit(1);
+    }
+    if config.daemon.binds_publicly() {
+        eprintln!("{}", t(lang, Msg::DaemonPublicHttp));
     }
 
     if !foreground {
         match daemon::lifecycle::spawn_background() {
             Ok(pid) => {
+                // The child mints a token under the PID lock; pick it up for the URL.
+                let config = config::AppConfig::load();
                 println!("{} (PID {pid})", t(lang, Msg::DaemonStarted));
                 println!("{} {}", t(lang, Msg::DaemonListening), config.daemon.url());
                 println!("{}", t(lang, Msg::DaemonStopHint));
@@ -108,14 +200,40 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
         }
     }
 
-    utils::init_daemon_logging();
+    let _log_guard = utils::init_daemon_logging();
     let _pid_guard = daemon::lifecycle::write_pid_file()?;
+    // The API can browse the filesystem, queue encodes and rewrite the
+    // configuration, and a token is minted on first start. The printed URL
+    // carries it, and following it authorises the browser. Minted under the
+    // PID lock, which serialises two concurrent --start processes.
+    if config.daemon.auth_token.len() < 32 {
+        let mut fresh = match load_config_for_save() {
+            Ok(fresh) => fresh,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        };
+        if fresh.daemon.auth_token.len() < 32 {
+            fresh.daemon.auth_token =
+                config::DaemonConfig::generate_token().map_err(io::Error::other)?;
+            if let Err(e) = fresh.save() {
+                eprintln!("{} ({e})", t(lang, Msg::SaveFailed));
+                std::process::exit(1);
+            }
+            println!("{}", t(lang, Msg::DaemonTokenGeneratedSeeStatus));
+        }
+        config
+            .daemon
+            .auth_token
+            .clone_from(&fresh.daemon.auth_token);
+    }
     daemon::run_daemon(config).map_err(io::Error::other)
 }
 
 /// `--stop`: signal the background daemon and wait for it to exit.
 fn stop_daemon_entry() {
-    let lang = config::AppConfig::load().language;
+    let lang = config::AppConfig::load_existing().language;
     let Some(pid) = daemon::lifecycle::running_pid() else {
         println!("{}", t(lang, Msg::DaemonNotRunning));
         return;
@@ -131,102 +249,464 @@ fn stop_daemon_entry() {
     }
 }
 
+/// `--restart`: stop a running daemon cleanly and start a fresh background
+/// process. Like `--start`, this starts an inactive daemon too.
+fn restart_daemon_entry() -> io::Result<()> {
+    let config = config::AppConfig::load();
+    let lang = config.language;
+
+    if !config.daemon.enabled {
+        eprintln!("{}", t(lang, Msg::DaemonDisabledError));
+        std::process::exit(1);
+    }
+
+    if let Some(pid) = daemon::lifecycle::running_pid() {
+        match daemon::lifecycle::stop(pid) {
+            Ok(()) => println!("{} (PID {pid})", t(lang, Msg::DaemonStopped)),
+            Err(e) => {
+                eprintln!("{} {e}", t(lang, Msg::DaemonStopFailed));
+                std::process::exit(1);
+            }
+        }
+    }
+
+    run_daemon_entry(false)
+}
+
 /// `--status`: report whether the background daemon is running.
 fn daemon_status_entry() {
-    let config = config::AppConfig::load();
+    let mut config = config::AppConfig::load_existing();
     let lang = config.language;
     match daemon::lifecycle::running_pid() {
         Some(pid) => {
+            // The URL names the address the daemon bound, not the one the
+            // config file holds now.
+            if let Some(bound) = daemon::lifecycle::running_listen() {
+                config.daemon.bind_address = bound.ip().to_string();
+                config.daemon.port = bound.port();
+            }
             println!("{} (PID {pid})", t(lang, Msg::DaemonRunning));
             println!("{} {}", t(lang, Msg::DaemonListening), config.daemon.url());
         }
         None => println!("{}", t(lang, Msg::DaemonNotRunning)),
     }
+    if daemon::service::supported() {
+        println!(
+            "{}",
+            t(
+                lang,
+                if daemon::service::installed() {
+                    Msg::DaemonAutostartOn
+                } else {
+                    Msg::DaemonAutostartOff
+                }
+            )
+        );
+    }
+}
+
+/// Mint a token if needed, set `daemon.enabled`, validate, and save. Shared by
+/// `--install-service` and the Settings row. `config` is left untouched when
+/// validation or the save fails.
+fn enable_daemon_config(
+    config: &mut config::AppConfig,
+    previous: &config::AppConfig,
+) -> Result<bool, String> {
+    let mut candidate = config.clone();
+    let mut generated = false;
+    candidate.daemon.enabled = true;
+    if candidate.daemon.auth_token.len() < 32 {
+        candidate.daemon.auth_token = config::DaemonConfig::generate_token()?;
+        generated = true;
+    }
+    validate_and_save_config(&mut candidate, previous)?;
+    *config = candidate;
+    Ok(generated)
+}
+
+/// Load `config.toml` for a command that saves it: an error naming the parse
+/// failure when the file exists but cannot be read.
+fn load_config_for_save() -> Result<config::AppConfig, String> {
+    match config::AppConfig::load_reporting() {
+        (config, None) => Ok(config),
+        (config, Some(error)) => Err(format!(
+            "{} ({})",
+            t(config.language, Msg::ConfigUnreadableRefused),
+            error.lines().next().unwrap_or_default()
+        )),
+    }
+}
+
+/// Load `config.toml`, enable the daemon in it and save it. Returns the saved
+/// configuration and whether a token was generated.
+fn enable_daemon_on_disk() -> Result<(config::AppConfig, bool), String> {
+    let mut config = load_config_for_save()?;
+    let previous = config.clone();
+    let generated = enable_daemon_config(&mut config, &previous)?;
+    Ok((config, generated))
+}
+
+/// `--install-service`: write a user unit/plist and start the daemon now.
+fn install_service_entry() {
+    if !daemon::service::supported() {
+        let lang = config::AppConfig::load_existing().language;
+        eprintln!("{}", t(lang, Msg::DaemonServiceUnsupported));
+        std::process::exit(1);
+    }
+    let (config, generated) = match enable_daemon_on_disk() {
+        Ok(enabled) => enabled,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    let lang = config.language;
+    if generated {
+        println!("{}", t(lang, Msg::DaemonTokenGenerated));
+    }
+    match daemon::service::install() {
+        Ok(outcome) => {
+            println!("{}", t(lang, Msg::DaemonServiceInstalled));
+            println!("{} {}", t(lang, Msg::DaemonListening), config.daemon.url());
+            if outcome.still_starting {
+                println!("{}", t(lang, Msg::DaemonServiceStillStarting));
+            }
+            if outcome.linger_hint {
+                println!("{}", t(lang, Msg::DaemonServiceLingerHint));
+            }
+        }
+        Err(e) => {
+            eprintln!("{} {e}", t(lang, Msg::DaemonServiceFailed));
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `--uninstall-service`: remove the user unit/plist and stop the daemon.
+fn uninstall_service_entry() {
+    let lang = config::AppConfig::load_existing().language;
+    if !daemon::service::supported() {
+        eprintln!("{}", t(lang, Msg::DaemonServiceUnsupported));
+        std::process::exit(1);
+    }
+    match daemon::service::uninstall() {
+        Ok(()) => println!("{}", t(lang, Msg::DaemonServiceUninstalled)),
+        Err(e) => {
+            eprintln!("{} {e}", t(lang, Msg::DaemonServiceFailed));
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `--scan-discs`: print every drive and the titles of each loaded disc, as
+/// parsed from `MakeMKV`'s output. English, like `--help`.
+fn scan_discs_entry() {
+    let config = config::AppConfig::load_existing();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let bin = match disc::find_makemkvcon(&config) {
+        Ok(bin) => bin,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    println!("makemkvcon: {}", bin.display());
+
+    let drives = match disc::list_drives(&bin, &cancel) {
+        Ok(drives) => drives,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    for drive in &drives {
+        println!(
+            "\ndrive {}: {} [{}]",
+            drive.id,
+            drive.name,
+            drive.disc_label.as_deref().unwrap_or("empty")
+        );
+        if drive.disc_label.is_none() {
+            continue;
+        }
+        match disc::scan_titles(&bin, &disc::DiscSource::Drive(drive.clone()), &cancel) {
+            Ok(scan) => {
+                if let Some(kind) = scan.disc_type {
+                    println!("  {kind}");
+                }
+                for title in scan.titles {
+                    let chapters = if title.chapters > 0 {
+                        format!("  {} chapters", title.chapters)
+                    } else {
+                        String::new()
+                    };
+                    println!(
+                        "  title {:>2}  {}  {}{chapters}  {}",
+                        title.id,
+                        utils::format_duration(title.duration),
+                        utils::format_file_size(title.size_bytes),
+                        title.name
+                    );
+                    for track in &title.tracks {
+                        println!("            {track}");
+                    }
+                }
+            }
+            Err(e) => eprintln!("  {e}"),
+        }
+    }
+}
+
+/// Directories `--purge` removes: config and daemon data, deduped. With no
+/// `HOME`/`XDG_*` both fall back to `.` and resolve to the same path.
+fn purge_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(dir) = config::AppConfig::config_path().parent() {
+        dirs.push(dir.to_path_buf());
+    }
+    let data = daemon::lifecycle::data_dir();
+    if !dirs.contains(&data) {
+        dirs.push(data);
+    }
+    dirs
+}
+
+fn is_purge_yes(line: &str) -> bool {
+    let line = line.trim();
+    line.eq_ignore_ascii_case("y") || line.eq_ignore_ascii_case("yes")
+}
+
+/// `--purge`: delete configuration and daemon state after confirmation.
+/// English, like `--help`. Does not load the config; loading creates a
+/// missing file.
+fn purge_entry() {
+    if let Some(pid) = daemon::lifecycle::running_pid() {
+        eprintln!(
+            "The daemon is still running (PID {pid}). Stop it first with: av1converter --stop"
+        );
+        std::process::exit(1);
+    }
+
+    let had_service = daemon::service::installed();
+    let existing: Vec<PathBuf> = purge_dirs()
+        .into_iter()
+        .filter(|dir| dir.exists())
+        .collect();
+    if existing.is_empty() {
+        if had_service {
+            uninstall_service_or_exit();
+            println!("Removed the login service.");
+        } else {
+            println!("Nothing to delete.");
+        }
+        return;
+    }
+
+    println!("This will permanently delete:");
+    for dir in &existing {
+        println!("  {}", dir.display());
+    }
+    if had_service {
+        println!("  the login service");
+    }
+    print!("Are you sure? [y/N] ");
+    let _ = io::stdout().flush();
+
+    let mut line = String::new();
+    match io::stdin().read_line(&mut line) {
+        Ok(_) if is_purge_yes(&line) => {}
+        Ok(_) => {
+            println!("Cancelled.");
+            return;
+        }
+        Err(e) => {
+            eprintln!("Could not read confirmation: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    if had_service {
+        uninstall_service_or_exit();
+    }
+    for dir in &existing {
+        if let Err(e) = std::fs::remove_dir_all(dir) {
+            eprintln!("Could not delete {}: {e}", dir.display());
+            std::process::exit(1);
+        }
+        println!("Deleted {}", dir.display());
+    }
+}
+
+fn uninstall_service_or_exit() {
+    if let Err(e) = daemon::service::uninstall() {
+        eprintln!("Could not remove the login service: {e}");
+        std::process::exit(1);
+    }
 }
 
 fn main() -> io::Result<()> {
-    match parse_cli() {
-        Cli::Tui => {}
-        Cli::Daemon => return run_daemon_entry(false),
-        Cli::DaemonForeground => return run_daemon_entry(true),
-        Cli::Stop => {
+    match parse_cli(
+        std::env::args_os()
+            .skip(1)
+            .map(|arg| arg.to_string_lossy().into_owned()),
+    ) {
+        Ok(Cli::Tui) => {}
+        Ok(Cli::Start) => return run_daemon_entry(false),
+        Ok(Cli::StartForeground) => return run_daemon_entry(true),
+        Ok(Cli::Restart) => return restart_daemon_entry(),
+        Ok(Cli::Stop) => {
             stop_daemon_entry();
             return Ok(());
         }
-        Cli::Status => {
+        Ok(Cli::Status) => {
             daemon_status_entry();
             return Ok(());
         }
-        Cli::Help => {
+        Ok(Cli::InstallService) => {
+            install_service_entry();
+            return Ok(());
+        }
+        Ok(Cli::UninstallService) => {
+            uninstall_service_entry();
+            return Ok(());
+        }
+        Ok(Cli::ScanDiscs) => {
+            scan_discs_entry();
+            return Ok(());
+        }
+        Ok(Cli::Purge) => {
+            purge_entry();
+            return Ok(());
+        }
+        Ok(Cli::Help) => {
             print!("{USAGE}");
             return Ok(());
         }
-        Cli::Version => {
+        Ok(Cli::Version) => {
             println!("av1converter {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
-        Cli::Unknown(arg) => {
-            eprintln!("Unknown argument: {arg}\n{USAGE}");
+        Err(msg) => {
+            eprint!("{msg}");
             std::process::exit(2);
         }
     }
 
     let _log_guard = utils::init_logging();
 
-    // Restore the terminal even if panic
+    // Restore the terminal on a panic of the main thread. Worker-thread panics
+    // go to the log and leave the running event loop's terminal untouched.
+    let main_thread = std::thread::current().id();
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
-        original_hook(info);
+        if std::thread::current().id() == main_thread {
+            let _ = restore_terminal();
+            original_hook(info);
+        } else {
+            tracing::error!("{info}");
+        }
     }));
+
+    // First run detects the encoder by test-encoding a frame per candidate,
+    // which takes seconds. It runs before the alternate screen opens.
+    if !config::AppConfig::config_path().exists() {
+        println!(
+            "{}",
+            t(config::AppConfig::default().language, Msg::DetectingEncoder)
+        );
+        let _ = config::AppConfig::load();
+    }
 
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    if let Err(e) = execute!(stdout, EnterAlternateScreen) {
+        let _ = restore_terminal();
+        return Err(e);
+    }
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(e) => {
+            let _ = restore_terminal();
+            return Err(e);
+        }
+    };
 
     // Create app and run
     let mut app = App::new();
+    // Staged rips named by a stopped daemon's queue stay for its next start.
+    let (daemon_queue, unreadable_queue) = queue::state::load(&daemon::lifecycle::queue_file());
+    if let Some(kept) = unreadable_queue {
+        app.set_message(
+            &t(app.config.language, Msg::QueueUnreadable)
+                .replace("{path}", &kept.display().to_string()),
+        );
+    }
+    disc::staging::sweep_orphans(
+        &app.config,
+        &daemon_queue.state.jobs,
+        disc::staging::ACTIVE_RIP_WINDOW,
+    );
     let res = run_app(&mut terminal, &mut app);
+    if res.is_err() {
+        shutdown_after_error(&app);
+    }
+    utils::remove_scratch_dir_if_empty();
 
     // Restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    let restore = restore_terminal();
+    res?;
+    restore
+}
 
-    if let Err(err) = res {
-        eprintln!("Error: {err:?}");
-    }
+/// Cleanup for an event-loop error, which returns before the quit path runs:
+/// kills tracked children and removes the staging copies of queued rips.
+fn shutdown_after_error(app: &App) {
+    crate::utils::child::kill_all();
+    app.discard_staged_jobs();
+}
 
-    Ok(())
+/// Best-effort terminal restoration used by setup errors, runtime errors and
+/// the panic hook. Leaves raw mode, the alternate screen and cursor hiding,
+/// attempting every operation even when the first fails.
+fn restore_terminal() -> io::Result<()> {
+    let raw = disable_raw_mode();
+    let screen = execute!(io::stdout(), LeaveAlternateScreen, Show);
+    raw.and(screen)
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
+    let mut quit_deadline: Option<Instant> = None;
     loop {
         app.process_progress_messages();
         app.process_analysis_messages();
+        app.process_folder_scan();
+        app.process_disc_drive_events();
+        app.process_disc_events();
         app.tick_message();
 
         terminal.draw(|f| {
             f.render_widget(Clear, f.area());
-            match app.current_screen {
-                Screen::Home => ui::render_home(f, app),
-                Screen::FileExplorer { .. } => ui::render_explorer(f, app),
-                Screen::FileConfirm => ui::render_file_confirm(f, app),
-                Screen::TrackConfig => ui::render_track_config(f, app),
-                Screen::Queue => ui::render_queue(f, app),
-                Screen::Finish => ui::render_finish(f, app),
-                Screen::Configuration => ui::render_config_screen(f, app),
-            }
-            if app.dv_dialog.is_some() && app.current_screen == Screen::TrackConfig {
-                ui::render_dv_dialog(f, app);
+            if app.should_quit {
+                ui::render_shutting_down(f, app.config.language);
+            } else if ui::terminal_too_small(app.current_screen, f.area()) {
+                ui::render_too_small(f, app.config.language, app.current_screen);
+            } else {
+                match app.current_screen {
+                    Screen::Home => ui::render_home(f, app),
+                    Screen::FileExplorer => ui::render_explorer(f, app),
+                    Screen::FileConfirm => ui::render_file_confirm(f, app),
+                    Screen::DiscDrives => ui::render_disc_drives(f, app),
+                    Screen::DiscTitles => ui::render_disc_titles(f, app),
+                    Screen::TrackConfig => ui::render_track_config(f, app),
+                    Screen::Queue => ui::render_queue(f, app),
+                    Screen::Finish => ui::render_finish(f, app),
+                    Screen::Configuration => ui::render_config_screen(f, app),
+                }
+                if app.dv_dialog.is_some() && app.current_screen == Screen::TrackConfig {
+                    ui::render_dv_dialog(f, app);
+                }
             }
             if app.confirm_dialog.is_some() {
                 ui::render_confirm_dialog(f, app);
@@ -235,18 +715,61 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
+            && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
         {
-            handle_key(app, key.code);
+            let compact = ui::terminal_too_small(app.current_screen, terminal.size()?.into());
+            let control_c =
+                key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
+            let allow_esc_cancel = key.code == KeyCode::Esc && app.work_active();
+            if !compact
+                || app.confirm_dialog.is_some()
+                || key.code == KeyCode::Char('q')
+                || control_c
+                || allow_esc_cancel
+            {
+                let quit_request = control_c
+                    || (compact && key.code == KeyCode::Char('q') && app.confirm_dialog.is_none());
+                if quit_request {
+                    if !app.should_quit {
+                        app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+                    }
+                } else if !(app.config_edit_buffer.is_some() && is_shortcut_char(key)) {
+                    handle_key(app, key.code);
+                }
+            }
         }
 
+        // Match the daemon: wait for children, then kill leftover ffmpeg/makemkvcon.
         if app.should_quit {
-            return Ok(());
+            let idle = !app.encoding_active
+                && app.analysis_receiver.is_none()
+                && app.folder_scan_receiver.is_none()
+                && app.disc_drive_receiver.is_none()
+                && app.disc_receiver.is_none();
+            let deadline = *quit_deadline.get_or_insert(Instant::now() + Duration::from_secs(10));
+            if idle || Instant::now() >= deadline {
+                if !idle {
+                    crate::utils::child::kill_all();
+                }
+                app.discard_staged_jobs();
+                return Ok(());
+            }
         }
     }
 }
 
+/// A character typed with either Control or Alt held. `AltGr`, which some
+/// terminals report as Control+Alt, still counts as a plain character.
+fn is_shortcut_char(key: event::KeyEvent) -> bool {
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    matches!(key.code, KeyCode::Char(_)) && control != alt
+}
+
 fn handle_key(app: &mut App, key: KeyCode) {
+    if app.should_quit {
+        return;
+    }
     if app.confirm_dialog.is_some() {
         handle_confirm_dialog_key(app, key);
         return;
@@ -258,7 +781,7 @@ fn handle_key(app: &mut App, key: KeyCode) {
     }
 
     // Global quit shortcut, available on every screen. Suppressed while typing
-    // in a Configuration text field so 'q' can still be entered as a character.
+    // in a Configuration text field, where 'q' is an ordinary character.
     if key == KeyCode::Char('q') && app.config_edit_buffer.is_none() {
         app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
         return;
@@ -266,8 +789,9 @@ fn handle_key(app: &mut App, key: KeyCode) {
 
     match &app.current_screen {
         Screen::Home => handle_home_key(app, key),
-        Screen::FileExplorer { .. } => handle_explorer_key(app, key),
+        Screen::FileExplorer => handle_explorer_key(app, key),
         Screen::FileConfirm => handle_file_confirm_key(app, key),
+        Screen::DiscDrives | Screen::DiscTitles => handle_disc_key(app, key),
         Screen::TrackConfig => handle_track_config_key(app, key),
         Screen::Queue => handle_queue_key(app, key),
         Screen::Finish => handle_finish_key(app, key),
@@ -285,9 +809,14 @@ fn handle_confirm_dialog_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('n' | 'N') | KeyCode::Esc => {
             app.confirm_dialog = None;
         }
-        KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l') => {
+        KeyCode::Left | KeyCode::Char('h') => {
             if let Some((_, sel)) = &mut app.confirm_dialog {
-                *sel = !*sel;
+                *sel = true;
+            }
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            if let Some((_, sel)) = &mut app.confirm_dialog {
+                *sel = false;
             }
         }
         KeyCode::Enter => {
@@ -321,29 +850,57 @@ fn handle_dv_dialog_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Enter | KeyCode::Char(' ') => app.confirm_dv_dialog(),
         KeyCode::Esc => app.dismiss_dv_dialog(),
+        KeyCode::Char('q') => {
+            app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+        }
         _ => {}
     }
 }
 
 fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
+    // The dialog was already taken before this call. Cancel is gated on live
+    // work: a confirm that raced with completion is a no-op, and the missing
+    // dialog is not itself treated as stale.
+    let still_active = match action {
+        ConfirmAction::CancelEncoding => app.encoding_active,
+        ConfirmAction::CancelAnalysis => app.analysis_receiver.is_some(),
+        ConfirmAction::CancelDisc => app.disc_receiver.is_some(),
+        _ => true,
+    };
+    if !still_active {
+        return;
+    }
     match action {
         ConfirmAction::CancelEncoding => {
             app.cancel_encoding();
         }
+        ConfirmAction::CancelDisc => app.cancel_disc_operation(),
         ConfirmAction::ExitApp => {
+            app.cancel_flag
+                .store(true, std::sync::atomic::Ordering::Release);
+            app.analysis_cancel_flag
+                .store(true, std::sync::atomic::Ordering::Release);
+            // Disc worker cancellation.
+            app.disc_cancel_flag
+                .store(true, std::sync::atomic::Ordering::Release);
+            app.folder_scan_cancel_flag
+                .store(true, std::sync::atomic::Ordering::Release);
             app.should_quit = true;
         }
         ConfirmAction::AbandonTrackConfig => {
             app.cancel_track_config();
         }
         ConfirmAction::DiscardConfigChanges => {
-            if let Some(snapshot) = app.config_snapshot.take() {
-                app.config = snapshot;
-            }
+            app.config = app.saved_config.clone();
             app.navigate_to_home();
         }
         ConfirmAction::CancelAnalysis => {
             app.cancel_analysis();
+        }
+        ConfirmAction::NewConversion => app.reset(),
+        ConfirmAction::RemoveRip(index) => app.remove_job(index),
+        ConfirmAction::ClearFinishedRips => {
+            app.clear_finished();
         }
     }
 }
@@ -351,15 +908,17 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
 fn handle_home_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Up | KeyCode::Char('k') if app.home_index > 0 => app.home_index -= 1,
-        KeyCode::Down | KeyCode::Char('j') if app.home_index < HOME_MENU.len() - 1 => {
+        KeyCode::Down | KeyCode::Char('j') if app.home_index + 1 < ui::home::MENU_ITEMS => {
             app.home_index += 1;
         }
+        KeyCode::Esc if !app.queue.jobs.is_empty() => app.navigate_to_queue(),
         KeyCode::Enter => match app.home_index {
             0 => app.navigate_to_explorer(false, false), // Open video file
             1 => app.navigate_to_explorer(true, false),  // Open folder
             2 => app.navigate_to_explorer(true, true),   // Open folder recursive
-            3 => app.navigate_to_configuration(),        // Configuration
-            4 => {
+            3 => app.start_disc_flow(),                  // Rip DVD / Blu-ray
+            4 => app.navigate_to_configuration(),        // Configuration
+            5 => {
                 app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
             }
             _ => {}
@@ -368,24 +927,80 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
     }
 }
 
+/// Drive and title selection. Esc during a scan cancels it and steps back.
+fn handle_disc_key(app: &mut App, key: KeyCode) {
+    if app.disc_state == app::DiscState::Cancelling {
+        return;
+    }
+    // While drives are still being discovered the list is empty, only Esc
+    // acts, and Enter does not reach the folder row.
+    if app.disc_state == app::DiscState::Discovering {
+        if key == KeyCode::Esc {
+            app.leave_disc_screen();
+        }
+        return;
+    }
+
+    match key {
+        KeyCode::Up | KeyCode::Char('k') => app.disc_move_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.disc_move_down(),
+        KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(1),
+        KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
+        KeyCode::Esc => app.leave_disc_screen(),
+        KeyCode::Char(' ') if app.current_screen == Screen::DiscTitles => app.toggle_disc_title(),
+        KeyCode::Char('a') if app.current_screen == Screen::DiscTitles => {
+            app.toggle_all_disc_titles();
+        }
+        KeyCode::Enter => match app.current_screen {
+            Screen::DiscDrives => app.scan_disc(app.disc_drive_cursor),
+            _ => app.start_disc_rip(),
+        },
+        _ => {}
+    }
+}
+
 fn handle_explorer_key(app: &mut App, key: KeyCode) {
+    if app.folder_scan_receiver.is_some() {
+        if key == KeyCode::Esc {
+            app.cancel_folder_scan();
+        }
+        return;
+    }
     app.clear_message();
 
     match key {
-        KeyCode::Esc => app.navigate_to_home(),
+        KeyCode::Esc => {
+            if app.selection_mode == app::SelectionMode::DiscFolder {
+                app.current_screen = Screen::DiscDrives;
+            } else if app.selection_mode == app::SelectionMode::SettingFolder {
+                app.current_screen = Screen::Configuration;
+            } else {
+                app.navigate_to_home();
+            }
+        }
         KeyCode::Up | KeyCode::Char('k') => app.explorer_move_up(),
         KeyCode::Down | KeyCode::Char('j') => app.explorer_move_down(),
         KeyCode::Enter => match app.selection_mode {
             app::SelectionMode::File => app.select_explorer_entry(),
-            app::SelectionMode::Folder | app::SelectionMode::FolderRecursive => {
-                app.enter_directory();
+            app::SelectionMode::DiscFolder
+                if app
+                    .dir_entries
+                    .get(app.explorer_index)
+                    .is_some_and(|entry| disc::is_iso(&entry.path)) =>
+            {
+                app.select_explorer_entry();
             }
+            app::SelectionMode::Folder
+            | app::SelectionMode::FolderRecursive
+            | app::SelectionMode::DiscFolder
+            | app::SelectionMode::SettingFolder => app.enter_directory(),
         },
         KeyCode::Char(' ') => match app.selection_mode {
             app::SelectionMode::File => app.toggle_file_selection(),
-            app::SelectionMode::Folder | app::SelectionMode::FolderRecursive => {
-                app.select_explorer_entry();
-            }
+            app::SelectionMode::Folder
+            | app::SelectionMode::FolderRecursive
+            | app::SelectionMode::DiscFolder
+            | app::SelectionMode::SettingFolder => app.select_explorer_entry(),
         },
         _ => {}
     }
@@ -399,7 +1014,13 @@ fn handle_file_confirm_key(app: &mut App, key: KeyCode) {
             app.file_confirm_scroll -= 1;
         }
         KeyCode::Down | KeyCode::Char('j')
-            if app.file_confirm_scroll < app.queue.jobs.len().saturating_sub(1) =>
+            if app.file_confirm_scroll
+                < app
+                    .queue
+                    .jobs
+                    .len()
+                    .saturating_sub(app.batch_start)
+                    .saturating_sub(1) =>
         {
             app.file_confirm_scroll += 1;
         }
@@ -407,17 +1028,36 @@ fn handle_file_confirm_key(app: &mut App, key: KeyCode) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_track_config_key(app: &mut App, key: KeyCode) {
     let Some(job) = app.current_config_job() else {
+        if key == KeyCode::Esc {
+            app.navigate_to_queue();
+        }
         return;
     };
 
     let audio_count = job.audio_tracks.len();
     let subtitle_count = job.subtitle_tracks.len();
 
+    if !app.is_track_configurable(app.queue.config_job_index) {
+        match key {
+            KeyCode::Esc => app.navigate_to_queue(),
+            KeyCode::Left | KeyCode::Char('h') => app.step_track_config_job(false),
+            KeyCode::Right | KeyCode::Char('l') => app.step_track_config_job(true),
+            _ => {}
+        }
+        return;
+    }
+
     match key {
+        KeyCode::Char('A') => app.apply_track_config_to_remaining(),
         KeyCode::Esc => {
-            app.confirm_dialog = Some((ConfirmAction::AbandonTrackConfig, false));
+            if app.encoding_active || app.disc_operation_active() {
+                app.navigate_to_queue();
+            } else {
+                app.confirm_dialog = Some((ConfirmAction::AbandonTrackConfig, false));
+            }
         }
         KeyCode::Left | KeyCode::Char('h') => app.step_track_config_job(false),
         KeyCode::Right | KeyCode::Char('l') => app.step_track_config_job(true),
@@ -427,6 +1067,15 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 TrackFocus::Audio | TrackFocus::Confirm if subtitle_count > 0 => {
                     TrackFocus::Subtitle
                 }
+                TrackFocus::Audio | TrackFocus::Subtitle | TrackFocus::Confirm => {
+                    TrackFocus::Confirm
+                }
+            };
+        }
+        KeyCode::BackTab => {
+            app.track_focus = match app.track_focus {
+                TrackFocus::Confirm if subtitle_count > 0 => TrackFocus::Subtitle,
+                TrackFocus::Subtitle | TrackFocus::Confirm if audio_count > 0 => TrackFocus::Audio,
                 TrackFocus::Audio | TrackFocus::Subtitle | TrackFocus::Confirm => {
                     TrackFocus::Confirm
                 }
@@ -488,7 +1137,7 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
                 }
             }
         }
-        KeyCode::Char('o') => {
+        KeyCode::Char('o') if app.track_focus == TrackFocus::Audio => {
             let cursor = app.audio_cursor;
             if let Some(job) = app.current_config_job_mut()
                 && let Some(track) = job.audio_tracks.get(cursor)
@@ -499,8 +1148,8 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Char('O') => {
             if let Some(job) = app.current_config_job_mut() {
-                // All-or-nothing across the *selected* tracks, so the second
-                // press undoes the first rather than doing nothing.
+                // All-or-nothing across the selected tracks: a second press
+                // undoes the first.
                 let selected = job.track_selection.audio_indices.clone();
                 let all_opus = !selected.is_empty()
                     && selected.iter().all(|&i| job.track_selection.is_opus(i));
@@ -510,7 +1159,7 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
             }
         }
         KeyCode::Char('r' | 'R') => {
-            let output_config = app.config.output.clone();
+            let output_config = app.saved_config.output.clone();
             if let Some(job) = app.current_config_job_mut() {
                 job.remux_only = !job.remux_only;
                 job.generate_output_path(&output_config);
@@ -527,15 +1176,48 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
 
 fn handle_queue_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Esc if app.analysis_receiver.is_some() => {
+        KeyCode::Esc if app.disc_state == app::DiscState::Cancelling => {}
+        KeyCode::Esc if app.disc_operation_active() => {
+            app.confirm_dialog = Some((ConfirmAction::CancelDisc, false));
+        }
+        KeyCode::Esc | KeyCode::Char('A') if app.analysis_receiver.is_some() => {
             app.confirm_dialog = Some((ConfirmAction::CancelAnalysis, false));
         }
-        KeyCode::Esc if app.encoding_active => {
+        KeyCode::Esc | KeyCode::Char('E') if app.encoding_active => {
             app.confirm_dialog = Some((ConfirmAction::CancelEncoding, false));
         }
+        KeyCode::Esc | KeyCode::Char('a') => app.navigate_to_home(),
         KeyCode::Up | KeyCode::Char('k') => app.queue_move_cursor(false),
         KeyCode::Down | KeyCode::Char('j') => app.queue_move_cursor(true),
-        KeyCode::Enter if !app.encoding_active && app.analysis_receiver.is_none() => {
+        KeyCode::Char('K') => app.queue_move_selected_up(),
+        KeyCode::Char('C') if app.can_clear_finished() => {
+            if app
+                .queue
+                .jobs
+                .iter()
+                .any(|job| job.temporary && job.status.is_terminal())
+            {
+                app.confirm_dialog = Some((ConfirmAction::ClearFinishedRips, false));
+            } else {
+                app.clear_finished();
+            }
+        }
+        KeyCode::Char('x') | KeyCode::Delete if app.can_remove_job(app.queue_cursor) => {
+            if app.queue.jobs[app.queue_cursor].temporary {
+                app.confirm_dialog = Some((ConfirmAction::RemoveRip(app.queue_cursor), false));
+            } else {
+                app.remove_job(app.queue_cursor);
+            }
+        }
+        KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(1),
+        KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
+        // A title that finished ripping while an encode ran is waiting for its
+        // tracks; Enter opens it.
+        KeyCode::Enter if app.has_jobs_awaiting_config() => app.configure_next_job(),
+        KeyCode::Char('t') if app.is_track_configurable(app.queue_cursor) => {
+            app.configure_next_job();
+        }
+        KeyCode::Enter if !app.work_active() => {
             app.navigate_to_finish();
         }
         _ => {}
@@ -544,9 +1226,14 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
 
 fn handle_finish_key(app: &mut App, key: KeyCode) {
     match key {
+        KeyCode::Esc => app.navigate_to_queue(),
         KeyCode::Up | KeyCode::Char('k') => app.finish_move_cursor(false),
         KeyCode::Down | KeyCode::Char('j') => app.finish_move_cursor(true),
-        KeyCode::Enter => app.reset(),
+        KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(1),
+        KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(1),
+        KeyCode::Enter => {
+            app.confirm_dialog = Some((ConfirmAction::NewConversion, false));
+        }
         _ => {}
     }
 }
@@ -557,17 +1244,26 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
             KeyCode::Enter => commit_config_edit(app),
             KeyCode::Esc => {
                 app.config_edit_buffer = None;
+                app.config_edit_cursor = 0;
             }
-            KeyCode::Backspace => {
-                if let Some(buf) = &mut app.config_edit_buffer {
-                    buf.pop();
-                }
+            KeyCode::Left => app.config_edit_cursor = app.config_edit_cursor.saturating_sub(1),
+            KeyCode::Right => {
+                let len = app
+                    .config_edit_buffer
+                    .as_deref()
+                    .map_or(0, |value| value.chars().count());
+                app.config_edit_cursor = (app.config_edit_cursor + 1).min(len);
             }
-            KeyCode::Char(c) => {
-                if let Some(buf) = &mut app.config_edit_buffer {
-                    buf.push(c);
-                }
+            KeyCode::Home => app.config_edit_cursor = 0,
+            KeyCode::End => {
+                app.config_edit_cursor = app
+                    .config_edit_buffer
+                    .as_deref()
+                    .map_or(0, |value| value.chars().count());
             }
+            KeyCode::Backspace => edit_config_backspace(app),
+            KeyCode::Delete => edit_config_delete(app),
+            KeyCode::Char(c) => edit_config_insert(app, c),
             _ => {}
         }
         return;
@@ -604,18 +1300,96 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                 start_config_edit(app);
             }
         }
-        KeyCode::Char('s') => {
-            let lang = app.config.language;
-            app.config.sanitize();
-            if let Err(e) = app.config.save() {
-                tracing::warn!("Failed to save config: {:?}", e);
-                app.set_timed_message(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 3);
-            } else {
-                app.config_snapshot = Some(app.config.clone());
-                app.set_timed_message(t(lang, Msg::SavedExclaim), 3);
-            }
-        }
+        KeyCode::Char('s') => save_config(app),
+        KeyCode::Char('b') => browse_config_folder(app),
         _ => {}
+    }
+}
+
+/// Open the folder explorer for the selected path setting.
+fn browse_config_folder(app: &mut App) {
+    use crate::ui::config_screen::{ConfigField, visible_config_items};
+    let Some(item) = visible_config_items(&app.config)
+        .get(app.config_selected)
+        .copied()
+    else {
+        return;
+    };
+    let start = match item.field {
+        ConfigField::OutputDirectory => app.config.output.output_directory.clone(),
+        ConfigField::DaemonBrowseRoot => Some(app.config.daemon.browse_root.clone()),
+        ConfigField::DiscStagingDirectory => app.config.disc.staging_directory.clone(),
+        _ => return,
+    };
+    app.browse_for_setting(start.as_deref());
+}
+
+/// Normalize, validate, sanitize, and persist `config`. `previous` is the
+/// last saved state, used to detect changed host paths.
+fn validate_and_save_config(
+    config: &mut config::AppConfig,
+    previous: &config::AppConfig,
+) -> Result<(), String> {
+    let lang = config.language;
+    config.normalize_changed_host_paths(previous)?;
+    config.validate_settings()?;
+    config.sanitize();
+    // An output directory unchanged since the screen opened does not block the
+    // save; `save_config` warns when it no longer exists.
+    let output_changed = config.output.same_directory != previous.output.same_directory
+        || config.output.output_directory != previous.output.output_directory;
+    if !config.output.same_directory
+        && output_changed
+        && !config
+            .output
+            .output_directory
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path).is_dir())
+    {
+        return Err(t(lang, Msg::OutputDirectoryInvalid).to_string());
+    }
+    config.save().map_err(|error| {
+        tracing::warn!("Failed to save config: {error:?}");
+        error.to_string()
+    })
+}
+
+/// Validate and persist the configuration screen values.
+fn save_config(app: &mut App) {
+    let lang = app.config.language;
+    let previous = app.saved_config.clone();
+    let queued: Vec<(std::path::PathBuf, Option<std::path::PathBuf>, bool)> = app
+        .queue
+        .jobs
+        .iter()
+        .filter(|job| !job.status.is_terminal())
+        .map(|job| (job.path.clone(), job.output_path.clone(), job.temporary))
+        .collect();
+    if let Some(error) =
+        config::queue_conflict(&previous, &app.config, &queued, daemon::api::within_root)
+    {
+        app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 6);
+        return;
+    }
+    if let Err(error) = validate_and_save_config(&mut app.config, &previous) {
+        app.set_timed_error(&format!("{}: {error}", t(lang, Msg::SaveFailed)), 3);
+    } else {
+        app.saved_config = app.config.clone();
+        app.encoder_deps =
+            utils::DependencyStatus::encoder_available(app.config.encoder.ffmpeg_name());
+        let output_directory_missing = app
+            .config
+            .output
+            .output_directory
+            .as_deref()
+            .is_some_and(|dir| !dir.is_empty() && !std::path::Path::new(dir).is_dir());
+        if output_directory_missing {
+            app.set_timed_error(t(lang, Msg::OutputDirectoryMissing), 6);
+        } else if !app.encoder_deps {
+            app.set_timed_message(t(lang, Msg::EncoderUnavailable), 6);
+        } else {
+            app.set_timed_success(t(lang, Msg::SavedExclaim), 3);
+        }
     }
 }
 
@@ -628,23 +1402,39 @@ fn start_config_edit(app: &mut App) {
     else {
         return;
     };
-    app.config_edit_buffer = Some(match item.field {
+    let buffer = match item.field {
         ConfigField::OutputSuffix => app.config.output.suffix.clone(),
-        ConfigField::OutputContainer => app.config.output.container.clone(),
+        ConfigField::OutputDirectory => app
+            .config
+            .output
+            .output_directory
+            .clone()
+            .unwrap_or_default(),
         ConfigField::AudioLanguages => app.config.tracks.preferred_audio_languages.join(", "),
         ConfigField::SubtitleLanguages => app.config.tracks.preferred_subtitle_languages.join(", "),
         ConfigField::DaemonBindAddress => app.config.daemon.bind_address.clone(),
         ConfigField::DaemonPort => app.config.daemon.port.to_string(),
         ConfigField::DaemonBrowseRoot => app.config.daemon.browse_root.clone(),
         ConfigField::DaemonAuthToken => app.config.daemon.auth_token.clone(),
+        ConfigField::DiscMakemkvconPath => {
+            app.config.disc.makemkvcon_path.clone().unwrap_or_default()
+        }
+        ConfigField::DiscStagingDirectory => app
+            .config
+            .disc
+            .staging_directory
+            .clone()
+            .unwrap_or_default(),
         _ => return,
-    });
+    };
+    app.config_edit_cursor = buffer.chars().count();
+    app.config_edit_buffer = Some(buffer);
 }
 
 /// Write the edit buffer back to the appropriate config field.
 fn commit_config_edit(app: &mut App) {
     use crate::ui::config_screen::{ConfigField, visible_config_items};
-    let Some(buf) = app.config_edit_buffer.take() else {
+    let Some(buf) = app.config_edit_buffer.clone() else {
         return;
     };
     let Some(item) = visible_config_items(&app.config)
@@ -656,30 +1446,89 @@ fn commit_config_edit(app: &mut App) {
     let value = buf.trim().to_string();
     match item.field {
         ConfigField::OutputSuffix => app.config.output.suffix = value,
-        ConfigField::OutputContainer => app.config.output.container = value,
+        ConfigField::OutputDirectory => {
+            app.config.output.output_directory = (!value.is_empty()).then_some(value);
+        }
         ConfigField::AudioLanguages => {
             app.config.tracks.preferred_audio_languages = parse_lang_list(&value);
         }
         ConfigField::SubtitleLanguages => {
             app.config.tracks.preferred_subtitle_languages = parse_lang_list(&value);
         }
-        // Invalid addresses/ports keep the previous value
+        // Validated network fields.
         ConfigField::DaemonBindAddress => {
-            if value.parse::<std::net::IpAddr>().is_ok() {
-                app.config.daemon.bind_address = value;
+            if value.parse::<std::net::IpAddr>().is_err() {
+                app.set_timed_error(t(app.config.language, Msg::InvalidAddress), 5);
+                return;
             }
+            app.config.daemon.bind_address = value;
         }
         ConfigField::DaemonPort => {
-            if let Ok(port) = value.parse::<u16>()
-                && port != 0
-            {
-                app.config.daemon.port = port;
+            let Ok(port) = value.parse::<u16>() else {
+                app.set_timed_error(t(app.config.language, Msg::InvalidPort), 5);
+                return;
+            };
+            if port == 0 {
+                app.set_timed_error(t(app.config.language, Msg::InvalidPort), 5);
+                return;
             }
+            app.config.daemon.port = port;
         }
-        // Both accept an empty value, which turns the feature off
+        // An empty browse root turns confinement off; an empty token is
+        // regenerated when the daemon starts.
         ConfigField::DaemonBrowseRoot => app.config.daemon.browse_root = value,
         ConfigField::DaemonAuthToken => app.config.daemon.auth_token = value,
+        // Empty uses PATH and the platform installation location.
+        ConfigField::DiscMakemkvconPath => {
+            app.config.disc.makemkvcon_path = (!value.is_empty()).then_some(value);
+        }
+        // Empty means the system temp directory.
+        ConfigField::DiscStagingDirectory => {
+            app.config.disc.staging_directory = (!value.is_empty()).then_some(value);
+        }
         _ => {}
+    }
+    app.config_edit_buffer = None;
+    app.config_edit_cursor = 0;
+}
+
+fn config_byte_index(value: &str, cursor: usize) -> usize {
+    value
+        .char_indices()
+        .nth(cursor)
+        .map_or(value.len(), |(index, _)| index)
+}
+
+fn edit_config_insert(app: &mut App, character: char) {
+    let Some(buffer) = &mut app.config_edit_buffer else {
+        return;
+    };
+    let index = config_byte_index(buffer, app.config_edit_cursor);
+    buffer.insert(index, character);
+    app.config_edit_cursor += 1;
+}
+
+fn edit_config_backspace(app: &mut App) {
+    if app.config_edit_cursor == 0 {
+        return;
+    }
+    let Some(buffer) = &mut app.config_edit_buffer else {
+        return;
+    };
+    let start = config_byte_index(buffer, app.config_edit_cursor - 1);
+    let end = config_byte_index(buffer, app.config_edit_cursor);
+    buffer.replace_range(start..end, "");
+    app.config_edit_cursor -= 1;
+}
+
+fn edit_config_delete(app: &mut App) {
+    let Some(buffer) = &mut app.config_edit_buffer else {
+        return;
+    };
+    let start = config_byte_index(buffer, app.config_edit_cursor);
+    let end = config_byte_index(buffer, app.config_edit_cursor + 1);
+    if start < end {
+        buffer.replace_range(start..end, "");
     }
 }
 
@@ -691,6 +1540,49 @@ fn parse_lang_list(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Flip login autostart. Enabling saves the live config first, including a
+/// port just typed in Settings, and sets `daemon.enabled`.
+fn apply_autostart(app: &mut App, enable: bool) {
+    let lang = app.config.language;
+    if !daemon::service::supported() {
+        app.set_timed_message(t(lang, Msg::DaemonServiceUnsupported), 5);
+        return;
+    }
+    if enable {
+        let previous = app.saved_config.clone();
+        if let Err(e) = enable_daemon_config(&mut app.config, &previous) {
+            app.set_timed_error(&format!("{}: {e}", t(lang, Msg::SaveFailed)), 5);
+            return;
+        }
+        app.saved_config = app.config.clone();
+        match daemon::service::install() {
+            Ok(outcome) => {
+                let mut msg = t(lang, Msg::DaemonServiceInstalled).to_string();
+                if outcome.still_starting {
+                    msg.push(' ');
+                    msg.push_str(t(lang, Msg::DaemonServiceStillStarting));
+                }
+                if outcome.linger_hint {
+                    msg.push(' ');
+                    msg.push_str(t(lang, Msg::DaemonServiceLingerHint));
+                }
+                app.set_timed_success(&msg, 8);
+            }
+            Err(e) => {
+                app.set_timed_error(&format!("{} {e}", t(lang, Msg::DaemonServiceFailed)), 5);
+            }
+        }
+    } else {
+        match daemon::service::uninstall_keep_running() {
+            Ok(()) => app.set_timed_success(t(lang, Msg::DaemonServiceUninstalled), 3),
+            Err(e) => {
+                app.set_timed_error(&format!("{} {e}", t(lang, Msg::DaemonServiceFailed)), 5);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
     use crate::ui::config_screen::{ConfigField, visible_config_items};
 
@@ -722,6 +1614,10 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
                 (current + encoders.len() - 1) % encoders.len()
             };
             app.config.encoder = encoders[next];
+            let count = ui::config_screen::visible_config_items(&app.config).len();
+            if app.config_selected >= count {
+                app.config_selected = count.saturating_sub(1);
+            }
         }
         ConfigField::VmafThreshold => {
             let delta = if increase { 1.0 } else { -1.0 };
@@ -745,7 +1641,7 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             }
         }
         ConfigField::NvencPreset => {
-            let presets = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
+            let presets = crate::config::PerformanceConfig::NVENC_PRESETS;
             let current = presets
                 .iter()
                 .position(|p| *p == app.config.performance.nvenc_preset)
@@ -758,11 +1654,33 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             app.config.performance.nvenc_preset = presets[next].to_string();
         }
         ConfigField::QualityPreset => cycle_quality_preset(app, increase),
+        ConfigField::OutputContainer => {
+            let containers = config::OutputConfig::CONTAINERS;
+            let current = containers
+                .iter()
+                .position(|c| *c == app.config.output.container)
+                .unwrap_or(0);
+            let next = if increase {
+                (current + 1) % containers.len()
+            } else {
+                (current + containers.len() - 1) % containers.len()
+            };
+            app.config.output.container = containers[next].to_string();
+        }
         ConfigField::SameDirectory => {
             app.config.output.same_directory = !app.config.output.same_directory;
         }
         ConfigField::DaemonEnabled => {
             app.config.daemon.enabled = !app.config.daemon.enabled;
+        }
+        ConfigField::DaemonAllowInsecureLan => {
+            app.config.daemon.allow_insecure_lan = !app.config.daemon.allow_insecure_lan;
+        }
+        ConfigField::DaemonBehindProxy => {
+            app.config.daemon.behind_proxy = !app.config.daemon.behind_proxy;
+        }
+        ConfigField::DaemonAutostart => {
+            apply_autostart(app, !daemon::service::installed());
         }
         ConfigField::AudioDefaultMode => {
             app.config.audio.default_mode = if increase {
@@ -785,28 +1703,24 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         ConfigField::SkipAlreadyOpus => {
             app.config.audio.skip_already_opus = !app.config.audio.skip_already_opus;
         }
-        ConfigField::RfSd
-        | ConfigField::RfHd
-        | ConfigField::RfFullHd
-        | ConfigField::RfFullHdHdr
-        | ConfigField::RfFullHdDv
-        | ConfigField::RfUhd
-        | ConfigField::RfUhdHdr
-        | ConfigField::RfUhdDv => {
-            let encoder = app.config.encoder;
-            if let Some(preset) = preset_for_rf_field(&mut app.config.presets, field) {
-                adjust_preset_rf(preset, encoder, increase);
-            }
+        ConfigField::SelectAllFallback => {
+            app.config.tracks.select_all_fallback = !app.config.tracks.select_all_fallback;
+        }
+        ConfigField::Preset(tier, metric) => {
+            let preset = preset_for_tier_mut(&mut app.config.presets, tier);
+            adjust_preset_value(preset, metric, increase);
         }
         // Text fields are edited via Enter, not ← →
         ConfigField::OutputSuffix
-        | ConfigField::OutputContainer
+        | ConfigField::OutputDirectory
         | ConfigField::AudioLanguages
         | ConfigField::SubtitleLanguages
         | ConfigField::DaemonBindAddress
         | ConfigField::DaemonPort
         | ConfigField::DaemonBrowseRoot
-        | ConfigField::DaemonAuthToken => {}
+        | ConfigField::DaemonAuthToken
+        | ConfigField::DiscMakemkvconPath
+        | ConfigField::DiscStagingDirectory => {}
     }
 }
 
@@ -814,7 +1728,7 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
 ///
 /// `Low`/`Medium`/`High` overwrite the per-tier presets; `Custom` keeps the
 /// user's own values. Toggling visibility of the RF rows can shrink the list,
-/// so the selection index is clamped afterward.
+/// and the selection index is clamped afterward.
 fn cycle_quality_preset(app: &mut App, increase: bool) {
     let next = if increase {
         app.config.quality_preset.next()
@@ -831,36 +1745,516 @@ fn cycle_quality_preset(app: &mut App, increase: bool) {
     }
 }
 
-/// Map a per-resolution rate-factor field to its mutable preset, if any.
-fn preset_for_rf_field(
+/// Select the mutable preset for a resolution tier.
+fn preset_for_tier_mut(
     presets: &mut config::EncodingPresetsConfig,
-    field: ui::config_screen::ConfigField,
-) -> Option<&mut config::EncodingPreset> {
-    use crate::ui::config_screen::ConfigField;
-    Some(match field {
-        ConfigField::RfSd => &mut presets.sd,
-        ConfigField::RfHd => &mut presets.hd,
-        ConfigField::RfFullHd => &mut presets.full_hd,
-        ConfigField::RfFullHdHdr => &mut presets.full_hd_hdr,
-        ConfigField::RfFullHdDv => &mut presets.full_hd_dv,
-        ConfigField::RfUhd => &mut presets.uhd,
-        ConfigField::RfUhdHdr => &mut presets.uhd_hdr,
-        ConfigField::RfUhdDv => &mut presets.uhd_dv,
-        _ => return None,
-    })
+    tier: ui::config_screen::PresetTier,
+) -> &mut config::EncodingPreset {
+    use crate::ui::config_screen::PresetTier;
+    match tier {
+        PresetTier::Sd => &mut presets.sd,
+        PresetTier::Hd => &mut presets.hd,
+        PresetTier::FullHd => &mut presets.full_hd,
+        PresetTier::FullHdHdr => &mut presets.full_hd_hdr,
+        PresetTier::FullHdDv => &mut presets.full_hd_dv,
+        PresetTier::Uhd => &mut presets.uhd,
+        PresetTier::UhdHdr => &mut presets.uhd_hdr,
+        PresetTier::UhdDv => &mut presets.uhd_dv,
+    }
 }
 
-fn adjust_preset_rf(preset: &mut config::EncodingPreset, encoder: config::Encoder, increase: bool) {
-    use crate::config::Encoder;
-    let val = match encoder {
-        Encoder::SvtAv1 => &mut preset.crf,
-        Encoder::Nvenc => &mut preset.nvenc_cq,
-        Encoder::Qsv => &mut preset.qsv_quality,
-        Encoder::Amf => &mut preset.amf_quality,
+fn adjust_preset_value(
+    preset: &mut config::EncodingPreset,
+    metric: ui::config_screen::PresetMetric,
+    increase: bool,
+) {
+    use crate::ui::config_screen::PresetMetric;
+    let (value, maximum) = match metric {
+        PresetMetric::Crf => (&mut preset.crf, config::Encoder::SvtAv1.max_quality()),
+        PresetMetric::FilmGrain => (&mut preset.film_grain, 50),
+        PresetMetric::NvencCq => (&mut preset.nvenc_cq, config::Encoder::Nvenc.max_quality()),
+        PresetMetric::QsvQuality => (&mut preset.qsv_quality, config::Encoder::Qsv.max_quality()),
+        PresetMetric::AmfQuality => (&mut preset.amf_quality, config::Encoder::Amf.max_quality()),
     };
     if increase {
-        *val = val.saturating_add(1).min(encoder.max_quality());
+        *value = value.saturating_add(1).min(maximum);
     } else {
-        *val = val.saturating_sub(1);
+        *value = value.saturating_sub(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_home_cursor_stops_on_the_last_menu_entry() {
+        let mut app = App::new();
+        for _ in 0..ui::home::MENU_ITEMS + 2 {
+            handle_home_key(&mut app, KeyCode::Down);
+        }
+        assert_eq!(app.home_index, ui::home::MENU_ITEMS - 1);
+    }
+
+    #[test]
+    fn no_args_starts_the_tui() {
+        assert_eq!(parse_cli([] as [&str; 0]).unwrap(), Cli::Tui);
+    }
+
+    #[test]
+    fn a_valid_flag_is_accepted() {
+        assert_eq!(parse_cli(["--start"]).unwrap(), Cli::Start);
+        assert_eq!(parse_cli(["--daemon"]).unwrap(), Cli::Start);
+        assert_eq!(
+            parse_cli(["--start-foreground"]).unwrap(),
+            Cli::StartForeground
+        );
+        assert_eq!(
+            parse_cli(["--daemon-foreground"]).unwrap(),
+            Cli::StartForeground
+        );
+        assert_eq!(parse_cli(["--restart"]).unwrap(), Cli::Restart);
+        assert_eq!(parse_cli(["--stop"]).unwrap(), Cli::Stop);
+        assert_eq!(parse_cli(["--purge"]).unwrap(), Cli::Purge);
+        assert_eq!(
+            parse_cli(["--install-service"]).unwrap(),
+            Cli::InstallService
+        );
+        assert_eq!(
+            parse_cli(["--uninstall-service"]).unwrap(),
+            Cli::UninstallService
+        );
+    }
+
+    #[test]
+    fn purge_confirmation_accepts_only_yes() {
+        assert!(is_purge_yes("y"));
+        assert!(is_purge_yes("Yes\n"));
+        assert!(!is_purge_yes("n"));
+        assert!(!is_purge_yes("\n"));
+        assert!(!is_purge_yes("yeah"));
+    }
+
+    #[test]
+    fn purge_dirs_are_unique() {
+        let dirs = purge_dirs();
+        assert!(!dirs.is_empty());
+        for (i, dir) in dirs.iter().enumerate() {
+            assert!(
+                !dirs[i + 1..].iter().any(|other| other == dir),
+                "duplicate purge path {}",
+                dir.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_typo_suggests_the_closest_flag() {
+        let err = parse_cli(["--stiop"]).unwrap_err();
+        assert!(err.contains("Did you mean `--stop`"), "{err}");
+    }
+
+    #[test]
+    fn extra_arguments_are_rejected() {
+        let err = parse_cli(["--stop", "foo"]).unwrap_err();
+        assert!(err.contains("Unexpected extra argument: foo"), "{err}");
+    }
+
+    #[test]
+    fn a_one_character_argument_is_not_suggested_a_flag() {
+        for arg in ["", "-", "x"] {
+            let err = parse_cli([arg]).unwrap_err();
+            assert!(err.contains(&format!("Unknown argument: {arg}")), "{err}");
+            assert!(!err.contains("Did you mean"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_distant_unknown_flag_is_not_suggested() {
+        let err = parse_cli(["--foo"]).unwrap_err();
+        assert!(err.contains("Unknown argument: --foo"), "{err}");
+        assert!(!err.contains("Did you mean"), "{err}");
+    }
+
+    /// A missing output directory blocks a save only when the save changes it.
+    #[test]
+    fn an_unchanged_missing_output_directory_does_not_block_saving() {
+        let mut config = config::AppConfig::default();
+        config.output.same_directory = false;
+        config.output.output_directory = Some(
+            std::env::temp_dir()
+                .join(format!("av1c_missing_output_{}", std::process::id()))
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let previous = config.clone();
+        assert!(validate_and_save_config(&mut config.clone(), &previous).is_ok());
+        assert!(validate_and_save_config(&mut config, &config::AppConfig::default()).is_err());
+    }
+
+    #[test]
+    fn enabling_the_daemon_refuses_an_unreadable_config_and_leaves_it_alone() {
+        let path = config::AppConfig::config_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let corrupt = b"[daemon\nenabled = tru\n";
+        std::fs::write(&path, corrupt).unwrap();
+
+        let error = enable_daemon_on_disk().unwrap_err();
+
+        assert!(
+            error.starts_with(t(
+                config::AppConfig::default().language,
+                Msg::ConfigUnreadableRefused
+            )),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+        assert!(!path.with_extension("toml.bak").exists());
+
+        // A readable file is enabled and saved.
+        std::fs::remove_file(&path).unwrap();
+        let (saved, generated) = enable_daemon_on_disk().unwrap();
+        assert!(saved.daemon.enabled);
+        assert!(generated);
+        assert!(config::AppConfig::load_existing().daemon.enabled);
+    }
+
+    #[test]
+    fn enabling_the_daemon_with_an_invalid_browse_root_saves_nothing() {
+        let on_disk = || std::fs::read(config::AppConfig::config_path()).ok();
+        let mut config = config::AppConfig::load();
+        config.daemon.enabled = false;
+        let previous = config.clone();
+        let before = on_disk();
+        assert!(before.is_some());
+        let missing = std::env::temp_dir()
+            .join(format!("av1c_no_such_root_{}", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
+        config.daemon.browse_root.clone_from(&missing);
+
+        let result = enable_daemon_config(&mut config, &previous);
+
+        assert_eq!(
+            result,
+            Err(t(config.language, Msg::BrowseRootInvalid).to_string())
+        );
+        assert_eq!(on_disk(), before);
+        assert!(!config.daemon.enabled);
+        assert_eq!(config.daemon.browse_root, missing);
+    }
+
+    #[test]
+    fn config_editor_changes_unicode_at_character_boundaries() {
+        let mut app = App::new();
+        app.config_edit_buffer = Some("åb".to_string());
+        app.config_edit_cursor = 1;
+
+        edit_config_insert(&mut app, '中');
+        assert_eq!(app.config_edit_buffer.as_deref(), Some("å中b"));
+        edit_config_backspace(&mut app);
+        assert_eq!(app.config_edit_buffer.as_deref(), Some("åb"));
+        edit_config_delete(&mut app);
+        assert_eq!(app.config_edit_buffer.as_deref(), Some("å"));
+    }
+
+    #[test]
+    fn invalid_daemon_port_stays_in_the_editor() {
+        use crate::ui::config_screen::{ConfigField, visible_config_items};
+
+        let mut app = App::new();
+        let original = app.config.daemon.port;
+        app.config_selected = visible_config_items(&app.config)
+            .iter()
+            .position(|item| item.field == ConfigField::DaemonPort)
+            .unwrap();
+        app.config_edit_buffer = Some("0".to_string());
+        app.config_edit_cursor = 1;
+
+        commit_config_edit(&mut app);
+
+        assert_eq!(app.config.daemon.port, original);
+        assert_eq!(app.config_edit_buffer.as_deref(), Some("0"));
+        assert_eq!(app.message_kind, app::MessageKind::Error);
+    }
+
+    /// ← → cycles the output container through the supported set, wrapping
+    /// at both ends.
+    #[test]
+    fn output_container_cycles_through_supported_containers() {
+        use crate::ui::config_screen::{ConfigField, visible_config_items};
+
+        let mut app = App::new();
+        app.config.output.container = "mkv".to_string();
+        let index = visible_config_items(&app.config)
+            .iter()
+            .position(|item| item.field == ConfigField::OutputContainer)
+            .unwrap();
+
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            adjust_config_value(&mut app, index, true);
+            seen.push(app.config.output.container.clone());
+        }
+        assert_eq!(seen, ["mp4", "webm", "mkv"]);
+        adjust_config_value(&mut app, index, false);
+        assert_eq!(app.config.output.container, "webm");
+    }
+
+    #[test]
+    fn only_control_or_alt_characters_are_shortcuts() {
+        let key = |code, modifiers| event::KeyEvent::new(code, modifiers);
+
+        assert!(is_shortcut_char(key(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(is_shortcut_char(key(KeyCode::Char('b'), KeyModifiers::ALT)));
+        assert!(!is_shortcut_char(key(
+            KeyCode::Char('@'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT
+        )));
+        assert!(!is_shortcut_char(key(
+            KeyCode::Char('U'),
+            KeyModifiers::SHIFT
+        )));
+        assert!(!is_shortcut_char(key(KeyCode::Left, KeyModifiers::CONTROL)));
+    }
+
+    #[test]
+    fn confirm_arrows_select_the_button_in_their_direction() {
+        let mut app = App::new();
+        app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+
+        handle_confirm_dialog_key(&mut app, KeyCode::Left);
+        assert!(app.confirm_dialog.as_ref().unwrap().1);
+        handle_confirm_dialog_key(&mut app, KeyCode::Right);
+        assert!(!app.confirm_dialog.as_ref().unwrap().1);
+    }
+
+    #[test]
+    fn confirming_cancel_encoding_sets_the_cancel_flag() {
+        let mut app = App::new();
+        app.encoding_active = true;
+        app.cancel_flag
+            .store(false, std::sync::atomic::Ordering::Release);
+        // Dialog was already taken (as handle_confirm_dialog_key does).
+        execute_confirm_action(&mut app, ConfirmAction::CancelEncoding);
+        assert!(app.cancel_flag.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn confirming_cancel_encoding_is_a_noop_when_idle() {
+        let mut app = App::new();
+        app.encoding_active = false;
+        app.cancel_flag
+            .store(false, std::sync::atomic::Ordering::Release);
+        execute_confirm_action(&mut app, ConfirmAction::CancelEncoding);
+        assert!(!app.cancel_flag.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn confirm_yes_cancels_encoding_after_dialog_take() {
+        let mut app = App::new();
+        app.encoding_active = true;
+        app.cancel_flag
+            .store(false, std::sync::atomic::Ordering::Release);
+        app.confirm_dialog = Some((ConfirmAction::CancelEncoding, true));
+        handle_confirm_dialog_key(&mut app, KeyCode::Char('y'));
+        assert!(app.confirm_dialog.is_none());
+        assert!(app.cancel_flag.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    fn app_on_track_config_of_an_encoding_dv_job() -> App {
+        let mut app = App::new();
+        app.saved_config.encoder = crate::config::Encoder::SvtAv1;
+        let mut job = crate::queue::EncodingJob::new(PathBuf::from("dv.mkv"));
+        job.metadata = Some(crate::analyzer::VideoMetadata {
+            width: 3840,
+            height: 2160,
+            hdr_type: crate::analyzer::HdrType::DolbyVision,
+            dv_profile: Some(8),
+            dv_bl_compat: Some(1),
+            hdr10_static: None,
+            codec_name: "hevc".into(),
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            duration_secs: 1.0,
+        });
+        job.dv_mode = Some(crate::analyzer::DvMode::KeepDolbyVision);
+        job.output_path = Some(PathBuf::from("dv_av1.mkv"));
+        job.status = crate::queue::JobStatus::Encoding { progress: 0.0 };
+        app.queue.jobs.push(job);
+        app.queue.config_job_index = 0;
+        app.encoding_active = true;
+        app.current_screen = Screen::TrackConfig;
+        app
+    }
+
+    /// The TUI refuses a settings save that would strand queued rips, the
+    /// same way the daemon does.
+    #[test]
+    fn saving_settings_is_refused_while_a_rip_needs_them() {
+        let mut app = App::new();
+        app.config.disc.staging_directory = Some("/scratch".to_string());
+        app.saved_config = app.config.clone();
+        let mut rip = crate::queue::EncodingJob::new(PathBuf::from("/scratch/rip-a1/DISC_t00.mkv"));
+        rip.status = crate::queue::JobStatus::Ready;
+        rip.temporary = true;
+        app.queue.jobs.push(rip);
+        app.config.disc.staging_directory = Some("/elsewhere".to_string());
+
+        save_config(&mut app);
+
+        assert_eq!(
+            app.saved_config.disc.staging_directory,
+            Some("/scratch".to_string())
+        );
+        let message = app.message.clone().expect("the refusal is shown");
+        assert!(
+            message.contains(t(app.config.language, Msg::QueuedRipsPinStagingDirectory)),
+            "{message}"
+        );
+    }
+
+    /// Toggling remux puts the output where the saved settings say, not where
+    /// unsaved edits on the Settings screen do.
+    #[test]
+    fn the_remux_key_names_the_output_from_the_saved_settings() {
+        let mut app = App::new();
+        app.saved_config.output.same_directory = false;
+        app.saved_config.output.output_directory = Some("/saved".to_string());
+        app.saved_config.output.container = "mkv".to_string();
+        app.config = app.saved_config.clone();
+        app.config.output.output_directory = Some("/unsaved".to_string());
+        let mut job = crate::queue::EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
+        job.status = crate::queue::JobStatus::AwaitingConfig;
+        app.queue.jobs.push(job);
+        app.queue.config_job_index = 0;
+        app.current_screen = Screen::TrackConfig;
+
+        handle_track_config_key(&mut app, KeyCode::Char('r'));
+
+        assert!(app.queue.jobs[0].remux_only);
+        assert_eq!(
+            app.queue.jobs[0].output_path,
+            Some(PathBuf::from("/saved/movie_remux.mkv"))
+        );
+    }
+
+    #[test]
+    fn track_keys_do_nothing_once_the_job_is_encoding() {
+        let mut app = app_on_track_config_of_an_encoding_dv_job();
+
+        handle_track_config_key(&mut app, KeyCode::Char('r'));
+        handle_track_config_key(&mut app, KeyCode::Char('d'));
+
+        assert!(!app.queue.jobs[0].remux_only);
+        assert_eq!(
+            app.queue.jobs[0].output_path,
+            Some(PathBuf::from("dv_av1.mkv"))
+        );
+        assert_eq!(app.dv_dialog, None);
+
+        handle_track_config_key(&mut app, KeyCode::Esc);
+        assert_eq!(app.current_screen, Screen::Queue);
+    }
+
+    #[test]
+    fn an_open_dv_dialog_cannot_change_a_job_that_started_encoding() {
+        let mut app = app_on_track_config_of_an_encoding_dv_job();
+        app.dv_dialog = Some(1);
+
+        handle_key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.dv_dialog, None);
+        assert_eq!(
+            app.queue.jobs[0].dv_mode,
+            Some(crate::analyzer::DvMode::KeepDolbyVision)
+        );
+    }
+
+    #[test]
+    fn each_kind_of_running_work_has_its_own_cancel_key_on_the_queue() {
+        let mut app = App::new();
+        app.current_screen = Screen::Queue;
+        let (_disc_tx, disc_rx) = std::sync::mpsc::channel();
+        app.disc_receiver = Some(disc_rx);
+        let (_analysis_tx, analysis_rx) = std::sync::mpsc::channel();
+        app.analysis_receiver = Some(analysis_rx);
+        app.encoding_active = true;
+
+        handle_queue_key(&mut app, KeyCode::Esc);
+        assert!(matches!(
+            app.confirm_dialog.take(),
+            Some((ConfirmAction::CancelDisc, false))
+        ));
+        handle_queue_key(&mut app, KeyCode::Char('A'));
+        assert!(matches!(
+            app.confirm_dialog.take(),
+            Some((ConfirmAction::CancelAnalysis, false))
+        ));
+        handle_queue_key(&mut app, KeyCode::Char('E'));
+        assert!(matches!(
+            app.confirm_dialog.take(),
+            Some((ConfirmAction::CancelEncoding, false))
+        ));
+    }
+
+    #[test]
+    fn cancelling_the_encode_leaves_a_running_rip_alone() {
+        let mut app = App::new();
+        let (_disc_tx, disc_rx) = std::sync::mpsc::channel();
+        app.disc_receiver = Some(disc_rx);
+        app.encoding_active = true;
+
+        execute_confirm_action(&mut app, ConfirmAction::CancelEncoding);
+
+        assert!(app.cancel_flag.load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            !app.disc_cancel_flag
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+    }
+
+    #[test]
+    fn browse_fills_a_folder_setting_from_the_explorer() {
+        use crate::ui::config_screen::{ConfigField, visible_config_items};
+        let root = std::env::temp_dir().join(format!("av1c-browse-setting-{}", std::process::id()));
+        let picked = root.join("picked");
+        std::fs::create_dir_all(&picked).unwrap();
+        let mut app = App::new();
+        app.current_screen = Screen::Configuration;
+        app.config.output.same_directory = false;
+        app.config.output.output_directory = Some(root.to_string_lossy().into_owned());
+        app.config_selected = visible_config_items(&app.config)
+            .iter()
+            .position(|item| item.field == ConfigField::OutputDirectory)
+            .unwrap();
+
+        handle_config_key(&mut app, KeyCode::Char('b'));
+        assert!(matches!(app.current_screen, Screen::FileExplorer));
+        assert_eq!(app.selection_mode, app::SelectionMode::SettingFolder);
+        assert_eq!(app.current_dir, root);
+
+        handle_explorer_key(&mut app, KeyCode::Esc);
+        assert_eq!(app.current_screen, Screen::Configuration);
+        assert_eq!(app.config_edit_buffer, None);
+
+        handle_config_key(&mut app, KeyCode::Char('b'));
+        app.explorer_index = app
+            .dir_entries
+            .iter()
+            .position(|entry| entry.path == picked)
+            .unwrap();
+        handle_explorer_key(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.current_screen, Screen::Configuration);
+        handle_config_key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            app.config.output.output_directory,
+            Some(picked.to_string_lossy().into_owned())
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

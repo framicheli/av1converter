@@ -24,11 +24,57 @@ pub enum AppError {
 
     /// Command execution failed
     CommandExecution(String),
+
+    /// The operation was cancelled
+    Cancelled,
+
+    /// Analysis of one file panicked.
+    AnalysisPanicked(String),
+
+    /// An analysis worker thread panicked.
+    AnalysisThreadPanicked,
+
+    /// The file carries no video stream.
+    NoVideoStream,
+}
+
+impl AppError {
+    /// The error in the given language. Details coming from `FFmpeg`, the
+    /// operating system or a parser stay in their own wording.
+    pub fn message(&self, lang: crate::i18n::Language) -> String {
+        use crate::i18n::{Msg, t};
+        match self {
+            AppError::Cancelled => t(lang, Msg::Cancelled).to_string(),
+            AppError::Io {
+                path,
+                operation,
+                message,
+            } => t(lang, Msg::ErrIo)
+                .replace("{operation}", operation)
+                .replace("{path}", &path.display().to_string())
+                .replace("{message}", message),
+            AppError::Analysis(msg) => t(lang, Msg::ErrAnalysisFailed).replace("{message}", msg),
+            AppError::Config(msg) => t(lang, Msg::ErrConfigFailed).replace("{message}", msg),
+            AppError::Vmaf(msg) => t(lang, Msg::ErrVmafFailed).replace("{message}", msg),
+            AppError::Parse { context, message } => t(lang, Msg::ErrParseFailed)
+                .replace("{context}", context)
+                .replace("{message}", message),
+            AppError::CommandExecution(msg) => {
+                t(lang, Msg::ErrCommandFailed).replace("{message}", msg)
+            }
+            AppError::AnalysisPanicked(path) => {
+                t(lang, Msg::ErrAnalysisPanicked).replace("{path}", path)
+            }
+            AppError::AnalysisThreadPanicked => t(lang, Msg::ErrAnalysisThreadPanicked).to_string(),
+            AppError::NoVideoStream => t(lang, Msg::ErrNoVideoStream).to_string(),
+        }
+    }
 }
 
 impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            AppError::Cancelled => write!(f, "Cancelled"),
             AppError::Io {
                 path,
                 operation,
@@ -49,6 +95,9 @@ impl std::fmt::Display for AppError {
                 write!(f, "Parse error in {context}: {message}")
             }
             AppError::CommandExecution(msg) => write!(f, "Command execution failed: {msg}"),
+            AppError::AnalysisPanicked(path) => write!(f, "Analysis crashed on {path}"),
+            AppError::AnalysisThreadPanicked => write!(f, "The analysis thread crashed"),
+            AppError::NoVideoStream => write!(f, "The file has no video stream"),
         }
     }
 }

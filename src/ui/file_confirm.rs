@@ -22,12 +22,12 @@ pub fn render_file_confirm(f: &mut Frame, app: &mut App) {
         .split(f.area());
 
     // Header with total count and size
-    let total_size: u64 = app.queue.jobs.iter().filter_map(|j| j.source_size).sum();
+    let batch = &app.queue.jobs[app.batch_start.min(app.queue.jobs.len())..];
+    let total_size: u64 = batch.iter().filter_map(|j| j.source_size).sum();
 
     let title_text = format!(
-        "{} {}  ({})",
-        app.queue.jobs.len(),
-        t(lang, Msg::FilesSelectedWord),
+        "{}  ({})",
+        t(lang, Msg::FilesSelectedCount).replace("{n}", &batch.len().to_string()),
         format_file_size(total_size)
     );
 
@@ -47,9 +47,7 @@ pub fn render_file_confirm(f: &mut Frame, app: &mut App) {
     f.render_widget(title, chunks[0]);
 
     // File list
-    let items: Vec<ListItem> = app
-        .queue
-        .jobs
+    let items: Vec<ListItem> = batch
         .iter()
         .enumerate()
         .map(|(i, job)| {
@@ -84,12 +82,14 @@ pub fn render_file_confirm(f: &mut Frame, app: &mut App) {
 
     // Help
     let help_text = Line::from(vec![
+        Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Proceed))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Proceed))),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Back))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))),
         Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}", t(lang, Msg::Quit))),
+        Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))),
     ]);
 
     let help = Paragraph::new(help_text)

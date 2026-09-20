@@ -1,6 +1,7 @@
 use crate::analyzer::{DvMode, HdrType};
 use crate::app::{App, TrackFocus};
 use crate::i18n::{Msg, t};
+use crate::ui::common::message_color;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -12,6 +13,7 @@ use ratatui::{
 #[allow(clippy::too_many_lines)]
 pub fn render_track_config(f: &mut Frame, app: &mut App) {
     let lang = app.config.language;
+    let narrow = f.area().width < 100;
     let audio_config = app.config.audio.clone();
     let (
         filename,
@@ -27,12 +29,12 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             return;
         };
 
-        // Resolving the selection here rather than re-deriving it means the row
-        // shows exactly the bitrate the encoder will be asked for, including
-        // the already-Opus tracks that are quietly left alone.
+        // Resolved to the bitrate the encoder is asked for, including
+        // already-Opus tracks, which are left alone.
+        let output = job.output_path.clone().unwrap_or_default();
         let plan = job
             .track_selection
-            .resolve(&job.audio_tracks, &audio_config);
+            .resolve_for(&job.audio_tracks, &audio_config, &output);
 
         let audio_data: Vec<AudioRow> = job
             .audio_tracks
@@ -51,15 +53,16 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             })
             .collect();
 
-        let subtitle_data: Vec<(String, bool, bool)> = job
+        let subtitle_data: Vec<SubtitleRow> = job
             .subtitle_tracks
             .iter()
-            .map(|track| {
-                (
-                    track.display_name(),
-                    track.forced,
-                    job.track_selection.subtitle_indices.contains(&track.index),
-                )
+            .map(|track| SubtitleRow {
+                name: track.display_name(),
+                forced: track.forced,
+                selected: job.track_selection.subtitle_indices.contains(&track.index),
+                dropped: crate::tracks::subtitle_codecs_for(&output, std::slice::from_ref(track))
+                    .first()
+                    .is_some_and(Option::is_none),
             })
             .collect();
 
@@ -83,17 +86,25 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
                     Some(DvMode::KeepDolbyVision) => {
                         format!("Dolby Vision{profile} ({})", t(lang, Msg::DvKeptTag))
                     }
-                    Some(DvMode::ToHdr10) => format!("Dolby Vision{profile} → HDR10"),
+                    Some(DvMode::ToHdr10) => {
+                        format!("Dolby Vision{profile} ({})", t(lang, Msg::DvConvertedTag))
+                    }
                     None => format!("Dolby Vision{profile}"),
                 }
             } else {
-                job.hdr_string().to_string()
+                job.metadata.as_ref().map_or_else(
+                    || t(lang, Msg::Unknown).to_string(),
+                    |_| job.hdr_string().to_string(),
+                )
             }
         };
 
         (
             job.filename(),
-            job.resolution_string(),
+            job.metadata.as_ref().map_or_else(
+                || t(lang, Msg::Unknown).to_string(),
+                |_| job.resolution_string(),
+            ),
             job.hdr_string().to_string(),
             hdr_display,
             audio_data,
@@ -103,15 +114,45 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         )
     };
 
+    let notice = if app.is_track_configurable(app.queue.config_job_index) {
+        app.message
+            .clone()
+            .map(|msg| (msg, message_color(app.message_kind)))
+    } else {
+        Some((t(lang, Msg::WebTracksLocked).to_string(), Color::Yellow))
+    };
+    let notice_rows = notice.as_ref().map_or(0, |(msg, _)| {
+        crate::ui::common::wrapped_rows(msg, f.area().width.saturating_sub(4))
+            .saturating_add(2)
+            .min(6)
+    });
+    // The notice gives up rows to the track lists, which need a border pair
+    // plus one entry; stacked lists need that twice.
+    let reserved = 6 + if narrow { 5 + 6 } else { 3 + 3 };
+    let room = f.area().height.saturating_sub(2).saturating_sub(reserved);
+    let notice_rows = notice_rows.min(room.max(3));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(notice_rows),
             Constraint::Length(6),
             Constraint::Min(5),
-            Constraint::Length(3),
+            Constraint::Length(if narrow { 5 } else { 3 }),
         ])
         .margin(1)
         .split(f.area());
+
+    if let Some((msg, color)) = notice {
+        let notice = Paragraph::new(msg)
+            .style(Style::default().fg(color))
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(color)),
+            );
+        f.render_widget(notice, chunks[0]);
+    }
 
     // File info header
     let info_lines = vec![
@@ -132,7 +173,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
                 format!("{}: ", t(lang, Msg::ResolutionLabel)),
                 Style::default().fg(Color::DarkGray),
             ),
-            Span::styled(resolution_string, Style::default().fg(Color::White)),
+            Span::styled(resolution_string, Style::default()),
             Span::raw("  "),
             Span::styled(
                 format!("{}: ", t(lang, Msg::TypeLabel)),
@@ -144,7 +185,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
                     "HDR10" => Color::Yellow,
                     "HLG" => Color::Green,
                     "Dolby Vision" => Color::Magenta,
-                    _ => Color::White,
+                    _ => Color::Reset,
                 }),
             ),
         ]),
@@ -179,13 +220,27 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         ]),
     ];
 
-    let total_jobs = app.queue.jobs.len();
-    let info_title = if total_jobs > 1 {
+    let configurable = app
+        .queue
+        .jobs
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| app.is_track_configurable(*index))
+        .count()
+        .max(1);
+    let current_number = app
+        .queue
+        .jobs
+        .iter()
+        .take(app.queue.config_job_index + 1)
+        .enumerate()
+        .filter(|(index, _)| app.is_track_configurable(*index))
+        .count()
+        .max(1);
+    let info_title = if configurable > 1 {
         format!(
-            " {} ({}/{}) ",
+            " {} ({current_number}/{configurable}) ",
             t(lang, Msg::VideoInfo),
-            app.queue.config_job_index + 1,
-            total_jobs
         )
     } else {
         format!(" {} ", t(lang, Msg::VideoInfo))
@@ -197,13 +252,17 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             .border_style(Style::default().fg(Color::DarkGray))
             .title(info_title),
     );
-    f.render_widget(info, chunks[0]);
+    f.render_widget(info, chunks[1]);
 
     // Track selection area
     let track_chunks = Layout::default()
-        .direction(Direction::Horizontal)
+        .direction(if narrow {
+            Direction::Vertical
+        } else {
+            Direction::Horizontal
+        })
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[1]);
+        .split(chunks[2]);
 
     // Audio tracks with bitrate/sample rate
     let audio_items: Vec<ListItem> = audio_data
@@ -258,9 +317,9 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
     let subtitle_items: Vec<ListItem> = subtitle_data
         .iter()
         .enumerate()
-        .map(|(i, (name, forced, selected))| {
+        .map(|(i, row)| {
             let is_cursor = app.track_focus == TrackFocus::Subtitle && i == app.subtitle_cursor;
-            create_subtitle_track_item(name, *forced, *selected, is_cursor, lang)
+            create_subtitle_track_item(row, is_cursor, lang)
         })
         .collect();
 
@@ -298,29 +357,40 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
 
     let mut help_spans = vec![
         Span::styled("Tab", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::SwitchPanel))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::SwitchPanel))),
         Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Navigate))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Navigate))),
         Span::styled("Space", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::Toggle))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Toggle))),
         Span::styled("r", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::SwitchMode))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::SwitchMode))),
         Span::styled("a", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::AllAudio))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::AllAudio))),
         Span::styled("s", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::AllSubs))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::AllSubs))),
         Span::styled("o", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::ToOpus))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::ToOpus))),
         Span::styled("O", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(" {}  ", t(lang, Msg::AllOpus))),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::AllOpus))),
     ];
-    if hdr_string == "Dolby Vision" {
+    if hdr_string == "Dolby Vision" && !remux_only {
         help_spans.push(Span::styled("d", Style::default().fg(Color::Yellow)));
-        help_spans.push(Span::raw(format!(" {}  ", t(lang, Msg::DvModeHelp))));
+        help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::DvModeHelp))));
     }
-    if total_jobs > 1 {
+    if configurable > 1 {
         help_spans.push(Span::styled("←→", Style::default().fg(Color::Yellow)));
-        help_spans.push(Span::raw(format!(" {}  ", t(lang, Msg::SwitchFile))));
+        help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::SwitchFile))));
+    }
+    let others_awaiting = app.queue.jobs.iter().enumerate().any(|(index, job)| {
+        index != app.queue.config_job_index
+            && matches!(job.status, crate::queue::JobStatus::AwaitingConfig)
+    });
+    if others_awaiting {
+        help_spans.push(Span::styled("A", Style::default().fg(Color::Yellow)));
+        help_spans.push(Span::raw(format!(
+            "\u{a0}{}  ",
+            t(lang, Msg::WebApplyRemaining)
+        )));
     }
     help_spans.push(Span::styled(" [", Style::default().fg(Color::DarkGray)));
     help_spans.push(Span::styled(
@@ -328,8 +398,10 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         confirm_style,
     ));
     help_spans.push(Span::styled("]  ", Style::default().fg(Color::DarkGray)));
+    help_spans.push(Span::styled("Esc", Style::default().fg(Color::Yellow)));
+    help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Back))));
     help_spans.push(Span::styled("q", Style::default().fg(Color::Yellow)));
-    help_spans.push(Span::raw(format!(" {}", t(lang, Msg::Quit))));
+    help_spans.push(Span::raw(format!("\u{a0}{}", t(lang, Msg::Quit))));
 
     let help_text = Line::from(help_spans);
 
@@ -337,7 +409,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE))
         .wrap(Wrap { trim: true });
-    f.render_widget(help, chunks[2]);
+    f.render_widget(help, chunks[3]);
 }
 
 /// One row of the audio panel, already resolved against the audio settings.
@@ -346,9 +418,7 @@ struct AudioRow {
     bitrate: String,
     sample_rate: String,
     selected: bool,
-    /// The user asked for Opus on this track
     marked_opus: bool,
-    /// The bitrate it will actually be encoded at, or `None` when it is copied
     opus_kbps: Option<u32>,
 }
 
@@ -357,8 +427,6 @@ fn create_audio_track_item(
     is_cursor: bool,
     lang: crate::i18n::Language,
 ) -> ListItem<'static> {
-    // A track marked for Opus that resolves to no bitrate is one that is
-    // already Opus, so it stays a plain copy and says why.
     let checkbox = match (row.selected, row.opus_kbps) {
         (false, _) => "[ ]",
         (true, None) => "[x]",
@@ -384,31 +452,49 @@ fn create_audio_track_item(
         Style::default().fg(Color::DarkGray)
     };
 
-    ListItem::new(format!("{prefix}{checkbox} {}{extra}{target}", row.name)).style(style)
+    ListItem::new(format!("{prefix}{checkbox} {}{target}{extra}", row.name)).style(style)
+}
+
+/// One row of the subtitle panel, already resolved against the output container.
+struct SubtitleRow {
+    name: String,
+    forced: bool,
+    selected: bool,
+    /// The output container cannot hold this track.
+    dropped: bool,
 }
 
 fn create_subtitle_track_item(
-    name: &str,
-    forced: bool,
-    selected: bool,
+    row: &SubtitleRow,
     is_cursor: bool,
     lang: crate::i18n::Language,
 ) -> ListItem<'static> {
-    let checkbox = if selected { "[x]" } else { "[ ]" };
+    let checkbox = if row.selected { "[x]" } else { "[ ]" };
     let prefix = if is_cursor { "> " } else { "  " };
-    let forced_str = if forced {
+    let forced_str = if row.forced {
         format!(" [{}]", t(lang, Msg::ForcedTag))
+    } else {
+        String::new()
+    };
+    let dropped_str = if row.selected && row.dropped {
+        format!(" ({})", t(lang, Msg::SubtitleNotIncluded))
     } else {
         String::new()
     };
 
     let style = if is_cursor {
         Style::default().add_modifier(Modifier::BOLD)
-    } else if selected {
+    } else if row.selected && row.dropped {
+        Style::default().fg(Color::Yellow)
+    } else if row.selected {
         Style::default().fg(Color::Green)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    ListItem::new(format!("{prefix}{checkbox} {name}{forced_str}")).style(style)
+    ListItem::new(format!(
+        "{prefix}{checkbox} {}{forced_str}{dropped_str}",
+        row.name
+    ))
+    .style(style)
 }

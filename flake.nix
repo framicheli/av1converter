@@ -23,10 +23,15 @@
 
           cargoLock.lockFile = ./Cargo.lock;
 
-          # ffmpeg/ffprobe are shelled out to at runtime, not linked, and this
-          # tool relies on Dolby Vision/VMAF features that vary by ffmpeg build
-          # (see README prerequisites) — so it's left as a user-provided PATH
-          # dependency rather than pinned/wrapped here.
+          # Source paths under the per-build directory are written into the
+          # binary as /build.
+          preBuild = ''
+            export RUSTFLAGS="''${RUSTFLAGS:-} --remap-path-prefix=$NIX_BUILD_TOP=/build"
+          '';
+
+          # ffmpeg and ffprobe are run from PATH at runtime and are not added to
+          # the package. The Dolby Vision and VMAF features the tool uses depend
+          # on how that ffmpeg was built (see README prerequisites).
 
           meta = with pkgs.lib; {
             description = cargoToml.package.description;

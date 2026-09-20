@@ -1,0 +1,303 @@
+//! Scanning and ripping off the UI thread, following the analysis worker
+//! pattern: one thread, one channel, drained by the event loop.
+//!
+//! The worker never waits on whoever consumes its events. A title that has
+//! finished extracting is announced and the next one starts immediately; a
+//! slow consumer — analysis, then an encode — does not stall the drive.
+
+use super::{DiscError, DiscSource, DiscTitle, staging};
+use crate::config::AppConfig;
+use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::Sender;
+use std::thread;
+use std::thread::JoinHandle;
+
+/// What a scan or a rip run reports back. `index` is the position in the
+/// requested list, which is what the caller's queue is keyed on.
+#[derive(Debug)]
+pub enum DiscEvent {
+    /// The disc was scanned.
+    TitlesFound(super::DiscScan),
+    /// Extraction progress for one title.
+    Ripping { index: usize, progress: f64 },
+    /// A title finished extracting; its file is ready to analyze.
+    TitleReady { index: usize, path: PathBuf },
+    /// The run stopped here. Titles already extracted stay.
+    Error { index: usize, error: DiscError },
+    /// The run stopped on request.
+    Cancelled,
+    /// Every requested title was extracted.
+    Finished,
+}
+
+/// The span every line about a disc run carries: the drive or path it reads.
+fn disc_span(source: &DiscSource) -> tracing::Span {
+    tracing::info_span!("disc", drive = %source.to_arg())
+}
+
+/// Scan `source` and report its titles.
+pub fn spawn_scan(
+    bin: PathBuf,
+    source: DiscSource,
+    cancel: &Arc<AtomicBool>,
+    tx: Sender<DiscEvent>,
+) -> JoinHandle<()> {
+    let cancel = cancel.clone();
+    thread::spawn(move || {
+        let _span = disc_span(&source).entered();
+        let scanned = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            super::scan_titles(&bin, &source, &cancel)
+        }));
+        let _ = tx.send(match scanned {
+            Ok(Ok(scan)) => DiscEvent::TitlesFound(scan),
+            Ok(Err(DiscError::Cancelled)) => DiscEvent::Cancelled,
+            Ok(Err(error)) => DiscEvent::Error { index: 0, error },
+            Err(_) => DiscEvent::Error {
+                index: 0,
+                error: DiscError::Failed("the disc scan panicked".to_string()),
+            },
+        });
+    })
+}
+
+/// Extract `titles` one after another, reporting each file as it lands.
+///
+/// One rip at a time, for the one optical drive. A title that fails ends the
+/// run.
+pub fn spawn_rips(
+    bin: PathBuf,
+    config: AppConfig,
+    source: DiscSource,
+    titles: Vec<DiscTitle>,
+    cancel: &Arc<AtomicBool>,
+    tx: Sender<DiscEvent>,
+) -> JoinHandle<()> {
+    let cancel = cancel.clone();
+    thread::spawn(move || {
+        let _span = disc_span(&source).entered();
+        let confirmed = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            staging::confirm_titles(&bin, &source, &titles, &cancel)
+        }));
+        let source = match confirmed {
+            Ok(Ok(source)) => source,
+            Ok(Err(DiscError::Cancelled)) => {
+                let _ = tx.send(DiscEvent::Cancelled);
+                return;
+            }
+            Ok(Err(error)) => {
+                let _ = tx.send(DiscEvent::Error { index: 0, error });
+                return;
+            }
+            Err(_) => {
+                let _ = tx.send(DiscEvent::Error {
+                    index: 0,
+                    error: DiscError::Failed("the title check panicked".to_string()),
+                });
+                return;
+            }
+        };
+        for (index, title) in titles.iter().enumerate() {
+            let progress_tx = tx.clone();
+            // A panic here ends the run with an error.
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                staging::rip_to_staging(
+                    &bin,
+                    &config,
+                    &source,
+                    title,
+                    |progress| {
+                        let _ = progress_tx.send(DiscEvent::Ripping {
+                            index,
+                            progress: progress.percent,
+                        });
+                    },
+                    &cancel,
+                )
+            }));
+
+            match result {
+                Ok(Ok(path)) => {
+                    let _ = tx.send(DiscEvent::TitleReady { index, path });
+                }
+                Ok(Err(DiscError::Cancelled)) => {
+                    let _ = tx.send(DiscEvent::Cancelled);
+                    return;
+                }
+                Ok(Err(error)) => {
+                    let _ = tx.send(DiscEvent::Error { index, error });
+                    return;
+                }
+                Err(_) => {
+                    let _ = tx.send(DiscEvent::Error {
+                        index,
+                        error: DiscError::Failed("the rip panicked".to_string()),
+                    });
+                    return;
+                }
+            }
+        }
+        let _ = tx.send(DiscEvent::Finished);
+    })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::super::testing::{Fake, fake_makemkvcon};
+    use super::*;
+    use crate::config::{DiscConfig, OutputConfig};
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// Upper bound on a run these tests wait for.
+    const TIMEOUT: Duration = Duration::from_secs(30);
+
+    fn two_titles() -> Vec<DiscTitle> {
+        vec![
+            DiscTitle {
+                id: 0,
+                name: "Blade Runner, The \"Final\" Cut".to_string(),
+                duration: Duration::from_secs(7051),
+                size_bytes: 29_715_223_808,
+                chapters: 1,
+                tracks: Vec::new(),
+            },
+            DiscTitle {
+                id: 1,
+                name: "Commentary".to_string(),
+                duration: Duration::from_secs(7051),
+                size_bytes: 8_000_000_000,
+                chapters: 1,
+                tracks: Vec::new(),
+            },
+        ]
+    }
+
+    /// The drive starts the next title before the first one has been taken
+    /// off the channel; a slow encode does not hold the run up.
+    #[test]
+    fn the_next_title_is_extracted_before_the_previous_one_is_consumed() {
+        let base = std::env::temp_dir().join(format!(
+            "av1c_disc_worker_interleave_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let out = base.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let bin = fake_makemkvcon(&base, &Fake::SlowRip);
+
+        let config = AppConfig {
+            disc: DiscConfig {
+                staging_directory: Some(base.join("staging").to_string_lossy().into_owned()),
+                ..DiscConfig::default()
+            },
+            output: OutputConfig {
+                output_directory: Some(out.to_string_lossy().into_owned()),
+                ..OutputConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        let source = DiscSource::Drive(crate::disc::DiscDrive {
+            id: 0,
+            name: "HL-DT-ST BD-RE WH16NS60".to_string(),
+            disc_label: Some("THE_DISC".to_string()),
+        });
+
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let _rip = spawn_rips(bin, config, source, two_titles(), &cancel, tx);
+
+        // Hold the first finished title, as a slow encode would.
+        let mut ready = Vec::new();
+        while ready.is_empty() {
+            match rx.recv_timeout(TIMEOUT).expect("the first title") {
+                DiscEvent::TitleReady { index, .. } => ready.push(index),
+                DiscEvent::Error { error, .. } => panic!("rip failed: {error}"),
+                _ => {}
+            }
+        }
+        assert_eq!(ready, vec![0]);
+
+        // Still holding it: the worker must be extracting the second title.
+        let mut second_started = false;
+        while !second_started {
+            match rx
+                .recv_timeout(TIMEOUT)
+                .expect("progress on the second title")
+            {
+                DiscEvent::Ripping { index: 1, .. } => second_started = true,
+                DiscEvent::Error { error, .. } => panic!("rip failed: {error}"),
+                DiscEvent::Finished => panic!("finished without reporting the second rip"),
+                _ => {}
+            }
+        }
+
+        // Releasing the consumer, both titles complete and the run ends.
+        let mut finished = false;
+        while !finished {
+            match rx.recv_timeout(TIMEOUT).expect("the run to finish") {
+                DiscEvent::TitleReady { index, .. } => ready.push(index),
+                DiscEvent::Finished => finished = true,
+                DiscEvent::Error { error, .. } => panic!("rip failed: {error}"),
+                _ => {}
+            }
+        }
+        assert_eq!(ready, vec![0, 1]);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Cancelling mid-rip is reported as a cancellation, not as a failure, and
+    /// the partial file goes with it.
+    #[test]
+    fn cancelling_reports_cancelled_and_leaves_nothing_behind() {
+        let base =
+            std::env::temp_dir().join(format!("av1c_disc_worker_cancel_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let out = base.join("out");
+        let staging = base.join("staging");
+        std::fs::create_dir_all(&out).unwrap();
+        let bin = fake_makemkvcon(&base, &Fake::SlowRip);
+
+        let config = AppConfig {
+            disc: DiscConfig {
+                staging_directory: Some(staging.to_string_lossy().into_owned()),
+                ..DiscConfig::default()
+            },
+            output: OutputConfig {
+                output_directory: Some(out.to_string_lossy().into_owned()),
+                ..OutputConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        let source = DiscSource::Drive(crate::disc::DiscDrive {
+            id: 0,
+            name: "HL-DT-ST BD-RE WH16NS60".to_string(),
+            disc_label: Some("THE_DISC".to_string()),
+        });
+
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let _rip = spawn_rips(bin, config, source, two_titles(), &cancel, tx);
+
+        let mut cancelled = false;
+        while !cancelled {
+            match rx.recv_timeout(TIMEOUT).expect("an event") {
+                // Cancel from inside the run, at the first sign of progress.
+                DiscEvent::Ripping { .. } => cancel.store(true, Ordering::Release),
+                DiscEvent::Cancelled => cancelled = true,
+                other => panic!("expected a cancellation, got {other:?}"),
+            }
+        }
+        assert_eq!(
+            std::fs::read_dir(&staging).map_or(0, Iterator::count),
+            0,
+            "the partial rip is deleted with its staging directory"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
