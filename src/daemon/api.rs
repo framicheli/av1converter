@@ -1701,7 +1701,7 @@ mod tests {
     use crate::config::DaemonConfig;
     use crate::daemon::state::{DaemonState, EncodeSession, lock};
     use crate::queue::{EncodingJob, JobStatus};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
 
@@ -1768,7 +1768,10 @@ mod tests {
         assert_eq!(row["crf"], 30);
         assert_eq!(row["source_kept_vmaf"], 91.0);
         assert_eq!(row["output_name"], "out.mkv");
-        assert!(row["quality"].is_string());
+        assert_eq!(
+            row["quality"],
+            crate::i18n::quality_description(crate::i18n::Language::English, 96.0)
+        );
     }
 
     #[test]
@@ -1959,7 +1962,7 @@ mod tests {
     #[test]
     fn browse_root_confines_paths() {
         let dir = std::env::temp_dir();
-        let root = dir.join("av1c_root_test");
+        let root = dir.join(format!("av1c_root_test_{}", std::process::id()));
         let inside = root.join("inside");
         std::fs::create_dir_all(&inside).unwrap();
 
@@ -1988,7 +1991,13 @@ mod tests {
     /// A path that cannot be resolved is refused rather than assumed safe.
     #[test]
     fn unresolvable_paths_are_refused_under_a_root() {
-        assert!(!within_root(Path::new("/nonexistent/x.mkv"), "/tmp"));
+        let root = std::env::temp_dir().join(format!("av1c_unresolvable_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root_str = root.to_string_lossy().into_owned();
+        assert!(!within_root(&root.join("gone/x.mkv"), &root_str));
+        // The root itself resolves, so the refusal is about the missing path.
+        assert!(within_root(&root, &root_str));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(unix)]
@@ -2081,18 +2090,40 @@ mod tests {
             let shared = scanned(Some("/tmp".to_string()));
             let (tx, _rx) = mpsc::channel();
 
-            assert_eq!(discs_scan(&shared, &tx, &json!({"drive": 7})).0, 400);
-            assert_eq!(discs_scan(&shared, &tx, &json!({})).0, 400);
-            assert_eq!(discs_scan(&shared, &tx, &json!({"drive": -1})).0, 400);
+            // Each case names the refusal, so a missing makemkvcon (also a
+            // 400) cannot stand in for the check being made.
+            for (body, error) in [
+                (json!({"drive": 7}), "unknown drive id"),
+                (json!({}), "missing or invalid 'drive'"),
+                (json!({"drive": -1}), "missing or invalid 'drive'"),
+            ] {
+                assert_eq!(
+                    discs_scan(&shared, &tx, &body),
+                    (400, json!({"error": error}))
+                );
+            }
 
-            assert_eq!(rip(&shared, &json!({"drive": 7, "titles": [3]})).0, 400);
-            assert_eq!(rip(&shared, &json!({"drive": 0, "titles": [9]})).0, 400);
-            assert_eq!(rip(&shared, &json!({"drive": 0, "titles": []})).0, 400);
-            assert_eq!(rip(&shared, &json!({"drive": 0, "titles": [3, 3]})).0, 400);
-            assert_eq!(
-                rip(&shared, &json!({"drive": 0, "titles": ["../../etc"]})).0,
-                400
-            );
+            for (body, error) in [
+                (
+                    json!({"drive": 7, "titles": [3]}),
+                    crate::i18n::t(crate::i18n::Language::English, Msg::ErrScanDiscFirst),
+                ),
+                (json!({"drive": 0, "titles": [9]}), "unknown title id 9"),
+                (
+                    json!({"drive": 0, "titles": []}),
+                    "'titles' must be a non-empty list of ids",
+                ),
+                (
+                    json!({"drive": 0, "titles": [3, 3]}),
+                    "title id 3 is listed twice",
+                ),
+                (
+                    json!({"drive": 0, "titles": ["../../etc"]}),
+                    "'titles' must be a non-empty list of ids",
+                ),
+            ] {
+                assert_eq!(rip(&shared, &body), (400, json!({"error": error})));
+            }
             // Nothing was started, and no job was queued on the way out.
             assert!(!lock(&shared).disc.active);
             assert!(lock(&shared).queue.state.jobs.is_empty());
@@ -2133,8 +2164,10 @@ mod tests {
         fn a_folder_outside_the_browse_root_is_refused() {
             use crate::disc::testing::{Fake, fake_makemkvcon};
 
-            let root = std::env::temp_dir().join("av1c_api_disc_root");
-            let outside = std::env::temp_dir().join("av1c_api_disc_outside");
+            let root =
+                std::env::temp_dir().join(format!("av1c_api_disc_root_{}", std::process::id()));
+            let outside =
+                std::env::temp_dir().join(format!("av1c_api_disc_outside_{}", std::process::id()));
             for dir in [&root, &outside] {
                 let _ = std::fs::remove_dir_all(dir);
             }
@@ -2215,15 +2248,24 @@ mod tests {
         #[cfg(unix)]
         #[test]
         fn a_symlinked_folder_rips_after_its_scan() {
+            use crate::disc::testing::{Fake, fake_makemkvcon};
+
             let root =
                 std::env::temp_dir().join(format!("av1c_api_disc_link_{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(root.join("THE_DISC/BDMV")).unwrap();
+            std::fs::create_dir_all(root.join("out")).unwrap();
             std::os::unix::fs::symlink(root.join("THE_DISC"), root.join("LINK")).unwrap();
 
             let shared = scanned(Some("/tmp".to_string()));
             {
                 let mut state = lock(&shared);
+                let bin = fake_makemkvcon(&root.join("bin"), &Fake::Rip);
+                state.config.disc.makemkvcon_path = Some(bin.to_string_lossy().into_owned());
+                state.config.output.output_directory =
+                    Some(root.join("out").to_string_lossy().into_owned());
+                state.config.disc.staging_directory =
+                    Some(root.join("staging").to_string_lossy().into_owned());
                 state.config.daemon.browse_root = root.to_string_lossy().into_owned();
                 state.disc.scanned_source = Some(
                     crate::disc::DiscSource::folder(root.join("THE_DISC").canonicalize().unwrap())
@@ -2231,11 +2273,21 @@ mod tests {
                 );
             }
 
-            let (_, body) = rip(
+            let (status, body) = rip(
                 &shared,
                 &json!({"folder": root.join("LINK").to_string_lossy(), "titles": [3]}),
             );
-            assert_ne!(body["error"], json!("scan the disc before ripping from it"));
+            assert_eq!((status, &body), (200, &json!({"ok": true, "jobs": [1]})));
+            assert!(lock(&shared).disc.active);
+            lock(&shared)
+                .disc
+                .cancel_flag
+                .as_ref()
+                .unwrap()
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(worker) = lock(&shared).disc_worker.take() {
+                let _ = worker.join();
+            }
             let _ = std::fs::remove_dir_all(&root);
         }
 
