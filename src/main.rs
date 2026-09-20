@@ -1139,7 +1139,7 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
             }
         }
         KeyCode::Char('r' | 'R') => {
-            let output_config = app.config.output.clone();
+            let output_config = app.saved_config.output.clone();
             if let Some(job) = app.current_config_job_mut() {
                 job.remux_only = !job.remux_only;
                 job.generate_output_path(&output_config);
@@ -2047,6 +2047,31 @@ mod tests {
         app.encoding_active = true;
         app.current_screen = Screen::TrackConfig;
         app
+    }
+
+    /// Toggling remux puts the output where the saved settings say, not where
+    /// unsaved edits on the Settings screen do.
+    #[test]
+    fn the_remux_key_names_the_output_from_the_saved_settings() {
+        let mut app = App::new();
+        app.saved_config.output.same_directory = false;
+        app.saved_config.output.output_directory = Some("/saved".to_string());
+        app.saved_config.output.container = "mkv".to_string();
+        app.config = app.saved_config.clone();
+        app.config.output.output_directory = Some("/unsaved".to_string());
+        let mut job = crate::queue::EncodingJob::new(PathBuf::from("/tmp/movie.mkv"));
+        job.status = crate::queue::JobStatus::AwaitingConfig;
+        app.queue.jobs.push(job);
+        app.queue.config_job_index = 0;
+        app.current_screen = Screen::TrackConfig;
+
+        handle_track_config_key(&mut app, KeyCode::Char('r'));
+
+        assert!(app.queue.jobs[0].remux_only);
+        assert_eq!(
+            app.queue.jobs[0].output_path,
+            Some(PathBuf::from("/saved/movie_remux.mkv"))
+        );
     }
 
     #[test]
