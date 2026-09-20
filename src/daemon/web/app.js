@@ -285,6 +285,8 @@ let pollSeq = 0;
 let lastWork = { encoding: false, ripping: false, analyzing: false };
 // The last /api/status answer.
 let lastStatus = null;
+// Uptime from the last answer, which drops when the daemon has restarted.
+let lastUptime = null;
 
 async function poll() {
   if (pollInFlight) {
@@ -309,6 +311,14 @@ async function poll() {
       return;
     }
     setOffline(false);
+    // A restarted daemon numbers its queue from the start again, so the ids
+    // remembered for the track prompt no longer mean anything.
+    if (lastUptime != null && s.uptime_secs < lastUptime) {
+      maxJobId = 0;
+      trackPromptFloor = 0;
+      promptedTrackJobs.clear();
+    }
+    lastUptime = s.uptime_secs;
     if (Object.keys(strings).length === 0) loadStrings().catch(() => {});
 
     const pill = $("status-pill");

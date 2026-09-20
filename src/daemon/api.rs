@@ -1753,6 +1753,8 @@ mod tests {
         assert_eq!(value["deps"]["encoder"], false);
         assert_eq!(value["deps"]["opus"], true);
         assert_eq!(value["vmaf_threshold"], threshold);
+        // The web UI reads a drop in this value as a restart.
+        assert!(value["uptime_secs"].is_u64());
     }
 
     /// Ripping, analyzing, verifying and encoding each report as the current job.
