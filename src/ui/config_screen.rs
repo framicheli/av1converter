@@ -535,7 +535,7 @@ fn quality_preset_name(lang: crate::i18n::Language, preset: QualityPreset) -> &'
 fn audio_mode_name(lang: crate::i18n::Language, mode: AudioMode) -> String {
     match mode {
         AudioMode::Copy => t(lang, Msg::CopyTracks).to_string(),
-        AudioMode::Opus => "Opus".to_string(),
+        AudioMode::Opus => t(lang, Msg::WebCfgAudioModeOpus).to_string(),
     }
 }
 
