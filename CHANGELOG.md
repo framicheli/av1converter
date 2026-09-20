@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- The staging directory can no longer be changed while ripped titles are waiting to be encoded, which used to leave their files behind for good.
 - A disc swapped for another with the same title numbering is now caught by each title's length and size, and a MakeMKV notice that the Blu-ray key is about to expire is no longer reported as an expired key.
 - The web file browser starts in the user's home directory on Windows, and a one-character argument on the command line no longer suggests an unrelated option.
 - Stopping the daemon during a disc rip now leaves the title for the next start to settle, and a saved queue whose job ids run past its counter is kept instead of being discarded.

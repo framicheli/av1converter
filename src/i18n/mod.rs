@@ -278,6 +278,7 @@ pub enum Msg {
     SettingsRestoreFailed,
     BrowseRootExcludesJobs,
     QueuedRipsNeedOutputDirectory,
+    QueuedRipsPinStagingDirectory,
     CfgGroupTracks,
     CfgGroupDisc,
     CfgVmafThreshold,
@@ -2122,6 +2123,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
                 "Der neue Basisordner schließt einen oder mehrere Aufträge in der Warteschlange aus"
             }
             Zh => "新的浏览根目录不包含一个或多个排队中的任务",
+        },
+        Msg::QueuedRipsPinStagingDirectory => match lang {
+            En => "Queued disc rips are stored in the current staging directory",
+            It => "Le estrazioni dei dischi in coda si trovano nella cartella di staging attuale",
+            Es => "Las extracciones de discos en cola están en la carpeta de preparación actual",
+            Fr => "Les extractions de disques en file sont dans le dossier de préparation actuel",
+            De => "Ausgelesene Discs in der Warteschlange liegen im aktuellen Staging-Ordner",
+            Zh => "队列中的光盘翻录保存在当前暂存目录中",
         },
         Msg::QueuedRipsNeedOutputDirectory => match lang {
             En => "Queued disc rips need an output directory",

@@ -1425,6 +1425,14 @@ fn queue_conflict(
             .as_deref()
             .is_some_and(|dir| !dir.trim().is_empty())
     };
+    if live.disc.staging_directory != config.disc.staging_directory
+        && jobs.iter().any(|(_, _, temporary)| *temporary)
+    {
+        return Some(crate::i18n::t(
+            config.language,
+            Msg::QueuedRipsPinStagingDirectory,
+        ));
+    }
     (has_directory(live)
         && !has_directory(config)
         && jobs.iter().any(|(_, _, temporary)| *temporary))
@@ -2614,6 +2622,29 @@ mod tests {
             body["daemon"]["auth_token"] = json!(replacement);
             let merged = merged_settings(&body, &current, true).unwrap();
             assert_eq!(merged.daemon.auth_token, replacement);
+        }
+
+        /// The staging directory holds the queued rips, so it cannot be
+        /// moved out from under them.
+        #[test]
+        fn changing_the_staging_directory_is_refused_while_rips_are_queued() {
+            let mut live = live();
+            live.disc.staging_directory = Some("/scratch".to_string());
+            let mut moved = live.clone();
+            moved.disc.staging_directory = Some("/other".to_string());
+            let inside = |_: &Path, _: &str| true;
+
+            let rip = [(PathBuf::from("/scratch/rip-a1/DISC_t00.mkv"), None, true)];
+            assert_eq!(
+                queue_conflict(&live, &moved, &rip, inside),
+                Some(crate::i18n::t(
+                    moved.language,
+                    Msg::QueuedRipsPinStagingDirectory
+                ))
+            );
+            let file = [(PathBuf::from("/media/movie.mkv"), None, false)];
+            assert!(queue_conflict(&live, &moved, &file, inside).is_none());
+            assert!(queue_conflict(&live, &live, &rip, inside).is_none());
         }
 
         /// The output directory cannot be cleared while ripped files wait to
