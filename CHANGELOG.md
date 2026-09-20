@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- Web UI: an open page follows a language change made from another client instead of mixing two languages.
 - Web UI: after the daemon restarts, an open page prompts for the track choices of the new queue's jobs again.
 - Web UI: saving a new access token no longer flashes an authorisation error on the requests that were already on their way.
 - Web UI: trying to add a disc while another client holds the drive now says a disc operation is already running.

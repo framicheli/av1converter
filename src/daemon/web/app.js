@@ -319,7 +319,10 @@ async function poll() {
       promptedTrackJobs.clear();
     }
     lastUptime = s.uptime_secs;
-    if (Object.keys(strings).length === 0) loadStrings().catch(() => {});
+    // Another client can change the language; the string map is then reloaded.
+    if (Object.keys(strings).length === 0 || (s.language && strings.html_lang !== s.language)) {
+      loadStrings().catch(() => {});
+    }
 
     const pill = $("status-pill");
     const kind = s.current?.status.kind;

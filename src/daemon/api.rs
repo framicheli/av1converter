@@ -77,6 +77,7 @@ pub fn status(shared: &SharedState) -> Value {
     json!({
         "version": env!("CARGO_PKG_VERSION"),
         "encoder": state.config.encoder.display_name(),
+        "language": state.config.language,
         "deps": {
             "ffmpeg": state.deps.ffmpeg,
             "vmaf": state.deps.vmaf,
@@ -1755,6 +1756,8 @@ mod tests {
         assert_eq!(value["vmaf_threshold"], threshold);
         // The web UI reads a drop in this value as a restart.
         assert!(value["uptime_secs"].is_u64());
+        // The web UI reloads its strings when this stops matching its own.
+        assert_eq!(value["language"], "en");
     }
 
     /// Ripping, analyzing, verifying and encoding each report as the current job.
