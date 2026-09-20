@@ -53,6 +53,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- Web UI: leaving the page with unsaved track choices now asks first, as unsaved settings already did.
 - Web UI: notifications work on browsers without popover support (Safari before 17), and a success message no longer replaces an error you have not dismissed.
 - TUI: the first run says it is detecting the AV1 encoder instead of showing an empty screen while the test encodes run.
 - TUI: an unreadable `config.toml` is reported in the notice line only, instead of also printing over the first screen.

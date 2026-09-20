@@ -1894,7 +1894,7 @@ function updateSettingsActions() {
 
 // Edits are held in memory until Save; a reload discards them.
 addEventListener("beforeunload", (event) => {
-  if (settingsDirty()) event.preventDefault();
+  if (settingsDirty() || tracksDirty()) event.preventDefault();
 });
 
 // Native language names and product names are not translated — they read the
