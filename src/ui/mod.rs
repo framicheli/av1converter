@@ -83,6 +83,7 @@ mod tests {
     };
     use crate::analyzer::{HdrType, VideoMetadata};
     use crate::app::{App, ConfirmAction, Entry, MessageKind, Screen, SelectionMode};
+    use crate::i18n::{Msg, t};
     use crate::queue::{EncodingJob, JobStatus};
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
@@ -115,8 +116,9 @@ mod tests {
 
         let screen = rendered(20, 5, |frame| render_confirm_dialog(frame, &app));
 
-        assert!(screen.contains('y'));
-        assert!(screen.contains('n'));
+        let lang = app.config.language;
+        assert!(screen.contains(&format!("y {}", t(lang, Msg::Yes))));
+        assert!(screen.contains(&format!("n {}", t(lang, Msg::No))));
     }
 
     #[test]

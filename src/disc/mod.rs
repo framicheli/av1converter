@@ -904,7 +904,6 @@ mod tests {
         let dest = scratch("cancel");
         let bin = fake_makemkvcon(&dest, &Fake::RipHangs);
         let cancel = AtomicBool::new(false);
-        let started = std::time::Instant::now();
         let result = rip_title(
             &bin,
             &drive_source(),
@@ -914,7 +913,15 @@ mod tests {
             &cancel,
         );
         assert_eq!(result, Err(DiscError::Cancelled));
-        assert!(started.elapsed() < Duration::from_secs(30));
+
+        // The fake records its own pid before hanging; the cancel returned
+        // only after that process was killed and reaped.
+        let pid: u32 = std::fs::read_to_string(dest.join("makemkvcon.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(!crate::utils::child::pid_alive(pid));
     }
 
     /// Every failure has its own translated wording, and the catch-all still

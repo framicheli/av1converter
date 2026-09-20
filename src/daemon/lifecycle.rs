@@ -451,13 +451,21 @@ mod tests {
             .open(&path)
             .unwrap();
         assert_eq!(unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX) }, 0);
-        let release = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(200));
-            drop(probe);
-        });
 
-        let guard = lock_pid_file(&path, std::process::id()).unwrap();
-        release.join().unwrap();
+        // The probe is released once the daemon's attempt is under way, so the
+        // attempt has to wait for the lock rather than fail on it.
+        let (attempting, about_to_lock) = std::sync::mpsc::channel();
+        let locking = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                attempting.send(()).unwrap();
+                lock_pid_file(&path, std::process::id())
+            })
+        };
+        about_to_lock.recv().unwrap();
+        drop(probe);
+
+        let guard = locking.join().unwrap().unwrap();
         let refused = lock_pid_file(&path, std::process::id()).unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists);
 
