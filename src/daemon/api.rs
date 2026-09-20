@@ -1650,11 +1650,10 @@ fn status_json(status: &JobStatus) -> Value {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use super::queue_add;
+    use super::{Msg, SharedState, Value, fs_browse, json, queue_add};
     use super::{
-        Msg, RecursiveScanGuard, SharedState, Value, fs_browse, json, queue, queue_cancel,
-        queue_cancel_analysis, queue_clear_finished, queue_move_up, queue_remove, settings_access,
-        status, within_root,
+        RecursiveScanGuard, queue, queue_cancel, queue_cancel_analysis, queue_clear_finished,
+        queue_move_up, queue_remove, settings_access, status, within_root,
     };
     use crate::config::AppConfig;
     #[cfg(unix)]
@@ -1663,6 +1662,7 @@ mod tests {
     use crate::queue::{EncodingJob, JobStatus};
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
+    #[cfg(unix)]
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
 

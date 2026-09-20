@@ -66,6 +66,7 @@ Changes since 2.6.1. This release adds disc ripping through MakeMKV, login autos
 
 ### Fixed
 
+- Windows builds pass strict lint checks with Unix-only test helpers and imports excluded.
 - The TUI settings screen now refuses the same saves the web UI does: clearing the output directory or moving the staging directory while ripped titles are waiting to be encoded, and a browse root that would exclude queued jobs.
 - German: "Idle", "Scanning", "Cancelling", "Analyzing" and "Configuring" no longer read the same as another state or in the first person. The output directory setting says it is also used for disc rips, the TUI audio setting reads "Convert to Opus" as the web UI does, and the English dependency warning drops a stray capital.
 - Errors a job can end with — a source that changed, an output that is the input or already exists, an FFmpeg failure or short encode, an analysis or encode crash, and a path that is not valid UTF-8 — are now shown in the configured language. The details FFmpeg and the operating system report stay in their own wording.

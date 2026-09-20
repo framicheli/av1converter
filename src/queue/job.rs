@@ -272,7 +272,7 @@ impl EncodingJob {
 /// Recursively collect video files under `dir`. Symlinks are followed, and
 /// directories and files are tracked by resolved path: link cycles terminate
 /// and a file reachable by two routes is listed once.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub fn collect_video_files(dir: &Path, paths: &mut Vec<PathBuf>) {
     collect_video_files_impl(dir, paths, None, None);
 }

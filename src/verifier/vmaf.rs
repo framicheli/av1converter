@@ -258,8 +258,12 @@ pub fn calculate_vmaf(
 
 #[cfg(test)]
 mod tests {
-    use super::{VmafJson, VmafResult, escape_filter_value, vmaf_failure, wait_or_cancel};
+    #[cfg(unix)]
+    use super::wait_or_cancel;
+    use super::{VmafJson, VmafResult, escape_filter_value, vmaf_failure};
+    #[cfg(unix)]
     use std::process::Stdio;
+    #[cfg(unix)]
     use std::sync::atomic::AtomicBool;
 
     /// The mean, minimum and maximum come out of libvmaf's own JSON shape.
