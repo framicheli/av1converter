@@ -626,8 +626,8 @@ pub fn queue_add(
 
     let mut files: Vec<PathBuf> = Vec::new();
     match mode {
-        // An explicitly chosen file is queued as asked, even when it looks like
-        // one of our own outputs.
+        // A single file is queued whatever its name. The folder modes queue
+        // every video file they find, including earlier outputs.
         "file" => {
             if !path.is_file() || !is_video_file(&path) {
                 return (400, json!({"error": "not a video file"}));
