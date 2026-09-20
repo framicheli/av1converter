@@ -8,12 +8,11 @@ use tracing::warn;
 /// on first use and reused while it is still this user's private directory.
 ///
 /// Created with `mkdir` under a random name in the system temp directory:
-/// `mkdir` will not follow a final symlink and fails if the name is taken, so a
-/// directory created this way is owned by nobody else, and the random name
-/// cannot be occupied in advance. A directory that has been removed (macOS
-/// clears old `$TMPDIR` entries) or replaced is never reused; a new one is
-/// created under a fresh name. `None` means none could be created; callers
-/// fail rather than fall back to the shared temp directory.
+/// `mkdir` does not follow a final symlink and fails when the name is taken. A
+/// directory that has been removed (macOS clears old `$TMPDIR` entries) or
+/// replaced is never reused; a new one is created under a fresh name. `None`
+/// means none could be created, and callers fail rather than fall back to the
+/// shared temp directory.
 pub fn scratch_dir() -> Option<PathBuf> {
     static DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
     let mut dir = DIR
@@ -79,8 +78,8 @@ pub fn scratch_path(name: &str) -> Result<PathBuf, String> {
 /// Create `path` (and its parents) if missing, restricted to this user.
 ///
 /// For directories that persist between runs — the data directory holding the
-/// daemon log, the PID file and the debug log. The log appenders cannot set a
-/// mode per file, so the restriction goes on the directory.
+/// daemon log, the PID file and the debug log. The log appenders set no file
+/// mode; the restriction sits on the directory.
 pub fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)?;
     #[cfg(unix)]
@@ -99,14 +98,14 @@ pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        // Set at creation, leaving no window at wider permissions.
+        // The mode is set at creation.
         builder.mode(0o700);
     }
     builder.create(path)
 }
 
 /// Remove this process's scratch directory if nothing is left in it. Files are
-/// removed as each job finishes, so a clean run leaves an empty directory.
+/// removed as each job finishes, and a clean run leaves an empty directory.
 pub fn remove_scratch_dir_if_empty() {
     if let Some(dir) = scratch_dir()
         && remove_if_empty(&dir)
@@ -147,8 +146,7 @@ mod tests {
         let dir = scratch_dir().expect("a private scratch directory");
         assert_eq!(scratch_dir().as_ref(), Some(&dir));
         assert!(dir.is_dir());
-        // Random, not derived from the PID: an attacker cannot occupy the name
-        // in advance to force the "no private directory" path.
+        // The name is random, not derived from the PID.
         let name = dir.file_name().unwrap().to_string_lossy();
         assert!(!name.contains(&std::process::id().to_string()));
 

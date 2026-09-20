@@ -120,7 +120,7 @@ impl EncodingPreset {
     /// and smaller files). Film grain synthesis is left untouched.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn shifted(&self, delta: i16) -> EncodingPreset {
-        // clamp(0, 63) keeps the result well within u8 range before the cast.
+        // Clamped to 0..=63 before the cast to u8.
         let adj = |v: u8| -> u8 { (i16::from(v) + delta).clamp(0, 63) as u8 };
         EncodingPreset {
             crf: adj(self.crf),
@@ -361,22 +361,21 @@ impl Default for OutputConfig {
 pub struct DaemonConfig {
     /// Whether `--start` is allowed to start the daemon
     pub enabled: bool,
-    /// Bind address for the web server. Defaults to loopback: the web UI can
-    /// queue encodes and delete sources, so reaching the network is opt-in.
+    /// Bind address for the web server. Defaults to loopback; reaching the
+    /// network is opt-in.
     pub bind_address: String,
     /// TCP port for the web server
     pub port: u16,
     /// Directory the web file browser is confined to. Empty means the whole
-    /// filesystem, which is only reasonable while bound to loopback.
+    /// filesystem.
     #[serde(default)]
     pub browse_root: String,
     /// Shared secret required by the `/api` endpoints. Values shorter than 32
     /// bytes are replaced with a generated token when the daemon starts.
     #[serde(default)]
     pub auth_token: String,
-    /// Explicit opt-in to bind off-loopback over plain HTTP. Without this the
-    /// daemon refuses a public bind address so the Bearer token is not sent
-    /// cleartext on the LAN by accident.
+    /// Explicit opt-in to bind off-loopback over plain HTTP. Without it the
+    /// daemon refuses a public bind address.
     #[serde(default)]
     pub allow_insecure_lan: bool,
     /// Treats every web request as remote, which makes the `[daemon]` and
@@ -394,11 +393,10 @@ impl DaemonConfig {
     }
 
     /// The URL to open the web UI with, carrying the access token when one is
-    /// set so the browser is authorised by following the link once.
+    /// set, which authorises the browser that follows the link.
     ///
-    /// A wildcard bind is shown as loopback: `http://0.0.0.0:8399/` is a valid
-    /// thing to listen on but not a thing any browser can open, and this string
-    /// is printed for the user to click.
+    /// A wildcard bind is shown as loopback: `http://0.0.0.0:8399/` is an
+    /// address to listen on, not one a browser can open.
     pub fn url(&self) -> String {
         let host = match self.bind_address.parse::<std::net::IpAddr>() {
             Ok(ip) if ip.is_unspecified() && ip.is_ipv4() => "127.0.0.1".to_string(),
@@ -470,8 +468,8 @@ pub struct DiscConfig {
     #[serde(default)]
     pub makemkvcon_path: Option<String>,
     /// Where ripped titles are staged until their encode finishes. A Blu-ray
-    /// title needs 100 GB or more, so this usually wants a scratch drive.
-    /// Unset stages under the system temp directory.
+    /// title needs 100 GB or more. Unset stages under the system temp
+    /// directory.
     #[serde(default)]
     pub staging_directory: Option<String>,
 }
@@ -512,7 +510,7 @@ pub struct AudioConfig {
     /// What newly analyzed files default to. Per-track choices override it.
     pub default_mode: AudioMode,
     /// Opus bitrate allotted per channel, in kbps. The channel layout is never
-    /// changed, so the stream bitrate is simply this times the channel count.
+    /// changed; the stream bitrate is this times the channel count.
     pub opus_bitrate_per_channel: u16,
     /// Copy tracks that are already Opus instead of re-encoding them.
     pub skip_already_opus: bool,

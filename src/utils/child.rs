@@ -1,5 +1,5 @@
-//! Live child PIDs so a timed-out shutdown can kill ffmpeg / ffprobe /
-//! makemkvcon instead of leaving them behind.
+//! Live child PIDs of ffmpeg / ffprobe / makemkvcon, killed by a timed-out
+//! shutdown.
 
 use std::collections::HashMap;
 use std::process::{Child, Command};
@@ -38,8 +38,7 @@ pub struct ChildGuard {
 }
 
 impl ChildGuard {
-    /// Drop the pid from the live set without waiting for `Drop`, so a
-    /// reaped child cannot be mistaken for a reused pid by [`kill_all`].
+    /// Drop the pid from the live set without waiting for `Drop`.
     pub fn unregister(pid: u32) {
         lock().remove(&pid);
     }
@@ -52,8 +51,7 @@ impl Drop for ChildGuard {
 }
 
 /// SIGKILL the process group (Unix) or `taskkill /T /F` (Windows), then wait.
-/// Unregisters the pid as soon as wait returns so [`kill_all`] cannot race a
-/// reused pid during later cleanup.
+/// Unregisters the pid as soon as wait returns.
 pub fn kill_and_wait(child: &mut Child) {
     let pid = child.id();
     kill_pid(pid);
@@ -82,8 +80,7 @@ pub fn kill_all() {
 
 /// Whether a process with this pid currently exists. A pid that does not fit
 /// `pid_t` counts as gone. Unlike daemon PID-file checks, this does **not**
-/// require the image name to match this executable — tracked children are
-/// ffmpeg / ffprobe / makemkvcon.
+/// require the image name to match this executable.
 pub(crate) fn pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -144,8 +141,8 @@ pub(crate) fn kill_pid(pid: u32) {
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn kill_pid(_pid: u32) {}
 
-/// Kernel starttime for `pid`, when the platform exposes one. Used to refuse
-/// killing a reused pid after the original child has exited.
+/// Kernel starttime for `pid`, when the platform exposes one. Compared before
+/// a kill to tell a reused pid from the original child.
 fn process_starttime(pid: u32) -> Option<u64> {
     #[cfg(target_os = "linux")]
     {

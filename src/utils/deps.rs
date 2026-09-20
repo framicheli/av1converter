@@ -5,8 +5,8 @@ use std::process::Command;
 pub struct DependencyStatus;
 
 impl DependencyStatus {
-    /// Whether everything needed to encode is present. `libvmaf` is not part of
-    /// this — it is only needed for quality verification.
+    /// Whether everything needed to encode is present. `libvmaf` is not part
+    /// of this; it covers quality verification only.
     pub fn check() -> bool {
         check_command("ffmpeg", &["-version"]) && check_command("ffprobe", &["-version"])
     }
@@ -16,8 +16,8 @@ impl DependencyStatus {
         check_vmaf_available()
     }
 
-    /// Whether this `FFmpeg` build can encode Opus. Like `libvmaf`, not part of
-    /// [`DependencyStatus::check`] — copying audio works without it.
+    /// Whether this `FFmpeg` build can encode Opus. Like `libvmaf`, not part
+    /// of [`DependencyStatus::check`].
     pub fn libopus_available() -> bool {
         check_encoder_available("libopus")
     }

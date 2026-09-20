@@ -374,7 +374,7 @@ impl AppConfig {
         {
             self.daemon.bind_address = DaemonConfig::default().bind_address;
         }
-        // Multiplied by the channel count, so it is clamped to a rate libopus
+        // Multiplied by the channel count; clamped to a rate libopus
         // accepts.
         self.audio.opus_bitrate_per_channel = self
             .audio
@@ -806,8 +806,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A per-channel bitrate outside libopus' useful range is clamped, not
-    /// passed through to be multiplied by the channel count.
+    /// A per-channel bitrate outside libopus' useful range is clamped.
     #[test]
     fn opus_bitrate_per_channel_is_clamped() {
         let mut cfg = AppConfig::default();
@@ -913,8 +912,8 @@ mod tests {
         assert_eq!(cfg.performance.nvenc_preset, "p4");
     }
 
-    /// The printed URL has to be a link the user can actually open, which a
-    /// wildcard bind address is not.
+    /// The printed URL is a link the user can open; a wildcard bind address
+    /// is shown as loopback.
     #[test]
     fn wildcard_binds_are_shown_as_loopback() {
         let mut cfg = DaemonConfig::default();

@@ -1,7 +1,7 @@
 use tracing_appender::non_blocking::WorkerGuard;
 
-/// Initialize logging for daemon mode: INFO to stdout (there is no TUI to
-/// fight with), DEBUG when `AV1_DEBUG` is set.
+/// Initialize logging for daemon mode: INFO to stdout, DEBUG when `AV1_DEBUG`
+/// is set.
 pub fn init_daemon_logging() {
     let level = if std::env::var("AV1_DEBUG").is_ok() {
         tracing::Level::DEBUG
@@ -24,9 +24,9 @@ pub fn init_logging() -> Option<WorkerGuard> {
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("av1converter");
 
-        // The rolling appender names each file after the date and gives no way
-        // to set a mode, so the directory carries the restriction. The log
-        // records the path of every file processed.
+        // The rolling appender names each file after the date and sets no
+        // file mode; the restriction sits on the directory. The log records
+        // the path of every file processed.
         if let Err(e) = super::ensure_private_dir(&log_dir) {
             eprintln!(
                 "Could not prepare the log directory {}: {e}",

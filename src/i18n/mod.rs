@@ -2,8 +2,8 @@
 //!
 //! Every user-facing string maps to a [`Msg`] key. [`t`] resolves a key for the
 //! active [`Language`] to a `&'static str`. English is the default and the
-//! fallback intent for every key. Because the match in [`t`] is exhaustive over
-//! `Msg`, the compiler guarantees that no key is ever forgotten.
+//! fallback intent for every key. The match in [`t`] is exhaustive over `Msg`;
+//! every key resolves in every language.
 
 use serde::{Deserialize, Serialize};
 
@@ -4298,7 +4298,7 @@ mod tests {
     use super::{Language, WEB_KEYS, t};
     use std::collections::HashSet;
 
-    /// Web keys are looked up by name, so each must be unique.
+    /// Web keys are looked up by name, and each one is unique.
     #[test]
     fn web_keys_are_unique() {
         let mut seen: HashSet<&str> = HashSet::new();
