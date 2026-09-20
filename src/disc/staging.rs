@@ -70,7 +70,7 @@ fn prepare_private_root(root: &Path) -> std::io::Result<()> {
 }
 
 /// The directory encoded output goes to. A rip refuses to start without one;
-/// `same_directory` would place the encode inside the staging directory.
+/// a staged rip ignores `same_directory`.
 pub fn require_destination(config: &AppConfig) -> Result<PathBuf, DiscError> {
     let configured = config
         .output

@@ -27,7 +27,7 @@ pub enum DiscEvent {
     TitleReady { index: usize, path: PathBuf },
     /// The run stopped here. Titles already extracted stay.
     Error { index: usize, error: DiscError },
-    /// The run stopped because it was asked to.
+    /// The run stopped on request.
     Cancelled,
     /// Every requested title was extracted.
     Finished,

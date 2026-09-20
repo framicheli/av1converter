@@ -192,8 +192,8 @@ fn encodes_a_surround_source_to_av1_and_opus() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A failed encode must not leave the destination holding a broken file, and
-/// must not touch an unrelated file that was already sitting there.
+/// A failed encode leaves no broken file at the destination, and does not
+/// touch an unrelated file already sitting there.
 #[test]
 fn a_failed_encode_leaves_the_destination_alone() {
     if !DependencyStatus::check() {

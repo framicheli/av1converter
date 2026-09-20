@@ -686,7 +686,7 @@ mod tests {
 
         // Only the transcoded stream carries a bitrate.
         assert!(!args.contains(&"-b:a:0".to_string()));
-        // No bare `-c:a`, which would override the per-stream choices.
+        // No bare `-c:a`; the per-stream choices stand on their own.
         assert!(!args.contains(&"-c:a".to_string()));
     }
 
