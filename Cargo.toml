@@ -1,8 +1,8 @@
 [package]
 name = "av1converter"
-version = "3.0.0"
+version = "3.1.0"
 edition = "2024"
-rust-version = "1.91"
+rust-version = "1.99"
 description = "Batch convert video files to AV1 with FFmpeg, from a terminal UI or a daemon with a web UI"
 license = "MIT"
 repository = "https://github.com/framicheli/av1converter"
@@ -12,10 +12,10 @@ categories = ["command-line-utilities", "multimedia::video"]
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 ratatui = "0.30.2"
 crossterm = "0.29"
-toml = "1.1.4"
+toml = "1.1.8+spec-1.1.0"
 getrandom = "0.4.3"
 
 # Daemon / web UI
@@ -28,4 +28,4 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tracing-appender = "0.2.5"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.189"
+libc = "0.2.191"
