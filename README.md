@@ -1,23 +1,62 @@
+<div align="center">
+
+<img src="src/daemon/web/favicon.png" alt="AV1Converter logo" width="96">
+
 # AV1Converter
 
-A tool to batch convert video files to the AV1 codec using FFmpeg. It auto-detects available hardware encoders, verifies output quality with VMAF, and manages the full encoding pipeline through a terminal UI or a local web UI.
+**Batch convert your video library to AV1, and delete the original only when the result is proven good.**
 
-## Features
+[![CI](https://github.com/framicheli/av1converter/actions/workflows/rust.yml/badge.svg)](https://github.com/framicheli/av1converter/actions/workflows/rust.yml)
+[![Crates.io](https://img.shields.io/crates/v/av1converter.svg)](https://crates.io/crates/av1converter)
+[![Release](https://img.shields.io/github/v/release/framicheli/av1converter)](https://github.com/framicheli/av1converter/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
-- **Interactive TUI** — Browse files, configure tracks, and monitor encoding progress in the terminal
-- **Two operating modes** — Re-encode to AV1, or demux/remux to repackage and strip tracks without recompression
-- **Hardware acceleration** — Automatically detects and uses NVIDIA NVENC, Intel QSV, or AMD AMF; the choice can be overridden manually in Settings
-- **Batch processing** — Convert a single file, a folder, or an entire directory tree recursively
-- **Smart preset selection** — Automatically picks encoding parameters based on resolution and HDR type
-- **Dolby Vision support** — Keep Dolby Vision in the AV1 output (profile 10) or convert to HDR10; profile 5 sources are tone-mapped on the GPU when converting to HDR10. True HDR10 static metadata (mastering display, MaxCLL/MaxFALL) is written for SVT-AV1 encodes; hardware encoders get PQ color tags only
-- **Quality presets** — Low, Medium, or High shifts CRF/CQ values across every resolution tier at once; Custom leaves each tier's values manually editable
-- **VMAF quality verification** — Scores output quality after encoding (mean and minimum sampled frame, every 10th frame); deletes the source only when both meet the threshold (never for remuxes, disabled VMAF, tone-mapped DV profile 5, or when audio was transcoded to Opus, a selected subtitle was converted or left out, cover art or attachments are not carried into the output, or the source is not 4:2:0 at 10 bits or fewer)
-- **Track selection** — Auto-selects audio and subtitle tracks by preferred language (ISO 639-1/639-2 and BCP-47 tags like `en-US` are treated as aliases, e.g. `en`/`eng`); when nothing matches, audio falls back to the first track and subtitles to none unless "select all" fallback is enabled (the default)
-- **Audio transcoding** — Copy audio tracks untouched (the default) or convert any of them to Opus at the source's own channel layout; per-track in both the TUI and the web UI
-- **Disc ripping** — Import titles straight from a DVD or Blu-ray through MakeMKV, ripping one title while the previous one encodes (see [Disc Ripping](#disc-ripping))
-- **Daemon mode with web UI** — Run headless and manage the queue from a browser (see [Daemon Mode](#daemon-mode-and-web-ui))
-- **Multi-language UI** — TUI and web UI available in English (default), Italian, Spanish, French, German, and Chinese; selectable in Settings
-- **Configurable** — All key settings adjustable through the built-in configuration screen, the web settings page, or `config.toml` (see [Configuration](#configuration))
+[Quick start](#quick-start) •
+[Installation](#installation) •
+[Usage](#usage) •
+[Web UI](#daemon-mode-and-web-ui) •
+[Disc ripping](#disc-ripping) •
+[Configuration](#configuration) •
+[Changelog](CHANGELOG.md)
+
+</div>
+
+---
+
+AV1Converter is a single Rust binary that drives FFmpeg to re-encode whole folders to AV1. It picks the fastest encoder your machine has, chooses quality settings from each file's resolution and HDR format, scores every result with VMAF, and runs from a **terminal UI** or as a **background daemon with a web UI**.
+
+## Highlights
+
+|  |  |
+|---|---|
+| ⚡ **Hardware first** | Detects NVIDIA NVENC, Intel QSV and AMD AMF, falls back to SVT-AV1; override it any time in Settings |
+| 🎯 **VMAF-verified** | Scores each output (mean and minimum sampled frame, every 10th frame); the source is deleted only when both meet the threshold and every selected stream made it across unchanged ([details](#workflow)) |
+| 🌈 **HDR & Dolby Vision** | Keeps Dolby Vision as AV1 profile 10 or converts to true HDR10 with static metadata; profile 5 is tone-mapped on the GPU ([details](#dolby-vision-handling)) |
+| 🎚️ **Smart presets** | CRF/CQ picked per resolution tier and HDR type; Low, Medium or High shift every tier at once, Custom leaves each one editable |
+| 🔊 **Track control** | Auto-selects audio and subtitles by preferred language (ISO 639-1/639-2 and BCP-47 tags such as `en-US` count as aliases, e.g. `en`/`eng`); with no match, audio falls back to the first track and subtitles to none, unless "select all" fallback is on (the default) |
+| 🎵 **Opus audio** | Copy audio untouched, or convert any track to Opus at its own channel layout, per track ([details](#audio-transcoding)) |
+| 📦 **Remux mode** | Repackage and strip tracks without re-encoding the video |
+| 💿 **Disc ripping** | Imports DVD and Blu-ray titles through MakeMKV, ripping the next title while the previous one encodes ([details](#disc-ripping)) |
+| 🌐 **Headless daemon** | A persistent queue and a token-protected web UI with feature parity to the TUI ([details](#daemon-mode-and-web-ui)) |
+| 🗂️ **Batch anything** | A single file, a folder, or a whole directory tree recursively |
+| 🌍 **Six languages** | English, Italian, Spanish, French, German and Chinese, in both UIs |
+
+## Quick start
+
+```bash
+cargo install av1converter     # or brew, nix, AUR, .deb/.rpm: see Installation
+av1converter                   # open the terminal UI
+```
+
+Prefer a browser? Enable the daemon in Settings, then:
+
+```bash
+av1converter --start           # prints the web UI link with its access token
+```
+
+> [!IMPORTANT]
+> You need `ffmpeg` and `ffprobe` **8.0 or newer** on your `PATH`. See [Prerequisites](#prerequisites) for which FFmpeg features each option needs.
 
 ## Prerequisites
 
@@ -44,13 +83,17 @@ ffmpeg -filters | grep libplacebo                # DV profile 5 tone-mapping
 vulkaninfo --summary                             # Vulkan driver (DV profile 5 only)
 ```
 
-Platform notes:
+<details>
+<summary><b>Platform notes</b> (Arch, Debian/Ubuntu, Fedora, macOS, Windows)</summary>
+
 
 - **Arch Linux** — `pacman -S ffmpeg` includes all of the above. For DV profile 5 tone-mapping also install your GPU's Vulkan driver (`vulkan-radeon`, `vulkan-intel`, or `nvidia-utils`).
 - **Debian/Ubuntu** — the distro `ffmpeg` includes `libsvtav1`, but is often older than 8.0 (no DV passthrough — selecting "keep Dolby Vision" will fail); `libvmaf` and `libplacebo` also vary by release. Verify with the commands above.
 - **Fedora** — use the FFmpeg from RPM Fusion; the freeworld build includes `libsvtav1` and `libvmaf`.
 - **macOS** — `brew install ffmpeg` includes `libsvtav1` and `libvmaf` but **not** `libplacebo`/Vulkan: everything works except DV profile 5 → HDR10 tone-mapping (keeping DV still works for profile 5).
 - **Windows** — the full builds from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) or [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) (GPL variant) include everything.
+
+</details>
 
 ## Installation
 
@@ -245,6 +288,9 @@ Two things worth knowing:
 
 ### Keyboard Controls
 
+<details>
+<summary><b>Show all key bindings</b></summary>
+
 | Key | Where | Action |
 |-----|-------|--------|
 | `↑` / `k`, `↓` / `j` | Everywhere | Navigate |
@@ -275,6 +321,8 @@ Two things worth knowing:
 | `y` / `n` | Confirmation dialogs | Answer yes / no |
 | `←` / `h`, `→` / `l`, `Enter` | Confirmation dialogs | Highlight Yes or No, then answer with the highlighted one (No unless changed) |
 | `q`, `Ctrl+C` | Everywhere | Quit (with confirmation, which mentions unsaved configuration changes; `q` is ignored while editing a text field) |
+
+</details>
 
 ## Disc Ripping
 
@@ -392,6 +440,9 @@ On first run (when no `config.toml` exists yet) the tool encodes one test frame 
 
 Configuration is stored at `$XDG_CONFIG_HOME/av1converter/config.toml` (default `~/.config/av1converter/config.toml`). On Windows it is `%APPDATA%\av1converter\config.toml` unless `XDG_CONFIG_HOME` or `HOME` is set (Git Bash and MSYS2 set `HOME`), in which case the paths above apply. It can be edited directly or through either settings interface. The first run writes a complete file. The excerpt below leaves out the `[presets.*]` tables, so edit the generated file rather than replacing it with this block.
 
+<details>
+<summary><b>Show the main <code>config.toml</code> settings</b></summary>
+
 ```toml
 language = "en"                # UI language: en, it, es, fr, de, zh (English if omitted)
 encoder = "SvtAv1"             # Selected encoder: Nvenc, Qsv, Amf, SvtAv1 (auto-detected on first run, then overridable)
@@ -436,6 +487,8 @@ behind_proxy = false       # Treat every web request as remote; set when a rever
 # staging_directory = ""    # Where ripped titles wait to be encoded (unset = a private per-user folder under the system temp directory)
 ```
 
+</details>
+
 If `config.toml` cannot be parsed it is left untouched and defaults are used for that run. Saving settings afterwards first copies the broken file to `config.toml.unreadable-<seconds since the epoch>`, so a second broken file never overwrites the first. `--install-service`, and `--start` when it has to generate an access token, refuse to run until the file is fixed or removed.
 
 Each resolution preset exposes per-encoder quality values (`crf`, `nvenc_cq`, `qsv_quality`, `amf_quality`). `film_grain` synthesis strength is SVT-AV1 only and is hidden in the settings UI when a hardware encoder is selected.
@@ -459,3 +512,11 @@ Logs roll daily and are written to:
 The last 7 daily files are kept; older ones are deleted when the log rolls over.
 
 For the daemon, `AV1_DEBUG` raises the log level of stdout or `daemon.log.<date>` to debug in the same way.
+
+---
+
+<div align="center">
+
+Released under the [MIT License](LICENSE) • Built with Rust on top of [FFmpeg](https://ffmpeg.org/), [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) and [VMAF](https://github.com/Netflix/vmaf)
+
+</div>
