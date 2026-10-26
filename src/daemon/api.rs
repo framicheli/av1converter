@@ -3403,6 +3403,7 @@ mod tests {
                 title: None,
                 forced: false,
                 external: None,
+                external_stream: 0,
             }];
             job.track_selection.audio_indices = vec![0];
             job.track_selection.subtitle_indices = vec![0];
@@ -3644,6 +3645,7 @@ mod tests {
                     title: None,
                     forced: false,
                     external: None,
+                    external_stream: 0,
                 }];
                 job.track_selection.audio_indices = vec![0, 2];
                 job.track_selection.audio_to_opus = vec![2];

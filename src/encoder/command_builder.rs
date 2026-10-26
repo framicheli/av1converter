@@ -153,8 +153,11 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
             args.extend(["-map".to_string(), format!("0:s:{idx}")]);
             continue;
         };
-        args.extend(["-map".to_string(), format!("{}:0", input + 1)]);
         let track = sidecars[input].0;
+        args.extend([
+            "-map".to_string(),
+            format!("{}:s:{}", input + 1, track.external_stream),
+        ]);
         if let Some(language) = &track.language {
             subtitle_metadata.extend([
                 format!("-metadata:s:s:{out}"),
@@ -883,6 +886,7 @@ mod tests {
             title: None,
             forced: true,
             external: Some("/media/Movie.en.forced.srt".into()),
+            external_stream: 3,
         }];
         let args = build_ffmpeg_args(&params);
 
@@ -899,7 +903,7 @@ mod tests {
             .filter(|(i, _)| i > &0 && args[i - 1] == "-map")
             .map(|(_, a)| a)
             .collect();
-        assert_eq!(maps, vec!["0:V:0", "0:s:1", "1:0", "0:t?"]);
+        assert_eq!(maps, vec!["0:V:0", "0:s:1", "1:s:3", "0:t?"]);
         assert_eq!(
             arg_after(&args, "-metadata:s:s:1").as_deref(),
             Some("language=eng")

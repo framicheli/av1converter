@@ -18,7 +18,8 @@ pub fn selected_subtitles(tracks: &[SubtitleTrack], indices: &[usize]) -> Vec<Su
 /// container, or `None` for a track the container cannot hold.
 ///
 /// Matroska holds every format except teletext and CEA-608 captions, which are
-/// left out; `mov_text` is converted to SRT there. `WebM`
+/// left out; `mov_text` and other text formats it cannot store, such as
+/// `MicroDVD` and SAMI, are converted to SRT there. `WebM`
 /// holds only `WebVTT`, and MP4 only `mov_text` and DVD bitmaps: other text
 /// tracks are converted, other bitmap tracks are left out.
 pub fn subtitle_codecs_for(
@@ -33,11 +34,27 @@ pub fn subtitle_codecs_for(
         .iter()
         .map(|track| {
             let is = |name: &str| track.codec.eq_ignore_ascii_case(name);
-            let text = ["ass", "mov_text", "ssa", "srt", "subrip", "text", "webvtt"]
+            let matroska_text = ["ass", "ssa", "srt", "subrip", "text", "webvtt"]
+                .into_iter()
+                .any(is);
+            let text = matroska_text
+                || [
+                    "jacosub",
+                    "microdvd",
+                    "mov_text",
+                    "mpl2",
+                    "pjs",
+                    "realtext",
+                    "sami",
+                    "stl",
+                    "subviewer",
+                    "subviewer1",
+                    "vplayer",
+                ]
                 .into_iter()
                 .any(is);
             match extension.to_ascii_lowercase().as_str() {
-                "mkv" if is("mov_text") => Some("srt"),
+                "mkv" if text && !matroska_text => Some("srt"),
                 "mkv" if is("dvb_teletext") || is("eia_608") => None,
                 "webm" if is("webvtt") => Some("copy"),
                 "webm" if text => Some("webvtt"),
@@ -65,6 +82,7 @@ mod tests {
             title: None,
             forced: false,
             external: None,
+            external_stream: 0,
         }
     }
 
@@ -78,17 +96,24 @@ mod tests {
     #[test]
     fn a_sidecar_path_survives_a_save_and_old_tracks_load_without_one() {
         let track = SubtitleTrack {
-            external: Some("/media/Movie.en.srt".into()),
-            ..sub("subrip")
+            external: Some("/media/Movie.idx".into()),
+            external_stream: 2,
+            ..sub("dvd_subtitle")
         };
         let saved = serde_json::to_string(&track).unwrap();
         let loaded: SubtitleTrack = serde_json::from_str(&saved).unwrap();
         assert_eq!(loaded.external, track.external);
+        assert_eq!(loaded.external_stream, 2);
 
         let old = r#"{"index":0,"language":null,"codec":"subrip","title":null,"forced":false}"#;
         let loaded: SubtitleTrack = serde_json::from_str(old).unwrap();
         assert_eq!(loaded.external, None);
-        assert!(!serde_json::to_string(&loaded).unwrap().contains("external"));
+        assert_eq!(loaded.external_stream, 0);
+        assert!(
+            !serde_json::to_string(&loaded)
+                .unwrap()
+                .contains("\"external\"")
+        );
 
         assert!(serde_json::from_str::<SubtitleTrack>(r#"{"index":0,"external":7}"#).is_err());
     }
@@ -110,6 +135,37 @@ mod tests {
             [None, Some("mov_text")]
         );
         assert!(selected_subtitles(&tracks, &[]).is_empty());
+    }
+
+    #[test]
+    fn text_formats_matroska_cannot_store_are_converted_to_srt() {
+        assert_eq!(
+            subtitle_codecs_for(
+                Path::new("x.mkv"),
+                &[
+                    sub("microdvd"),
+                    sub("sami"),
+                    sub("subrip"),
+                    sub("ass"),
+                    sub("webvtt"),
+                    sub("dvd_subtitle"),
+                    sub("hdmv_pgs_subtitle")
+                ]
+            ),
+            [
+                Some("srt"),
+                Some("srt"),
+                Some("copy"),
+                Some("copy"),
+                Some("copy"),
+                Some("copy"),
+                Some("copy")
+            ]
+        );
+        assert_eq!(
+            subtitle_codecs_for(Path::new("x.mp4"), &[sub("microdvd")]),
+            [Some("mov_text")]
+        );
     }
 
     #[test]
@@ -267,6 +323,9 @@ pub struct SubtitleTrack {
     /// the source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external: Option<std::path::PathBuf>,
+    /// Subtitle stream number inside the sidecar file.
+    #[serde(default)]
+    pub external_stream: usize,
 }
 
 impl SubtitleTrack {

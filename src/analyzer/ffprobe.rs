@@ -27,7 +27,11 @@ pub fn analyze(input_path: &str, cancel: &AtomicBool) -> Result<AnalysisResult, 
         .map_err(|e| AppError::Analysis(format!("Could not inspect source: {e}")))?;
     let metadata = analyze_video_stream(input_path, cancel)?;
     let (audio_tracks, mut subtitle_tracks) = analyze_tracks(input_path, cancel)?;
-    let sidecars = sidecar_subtitles(std::path::Path::new(input_path), subtitle_tracks.len());
+    let sidecars = sidecar_subtitles(
+        std::path::Path::new(input_path),
+        subtitle_tracks.len(),
+        cancel,
+    );
     subtitle_tracks.extend(sidecars);
     if !source_identity.matches_path(input_path) {
         return Err(AppError::Analysis(
@@ -346,24 +350,9 @@ fn analyze_tracks(
     let audio_data: AllStreamsOutput = serde_json::from_str(&output)
         .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe audio output: {e}")))?;
 
-    let args_sub = [
-        "-v",
-        "error",
-        "-show_entries",
-        "stream=index,codec_type,codec_name:stream_tags=language,title:stream_disposition=forced",
-        "-select_streams",
-        "s",
-        "-of",
-        "json",
-        input_path,
-    ];
-
-    let output_sub = run_ffprobe(&args_sub, cancel)?;
-    let sub_data: AllStreamsOutput = serde_json::from_str(&output_sub)
-        .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe subtitle output: {e}")))?;
+    let subtitle_tracks = probe_subtitles(input_path, cancel)?;
 
     let mut audio_tracks = Vec::new();
-    let mut subtitle_tracks = Vec::new();
 
     for (audio_index, stream) in audio_data.streams.into_iter().enumerate() {
         audio_tracks.push(AudioTrack {
@@ -378,32 +367,88 @@ fn analyze_tracks(
         });
     }
 
-    for (subtitle_index, stream) in sub_data.streams.into_iter().enumerate() {
-        let forced = stream
-            .disposition
-            .as_ref()
-            .and_then(|d| d.forced)
-            .unwrap_or(0)
-            != 0;
-
-        subtitle_tracks.push(SubtitleTrack {
-            index: subtitle_index,
-            language: stream.tags.as_ref().and_then(|t| t.language.clone()),
-            codec: stream.codec_name.unwrap_or_else(|| "unknown".to_string()),
-            title: stream.tags.as_ref().and_then(|t| t.title.clone()),
-            forced,
-            external: None,
-        });
-    }
-
     Ok((audio_tracks, subtitle_tracks))
 }
 
-/// SRT files next to `input` named `<stem>.srt`, optionally with a language
-/// code and `forced`, `sdh`, `cc` or `default` labels between stem and
-/// extension (`Movie.en.forced.srt`), sorted by file name and indexed from
-/// `first_index`.
-pub fn sidecar_subtitles(input: &std::path::Path, first_index: usize) -> Vec<SubtitleTrack> {
+/// Subtitle streams of `path`, indexed from 0 in subtitle stream order.
+fn probe_subtitles(path: &str, cancel: &AtomicBool) -> Result<Vec<SubtitleTrack>, AppError> {
+    let args = [
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=index,codec_type,codec_name:stream_tags=language,title:stream_disposition=forced",
+        "-select_streams",
+        "s",
+        "-of",
+        "json",
+        path,
+    ];
+
+    let output = run_ffprobe(&args, cancel)?;
+    let data: AllStreamsOutput = serde_json::from_str(&output)
+        .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe subtitle output: {e}")))?;
+
+    Ok(data
+        .streams
+        .into_iter()
+        .enumerate()
+        .map(|(index, stream)| SubtitleTrack {
+            index,
+            language: stream.tags.as_ref().and_then(|t| t.language.clone()),
+            codec: stream.codec_name.unwrap_or_else(|| "unknown".to_string()),
+            title: stream.tags.as_ref().and_then(|t| t.title.clone()),
+            forced: stream.disposition.and_then(|d| d.forced).unwrap_or(0) != 0,
+            external: None,
+            external_stream: 0,
+        })
+        .collect())
+}
+
+/// Extensions read as sidecar subtitle files.
+const SIDECAR_EXTENSIONS: [&str; 10] = [
+    "srt", "ass", "ssa", "vtt", "sup", "idx", "sub", "smi", "sami", "txt",
+];
+
+/// Subtitle streams of the sidecar files next to `input`, as
+/// [`sidecar_files`] lists them, indexed from `first_index`. Each track is
+/// titled with its file name. A file ffprobe finds no subtitle stream in is
+/// left out.
+pub fn sidecar_subtitles(
+    input: &std::path::Path,
+    first_index: usize,
+    cancel: &AtomicBool,
+) -> Vec<SubtitleTrack> {
+    let mut tracks = Vec::new();
+    for (path, language, forced) in sidecar_files(input) {
+        let Ok(streams) = probe_subtitles(&path.to_string_lossy(), cancel) else {
+            continue;
+        };
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+        for stream in streams {
+            tracks.push(SubtitleTrack {
+                index: first_index + tracks.len(),
+                language: stream
+                    .language
+                    .map(|tag| canonical_language(&tag))
+                    .or_else(|| language.clone()),
+                codec: stream.codec,
+                title: name.clone(),
+                forced: stream.forced || forced,
+                external: Some(path.clone()),
+                external_stream: stream.index,
+            });
+        }
+    }
+    tracks
+}
+
+/// Files next to `input` named `<stem>.<ext>` for an extension in
+/// [`SIDECAR_EXTENSIONS`], optionally with a language code and `forced`,
+/// `sdh`, `cc` or `default` labels between stem and extension
+/// (`Movie.en.forced.srt`), sorted by file name, with the language and forced
+/// flag the name gives. A `.sub` file with an `.idx` of the same name is left
+/// out; the `.idx` stands for both.
+fn sidecar_files(input: &std::path::Path) -> Vec<(std::path::PathBuf, Option<String>, bool)> {
     let (Some(dir), Some(stem)) = (input.parent(), input.file_stem()) else {
         return Vec::new();
     };
@@ -416,7 +461,7 @@ pub fn sidecar_subtitles(input: &std::path::Path, first_index: usize) -> Vec<Sub
         return Vec::new();
     };
     let stem = stem.to_string_lossy();
-    let mut found: Vec<(String, std::path::PathBuf, Option<String>, bool)> = entries
+    let found: Vec<(String, std::path::PathBuf, Option<String>, bool)> = entries
         .flatten()
         .filter(|entry| entry.file_type().is_ok_and(|t| t.is_file()))
         .filter_map(|entry| {
@@ -425,26 +470,41 @@ pub fn sidecar_subtitles(input: &std::path::Path, first_index: usize) -> Vec<Sub
             Some((name, entry.path(), language, forced))
         })
         .collect();
-    found.sort_by(|a, b| a.0.cmp(&b.0));
-    found
+    let vobsub_data = |path: &std::path::Path| {
+        path.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("sub"))
+            && found.iter().any(|(_, other, _, _)| {
+                other
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("idx"))
+                    && other.with_extension("") == path.with_extension("")
+            })
+    };
+    let mut files: Vec<_> = found
+        .iter()
+        .filter(|(_, path, _, _)| !vobsub_data(path))
+        .collect();
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files
         .into_iter()
-        .enumerate()
-        .map(|(n, (name, path, language, forced))| SubtitleTrack {
-            index: first_index + n,
-            language,
-            codec: "subrip".to_string(),
-            title: Some(name),
-            forced,
-            external: Some(path),
-        })
+        .map(|(_, path, language, forced)| (path.clone(), language.clone(), *forced))
         .collect()
 }
 
+/// A language tag as the shared 3-letter code when known, otherwise lowercased.
+fn canonical_language(tag: &str) -> String {
+    crate::queue::job::language_canonical(tag)
+        .map_or_else(|| tag.to_ascii_lowercase(), str::to_string)
+}
+
 /// Language and forced flag from a sidecar file name, or `None` when `name`
-/// is not an SRT file for `stem`.
+/// is not a sidecar subtitle file for `stem`.
 fn sidecar_labels(name: &str, stem: &str) -> Option<(Option<String>, bool)> {
     let (base, extension) = name.rsplit_once('.')?;
-    if !extension.eq_ignore_ascii_case("srt") {
+    if !SIDECAR_EXTENSIONS
+        .iter()
+        .any(|known| extension.eq_ignore_ascii_case(known))
+    {
         return None;
     }
     let labels = if base == stem {
@@ -455,18 +515,14 @@ fn sidecar_labels(name: &str, stem: &str) -> Option<(Option<String>, bool)> {
     let mut language = None;
     let mut forced = false;
     for label in labels.split('.').filter(|l| !l.is_empty()) {
-        let lower = label.to_ascii_lowercase();
-        match lower.as_str() {
+        match label.to_ascii_lowercase().as_str() {
             "forced" => forced = true,
             "sdh" | "cc" | "default" => {}
             _ if language.is_none()
                 && (2..=3).contains(&label.len())
                 && label.chars().all(|c| c.is_ascii_alphabetic()) =>
             {
-                language = Some(
-                    crate::queue::job::language_canonical(label)
-                        .map_or(lower.clone(), str::to_string),
-                );
+                language = Some(canonical_language(label));
             }
             _ => return None,
         }
@@ -733,7 +789,8 @@ mod tests {
 
     #[test]
     fn files_for_another_stem_or_format_are_not_sidecars() {
-        assert_eq!(sidecar_labels("Movie.en.ass", "Movie"), None);
+        assert_eq!(sidecar_labels("Movie.en.nfo", "Movie"), None);
+        assert_eq!(sidecar_labels("Movie.mkv", "Movie"), None);
         assert_eq!(sidecar_labels("Movie 2.srt", "Movie"), None);
         assert_eq!(sidecar_labels("Movie.Part2.srt", "Movie"), None);
         assert_eq!(sidecar_labels("Movie.av1.en.srt", "Movie"), None);
@@ -741,35 +798,41 @@ mod tests {
     }
 
     #[test]
-    fn sidecars_are_indexed_after_the_source_tracks_in_name_order() {
+    fn sidecar_files_are_listed_in_name_order_with_vobsub_data_left_out() {
         let dir = std::env::temp_dir().join(format!("av1c-sidecars-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for name in [
             "Movie.mkv",
             "Movie.it.srt",
-            "Movie.en.srt",
-            "Movie.txt",
+            "Movie.en.ass",
+            "Movie.idx",
+            "Movie.sub",
+            "Movie.fr.sub",
+            "Movie.de.forced.sup",
+            "Movie.nfo",
             "Other.srt",
         ] {
             std::fs::write(dir.join(name), "").unwrap();
         }
-        std::fs::create_dir(dir.join("Movie.de.srt")).unwrap();
+        std::fs::create_dir(dir.join("Movie.es.vtt")).unwrap();
 
-        let tracks = sidecar_subtitles(&dir.join("Movie.mkv"), 2);
+        let files = sidecar_files(&dir.join("Movie.mkv"));
         let _ = std::fs::remove_dir_all(&dir);
 
+        let entry = |name: &str, language: Option<&str>, forced: bool| {
+            (dir.join(name), language.map(str::to_string), forced)
+        };
         assert_eq!(
-            tracks
-                .iter()
-                .map(|t| (t.index, t.language.as_deref(), t.external.clone()))
-                .collect::<Vec<_>>(),
+            files,
             vec![
-                (2, Some("eng"), Some(dir.join("Movie.en.srt"))),
-                (3, Some("ita"), Some(dir.join("Movie.it.srt"))),
+                entry("Movie.de.forced.sup", Some("deu"), true),
+                entry("Movie.en.ass", Some("eng"), false),
+                entry("Movie.fr.sub", Some("fra"), false),
+                entry("Movie.idx", None, false),
+                entry("Movie.it.srt", Some("ita"), false),
             ]
         );
-        assert!(tracks.iter().all(|t| t.codec == "subrip"));
     }
 
     /// Dolby Vision decides the type when its profile is readable, and is

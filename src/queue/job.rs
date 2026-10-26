@@ -990,6 +990,7 @@ mod tests {
             title: None,
             forced: false,
             external: None,
+            external_stream: 0,
         }
     }
 

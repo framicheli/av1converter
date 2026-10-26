@@ -214,6 +214,7 @@ mod tests {
             title: None,
             forced: false,
             external: None,
+            external_stream: 0,
         }];
         app.queue.jobs.push(job);
         app.set_message(&"a very long notice that wraps over several rows ".repeat(12));
