@@ -103,6 +103,7 @@ impl TrackSelection {
         OutputTracks {
             audio,
             subtitle_indices,
+            external_subtitles: Vec::new(),
         }
     }
 
@@ -234,6 +235,8 @@ fn standard_spelling(layout: &str) -> Option<&'static str> {
 pub struct OutputTracks {
     pub audio: Vec<AudioStreamPlan>,
     pub subtitle_indices: Vec<usize>,
+    /// Selected sidecar subtitle tracks, each read as an extra input.
+    pub external_subtitles: Vec<crate::tracks::SubtitleTrack>,
 }
 
 impl OutputTracks {

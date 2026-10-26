@@ -26,7 +26,9 @@ pub fn analyze(input_path: &str, cancel: &AtomicBool) -> Result<AnalysisResult, 
     let source_identity = crate::queue::SourceIdentity::from_path(input_path)
         .map_err(|e| AppError::Analysis(format!("Could not inspect source: {e}")))?;
     let metadata = analyze_video_stream(input_path, cancel)?;
-    let (audio_tracks, subtitle_tracks) = analyze_tracks(input_path, cancel)?;
+    let (audio_tracks, mut subtitle_tracks) = analyze_tracks(input_path, cancel)?;
+    let sidecars = sidecar_subtitles(std::path::Path::new(input_path), subtitle_tracks.len());
+    subtitle_tracks.extend(sidecars);
     if !source_identity.matches_path(input_path) {
         return Err(AppError::Analysis(
             "Source changed while it was being analyzed; add it again".to_string(),
@@ -390,10 +392,86 @@ fn analyze_tracks(
             codec: stream.codec_name.unwrap_or_else(|| "unknown".to_string()),
             title: stream.tags.as_ref().and_then(|t| t.title.clone()),
             forced,
+            external: None,
         });
     }
 
     Ok((audio_tracks, subtitle_tracks))
+}
+
+/// SRT files next to `input` named `<stem>.srt`, optionally with a language
+/// code and `forced`, `sdh`, `cc` or `default` labels between stem and
+/// extension (`Movie.en.forced.srt`), sorted by file name and indexed from
+/// `first_index`.
+pub fn sidecar_subtitles(input: &std::path::Path, first_index: usize) -> Vec<SubtitleTrack> {
+    let (Some(dir), Some(stem)) = (input.parent(), input.file_stem()) else {
+        return Vec::new();
+    };
+    let dir = if dir.as_os_str().is_empty() {
+        std::path::Path::new(".")
+    } else {
+        dir
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let stem = stem.to_string_lossy();
+    let mut found: Vec<(String, std::path::PathBuf, Option<String>, bool)> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let (language, forced) = sidecar_labels(&name, &stem)?;
+            Some((name, entry.path(), language, forced))
+        })
+        .collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
+        .into_iter()
+        .enumerate()
+        .map(|(n, (name, path, language, forced))| SubtitleTrack {
+            index: first_index + n,
+            language,
+            codec: "subrip".to_string(),
+            title: Some(name),
+            forced,
+            external: Some(path),
+        })
+        .collect()
+}
+
+/// Language and forced flag from a sidecar file name, or `None` when `name`
+/// is not an SRT file for `stem`.
+fn sidecar_labels(name: &str, stem: &str) -> Option<(Option<String>, bool)> {
+    let (base, extension) = name.rsplit_once('.')?;
+    if !extension.eq_ignore_ascii_case("srt") {
+        return None;
+    }
+    let labels = if base == stem {
+        ""
+    } else {
+        base.strip_prefix(stem)?.strip_prefix('.')?
+    };
+    let mut language = None;
+    let mut forced = false;
+    for label in labels.split('.').filter(|l| !l.is_empty()) {
+        let lower = label.to_ascii_lowercase();
+        match lower.as_str() {
+            "forced" => forced = true,
+            "sdh" | "cc" | "default" => {}
+            _ if language.is_none()
+                && (2..=3).contains(&label.len())
+                && label.chars().all(|c| c.is_ascii_alphabetic()) =>
+            {
+                language = Some(
+                    crate::queue::job::language_canonical(label)
+                        .map_or(lower.clone(), str::to_string),
+                );
+            }
+            _ => return None,
+        }
+    }
+    Some((language, forced))
 }
 
 /// Pixel format of the first video stream of `path`. `None` when ffprobe
@@ -635,6 +713,64 @@ struct StreamDisposition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidecar_names_give_language_and_forced_flag() {
+        assert_eq!(sidecar_labels("Movie.srt", "Movie"), Some((None, false)));
+        assert_eq!(
+            sidecar_labels("Movie.en.SRT", "Movie"),
+            Some((Some("eng".to_string()), false))
+        );
+        assert_eq!(
+            sidecar_labels("Movie.ita.forced.srt", "Movie"),
+            Some((Some("ita".to_string()), true))
+        );
+        assert_eq!(
+            sidecar_labels("Movie.xx.sdh.srt", "Movie"),
+            Some((Some("xx".to_string()), false))
+        );
+    }
+
+    #[test]
+    fn files_for_another_stem_or_format_are_not_sidecars() {
+        assert_eq!(sidecar_labels("Movie.en.ass", "Movie"), None);
+        assert_eq!(sidecar_labels("Movie 2.srt", "Movie"), None);
+        assert_eq!(sidecar_labels("Movie.Part2.srt", "Movie"), None);
+        assert_eq!(sidecar_labels("Movie.av1.en.srt", "Movie"), None);
+        assert_eq!(sidecar_labels("Other.srt", "Movie"), None);
+    }
+
+    #[test]
+    fn sidecars_are_indexed_after_the_source_tracks_in_name_order() {
+        let dir = std::env::temp_dir().join(format!("av1c-sidecars-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "Movie.mkv",
+            "Movie.it.srt",
+            "Movie.en.srt",
+            "Movie.txt",
+            "Other.srt",
+        ] {
+            std::fs::write(dir.join(name), "").unwrap();
+        }
+        std::fs::create_dir(dir.join("Movie.de.srt")).unwrap();
+
+        let tracks = sidecar_subtitles(&dir.join("Movie.mkv"), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            tracks
+                .iter()
+                .map(|t| (t.index, t.language.as_deref(), t.external.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (2, Some("eng"), Some(dir.join("Movie.en.srt"))),
+                (3, Some("ita"), Some(dir.join("Movie.it.srt"))),
+            ]
+        );
+        assert!(tracks.iter().all(|t| t.codec == "subrip"));
+    }
 
     /// Dolby Vision decides the type when its profile is readable, and is
     /// refused when it is not; otherwise the colour transfer decides.

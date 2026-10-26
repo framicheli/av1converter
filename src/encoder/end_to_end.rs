@@ -192,6 +192,62 @@ fn encodes_a_surround_source_to_av1_and_opus() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A sidecar SRT next to the source is found by the analyzer and lands in the
+/// Matroska output as a subtitle stream with its language and forced flag.
+#[test]
+fn a_sidecar_srt_is_muxed_into_the_output() {
+    if !DependencyStatus::check() {
+        eprintln!("skipping: ffmpeg is not on PATH");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_sidecar_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(input) = make_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    std::fs::write(
+        dir.join("clip.en.forced.srt"),
+        "1\n00:00:00,000 --> 00:00:00,500\nHello\n\n",
+    )
+    .unwrap();
+
+    let analysis =
+        crate::analyzer::ffprobe::analyze(input.to_str().unwrap(), &AtomicBool::new(false))
+            .unwrap();
+    assert_eq!(analysis.subtitle_tracks.len(), 1);
+    let output = dir.join("clip_av1.mkv");
+    let selected = crate::tracks::selected_subtitles(&analysis.subtitle_tracks, &[0]);
+    let tracks = crate::tracks::OutputTracks {
+        subtitle_indices: vec![0],
+        external_subtitles: selected.clone(),
+        ..crate::tracks::OutputTracks::default()
+    };
+    let params = EncodingParams::from_metadata(
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        &metadata_for(&input),
+        &AppConfig::default(),
+        tracks,
+        DvMode::ToHdr10,
+        true,
+        crate::tracks::subtitle_codecs_for(&output, &selected),
+    );
+
+    let result = encode_video(&params, None, &AtomicBool::new(false), 1.0, 24.0);
+    assert!(
+        matches!(result, EncodeResult::Success),
+        "remux failed: {result:?}"
+    );
+    assert_eq!(probe(&output, "stream=codec_name"), vec!["h264", "subrip"]);
+    assert_eq!(probe(&output, "stream_tags=language"), vec!["eng"]);
+    assert_eq!(probe(&output, "stream_disposition=forced"), vec!["0", "1"]);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A failed encode leaves no broken file at the destination, and does not
 /// touch an unrelated file already sitting there.
 #[test]

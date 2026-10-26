@@ -122,12 +122,18 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
         args.extend(["-init_hw_device".to_string(), "vulkan".to_string()]);
     }
 
-    args.extend([
-        "-i".to_string(),
-        params.input.clone(),
-        "-map".to_string(),
-        "0:V:0".to_string(),
-    ]);
+    args.extend(["-i".to_string(), params.input.clone()]);
+    // Sidecar subtitles are inputs 1, 2, … in selection order.
+    let sidecars: Vec<_> = params
+        .tracks
+        .external_subtitles
+        .iter()
+        .filter_map(|track| track.external.as_ref().map(|path| (track, path)))
+        .collect();
+    for (_, path) in &sidecars {
+        args.extend(["-i".to_string(), path.to_string_lossy().into_owned()]);
+    }
+    args.extend(["-map".to_string(), "0:V:0".to_string()]);
 
     // Track mapping. An empty selection maps nothing.
     for plan in &params.tracks.audio {
@@ -135,9 +141,28 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     }
     // A track the container cannot hold, or one without a codec entry, is
     // left unmapped.
-    for (n, idx) in params.tracks.subtitle_indices.iter().enumerate() {
-        if matches!(params.subtitle_codecs.get(n), Some(Some(_))) {
+    let mut subtitle_metadata = Vec::new();
+    let mapped = params
+        .tracks
+        .subtitle_indices
+        .iter()
+        .enumerate()
+        .filter(|(n, _)| matches!(params.subtitle_codecs.get(*n), Some(Some(_))));
+    for (out, (_, idx)) in mapped.enumerate() {
+        let Some(input) = sidecars.iter().position(|(track, _)| track.index == *idx) else {
             args.extend(["-map".to_string(), format!("0:s:{idx}")]);
+            continue;
+        };
+        args.extend(["-map".to_string(), format!("{}:0", input + 1)]);
+        let track = sidecars[input].0;
+        if let Some(language) = &track.language {
+            subtitle_metadata.extend([
+                format!("-metadata:s:s:{out}"),
+                format!("language={language}"),
+            ]);
+        }
+        if track.forced {
+            subtitle_metadata.extend([format!("-disposition:s:{out}"), "forced".to_string()]);
         }
     }
     let extension = std::path::Path::new(&params.output)
@@ -188,6 +213,9 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
             HdrType::Sdr => {}
         }
     }
+
+    // Language and forced flag of sidecar subtitles.
+    args.extend(subtitle_metadata);
 
     // The output is a positional argument; a leading `-` is spelled `./-`.
     if params.output.starts_with('-') {
@@ -662,6 +690,7 @@ mod tests {
         params.tracks = OutputTracks {
             audio: vec![audio(1, None), audio(3, Some(384)), audio(4, None)],
             subtitle_indices: vec![0],
+            ..OutputTracks::default()
         };
         params.subtitle_codecs = vec![Some("copy")];
         let args = build_ffmpeg_args(&params);
@@ -701,6 +730,7 @@ mod tests {
                 ..audio(0, Some(384))
             }],
             subtitle_indices: Vec::new(),
+            ..OutputTracks::default()
         };
         let args = build_ffmpeg_args(&params);
         assert_eq!(
@@ -720,6 +750,7 @@ mod tests {
                 ..audio(0, Some(384))
             }],
             subtitle_indices: Vec::new(),
+            ..OutputTracks::default()
         };
         let args = build_ffmpeg_args(&params);
         assert_eq!(
@@ -742,6 +773,7 @@ mod tests {
                 },
             ],
             subtitle_indices: Vec::new(),
+            ..OutputTracks::default()
         };
         let args = build_ffmpeg_args(&params);
         assert_eq!(
@@ -759,6 +791,7 @@ mod tests {
         params.tracks = OutputTracks {
             audio: vec![audio(0, Some(128))],
             subtitle_indices: Vec::new(),
+            ..OutputTracks::default()
         };
         let args = build_ffmpeg_args(&params);
 
@@ -834,6 +867,49 @@ mod tests {
 
         params.output = "out.mkv".to_string();
         assert!(!build_ffmpeg_args(&params).contains(&"-strict".to_string()));
+    }
+
+    /// A sidecar subtitle is an extra input mapped by input number, with its
+    /// language and forced flag set at its output position.
+    #[test]
+    fn sidecar_subtitles_are_extra_inputs_with_language_and_forced_flag() {
+        let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
+        params.tracks.subtitle_indices = vec![0, 1, 2];
+        params.subtitle_codecs = vec![None, Some("copy"), Some("copy")];
+        params.tracks.external_subtitles = vec![crate::tracks::SubtitleTrack {
+            index: 2,
+            language: Some("eng".to_string()),
+            codec: "subrip".to_string(),
+            title: None,
+            forced: true,
+            external: Some("/media/Movie.en.forced.srt".into()),
+        }];
+        let args = build_ffmpeg_args(&params);
+
+        let inputs: Vec<&String> = args
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i > &0 && args[i - 1] == "-i")
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(inputs, vec![&params.input, "/media/Movie.en.forced.srt"]);
+        let maps: Vec<&String> = args
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i > &0 && args[i - 1] == "-map")
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(maps, vec!["0:V:0", "0:s:1", "1:0", "0:t?"]);
+        assert_eq!(
+            arg_after(&args, "-metadata:s:s:1").as_deref(),
+            Some("language=eng")
+        );
+        assert_eq!(
+            arg_after(&args, "-disposition:s:1").as_deref(),
+            Some("forced")
+        );
+        assert!(!args.contains(&"-metadata:s:s:0".to_string()));
+        assert!(!args.contains(&"-disposition:s:0".to_string()));
     }
 
     /// A subtitle index with no matching codec entry is not mapped.

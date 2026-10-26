@@ -935,9 +935,16 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
         worker_jobs.push(WorkerJob {
             index: worker_jobs.len(),
             subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
-            tracks: job
-                .track_selection
-                .resolve_for(&job.audio_tracks, &audio_config, &output),
+            tracks: crate::tracks::OutputTracks {
+                external_subtitles: selected_subs
+                    .iter()
+                    .filter(|track| track.external.is_some())
+                    .cloned()
+                    .collect(),
+                ..job
+                    .track_selection
+                    .resolve_for(&job.audio_tracks, &audio_config, &output)
+            },
             input: job.path.clone(),
             output,
             source_identity,

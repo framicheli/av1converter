@@ -2125,9 +2125,15 @@ impl App {
                 Some(WorkerJob {
                     index: i,
                     subtitle_codecs: crate::tracks::subtitle_codecs_for(&output, &selected_subs),
-                    tracks: j
-                        .track_selection
-                        .resolve_for(&j.audio_tracks, &audio_config, &output),
+                    tracks: crate::tracks::OutputTracks {
+                        external_subtitles: selected_subs
+                            .iter()
+                            .filter(|track| track.external.is_some())
+                            .cloned()
+                            .collect(),
+                        ..j.track_selection
+                            .resolve_for(&j.audio_tracks, &audio_config, &output)
+                    },
                     input: j.path.clone(),
                     output,
                     source_identity,

@@ -8,6 +8,7 @@
 - Running `av1converter` while the daemon is running opens the TUI attached to it: the same screens and keys act on the daemon's queue, disc runs and settings, and quitting leaves the encode running.
 - A TUI attached to the daemon opens Track configuration when the daemon finishes analysing files that need it, and reports when an add queued nothing.
 - A standalone TUI started before the daemon refuses to encode while the daemon runs and asks you to restart it so it attaches.
+- Subtitle files next to a video (`Movie.srt`, `Movie.en.srt`, `Movie.en.forced.srt`) appear as extra subtitle tracks in Track configuration, in the TUI and the web UI, and selected ones are written into the output with their language and forced flag. The `.srt` files themselves are never deleted.
 
 ### Fixed
 

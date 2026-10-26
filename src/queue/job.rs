@@ -452,7 +452,7 @@ fn language_matches(preferred: &str, track: &str) -> bool {
 
 /// Map a 2- or 3-letter language tag to a shared lowercase 3-letter key.
 /// BCP-47 region/script subtags are stripped (`en-US` → `en`, `zh-Hans` → `zh`).
-fn language_canonical(tag: &str) -> Option<&'static str> {
+pub(crate) fn language_canonical(tag: &str) -> Option<&'static str> {
     let lower = tag.to_ascii_lowercase();
     let primary = lower.split(['-', '_']).next().unwrap_or(lower.as_str());
     match primary {
@@ -989,6 +989,7 @@ mod tests {
             codec: "subrip".into(),
             title: None,
             forced: false,
+            external: None,
         }
     }
 

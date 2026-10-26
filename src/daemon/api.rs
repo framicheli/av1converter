@@ -3402,6 +3402,7 @@ mod tests {
                 codec: "hdmv_pgs_subtitle".to_string(),
                 title: None,
                 forced: false,
+                external: None,
             }];
             job.track_selection.audio_indices = vec![0];
             job.track_selection.subtitle_indices = vec![0];
@@ -3642,6 +3643,7 @@ mod tests {
                     codec: "subrip".to_string(),
                     title: None,
                     forced: false,
+                    external: None,
                 }];
                 job.track_selection.audio_indices = vec![0, 2];
                 job.track_selection.audio_to_opus = vec![2];

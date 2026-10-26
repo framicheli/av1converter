@@ -64,6 +64,7 @@ mod tests {
             codec: codec.to_string(),
             title: None,
             forced: false,
+            external: None,
         }
     }
 
@@ -72,6 +73,24 @@ mod tests {
             index,
             ..sub(codec)
         }
+    }
+
+    #[test]
+    fn a_sidecar_path_survives_a_save_and_old_tracks_load_without_one() {
+        let track = SubtitleTrack {
+            external: Some("/media/Movie.en.srt".into()),
+            ..sub("subrip")
+        };
+        let saved = serde_json::to_string(&track).unwrap();
+        let loaded: SubtitleTrack = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.external, track.external);
+
+        let old = r#"{"index":0,"language":null,"codec":"subrip","title":null,"forced":false}"#;
+        let loaded: SubtitleTrack = serde_json::from_str(old).unwrap();
+        assert_eq!(loaded.external, None);
+        assert!(!serde_json::to_string(&loaded).unwrap().contains("external"));
+
+        assert!(serde_json::from_str::<SubtitleTrack>(r#"{"index":0,"external":7}"#).is_err());
     }
 
     /// The codec list follows the sorted indices, matching `-map 0:s:N`, even
@@ -244,6 +263,10 @@ pub struct SubtitleTrack {
     pub codec: String,
     pub title: Option<String>,
     pub forced: bool,
+    /// Sidecar subtitle file read as its own input, or `None` for a stream of
+    /// the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<std::path::PathBuf>,
 }
 
 impl SubtitleTrack {
