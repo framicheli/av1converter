@@ -271,7 +271,7 @@ mod tests {
 
         sel.toggle_audio(1);
         assert!(!sel.is_opus(1));
-        assert!(sel.audio_to_opus.is_empty());
+        assert_eq!(sel.audio_to_opus, Vec::<usize>::new());
     }
 
     /// Marking an unselected track for Opus also selects it.

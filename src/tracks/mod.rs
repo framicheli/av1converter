@@ -141,7 +141,10 @@ mod tests {
             subtitle_codecs_for(Path::new("out.mkv"), &subrip),
             [Some("copy")]
         );
-        assert!(subtitle_codecs_for(Path::new("out.mkv"), &[]).is_empty());
+        assert_eq!(
+            subtitle_codecs_for(Path::new("out.mkv"), &[]),
+            Vec::<Option<&str>>::new()
+        );
 
         let mixed = [sub("mov_text"), sub("hdmv_pgs_subtitle")];
         assert_eq!(

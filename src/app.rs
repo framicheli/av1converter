@@ -1,5 +1,6 @@
 use crate::analyzer::{self, AnalysisResult, DvMode, HdrType, is_av1_codec};
 use crate::config::{AppConfig, Encoder};
+use crate::daemon::client::{ClientError, ClientEvent, ClientRequest, RequestKind};
 use crate::disc::worker::DiscEvent;
 use crate::disc::{DiscDrive, DiscError, DiscSource, DiscTitle};
 use crate::error::AppError;
@@ -9,13 +10,14 @@ use crate::queue::{
 };
 use crate::utils::DependencyStatus;
 use ratatui::widgets::ListState;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Instant;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Application screens
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -109,12 +111,110 @@ pub enum ConfirmAction {
     ClearFinishedRips,
 }
 
+impl ConfirmAction {
+    /// Whether the dialog acts on jobs of the daemon run it was opened under.
+    fn names_queue_jobs(self) -> bool {
+        matches!(
+            self,
+            Self::RemoveRip(_)
+                | Self::ClearFinishedRips
+                | Self::CancelEncoding
+                | Self::CancelAnalysis
+                | Self::CancelDisc
+                | Self::AbandonTrackConfig
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     Info,
     Success,
     Warning,
     Error,
+}
+
+/// Where the queue runs and encodes.
+pub enum Backend {
+    /// In this process.
+    Local,
+    /// In the running daemon.
+    Remote(RemoteSession),
+}
+
+/// Connection to the daemon this TUI is attached to.
+// Independent connection flags, read one at a time.
+#[allow(clippy::struct_excessive_bools)]
+pub struct RemoteSession {
+    pub requests: mpsc::Sender<ClientRequest>,
+    pub events: Receiver<ClientEvent>,
+    /// Daemon job ids, `ids[i]` for `queue.jobs[i]`.
+    pub ids: Vec<u64>,
+    /// `taken_ms` of the last applied snapshot.
+    pub last_taken_ms: u64,
+    /// Daemon run id of the last snapshot.
+    pub instance: u64,
+    pub reachable: bool,
+    /// The daemon answered 401 to this TUI's token.
+    pub token_rejected: bool,
+    /// Version of a daemon run that differs from this TUI's version.
+    pub version_mismatch: Option<String>,
+    /// The daemon's host-level settings are read-only for this TUI.
+    pub host_settings_read_only: bool,
+    /// Jobs shown on the file confirmation screen and not yet sent.
+    pub pending: Vec<EncodingJob>,
+    /// Folder and add mode the pending jobs were previewed from.
+    pub pending_folder: Option<(String, &'static str)>,
+    /// Folder previews cancelled before their reply arrived.
+    pub cancelled_previews: usize,
+    pub was_encoding: bool,
+    /// The last snapshot had jobs pending or analyzing.
+    pub was_analyzing: bool,
+    /// The daemon runs a drive listing, disc scan or rip.
+    pub disc_active: bool,
+    /// Job id and `apply_to_remaining` of the track selection awaiting its reply.
+    pub tracks_in_flight: Option<(u64, bool)>,
+}
+
+impl RemoteSession {
+    /// A reachable session with no snapshot applied yet.
+    pub fn new(requests: mpsc::Sender<ClientRequest>, events: Receiver<ClientEvent>) -> Self {
+        Self {
+            requests,
+            events,
+            ids: Vec::new(),
+            last_taken_ms: 0,
+            instance: 0,
+            reachable: true,
+            token_rejected: false,
+            version_mismatch: None,
+            host_settings_read_only: false,
+            pending: Vec::new(),
+            pending_folder: None,
+            cancelled_previews: 0,
+            was_encoding: false,
+            was_analyzing: false,
+            disc_active: false,
+            tracks_in_flight: None,
+        }
+    }
+
+    /// Takes the daemon run of `snapshot` as current when it differs from the
+    /// last one: resets the snapshot clock, encode tracking and the track
+    /// selection in flight, and records a version mismatch. Returns whether
+    /// the run changed.
+    fn follow_instance(&mut self, snapshot: &crate::daemon::client::RemoteSnapshot) -> bool {
+        if snapshot.instance == self.instance {
+            return false;
+        }
+        self.instance = snapshot.instance;
+        self.last_taken_ms = 0;
+        self.tracks_in_flight = None;
+        self.was_encoding = snapshot.encoding_active;
+        self.version_mismatch =
+            (snapshot.version != env!("CARGO_PKG_VERSION")).then(|| snapshot.version.clone());
+        true
+    }
 }
 
 /// Main application state
@@ -172,6 +272,10 @@ pub struct App {
 
     // Encoding
     pub encoding_active: bool,
+    /// Lock file held while this TUI encodes locally.
+    pub tui_lock: Option<crate::daemon::lifecycle::TuiLockGuard>,
+    /// Process id of a running daemon, checked before a local encode starts.
+    pub daemon_running: fn() -> Option<u32>,
     pub progress_receiver: Option<Receiver<WorkerMessage>>,
     pub cancel_flag: Arc<AtomicBool>,
     /// Queue indices assigned to the current encoding worker session.
@@ -222,6 +326,8 @@ pub struct App {
     // Finish screen
     pub finish_cursor: usize,
     pub finish_list_state: ListState,
+
+    pub backend: Backend,
 }
 
 impl Default for App {
@@ -231,8 +337,528 @@ impl Default for App {
 }
 
 impl App {
-    #[allow(clippy::too_many_lines)]
     pub fn new() -> Self {
+        let (config, load_error) = AppConfig::load_reporting();
+        Self::with_config(config, load_error)
+    }
+
+    /// An app attached to the daemon, showing its first snapshot; sends `SettingsAccess`.
+    pub fn attached(
+        config: AppConfig,
+        session: RemoteSession,
+        first: &crate::daemon::client::RemoteSnapshot,
+    ) -> Self {
+        let mut app = Self::with_config(config, None);
+        let (queue, ids) = first.queue_state();
+        app.queue = queue;
+        app.encoding_active = first.encoding_active;
+        if first.encoding_active {
+            app.current_screen = Screen::Queue;
+        }
+        let _ = session.requests.send(ClientRequest::SettingsAccess);
+        app.backend = Backend::Remote(RemoteSession {
+            ids,
+            last_taken_ms: first.taken_ms,
+            instance: first.instance,
+            reachable: true,
+            was_encoding: first.encoding_active,
+            disc_active: first.disc.active,
+            ..session
+        });
+        let analyzing = app.analysis_active();
+        if let Some(remote) = app.remote_mut() {
+            remote.was_analyzing = analyzing;
+        }
+        app
+    }
+
+    fn remote_mut(&mut self) -> Option<&mut RemoteSession> {
+        match &mut self.backend {
+            Backend::Remote(remote) => Some(remote),
+            Backend::Local => None,
+        }
+    }
+
+    /// Sends `request` to the attached daemon; returns whether this app is attached.
+    pub fn send_to_daemon(&self, request: ClientRequest) -> bool {
+        let Backend::Remote(remote) = &self.backend else {
+            return false;
+        };
+        let _ = remote.requests.send(request);
+        true
+    }
+
+    /// The daemon id of the job at `index`.
+    fn daemon_id(&self, index: usize) -> Option<u64> {
+        match &self.backend {
+            Backend::Remote(remote) => remote.ids.get(index).copied(),
+            Backend::Local => None,
+        }
+    }
+
+    /// Whether the attached daemon treats this TUI as a remote client.
+    pub fn host_settings_read_only(&self) -> bool {
+        matches!(&self.backend, Backend::Remote(remote) if remote.host_settings_read_only)
+    }
+
+    pub fn is_attached(&self) -> bool {
+        matches!(self.backend, Backend::Remote(_))
+    }
+
+    /// Asks to quit: an attached app with work running in the daemon and no
+    /// unsaved settings quits at once, any other app opens the exit
+    /// confirmation.
+    pub fn request_exit(&mut self) {
+        let unsaved = self.current_screen == Screen::Configuration && self.config_is_dirty();
+        if self.is_attached() && self.work_active() && !unsaved {
+            self.should_quit = true;
+        } else {
+            self.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+        }
+    }
+
+    /// Whether the attached daemon is unreachable, rejects this TUI's token,
+    /// or runs a different version.
+    pub fn daemon_blocked(&self) -> bool {
+        self.blocked_status().is_some()
+    }
+
+    /// The status line shown while the attached daemon is blocked.
+    fn blocked_status(&self) -> Option<String> {
+        use crate::i18n::{Msg, t};
+        let Backend::Remote(remote) = &self.backend else {
+            return None;
+        };
+        let lang = self.config.language;
+        if let Some(version) = &remote.version_mismatch {
+            Some(
+                t(lang, Msg::DaemonVersionMismatch)
+                    .replace("{daemon}", version)
+                    .replace("{tui}", env!("CARGO_PKG_VERSION")),
+            )
+        } else if remote.token_rejected {
+            Some(t(lang, Msg::DaemonTokenRejected).to_string())
+        } else if !remote.reachable {
+            Some(t(lang, Msg::DaemonUnreachableRetrying).to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Applies every pending event from the attached daemon without blocking.
+    pub fn process_client_events(&mut self) {
+        let Backend::Remote(remote) = &self.backend else {
+            return;
+        };
+        let events: Vec<ClientEvent> = remote.events.try_iter().collect();
+        let before = self.blocked_status();
+        for event in events {
+            match event {
+                ClientEvent::Snapshot(snapshot) => self.apply_snapshot(&snapshot),
+                ClientEvent::Unreachable(reason) => {
+                    warn!("Daemon unreachable: {reason}");
+                    self.set_reachable(false);
+                    self.set_token_rejected(false);
+                }
+                ClientEvent::TokenRejected => {
+                    warn!("Daemon rejected the access token");
+                    self.set_reachable(true);
+                    self.set_token_rejected(true);
+                }
+                ClientEvent::Reachable => {
+                    self.set_reachable(true);
+                    self.set_token_rejected(false);
+                    self.send_to_daemon(ClientRequest::SettingsAccess);
+                }
+                ClientEvent::Reply { request, result } => self.apply_reply(request, result),
+            }
+        }
+        let after = self.blocked_status();
+        if after != before {
+            if before.is_some() && self.message == before {
+                self.clear_message();
+            }
+            if let Some(status) = &after {
+                self.set_message(status);
+            }
+        } else if let Some(status) = &after
+            && self.message.is_none()
+        {
+            self.set_message(status);
+        }
+    }
+
+    /// Applies the daemon's answer to a request this app sent.
+    fn apply_reply(&mut self, request: RequestKind, result: Result<Value, ClientError>) {
+        if request == RequestKind::AddPreview
+            && let Some(remote) = self.remote_mut()
+            && remote.cancelled_previews > 0
+        {
+            remote.cancelled_previews -= 1;
+            return;
+        }
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => {
+                match &error {
+                    ClientError::Http { status: 401, .. } => self.set_token_rejected(true),
+                    ClientError::Http { error, .. } => self.set_timed_error(error, 5),
+                    ClientError::Unreachable(_) | ClientError::BadResponse(_) => {
+                        let message = crate::i18n::t(
+                            self.config.language,
+                            crate::i18n::Msg::DaemonRequestFailed,
+                        )
+                        .replace("{error}", &error.to_string());
+                        self.set_timed_error(&message, 5);
+                    }
+                }
+                self.request_failed(request);
+                return;
+            }
+        };
+        let lang = self.config.language;
+        match request {
+            RequestKind::Browse => self.show_daemon_directory(&value),
+            RequestKind::AddPreview => self.accept_previewed_files(&value),
+            RequestKind::ClearFinished => {
+                let removed = value["removed"].as_u64().unwrap_or(0);
+                let message = crate::i18n::t(lang, crate::i18n::Msg::WebRemovedFinished)
+                    .replace("{n}", &removed.to_string());
+                self.set_timed_success(&message, 3);
+            }
+            RequestKind::SetTracks => self.tracks_applied(&value),
+            RequestKind::DiscsList => {
+                let Ok(drives) = serde_json::from_value::<Vec<DiscDrive>>(value["drives"].clone())
+                else {
+                    return;
+                };
+                self.disc_drives = drives;
+                self.disc_state = DiscState::Ready;
+                if self.current_screen == Screen::DiscDrives && self.disc_drives.len() == 1 {
+                    self.scan_disc(0);
+                }
+            }
+            RequestKind::SettingsGet => self.load_daemon_settings(value, false),
+            RequestKind::SettingsSet => self.load_daemon_settings(value, true),
+            RequestKind::SettingsAccess => {
+                let local = value["local"].as_bool().unwrap_or(false);
+                if let Some(remote) = self.remote_mut() {
+                    remote.host_settings_read_only = !local;
+                }
+            }
+            RequestKind::ServiceSet => {
+                let installed = value["enabled"].as_bool().unwrap_or(false);
+                if let Some(enabled) = value["daemon_enabled"].as_bool() {
+                    self.config.daemon.enabled = enabled;
+                    self.saved_config.daemon.enabled = enabled;
+                }
+                let msg = if installed {
+                    crate::i18n::Msg::DaemonServiceInstalled
+                } else {
+                    crate::i18n::Msg::DaemonServiceUninstalled
+                };
+                self.set_timed_success(crate::i18n::t(lang, msg), 5);
+            }
+            RequestKind::Add | RequestKind::AddFolder => {
+                if value["added"].as_u64() == Some(0) {
+                    self.set_timed_message(
+                        crate::i18n::t(lang, crate::i18n::Msg::WebNothingAdded),
+                        4,
+                    );
+                }
+            }
+            RequestKind::Remove
+            | RequestKind::MoveUp
+            | RequestKind::Cancel
+            | RequestKind::CancelAnalysis
+            | RequestKind::DiscsScan
+            | RequestKind::DiscsRip
+            | RequestKind::DiscsCancel => {}
+        }
+    }
+
+    /// Settles the screen after the daemon refused `request`.
+    fn request_failed(&mut self, request: RequestKind) {
+        match request {
+            // A refused folder falls back once to the daemon's start folder.
+            RequestKind::Browse if !self.current_dir.as_os_str().is_empty() => {
+                self.current_dir = PathBuf::new();
+                self.refresh_dir_entries();
+            }
+            RequestKind::AddPreview => {
+                if let Some(remote) = self.remote_mut() {
+                    remote.pending_folder = None;
+                }
+            }
+            RequestKind::SetTracks => {
+                if let Some(remote) = self.remote_mut() {
+                    remote.tracks_in_flight = None;
+                }
+                if self.current_screen == Screen::TrackConfig {
+                    self.navigate_to_queue();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Fills the explorer from a daemon directory listing.
+    fn show_daemon_directory(&mut self, listing: &Value) {
+        let Some(path) = listing["path"].as_str() else {
+            return;
+        };
+        self.current_dir = PathBuf::from(path);
+        self.dir_entries.clear();
+        if listing["parent"].is_string() {
+            self.dir_entries.push(Entry::parent());
+        }
+        let names = |key: &str| listing[key].as_array().cloned().unwrap_or_default();
+        for dir in names("dirs") {
+            if let Some(name) = dir["name"].as_str() {
+                self.dir_entries.push(Entry {
+                    path: self.current_dir.join(name),
+                    is_dir: true,
+                    size: None,
+                });
+            }
+        }
+        let disc_images = self.selection_mode == SelectionMode::DiscFolder;
+        for file in names("files") {
+            let listed = file["is_video"].as_bool() == Some(true)
+                || (disc_images && file["is_iso"].as_bool() == Some(true));
+            if let (true, Some(name)) = (listed, file["name"].as_str()) {
+                self.dir_entries.push(Entry {
+                    path: self.current_dir.join(name),
+                    is_dir: false,
+                    size: file["size"].as_u64(),
+                });
+            }
+        }
+        self.explorer_index = 0;
+        self.explorer_list_state.select(Some(0));
+    }
+
+    /// Shows the files a folder preview found, when the explorer still waits for them.
+    fn accept_previewed_files(&mut self, preview: &Value) {
+        let waiting =
+            matches!(&self.backend, Backend::Remote(remote) if remote.pending_folder.is_some());
+        if !waiting || self.current_screen != Screen::FileExplorer {
+            if let Some(remote) = self.remote_mut() {
+                remote.pending_folder = None;
+            }
+            return;
+        }
+        let paths = preview["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(PathBuf::from)
+            .collect();
+        self.accept_scanned_files(paths);
+    }
+
+    /// Marks the confirmed job Ready and, when it is still the one on Track
+    /// Config, moves on.
+    fn tracks_applied(&mut self, applied: &Value) {
+        let Some(remote) = self.remote_mut() else {
+            return;
+        };
+        let Some((id, apply_to_remaining)) = remote.tracks_in_flight.take() else {
+            return;
+        };
+        let index = remote.ids.iter().position(|&other| other == id);
+        if let Some(job) = index.and_then(|index| self.queue.jobs.get_mut(index))
+            && matches!(job.status, JobStatus::AwaitingConfig)
+        {
+            job.status = JobStatus::Ready;
+        }
+        if self.current_screen != Screen::TrackConfig {
+            return;
+        }
+        if apply_to_remaining {
+            let count = applied["applied"].as_u64().unwrap_or(1);
+            let message = crate::i18n::t(self.config.language, crate::i18n::Msg::WebTracksApplied)
+                .replace("{n}", &count.to_string());
+            self.detail_scroll = 0;
+            self.navigate_to_queue();
+            self.set_timed_success(&message, 4);
+            return;
+        }
+        if index == Some(self.queue.config_job_index) {
+            self.advance_track_config();
+        }
+    }
+
+    /// Takes the daemon's configuration as both the live and the saved one;
+    /// a loaded copy leaves unsaved edits alone.
+    fn load_daemon_settings(&mut self, settings: Value, saved: bool) {
+        let warning = settings["_warning"].as_str().map(str::to_string);
+        let Ok(config) = serde_json::from_value::<AppConfig>(settings) else {
+            return;
+        };
+        if !saved && self.config_is_dirty() {
+            return;
+        }
+        self.config = config.clone();
+        self.saved_config = config;
+        if !saved {
+            return;
+        }
+        if let Some(warning) = warning {
+            self.set_timed_error(&warning, 6);
+        } else {
+            let msg = crate::i18n::t(self.config.language, crate::i18n::Msg::SavedExclaim);
+            self.set_timed_success(msg, 3);
+        }
+    }
+
+    fn set_reachable(&mut self, reachable: bool) {
+        if let Backend::Remote(remote) = &mut self.backend {
+            remote.reachable = reachable;
+        }
+    }
+
+    fn set_token_rejected(&mut self, rejected: bool) {
+        if let Backend::Remote(remote) = &mut self.backend {
+            remote.token_rejected = rejected;
+        }
+    }
+
+    /// Mirrors a daemon snapshot newer than the last one applied, keeping the
+    /// job open on Track Config and the jobs pending on File Confirm.
+    fn apply_snapshot(&mut self, snapshot: &crate::daemon::client::RemoteSnapshot) {
+        let Backend::Remote(remote) = &mut self.backend else {
+            return;
+        };
+        let restarted = remote.follow_instance(snapshot);
+        let stale = remote.version_mismatch.is_some() || snapshot.taken_ms < remote.last_taken_ms;
+        if restarted {
+            self.leave_previous_run();
+        }
+        let Backend::Remote(remote) = &mut self.backend else {
+            return;
+        };
+        if stale {
+            return;
+        }
+        remote.token_rejected = false;
+        let editing = (self.current_screen == Screen::TrackConfig)
+            .then(|| {
+                let index = self.queue.config_job_index;
+                Some((*remote.ids.get(index)?, self.queue.jobs.get(index)?.clone()))
+            })
+            .flatten();
+        let cursor_id = remote.ids.get(self.queue_cursor).copied();
+        let rip_removal = match self.confirm_dialog {
+            Some((ConfirmAction::RemoveRip(index), selected)) => {
+                Some((remote.ids.get(index).copied(), selected))
+            }
+            _ => None,
+        };
+        let (queue, ids) = snapshot.queue_state();
+        self.queue = queue;
+        remote.ids = ids;
+        remote.last_taken_ms = snapshot.taken_ms;
+        remote.disc_active = snapshot.disc.active;
+        let was_encoding = std::mem::replace(&mut remote.was_encoding, snapshot.encoding_active);
+        let position = |id: Option<u64>| id.and_then(|id| remote.ids.iter().position(|&o| o == id));
+        if let Some(index) = position(cursor_id) {
+            self.queue_cursor = index;
+        }
+        if let Some((id, selected)) = rip_removal {
+            self.confirm_dialog =
+                position(id).map(|index| (ConfirmAction::RemoveRip(index), selected));
+        }
+        if self.current_screen == Screen::FileConfirm {
+            self.batch_start = self.queue.jobs.len();
+            self.queue.jobs.extend(remote.pending.iter().cloned());
+        }
+        let edited_index = editing.map(|(id, job)| {
+            let index = remote.ids.iter().position(|&other| other == id);
+            if let Some(index) = index {
+                self.queue.jobs[index] = job;
+                self.queue.config_job_index = index;
+            }
+            index
+        });
+
+        self.mirror_disc(&snapshot.disc);
+        self.encoding_active = snapshot.encoding_active;
+
+        if edited_index == Some(None) {
+            let lang = self.config.language;
+            self.set_timed_error(
+                crate::i18n::t(lang, crate::i18n::Msg::JobRemovedByDaemon),
+                5,
+            );
+            self.navigate_to_queue();
+        }
+        if was_encoding && !snapshot.encoding_active && self.follows_background_work() {
+            self.navigate_to_finish();
+        }
+        let analyzing = self.analysis_active();
+        let was_analyzing = self
+            .remote_mut()
+            .is_some_and(|remote| std::mem::replace(&mut remote.was_analyzing, analyzing));
+        if was_analyzing
+            && !restarted
+            && !analyzing
+            && !self.encoding_active
+            && self.follows_background_work()
+            && self.current_screen != Screen::TrackConfig
+            && self.has_jobs_awaiting_config()
+        {
+            self.configure_next_job();
+        }
+        let last_job = self.queue.jobs.len().saturating_sub(1);
+        self.queue_cursor = self.queue_cursor.min(last_job);
+        self.finish_cursor = self.finish_cursor.min(last_job);
+        self.disc_cursor = self
+            .disc_cursor
+            .min(self.disc_titles.len().saturating_sub(1));
+        self.disc_drive_cursor = self.disc_drive_cursor.min(self.disc_drives.len());
+    }
+
+    /// Closes the confirm dialogs about queue jobs and leaves Track
+    /// configuration for the Queue, discarding its edit, with a message.
+    fn leave_previous_run(&mut self) {
+        if self
+            .confirm_dialog
+            .is_some_and(|(action, _)| action.names_queue_jobs())
+        {
+            self.confirm_dialog = None;
+        }
+        if self.current_screen == Screen::TrackConfig {
+            let lang = self.config.language;
+            self.set_timed_error(
+                crate::i18n::t(lang, crate::i18n::Msg::DaemonRestartedEditDiscarded),
+                5,
+            );
+            self.navigate_to_queue();
+        }
+    }
+
+    /// Mirrors the daemon's disc drives, titles, source and run state.
+    fn mirror_disc(&mut self, disc: &crate::daemon::client::RemoteDisc) {
+        self.disc_drives.clone_from(&disc.drives);
+        self.disc_titles.clone_from(&disc.titles);
+        self.disc_source.clone_from(&disc.scanned_source);
+        self.disc_state = if let Some(error) = &disc.error {
+            DiscState::Failed(error.clone())
+        } else if disc.scanning {
+            DiscState::Scanning
+        } else if disc.active {
+            DiscState::Ready
+        } else if disc.listing {
+            DiscState::Discovering
+        } else {
+            DiscState::Ready
+        };
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn with_config(config: AppConfig, load_error: Option<String>) -> Self {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| {
             std::env::var_os("HOME")
                 .or_else(|| std::env::var_os("USERPROFILE"))
@@ -264,7 +890,6 @@ impl App {
         let mut disc_list_state = ListState::default();
         disc_list_state.select(Some(0));
 
-        let (config, load_error) = AppConfig::load_reporting();
         let deps = DependencyStatus::check();
         let vmaf_deps = DependencyStatus::vmaf_available();
         let opus_deps = DependencyStatus::libopus_available();
@@ -330,6 +955,12 @@ impl App {
             disc_job_indices: Vec::new(),
             disc_source: None,
             encoding_active: false,
+            tui_lock: None,
+            daemon_running: if cfg!(test) {
+                || None
+            } else {
+                crate::daemon::lifecycle::running_pid
+            },
             progress_receiver: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             encoding_session_indices: Vec::new(),
@@ -357,6 +988,7 @@ impl App {
             config,
             finish_cursor: 0,
             finish_list_state,
+            backend: Backend::Local,
         }
     }
 
@@ -582,8 +1214,8 @@ impl App {
         };
         let stale = match action {
             ConfirmAction::CancelEncoding => !self.encoding_active,
-            ConfirmAction::CancelAnalysis => self.analysis_receiver.is_none(),
-            ConfirmAction::CancelDisc => self.disc_receiver.is_none(),
+            ConfirmAction::CancelAnalysis => !self.analysis_active(),
+            ConfirmAction::CancelDisc => !self.disc_run_active(),
             _ => false,
         };
         if stale {
@@ -592,6 +1224,8 @@ impl App {
     }
 
     pub fn navigate_to_configuration(&mut self) {
+        self.send_to_daemon(ClientRequest::SettingsAccess);
+        self.send_to_daemon(ClientRequest::SettingsGet);
         self.config_selected = 0;
         self.current_screen = Screen::Configuration;
     }
@@ -607,12 +1241,29 @@ impl App {
     }
 
     pub fn disc_operation_active(&self) -> bool {
-        self.disc_drive_receiver.is_some() || self.disc_receiver.is_some()
+        self.disc_drive_receiver.is_some() || self.disc_run_active()
+    }
+
+    /// Whether a disc scan or rip runs here, or any disc work in the attached daemon.
+    pub fn disc_run_active(&self) -> bool {
+        self.disc_receiver.is_some()
+            || matches!(&self.backend, Backend::Remote(remote) if remote.disc_active)
+    }
+
+    /// Whether probes run here, or the attached daemon has jobs waiting for them.
+    pub fn analysis_active(&self) -> bool {
+        self.analysis_receiver.is_some()
+            || matches!(&self.backend, Backend::Remote(remote) if self
+                .queue
+                .jobs
+                .iter()
+                .take(remote.ids.len())
+                .any(|job| matches!(job.status, JobStatus::Analyzing | JobStatus::Pending)))
     }
 
     pub fn work_active(&self) -> bool {
         self.encoding_active
-            || self.analysis_receiver.is_some()
+            || self.analysis_active()
             || self.disc_operation_active()
             || self.folder_scan_receiver.is_some()
     }
@@ -631,6 +1282,12 @@ impl App {
     }
 
     pub fn queue_move_selected_up(&mut self) {
+        if self.is_attached() {
+            if let Some(id) = self.daemon_id(self.queue_cursor) {
+                self.send_to_daemon(ClientRequest::MoveUp(id));
+            }
+            return;
+        }
         if let Some(index) = self.queue.move_ready_up(self.queue_cursor) {
             self.queue_cursor = index;
             self.queue_list_state.select(Some(index));
@@ -653,7 +1310,15 @@ impl App {
 
     // File explorer
 
+    /// Lists `current_dir`; while attached, asks the daemon and keeps the
+    /// current rows until its listing arrives.
     pub fn refresh_dir_entries(&mut self) {
+        if self.send_to_daemon(ClientRequest::Browse {
+            path: self.current_dir.to_string_lossy().into_owned(),
+            show_hidden: true,
+        }) {
+            return;
+        }
         self.dir_entries.clear();
 
         // Add parent directory
@@ -742,6 +1407,10 @@ impl App {
 
     /// Navigate back from file confirm to the explorer
     pub fn cancel_file_confirm(&mut self) {
+        if let Some(remote) = self.remote_mut() {
+            remote.pending.clear();
+            remote.pending_folder = None;
+        }
         let batch_start = self.batch_start.min(self.queue.jobs.len());
         if self.selection_mode == SelectionMode::File {
             self.selected_files = self.queue.jobs[batch_start..]
@@ -839,6 +1508,24 @@ impl App {
         if self.folder_scan_receiver.is_some() {
             return;
         }
+        let scanning = crate::i18n::t(self.config.language, crate::i18n::Msg::ScanningFiles);
+        if let Some(remote) = self.remote_mut() {
+            if remote.pending_folder.is_some() {
+                return;
+            }
+            let path = folder.to_string_lossy().into_owned();
+            let mode = if recursive {
+                "folder_recursive"
+            } else {
+                "folder"
+            };
+            remote.pending_folder = Some((path.clone(), mode));
+            let _ = remote
+                .requests
+                .send(ClientRequest::AddPreview { path, mode });
+            self.set_info_message(scanning);
+            return;
+        }
         self.folder_scan_cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel = self.folder_scan_cancel_flag.clone();
         let (tx, rx) = mpsc::channel();
@@ -874,7 +1561,21 @@ impl App {
         });
     }
 
+    /// Whether a folder scan, or a daemon folder preview, is running.
+    pub fn folder_scan_active(&self) -> bool {
+        self.folder_scan_receiver.is_some()
+            || matches!(&self.backend, Backend::Remote(remote) if remote.pending_folder.is_some())
+    }
+
+    /// Stops the folder scan; a daemon preview's reply is then ignored.
     pub fn cancel_folder_scan(&mut self) {
+        if let Some(remote) = self.remote_mut() {
+            if remote.pending_folder.take().is_some() {
+                remote.cancelled_previews += 1;
+            }
+            self.clear_message();
+            return;
+        }
         self.folder_scan_cancel_flag.store(true, Ordering::Release);
         self.set_info_message(crate::i18n::t(
             self.config.language,
@@ -901,18 +1602,7 @@ impl App {
             return;
         }
         let Err(error) = &result else {
-            let paths = result.unwrap_or_default();
-            self.clear_message();
-            if paths.is_empty() {
-                let msg = crate::i18n::t(self.config.language, crate::i18n::Msg::NoVideoFiles);
-                self.set_message(msg);
-            } else if self.append_jobs(paths) {
-                if self.queue.jobs.len() - self.batch_start == 1 {
-                    self.analyze_jobs();
-                } else {
-                    self.navigate_to_file_confirm();
-                }
-            }
+            self.accept_scanned_files(result.unwrap_or_default());
             return;
         };
         let failed = crate::i18n::t(self.config.language, crate::i18n::Msg::FolderScanFailed);
@@ -923,10 +1613,37 @@ impl App {
         }
     }
 
+    /// Queue the files a folder scan found: one goes straight to analysis,
+    /// several to the confirmation screen.
+    fn accept_scanned_files(&mut self, paths: Vec<PathBuf>) {
+        self.clear_message();
+        if paths.is_empty() {
+            let msg = crate::i18n::t(self.config.language, crate::i18n::Msg::NoVideoFiles);
+            self.set_message(msg);
+        } else if self.append_jobs(paths) {
+            if self.queue.jobs.len() - self.batch_start == 1 {
+                self.analyze_jobs();
+            } else {
+                self.navigate_to_file_confirm();
+            }
+        }
+    }
+
     /// Append `paths` to the queue as a new batch, skipping any already queued
     /// and not finished. Returns whether anything was added; when nothing was,
-    /// says so in the status line.
+    /// says so in the status line. While attached, the batch is held as
+    /// pending jobs for the daemon.
     fn append_jobs(&mut self, paths: Vec<PathBuf>) -> bool {
+        if self.is_attached() {
+            let jobs: Vec<EncodingJob> = paths.into_iter().map(EncodingJob::new).collect();
+            self.batch_start = self.queue.jobs.len();
+            self.queue.jobs.extend(jobs.iter().cloned());
+            let added = !jobs.is_empty();
+            if let Some(remote) = self.remote_mut() {
+                remote.pending = jobs;
+            }
+            return added;
+        }
         self.queue.reset_session_if_finished();
         let resolved = |path: &PathBuf| path.canonicalize().unwrap_or_else(|_| path.clone());
         let queued: std::collections::HashSet<PathBuf> = self
@@ -952,7 +1669,24 @@ impl App {
         added
     }
 
+    /// Probes the current batch; while attached, sends it to the daemon instead.
     fn analyze_jobs(&mut self) {
+        if let Some(remote) = self.remote_mut() {
+            let pending = std::mem::take(&mut remote.pending);
+            let request = match remote.pending_folder.take() {
+                Some((path, mode)) => ClientRequest::AddFolder { path, mode },
+                None => ClientRequest::Add {
+                    paths: pending
+                        .iter()
+                        .map(|job| job.path.to_string_lossy().into_owned())
+                        .collect(),
+                },
+            };
+            let _ = remote.requests.send(request);
+            self.queue.jobs.truncate(self.batch_start);
+            self.navigate_to_queue();
+            return;
+        }
         let indices: Vec<usize> = (self.batch_start..self.queue.jobs.len()).collect();
         self.analyze_indices(&indices);
         self.navigate_to_queue();
@@ -1131,6 +1865,9 @@ impl App {
     /// Cancel every outstanding probe, keeping analysed jobs and concurrent
     /// work. No-op once the analysis round has ended.
     pub fn cancel_analysis(&mut self) {
+        if self.send_to_daemon(ClientRequest::CancelAnalysis) {
+            return;
+        }
         if self.analysis_receiver.is_none() {
             return;
         }
@@ -1192,12 +1929,20 @@ impl App {
         if !self.is_track_configurable(self.queue.config_job_index) {
             return;
         }
+        if self.is_attached() {
+            self.send_track_selection(false);
+            return;
+        }
         self.queue.jobs[self.queue.config_job_index].status = JobStatus::Ready;
         if !self.encoding_active {
             self.start_encoding();
         }
+        self.advance_track_config();
+    }
 
-        // Find the next job awaiting config, wrapping around to earlier jobs
+    /// Open the next job awaiting its tracks, wrapping around to earlier
+    /// jobs, or the queue when none is left.
+    fn advance_track_config(&mut self) {
         let len = self.queue.jobs.len();
         let next_index = (1..=len)
             .map(|k| (self.queue.config_job_index + k) % len)
@@ -1212,11 +1957,41 @@ impl App {
         }
     }
 
+    /// Sends the current job's track choices to the daemon, once per reply.
+    fn send_track_selection(&mut self, apply_to_remaining: bool) {
+        let index = self.queue.config_job_index;
+        let id = self.daemon_id(index);
+        let (Some(id), Some(job), Backend::Remote(remote)) =
+            (id, self.queue.jobs.get(index), &mut self.backend)
+        else {
+            return;
+        };
+        if remote.tracks_in_flight.is_some() {
+            return;
+        }
+        let selection = &job.track_selection;
+        let body = json!({
+            "id": id,
+            "audio_indices": selection.audio_indices,
+            "audio_to_opus": selection.audio_to_opus,
+            "subtitle_indices": selection.subtitle_indices,
+            "remux_only": job.remux_only,
+            "dv_mode": job.dv_mode.map(crate::daemon::api::dv_mode_name),
+            "apply_to_remaining": apply_to_remaining,
+        });
+        remote.tracks_in_flight = Some((id, apply_to_remaining));
+        let _ = remote.requests.send(ClientRequest::SetTracks(body));
+    }
+
     /// Apply the current job's track choices to every job still awaiting its
     /// tracks, matching tracks by position, then confirm the current job.
     pub fn apply_track_config_to_remaining(&mut self) {
         let index = self.queue.config_job_index;
         if !self.is_track_configurable(index) {
+            return;
+        }
+        if self.is_attached() {
+            self.send_track_selection(true);
             return;
         }
         let job = &self.queue.jobs[index];
@@ -1242,9 +2017,10 @@ impl App {
     }
 
     /// Abandon every job not yet finished, keeping finished ones, and return
-    /// to the queue, or to Home when nothing is left.
+    /// to the queue, or to Home when nothing is left. While attached, the
+    /// jobs stay in the daemon and the queue opens.
     pub fn cancel_track_config(&mut self) {
-        if self.encoding_active || self.disc_operation_active() {
+        if self.encoding_active || self.disc_operation_active() || self.is_attached() {
             self.navigate_to_queue();
             return;
         }
@@ -1299,6 +2075,18 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     pub fn start_encoding(&mut self) {
+        if self.is_attached() {
+            return;
+        }
+        if let Some(pid) = (self.daemon_running)() {
+            warn!("Not encoding locally: the daemon runs as PID {pid}");
+            let msg = crate::i18n::t(
+                self.config.language,
+                crate::i18n::Msg::DaemonStartedElsewhere,
+            );
+            self.set_message(msg);
+            return;
+        }
         info!("Starting encoding process");
         let follow_active = self.current_screen != Screen::Queue
             || self.queue_cursor == self.queue.current_job_index;
@@ -1375,6 +2163,13 @@ impl App {
         }
 
         self.encoding_active = true;
+        self.tui_lock = match crate::daemon::lifecycle::write_tui_lock() {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                warn!("Could not write the TUI lock file: {e}");
+                None
+            }
+        };
         self.cancel_flag = Arc::new(AtomicBool::new(false));
 
         let (tx, rx) = mpsc::channel();
@@ -1422,6 +2217,9 @@ impl App {
     }
 
     pub fn cancel_encoding(&mut self) {
+        if self.send_to_daemon(ClientRequest::Cancel) {
+            return;
+        }
         self.cancel_flag.store(true, Ordering::Release);
         let ready = self
             .queue
@@ -1450,6 +2248,14 @@ impl App {
     pub fn start_disc_flow(&mut self) {
         if self.disc_operation_active() {
             self.navigate_to_queue();
+            return;
+        }
+        if self.send_to_daemon(ClientRequest::DiscsList) {
+            self.disc_state = DiscState::Discovering;
+            self.disc_drives.clear();
+            self.disc_drive_cursor = 0;
+            self.disc_drive_list_state.select(Some(0));
+            self.current_screen = Screen::DiscDrives;
             return;
         }
         let lang = self.config.language;
@@ -1539,15 +2345,34 @@ impl App {
         let Some(drive) = self.disc_drives.get(index).cloned() else {
             return;
         };
+        if self.is_attached() {
+            self.request_disc_scan(json!({"drive": drive.id}));
+            return;
+        }
         self.begin_disc_scan(DiscSource::Drive(drive));
     }
 
     /// Scan a ripped disc folder or ISO image picked in the explorer.
     pub fn scan_disc_folder(&mut self, path: &Path) {
+        if self.is_attached() {
+            self.request_disc_scan(json!({"folder": path.to_string_lossy()}));
+            return;
+        }
         match DiscSource::folder(path) {
             Ok(source) => self.begin_disc_scan(source),
             Err(e) => self.set_timed_error(&e.message(self.config.language), 8),
         }
+    }
+
+    /// Asks the daemon to scan the disc `body` names and shows the title screen.
+    fn request_disc_scan(&mut self, body: Value) {
+        self.send_to_daemon(ClientRequest::DiscsScan(body));
+        self.disc_titles.clear();
+        self.disc_selected.clear();
+        self.disc_cursor = 0;
+        self.disc_list_state.select(Some(0));
+        self.disc_state = DiscState::Scanning;
+        self.current_screen = Screen::DiscTitles;
     }
 
     /// Start scanning `source` and show the title screen.
@@ -1645,6 +2470,20 @@ impl App {
             self.set_message(crate::i18n::t(lang, crate::i18n::Msg::DiscNothingSelected));
             return;
         }
+        if self.is_attached() {
+            let body = match &self.disc_source {
+                Some(DiscSource::Drive(drive)) => {
+                    json!({"drive": drive.id, "titles": self.disc_selected})
+                }
+                Some(DiscSource::Folder(path)) => {
+                    json!({"folder": path.to_string_lossy(), "titles": self.disc_selected})
+                }
+                None => return,
+            };
+            self.send_to_daemon(ClientRequest::DiscsRip(body));
+            self.navigate_to_queue();
+            return;
+        }
         if let Err(e) = crate::disc::staging::require_destination(&self.config) {
             self.disc_state = DiscState::Failed(e.message(lang));
             return;
@@ -1694,10 +2533,11 @@ impl App {
         self.navigate_to_queue();
     }
 
-    /// Esc: cancel whatever is running and step back one screen.
+    /// Esc: cancel whatever is running and step back one screen. A blocked
+    /// daemon is left running and the screen steps back.
     pub fn leave_disc_screen(&mut self) {
         self.clear_message();
-        if self.disc_operation_active() {
+        if self.disc_operation_active() && !self.daemon_blocked() {
             self.cancel_disc_operation();
             return;
         }
@@ -1709,7 +2549,9 @@ impl App {
 
     pub fn cancel_disc_operation(&mut self) {
         if self.disc_operation_active() {
-            self.disc_cancel_flag.store(true, Ordering::Release);
+            if !self.send_to_daemon(ClientRequest::DiscsCancel) {
+                self.disc_cancel_flag.store(true, Ordering::Release);
+            }
             self.disc_state = DiscState::Cancelling;
         }
     }
@@ -2069,6 +2911,7 @@ impl App {
         );
 
         if session_finished {
+            self.tui_lock = None;
             self.progress_receiver = None;
             self.encoding_session_indices.clear();
             // Set on every session end; the next session start subtracts the
@@ -2097,8 +2940,12 @@ impl App {
         }
     }
 
-    /// Delete the staging directory of every ripped title in the queue.
+    /// Delete the staging directory of every ripped title in the queue; does
+    /// nothing while attached.
     pub fn discard_staged_jobs(&self) {
+        if self.is_attached() {
+            return;
+        }
         let root = crate::disc::staging::staging_root(&self.config);
         for job in self.queue.jobs.iter().filter(|job| job.temporary) {
             crate::disc::staging::discard_staged(&root, &job.path);
@@ -2114,13 +2961,19 @@ impl App {
         let waiting_or_done = matches!(job.status, JobStatus::Ready | JobStatus::AwaitingConfig)
             || job.status.is_terminal();
         waiting_or_done
-            && self.analysis_receiver.is_none()
+            && !self.analysis_active()
             && !self.disc_operation_active()
             && (!self.encoding_active || index > self.queue.current_job_index)
     }
 
     /// Remove the job at `index`, deleting a ripped title's staging files.
     pub fn remove_job(&mut self, index: usize) {
+        if self.is_attached() {
+            if let Some(id) = self.daemon_id(index) {
+                self.send_to_daemon(ClientRequest::Remove(id));
+            }
+            return;
+        }
         if !self.can_remove_job(index) {
             return;
         }
@@ -2167,8 +3020,17 @@ impl App {
 
     /// Remove every finished job while nothing runs, keeping its space saved in
     /// the total and deleting ripped titles' staging files. Returns how many
-    /// were removed.
+    /// were removed; while attached, asks the daemon and returns 0.
     pub fn clear_finished(&mut self) -> usize {
+        if self.is_attached() {
+            let confirm = self
+                .queue
+                .jobs
+                .iter()
+                .any(|job| job.temporary && job.status.is_terminal());
+            self.send_to_daemon(ClientRequest::ClearFinished(json!({"confirm": confirm})));
+            return 0;
+        }
         if self.work_active() {
             return 0;
         }
@@ -2210,9 +3072,30 @@ impl App {
         self.queue.reset();
     }
 
+    /// Finish screen "New conversion": resets the app; while attached, clears
+    /// the daemon's finished jobs like `C` and returns home.
+    pub fn new_conversion(&mut self) {
+        if !self.is_attached() {
+            self.reset();
+            return;
+        }
+        if self
+            .queue
+            .jobs
+            .iter()
+            .any(|job| job.temporary && job.status.is_terminal())
+        {
+            self.confirm_dialog = Some((ConfirmAction::ClearFinishedRips, false));
+        } else {
+            self.clear_finished();
+        }
+        self.navigate_to_home();
+    }
+
     pub fn reset(&mut self) {
         self.clear_queue();
         self.encoding_active = false;
+        self.tui_lock = None;
         self.selected_files.clear();
         self.progress_receiver = None;
         self.encoding_session_indices.clear();
@@ -2284,8 +3167,1452 @@ fn dv_mode_index(mode: DvMode) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    fn session() -> (
+        RemoteSession,
+        Receiver<crate::daemon::client::ClientRequest>,
+        mpsc::Sender<crate::daemon::client::ClientEvent>,
+    ) {
+        let (requests, sent) = mpsc::channel();
+        let (events_tx, events) = mpsc::channel();
+        let session = RemoteSession {
+            reachable: false,
+            ..RemoteSession::new(requests, events)
+        };
+        (session, sent, events_tx)
+    }
+
+    fn daemon_snapshot(encoding: bool) -> (crate::daemon::client::RemoteSnapshot, Vec<u64>) {
+        let mut state = crate::daemon::state::DaemonState::new(AppConfig::default());
+        state.instance = 1;
+        let mut active = EncodingJob::new(PathBuf::from("/nonexistent/a.mkv"));
+        if encoding {
+            active.status = JobStatus::Encoding { progress: 37.5 };
+        }
+        let ids = vec![
+            state.queue.push(active),
+            state
+                .queue
+                .push(EncodingJob::new(PathBuf::from("/nonexistent/b.mkv"))),
+        ];
+        state.encoding_active = encoding;
+        let mut snapshot = crate::daemon::client::snapshot_of(state);
+        snapshot.taken_ms = 777;
+        (snapshot, ids)
+    }
+
+    #[test]
+    fn a_new_app_runs_locally() {
+        assert!(!App::new().is_attached());
+    }
+
+    #[test]
+    fn attaching_to_an_encoding_daemon_opens_on_its_queue() {
+        let (session, sent, _events) = session();
+        let (first, ids) = daemon_snapshot(true);
+
+        let app = App::attached(AppConfig::default(), session, &first);
+
+        assert!(app.is_attached());
+        assert_eq!(app.current_screen, Screen::Queue);
+        assert!(app.encoding_active);
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert!(matches!(
+            app.queue.jobs[0].status,
+            JobStatus::Encoding { progress } if (progress - 37.5).abs() < f64::EPSILON
+        ));
+        assert_eq!(app.queue.jobs[1].path, PathBuf::from("/nonexistent/b.mkv"));
+        let Backend::Remote(remote) = &app.backend else {
+            panic!("not attached");
+        };
+        assert_eq!(remote.ids, ids);
+        assert_eq!(remote.last_taken_ms, 777);
+        assert!(remote.reachable);
+        assert!(remote.was_encoding);
+        assert!(!remote.host_settings_read_only);
+        assert!(app.progress_receiver.is_none());
+        assert!(app.analysis_receiver.is_none());
+        assert!(app.disc_receiver.is_none());
+        assert!(app.tui_lock.is_none());
+        assert!(matches!(
+            sent.try_recv(),
+            Ok(crate::daemon::client::ClientRequest::SettingsAccess)
+        ));
+        assert!(sent.try_recv().is_err());
+    }
+
+    /// An attached app on the idle two-job snapshot; returns it with its request receiver and event sender.
+    pub(crate) fn attached_app() -> (
+        App,
+        Receiver<crate::daemon::client::ClientRequest>,
+        mpsc::Sender<crate::daemon::client::ClientEvent>,
+    ) {
+        let (session, sent, events) = session();
+        let (first, _) = daemon_snapshot(false);
+        let app = App::attached(AppConfig::default(), session, &first);
+        while sent.try_recv().is_ok() {}
+        (app, sent, events)
+    }
+
+    fn feed(
+        app: &mut App,
+        events: &mpsc::Sender<crate::daemon::client::ClientEvent>,
+        snapshot: crate::daemon::client::RemoteSnapshot,
+    ) {
+        events
+            .send(crate::daemon::client::ClientEvent::Snapshot(Box::new(
+                snapshot,
+            )))
+            .unwrap();
+        app.process_client_events();
+    }
+
+    pub(crate) fn snapshot_with(
+        taken_ms: u64,
+        encoding: bool,
+        paths: &[&str],
+    ) -> crate::daemon::client::RemoteSnapshot {
+        let mut state = crate::daemon::state::DaemonState::new(AppConfig::default());
+        state.instance = 1;
+        for path in paths {
+            state.queue.push(EncodingJob::new(PathBuf::from(path)));
+        }
+        state.encoding_active = encoding;
+        let mut snapshot = crate::daemon::client::snapshot_of(state);
+        snapshot.taken_ms = taken_ms;
+        snapshot
+    }
+
+    fn remote(app: &App) -> &RemoteSession {
+        let Backend::Remote(remote) = &app.backend else {
+            panic!("not attached");
+        };
+        remote
+    }
+
+    #[test]
+    fn a_snapshot_replaces_the_queue_and_ids() {
+        let (mut app, _sent, events) = attached_app();
+        let mut snapshot = snapshot_with(900, false, &["/nonexistent/x.mkv"]);
+        snapshot.queue.ids = vec![41];
+
+        feed(&mut app, &events, snapshot);
+
+        assert_eq!(app.queue.jobs.len(), 1);
+        assert_eq!(app.queue.jobs[0].path, PathBuf::from("/nonexistent/x.mkv"));
+        assert_eq!(remote(&app).ids, vec![41]);
+        assert_eq!(remote(&app).last_taken_ms, 900);
+    }
+
+    #[test]
+    fn an_older_snapshot_is_ignored() {
+        let (mut app, _sent, events) = attached_app();
+        feed(
+            &mut app,
+            &events,
+            snapshot_with(1200, false, &["/n/new.mkv"]),
+        );
+        feed(
+            &mut app,
+            &events,
+            snapshot_with(1100, false, &["/n/old.mkv", "/n/old2.mkv"]),
+        );
+
+        assert_eq!(app.queue.jobs.len(), 1);
+        assert_eq!(app.queue.jobs[0].path, PathBuf::from("/n/new.mkv"));
+        assert_eq!(remote(&app).last_taken_ms, 1200);
+    }
+
+    #[test]
+    fn a_snapshot_keeps_the_track_config_being_edited() {
+        let (mut app, _sent, events) = attached_app();
+        let paths = ["/nonexistent/a.mkv", "/nonexistent/b.mkv"];
+        app.queue.config_job_index = 1;
+        app.current_screen = Screen::TrackConfig;
+        app.queue.jobs[1].track_selection.audio_indices = vec![3];
+        // The daemon moved the edited job to the front.
+        let mut snapshot = snapshot_with(900, false, &[paths[1], paths[0]]);
+        snapshot.queue.ids.reverse();
+
+        feed(&mut app, &events, snapshot);
+
+        assert_eq!(app.current_screen, Screen::TrackConfig);
+        assert_eq!(app.queue.config_job_index, 0);
+        assert_eq!(app.queue.jobs[0].path, PathBuf::from(paths[1]));
+        assert_eq!(app.queue.jobs[0].track_selection.audio_indices, vec![3]);
+        assert_eq!(
+            app.queue.jobs[1].track_selection.audio_indices,
+            Vec::<usize>::new()
+        );
+    }
+
+    #[test]
+    fn a_removed_job_under_track_config_returns_to_the_queue_with_an_error() {
+        let (mut app, _sent, events) = attached_app();
+        app.queue.config_job_index = 1;
+        app.current_screen = Screen::TrackConfig;
+        let mut snapshot = snapshot_with(900, false, &["/nonexistent/a.mkv"]);
+        snapshot.queue.ids.truncate(1);
+
+        feed(&mut app, &events, snapshot);
+
+        assert_eq!(app.current_screen, Screen::Queue);
+        assert_eq!(
+            app.message.as_deref(),
+            Some(crate::i18n::t(
+                app.config.language,
+                crate::i18n::Msg::JobRemovedByDaemon
+            ))
+        );
+        assert_eq!(app.message_kind, MessageKind::Error);
+    }
+
+    #[test]
+    fn a_request_failure_without_an_http_answer_shows_a_translated_message() {
+        let (mut app, _sent, events) = attached_app();
+        reply(
+            &mut app,
+            &events,
+            RequestKind::Cancel,
+            Err(ClientError::Unreachable("connection refused".into())),
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some("The daemon did not answer: connection refused")
+        );
+
+        app.config.language = crate::config::Language::Italian;
+        reply(
+            &mut app,
+            &events,
+            RequestKind::Cancel,
+            Err(ClientError::BadResponse("incomplete response".into())),
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Il daemon non ha risposto: incomplete response")
+        );
+        assert_eq!(app.message_kind, MessageKind::Error);
+    }
+
+    #[test]
+    fn a_daemon_restart_closes_the_dialogs_that_name_queue_jobs() {
+        for action in [
+            ConfirmAction::RemoveRip(0),
+            ConfirmAction::ClearFinishedRips,
+            ConfirmAction::CancelEncoding,
+            ConfirmAction::CancelAnalysis,
+            ConfirmAction::CancelDisc,
+            ConfirmAction::AbandonTrackConfig,
+        ] {
+            let (mut app, _sent, events) = attached_app();
+            app.confirm_dialog = Some((action, true));
+            let mut restarted = snapshot_with(5, false, &["/nonexistent/a.mkv"]);
+            restarted.instance = remote(&app).instance + 1;
+
+            feed(&mut app, &events, restarted);
+
+            assert_eq!(app.confirm_dialog, None, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn a_daemon_restart_keeps_dialogs_unrelated_to_queue_jobs() {
+        let (mut app, _sent, events) = attached_app();
+        app.confirm_dialog = Some((ConfirmAction::ExitApp, true));
+        let mut restarted = snapshot_with(5, false, &["/nonexistent/a.mkv"]);
+        restarted.instance = remote(&app).instance + 1;
+
+        feed(&mut app, &events, restarted);
+
+        assert_eq!(app.confirm_dialog, Some((ConfirmAction::ExitApp, true)));
+    }
+
+    #[test]
+    fn a_daemon_restart_under_track_config_drops_the_edit_and_returns_to_the_queue() {
+        let (mut app, _sent, events) = attached_app();
+        app.queue.config_job_index = 0;
+        app.queue.jobs[0].track_selection.audio_indices = vec![3];
+        app.current_screen = Screen::TrackConfig;
+        let mut restarted = snapshot_with(5, false, &["/nonexistent/a.mkv"]);
+        restarted.instance = remote(&app).instance + 1;
+
+        feed(&mut app, &events, restarted);
+
+        assert_eq!(app.current_screen, Screen::Queue);
+        assert_eq!(
+            app.queue.jobs[0].track_selection.audio_indices,
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some("The daemon restarted; the track selection was discarded.")
+        );
+        assert_eq!(app.message_kind, MessageKind::Error);
+    }
+
+    #[test]
+    fn a_daemon_restart_forgets_the_track_selection_in_flight() {
+        let (mut app, _sent, events) = attached_app();
+        app.remote_mut().expect("attached").tracks_in_flight = Some((1, true));
+        feed(
+            &mut app,
+            &events,
+            snapshot_with(900, false, &["/nonexistent/a.mkv"]),
+        );
+        assert_eq!(remote(&app).tracks_in_flight, Some((1, true)));
+
+        let mut restarted = snapshot_with(5, false, &["/nonexistent/a.mkv"]);
+        restarted.instance = remote(&app).instance + 1;
+        feed(&mut app, &events, restarted);
+
+        assert_eq!(remote(&app).tracks_in_flight, None);
+    }
+
+    #[test]
+    fn a_snapshot_of_the_same_daemon_run_keeps_track_config_open() {
+        let (mut app, _sent, events) = attached_app();
+        app.queue.config_job_index = 0;
+        app.queue.jobs[0].track_selection.audio_indices = vec![3];
+        app.current_screen = Screen::TrackConfig;
+
+        feed(
+            &mut app,
+            &events,
+            snapshot_with(900, false, &["/nonexistent/a.mkv"]),
+        );
+
+        assert_eq!(app.current_screen, Screen::TrackConfig);
+        assert_eq!(app.queue.jobs[0].track_selection.audio_indices, vec![3]);
+    }
+
+    #[test]
+    fn an_encode_ending_while_attached_opens_finish() {
+        let (mut app, _sent, events) = attached_app();
+        feed(&mut app, &events, snapshot_with(900, true, &["/n/a.mkv"]));
+        app.navigate_to_queue();
+        let mut done = snapshot_with(901, false, &["/n/a.mkv"]);
+        done.queue.state.jobs[0].status = JobStatus::Done;
+
+        feed(&mut app, &events, done);
+
+        assert_eq!(app.current_screen, Screen::Finish);
+        assert!(!remote(&app).was_encoding);
+    }
+
+    #[test]
+    fn attaching_after_the_encode_ended_does_not_open_finish() {
+        let (mut app, _sent, events) = attached_app();
+        let mut done = snapshot_with(900, false, &["/n/a.mkv"]);
+        done.queue.state.jobs[0].status = JobStatus::Done;
+
+        feed(&mut app, &events, done);
+
+        assert_eq!(app.current_screen, Screen::Home);
+    }
+
+    #[test]
+    fn a_snapshot_maps_the_daemon_disc_state() {
+        let (mut app, _sent, events) = attached_app();
+        let cases = [
+            (
+                Some("no disc"),
+                true,
+                true,
+                true,
+                DiscState::Failed("no disc".into()),
+            ),
+            (None, true, true, true, DiscState::Scanning),
+            (None, false, true, true, DiscState::Ready),
+            (None, false, false, true, DiscState::Discovering),
+            (None, false, false, false, DiscState::Ready),
+        ];
+        for (taken, (error, scanning, active, listing, expected)) in (1000..).zip(cases) {
+            let mut snapshot = snapshot_with(taken, false, &[]);
+            snapshot.disc.error = error.map(str::to_string);
+            snapshot.disc.scanning = scanning;
+            snapshot.disc.active = active;
+            snapshot.disc.listing = listing;
+            snapshot.disc.titles = vec![DiscTitle {
+                id: 7,
+                name: "Main".into(),
+                duration: std::time::Duration::ZERO,
+                size_bytes: 0,
+                chapters: 0,
+                tracks: Vec::new(),
+            }];
+            feed(&mut app, &events, snapshot);
+            assert_eq!(app.disc_state, expected);
+            assert_eq!(app.disc_titles.len(), 1);
+            assert_eq!(app.disc_titles[0].id, 7);
+        }
+    }
+
+    #[test]
+    fn a_shrinking_queue_clamps_the_cursors() {
+        let (mut app, _sent, events) = attached_app();
+        app.queue_cursor = 1;
+        app.finish_cursor = 1;
+
+        feed(&mut app, &events, snapshot_with(900, false, &["/n/a.mkv"]));
+
+        assert_eq!(app.queue_cursor, 0);
+        assert_eq!(app.finish_cursor, 0);
+    }
+
+    #[test]
+    fn unreachable_and_reachable_toggle_the_retry_message() {
+        let (mut app, _sent, events) = attached_app();
+        events
+            .send(crate::daemon::client::ClientEvent::Unreachable(
+                "refused".into(),
+            ))
+            .unwrap();
+        app.process_client_events();
+
+        assert!(!remote(&app).reachable);
+        let retrying = crate::i18n::t(
+            app.config.language,
+            crate::i18n::Msg::DaemonUnreachableRetrying,
+        );
+        assert_eq!(app.message.as_deref(), Some(retrying));
+
+        events
+            .send(crate::daemon::client::ClientEvent::Reachable)
+            .unwrap();
+        app.process_client_events();
+
+        assert!(remote(&app).reachable);
+        assert!(app.message.is_none());
+    }
+
+    #[test]
+    fn an_http_error_reply_is_shown() {
+        let (mut app, _sent, events) = attached_app();
+        events
+            .send(crate::daemon::client::ClientEvent::Reply {
+                request: crate::daemon::client::RequestKind::Remove,
+                result: Err(crate::daemon::client::ClientError::Http {
+                    status: 409,
+                    error: "job is encoding".into(),
+                }),
+            })
+            .unwrap();
+
+        app.process_client_events();
+
+        assert_eq!(app.message.as_deref(), Some("job is encoding"));
+        assert_eq!(app.message_kind, MessageKind::Error);
+    }
+
+    #[test]
+    fn discarding_staged_jobs_while_attached_keeps_the_daemon_rips() {
+        let root = std::env::temp_dir().join(format!("av1c-attached-rips-{}", std::process::id()));
+        let file = crate::disc::staging::staged_rip(&root, u32::MAX);
+        let (mut app, _sent, _events) = attached_app();
+        app.config.disc.staging_directory = Some(root.to_string_lossy().into_owned());
+        app.queue.jobs[0].path.clone_from(&file);
+        app.queue.jobs[0].temporary = true;
+
+        app.discard_staged_jobs();
+
+        assert!(file.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    use crate::daemon::client::{ClientError, ClientEvent, ClientRequest, RequestKind};
+    use serde_json::json;
+
+    fn reply(
+        app: &mut App,
+        events: &mpsc::Sender<ClientEvent>,
+        request: RequestKind,
+        result: Result<serde_json::Value, ClientError>,
+    ) {
+        events.send(ClientEvent::Reply { request, result }).unwrap();
+        app.process_client_events();
+    }
+
+    fn http_error(error: &str) -> Result<serde_json::Value, ClientError> {
+        Err(ClientError::Http {
+            status: 409,
+            error: error.into(),
+        })
+    }
+
+    /// An attached app showing two daemon jobs with the ids `[7, 9]`.
+    fn attached_with_ids() -> (App, Receiver<ClientRequest>, mpsc::Sender<ClientEvent>) {
+        let (mut app, sent, events) = attached_app();
+        let mut snapshot = snapshot_with(900, false, &["/n/a.mkv", "/n/b.mkv"]);
+        snapshot.queue.ids = vec![7, 9];
+        feed(&mut app, &events, snapshot);
+        (app, sent, events)
+    }
+
+    fn sent_requests(sent: &Receiver<ClientRequest>) -> Vec<ClientRequest> {
+        sent.try_iter().collect()
+    }
+
+    #[test]
+    fn remove_sends_the_id_shown_at_the_cursor() {
+        let (mut app, sent, events) = attached_with_ids();
+        app.queue_cursor = 1;
+
+        app.remove_job(app.queue_cursor);
+        assert_eq!(sent_requests(&sent), vec![ClientRequest::Remove(9)]);
+        assert_eq!(app.queue.jobs.len(), 2);
+
+        let mut snapshot = snapshot_with(901, false, &["/n/b.mkv"]);
+        snapshot.queue.ids = vec![9];
+        feed(&mut app, &events, snapshot);
+        app.remove_job(app.queue_cursor);
+
+        assert_eq!(app.queue_cursor, 0);
+        assert_eq!(sent_requests(&sent), vec![ClientRequest::Remove(9)]);
+    }
+
+    #[test]
+    fn the_queue_cursor_follows_its_job_across_snapshots() {
+        let (mut app, sent, events) = attached_with_ids();
+        app.queue_cursor = 1;
+
+        app.queue_move_selected_up();
+        assert_eq!(sent_requests(&sent), vec![ClientRequest::MoveUp(9)]);
+        assert_eq!(app.queue_cursor, 1);
+
+        let mut snapshot = snapshot_with(901, false, &["/n/b.mkv", "/n/a.mkv"]);
+        snapshot.queue.ids = vec![9, 7];
+        feed(&mut app, &events, snapshot);
+
+        assert_eq!(app.queue_cursor, 0);
+        assert_eq!(app.queue.jobs[0].path, PathBuf::from("/n/b.mkv"));
+    }
+
+    #[test]
+    fn a_rip_removal_awaiting_confirmation_follows_its_job() {
+        let (mut app, sent, events) = attached_with_ids();
+        app.confirm_dialog = Some((ConfirmAction::RemoveRip(1), false));
+
+        let mut reordered = snapshot_with(901, false, &["/n/b.mkv", "/n/a.mkv"]);
+        reordered.queue.ids = vec![9, 7];
+        feed(&mut app, &events, reordered);
+        assert_eq!(
+            app.confirm_dialog,
+            Some((ConfirmAction::RemoveRip(0), false))
+        );
+
+        let mut gone = snapshot_with(902, false, &["/n/a.mkv"]);
+        gone.queue.ids = vec![7];
+        feed(&mut app, &events, gone);
+        assert_eq!(app.confirm_dialog, None);
+        assert_eq!(sent_requests(&sent), vec![]);
+    }
+
+    #[test]
+    fn queue_actions_while_attached_go_to_the_daemon() {
+        let (mut app, sent, _events) = attached_with_ids();
+        app.encoding_active = true;
+        app.queue.jobs[1].status = JobStatus::Ready;
+
+        app.cancel_encoding();
+        app.cancel_analysis();
+
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::Cancel, ClientRequest::CancelAnalysis]
+        );
+        assert!(!app.cancel_flag.load(Ordering::Acquire));
+        assert!(matches!(app.queue.jobs[1].status, JobStatus::Ready));
+    }
+
+    #[test]
+    fn clearing_finished_while_attached_confirms_only_shown_rips() {
+        let (mut app, sent, events) = attached_with_ids();
+        app.queue.jobs[0].status = JobStatus::Done;
+
+        assert_eq!(app.clear_finished(), 0);
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::ClearFinished(json!({"confirm": false}))]
+        );
+        assert_eq!(app.queue.jobs.len(), 2);
+
+        app.queue.jobs[0].temporary = true;
+        app.clear_finished();
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::ClearFinished(json!({"confirm": true}))]
+        );
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::ClearFinished,
+            Ok(json!({"removed": 1})),
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some(
+                crate::i18n::t(app.config.language, crate::i18n::Msg::WebRemovedFinished)
+                    .replace("{n}", "1")
+                    .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn analysis_and_disc_runs_in_the_daemon_count_as_work() {
+        let (mut app, _sent, events) = attached_with_ids();
+        let mut idle = snapshot_with(901, false, &["/n/a.mkv", "/n/b.mkv"]);
+        for job in &mut idle.queue.state.jobs {
+            job.status = JobStatus::Ready;
+        }
+        feed(&mut app, &events, idle);
+        assert!(!app.analysis_active());
+        assert!(!app.disc_run_active());
+        assert!(!app.work_active());
+
+        let mut snapshot = snapshot_with(902, false, &["/n/a.mkv", "/n/b.mkv"]);
+        snapshot.queue.state.jobs[0].status = JobStatus::Ready;
+        snapshot.queue.state.jobs[1].status = JobStatus::Analyzing;
+        snapshot.disc.active = true;
+        feed(&mut app, &events, snapshot);
+
+        assert!(app.analysis_active());
+        assert!(app.disc_run_active());
+        assert!(app.disc_operation_active());
+        assert!(app.work_active());
+    }
+
+    #[test]
+    fn browsing_while_attached_lists_the_daemon_directory() {
+        let (mut app, sent, events) = attached_app();
+        app.current_dir = PathBuf::from("/srv/media");
+        app.selection_mode = SelectionMode::File;
+
+        app.refresh_dir_entries();
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::Browse {
+                path: "/srv/media".into(),
+                show_hidden: true,
+            }]
+        );
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::Browse,
+            Ok(json!({
+                "path": "/srv/media",
+                "parent": "/srv",
+                "dirs": [{"name": "Shows", "symlink": false}],
+                "files": [
+                    {"name": "a.mkv", "size": 12, "is_video": true, "is_iso": false},
+                    {"name": "disc.iso", "size": 5, "is_video": false, "is_iso": true},
+                    {"name": "notes.txt", "size": 1, "is_video": false, "is_iso": false},
+                ],
+            })),
+        );
+
+        assert_eq!(app.current_dir, PathBuf::from("/srv/media"));
+        assert_eq!(
+            app.dir_entries,
+            vec![
+                Entry::parent(),
+                Entry {
+                    path: PathBuf::from("/srv/media/Shows"),
+                    is_dir: true,
+                    size: None,
+                },
+                Entry {
+                    path: PathBuf::from("/srv/media/a.mkv"),
+                    is_dir: false,
+                    size: Some(12),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_refused_browse_falls_back_to_the_daemon_start_folder() {
+        let (mut app, sent, events) = attached_app();
+        app.current_dir = PathBuf::from("/outside");
+        app.refresh_dir_entries();
+        let _ = sent_requests(&sent);
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::Browse,
+            http_error("outside the browse root"),
+        );
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::Browse {
+                path: String::new(),
+                show_hidden: true,
+            }]
+        );
+
+        reply(&mut app, &events, RequestKind::Browse, http_error("no"));
+        assert_eq!(sent_requests(&sent), vec![]);
+    }
+
+    #[test]
+    fn a_folder_pick_previews_and_fills_file_confirm() {
+        let (mut app, sent, events) = attached_app();
+        app.current_screen = Screen::FileExplorer;
+        app.selection_mode = SelectionMode::Folder;
+
+        app.scan_folder(PathBuf::from("/srv/media"), false);
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::AddPreview {
+                path: "/srv/media".into(),
+                mode: "folder",
+            }]
+        );
+        assert!(app.folder_scan_receiver.is_none());
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::AddPreview,
+            Ok(json!({"files": ["/srv/media/a.mkv", "/srv/media/b.mkv"]})),
+        );
+
+        assert_eq!(app.current_screen, Screen::FileConfirm);
+        assert_eq!(app.batch_start, 2);
+        let batch: Vec<PathBuf> = app.queue.jobs[app.batch_start..]
+            .iter()
+            .map(|job| job.path.clone())
+            .collect();
+        assert_eq!(
+            batch,
+            vec![
+                PathBuf::from("/srv/media/a.mkv"),
+                PathBuf::from("/srv/media/b.mkv")
+            ]
+        );
+        assert_eq!(remote(&app).pending.len(), 2);
+        assert_eq!(sent_requests(&sent), vec![]);
+    }
+
+    /// An attached app on File Confirm with the folder batch `/srv/media/{a,b}.mkv`.
+    fn previewed_folder() -> (App, Receiver<ClientRequest>, mpsc::Sender<ClientEvent>) {
+        let (mut app, sent, events) = attached_app();
+        app.current_screen = Screen::FileExplorer;
+        app.selection_mode = SelectionMode::Folder;
+        app.scan_folder(PathBuf::from("/srv/media"), false);
+        reply(
+            &mut app,
+            &events,
+            RequestKind::AddPreview,
+            Ok(json!({"files": ["/srv/media/a.mkv", "/srv/media/b.mkv"]})),
+        );
+        let _ = sent_requests(&sent);
+        (app, sent, events)
+    }
+
+    #[test]
+    fn a_cancelled_preview_reply_is_never_shown_as_the_next_folders_files() {
+        let (mut app, sent, events) = attached_app();
+        app.current_screen = Screen::FileExplorer;
+        app.selection_mode = SelectionMode::Folder;
+        app.scan_folder(PathBuf::from("/A"), false);
+        app.cancel_folder_scan();
+        app.scan_folder(PathBuf::from("/B"), false);
+        assert_eq!(
+            sent_requests(&sent),
+            vec![
+                ClientRequest::AddPreview {
+                    path: "/A".into(),
+                    mode: "folder"
+                },
+                ClientRequest::AddPreview {
+                    path: "/B".into(),
+                    mode: "folder"
+                }
+            ]
+        );
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::AddPreview,
+            Ok(json!({"files": ["/A/a1.mkv", "/A/a2.mkv"]})),
+        );
+        assert_eq!(app.current_screen, Screen::FileExplorer);
+        assert!(remote(&app).pending.is_empty());
+        assert!(app.queue.jobs.iter().all(|job| !job.path.starts_with("/A")));
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::AddPreview,
+            Ok(json!({"files": ["/B/b1.mkv", "/B/b2.mkv"]})),
+        );
+        assert_eq!(app.current_screen, Screen::FileConfirm);
+        let batch: Vec<PathBuf> = app.queue.jobs[app.batch_start..]
+            .iter()
+            .map(|job| job.path.clone())
+            .collect();
+        assert_eq!(
+            batch,
+            vec![PathBuf::from("/B/b1.mkv"), PathBuf::from("/B/b2.mkv")]
+        );
+
+        app.confirm_queued_files();
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::AddFolder {
+                path: "/B".into(),
+                mode: "folder",
+            }]
+        );
+    }
+
+    #[test]
+    fn a_snapshot_keeps_the_pending_file_batch() {
+        let (mut app, _sent, events) = previewed_folder();
+
+        feed(
+            &mut app,
+            &events,
+            snapshot_with(900, false, &["/n/only.mkv"]),
+        );
+
+        assert_eq!(app.current_screen, Screen::FileConfirm);
+        assert_eq!(app.batch_start, 1);
+        let batch: Vec<PathBuf> = app.queue.jobs[app.batch_start..]
+            .iter()
+            .map(|job| job.path.clone())
+            .collect();
+        assert_eq!(
+            batch,
+            vec![
+                PathBuf::from("/srv/media/a.mkv"),
+                PathBuf::from("/srv/media/b.mkv")
+            ]
+        );
+    }
+
+    #[test]
+    fn confirming_a_folder_batch_adds_the_folder() {
+        let (mut app, sent, _events) = previewed_folder();
+
+        app.confirm_queued_files();
+
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::AddFolder {
+                path: "/srv/media".into(),
+                mode: "folder",
+            }]
+        );
+        assert_eq!(remote(&app).pending.len(), 0);
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert_eq!(app.current_screen, Screen::Queue);
+        assert!(app.analysis_receiver.is_none());
+    }
+
+    /// An attached app on File Confirm with the file batch `/m/a.mkv`, `/m/b.mkv`.
+    fn picked_files() -> (App, Receiver<ClientRequest>, mpsc::Sender<ClientEvent>) {
+        let (mut app, sent, events) = attached_app();
+        app.current_screen = Screen::FileExplorer;
+        app.selection_mode = SelectionMode::File;
+        app.dir_entries = vec![Entry {
+            path: PathBuf::from("/m/b.mkv"),
+            is_dir: false,
+            size: None,
+        }];
+        app.explorer_index = 0;
+        app.selected_files = vec![PathBuf::from("/m/a.mkv")];
+        app.select_explorer_entry();
+        (app, sent, events)
+    }
+
+    #[test]
+    fn escaping_file_confirm_queues_nothing() {
+        let (mut app, sent, _events) = picked_files();
+        assert_eq!(app.current_screen, Screen::FileConfirm);
+        assert_eq!(remote(&app).pending.len(), 2);
+
+        app.cancel_file_confirm();
+
+        assert_eq!(sent_requests(&sent), vec![]);
+        assert_eq!(remote(&app).pending.len(), 0);
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert_eq!(app.current_screen, Screen::FileExplorer);
+        assert_eq!(
+            app.selected_files,
+            vec![PathBuf::from("/m/a.mkv"), PathBuf::from("/m/b.mkv")]
+        );
+    }
+
+    #[test]
+    fn confirming_a_file_batch_adds_each_file() {
+        let (mut app, sent, _events) = picked_files();
+
+        app.confirm_queued_files();
+
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::Add {
+                paths: vec!["/m/a.mkv".into(), "/m/b.mkv".into()],
+            }]
+        );
+        assert_eq!(remote(&app).pending.len(), 0);
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert!(app.analysis_receiver.is_none());
+    }
+
+    #[test]
+    fn a_single_file_pick_is_added_at_once() {
+        let (mut app, sent, _events) = attached_app();
+        app.current_screen = Screen::FileExplorer;
+        app.selection_mode = SelectionMode::File;
+        app.dir_entries = vec![Entry {
+            path: PathBuf::from("/m/one.mkv"),
+            is_dir: false,
+            size: None,
+        }];
+
+        app.select_explorer_entry();
+
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::Add {
+                paths: vec!["/m/one.mkv".into()],
+            }]
+        );
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert_eq!(app.current_screen, Screen::Queue);
+    }
+
+    #[test]
+    fn cancelling_a_folder_scan_while_attached_sends_nothing() {
+        let (mut app, sent, _events) = attached_app();
+
+        app.cancel_folder_scan();
+
+        assert_eq!(sent_requests(&sent), vec![]);
+    }
+
+    /// An attached app on Track Config for job 7, with job 9 also awaiting tracks.
+    fn configuring_tracks() -> (App, Receiver<ClientRequest>, mpsc::Sender<ClientEvent>) {
+        let (mut app, sent, events) = attached_with_ids();
+        for job in &mut app.queue.jobs {
+            job.status = JobStatus::AwaitingConfig;
+        }
+        app.queue.jobs[0].track_selection = crate::tracks::TrackSelection {
+            audio_indices: vec![1, 2],
+            subtitle_indices: vec![4],
+            audio_to_opus: vec![2],
+        };
+        app.queue.config_job_index = 0;
+        app.current_screen = Screen::TrackConfig;
+        (app, sent, events)
+    }
+
+    #[test]
+    fn confirming_tracks_posts_the_selection() {
+        let (mut app, sent, events) = configuring_tracks();
+
+        app.confirm_track_config();
+        app.confirm_track_config();
+
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::SetTracks(json!({
+                "id": 7,
+                "audio_indices": [1, 2],
+                "audio_to_opus": [2],
+                "subtitle_indices": [4],
+                "remux_only": false,
+                "dv_mode": null,
+                "apply_to_remaining": false,
+            }))]
+        );
+        assert_eq!(app.queue.config_job_index, 0);
+        assert!(!app.encoding_active);
+        assert!(app.progress_receiver.is_none());
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::SetTracks,
+            Ok(json!({"applied": 1})),
+        );
+
+        assert_eq!(app.current_screen, Screen::TrackConfig);
+        assert_eq!(app.queue.config_job_index, 1);
+        assert!(matches!(app.queue.jobs[0].status, JobStatus::Ready));
+    }
+
+    #[test]
+    fn refused_tracks_return_to_the_queue_with_the_error() {
+        let (mut app, sent, events) = configuring_tracks();
+        app.confirm_track_config();
+        let _ = sent_requests(&sent);
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::SetTracks,
+            http_error("job is not editable"),
+        );
+
+        assert_eq!(app.current_screen, Screen::Queue);
+        assert_eq!(app.message.as_deref(), Some("job is not editable"));
+        assert_eq!(app.message_kind, MessageKind::Error);
+
+        app.queue.config_job_index = 0;
+        app.current_screen = Screen::TrackConfig;
+        app.confirm_track_config();
+        assert_eq!(sent_requests(&sent).len(), 1);
+    }
+
+    #[test]
+    fn applying_tracks_to_the_rest_while_attached_lets_the_daemon_apply_them() {
+        let (mut app, sent, events) = configuring_tracks();
+
+        app.apply_track_config_to_remaining();
+
+        let requests = sent_requests(&sent);
+        assert_eq!(requests.len(), 1);
+        let ClientRequest::SetTracks(body) = &requests[0] else {
+            panic!("expected SetTracks, got {requests:?}");
+        };
+        assert_eq!(body["id"], json!(7));
+        assert_eq!(body["apply_to_remaining"], json!(true));
+        assert!(matches!(
+            app.queue.jobs[1].status,
+            JobStatus::AwaitingConfig
+        ));
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::SetTracks,
+            Ok(json!({"applied": 2})),
+        );
+
+        assert_eq!(app.current_screen, Screen::Queue);
+        assert_eq!(
+            app.message.as_deref(),
+            Some(
+                crate::i18n::t(app.config.language, crate::i18n::Msg::WebTracksApplied)
+                    .replace("{n}", "2")
+                    .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn abandoning_track_config_while_attached_keeps_the_daemon_jobs_and_rips() {
+        let root =
+            std::env::temp_dir().join(format!("av1c-attached-abandon-{}", std::process::id()));
+        let file = crate::disc::staging::staged_rip(&root, u32::MAX - 1);
+        let (mut app, sent, _events) = configuring_tracks();
+        app.config.disc.staging_directory = Some(root.to_string_lossy().into_owned());
+        app.queue.jobs[0].path.clone_from(&file);
+        app.queue.jobs[0].temporary = true;
+
+        app.cancel_track_config();
+
+        assert!(file.exists());
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert_eq!(app.current_screen, Screen::Queue);
+        assert_eq!(sent_requests(&sent), vec![]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_encoding_while_attached_sends_nothing_and_starts_no_worker() {
+        let (mut app, sent, _events) = attached_with_ids();
+        let job = &mut app.queue.jobs[0];
+        job.status = JobStatus::Ready;
+        job.output_path = Some(PathBuf::from("/nonexistent/out.mkv"));
+        job.metadata = Some(crate::analyzer::VideoMetadata {
+            width: 1920,
+            height: 1080,
+            hdr_type: crate::analyzer::HdrType::Sdr,
+            dv_profile: None,
+            dv_bl_compat: None,
+            hdr10_static: None,
+            codec_name: "h264".into(),
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            duration_secs: 1.0,
+        });
+        job.source_identity = Some(crate::queue::SourceIdentity::from_metadata(
+            &std::fs::metadata(std::env::current_exe().unwrap()).unwrap(),
+        ));
+
+        app.start_encoding();
+
+        assert_eq!(sent_requests(&sent), vec![]);
+        assert!(app.progress_receiver.is_none());
+        assert!(app.tui_lock.is_none());
+        assert!(!app.encoding_active);
+        assert!(matches!(app.queue.jobs[0].status, JobStatus::Ready));
+    }
+
+    #[test]
+    fn disc_actions_while_attached_go_to_the_daemon() {
+        let (mut app, sent, events) = attached_app();
+
+        app.start_disc_flow();
+        assert_eq!(sent_requests(&sent), vec![ClientRequest::DiscsList]);
+        assert_eq!(app.current_screen, Screen::DiscDrives);
+        assert_eq!(app.disc_state, DiscState::Discovering);
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::DiscsList,
+            Ok(json!({"drives": [{"id": 3, "name": "BD-RE", "disc_label": "MOVIE"}]})),
+        );
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::DiscsScan(json!({"drive": 3}))]
+        );
+        assert_eq!(app.current_screen, Screen::DiscTitles);
+
+        app.scan_disc_folder(Path::new("/srv/discs/MOVIE"));
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::DiscsScan(
+                json!({"folder": "/srv/discs/MOVIE"})
+            )]
+        );
+
+        app.disc_state = DiscState::Ready;
+        app.disc_source = Some(DiscSource::Drive(crate::disc::DiscDrive {
+            id: 3,
+            name: "BD-RE".into(),
+            disc_label: Some("MOVIE".into()),
+        }));
+        app.disc_selected = vec![2, 0];
+        app.start_disc_rip();
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::DiscsRip(
+                json!({"drive": 3, "titles": [2, 0]})
+            )]
+        );
+        assert_eq!(app.current_screen, Screen::Queue);
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert!(app.disc_receiver.is_none());
+
+        let mut ripping = snapshot_with(901, false, &[]);
+        ripping.disc.active = true;
+        feed(&mut app, &events, ripping);
+        app.cancel_disc_operation();
+        assert_eq!(sent_requests(&sent), vec![ClientRequest::DiscsCancel]);
+    }
+
+    /// The `DiscsRip` body an attached app sends for `source` with titles `[3]`.
+    fn rip_body(source: DiscSource) -> Option<Value> {
+        let (mut app, sent, _events) = attached_app();
+        app.disc_state = DiscState::Ready;
+        app.disc_source = Some(source);
+        app.disc_selected = vec![3];
+        app.start_disc_rip();
+        match sent_requests(&sent).as_slice() {
+            [ClientRequest::DiscsRip(body)] => Some(body.clone()),
+            [] => None,
+            other => panic!("unexpected requests {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_rip_body_names_the_scanned_source_the_daemon_checks() {
+        let drive = DiscDrive {
+            id: 0,
+            name: "BD-RE".into(),
+            disc_label: None,
+        };
+        let folder = std::env::temp_dir().canonicalize().unwrap();
+        for source in [DiscSource::Drive(drive), DiscSource::Folder(folder)] {
+            let body = rip_body(source.clone()).expect("a rip request");
+            let mut state = crate::daemon::state::DaemonState::new(AppConfig::default());
+            state.disc.scanned_source = Some(source);
+            state.disc.titles = vec![DiscTitle {
+                id: 3,
+                name: "Feature".into(),
+                duration: std::time::Duration::ZERO,
+                size_bytes: 0,
+                chapters: 0,
+                tracks: Vec::new(),
+            }];
+            let shared = Arc::new(std::sync::Mutex::new(state));
+            let (tx, _rx) = mpsc::channel();
+
+            let (status, reply) = crate::daemon::api::discs_rip(&shared, &tx, &body);
+
+            // No output directory: refused after the source and title checks pass.
+            assert_eq!(
+                (status, &reply["error"]),
+                (
+                    400,
+                    &json!(DiscError::NoDestination.message(crate::i18n::Language::English))
+                ),
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rip_without_a_scanned_source_sends_nothing() {
+        let (mut app, sent, _events) = attached_app();
+        app.disc_state = DiscState::Ready;
+        app.disc_selected = vec![3];
+
+        app.start_disc_rip();
+
+        assert_eq!(sent_requests(&sent), vec![]);
+    }
+
+    #[test]
+    fn a_snapshot_carries_the_session_clock() {
+        let (mut app, _sent, events) = attached_app();
+        let mut idle = snapshot_with(901, false, &["/n/a.mkv"]);
+        idle.elapsed_secs = Some(90);
+        feed(&mut app, &events, idle);
+        assert_eq!(
+            app.queue.elapsed_time(),
+            Some(std::time::Duration::from_secs(90))
+        );
+
+        let mut encoding = snapshot_with(902, true, &["/n/a.mkv"]);
+        encoding.elapsed_secs = Some(90);
+        feed(&mut app, &events, encoding);
+        assert!(app.queue.elapsed_time().unwrap() >= std::time::Duration::from_secs(90));
+        assert!(app.queue.end_time.is_none());
+
+        feed(&mut app, &events, snapshot_with(903, false, &["/n/a.mkv"]));
+        assert_eq!(app.queue.elapsed_time(), None);
+    }
+
+    #[test]
+    fn a_second_folder_pick_waits_for_the_first_preview() {
+        let (mut app, sent, _events) = attached_app();
+        app.current_screen = Screen::FileExplorer;
+        app.selection_mode = SelectionMode::Folder;
+        app.scan_folder(PathBuf::from("/srv/a"), false);
+        let _ = sent_requests(&sent);
+
+        app.scan_folder(PathBuf::from("/srv/b"), false);
+
+        assert_eq!(sent_requests(&sent), vec![]);
+        assert!(app.folder_scan_active());
+    }
+
+    #[test]
+    fn a_cancelled_preview_reply_is_ignored() {
+        let (mut app, sent, events) = attached_app();
+        app.current_screen = Screen::FileExplorer;
+        app.selection_mode = SelectionMode::Folder;
+        app.scan_folder(PathBuf::from("/srv/a"), false);
+        app.cancel_folder_scan();
+        assert!(!app.folder_scan_active());
+        app.scan_folder(PathBuf::from("/srv/b"), false);
+        let _ = sent_requests(&sent);
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::AddPreview,
+            Ok(json!({"files": ["/srv/a/1.mkv", "/srv/a/2.mkv"]})),
+        );
+        assert_eq!(app.current_screen, Screen::FileExplorer);
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert!(app.folder_scan_active());
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::AddPreview,
+            Ok(json!({"files": ["/srv/b/1.mkv", "/srv/b/2.mkv"]})),
+        );
+        assert_eq!(app.current_screen, Screen::FileConfirm);
+        assert_eq!(app.queue.jobs[2].path, PathBuf::from("/srv/b/1.mkv"));
+        app.confirm_queued_files();
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::AddFolder {
+                path: "/srv/b".into(),
+                mode: "folder",
+            }]
+        );
+    }
+
+    #[test]
+    fn a_tracks_reply_marks_the_confirmed_job_after_stepping_away() {
+        let (mut app, sent, events) = configuring_tracks();
+        app.confirm_track_config();
+        let _ = sent_requests(&sent);
+        app.step_track_config_job(true);
+        assert_eq!(app.queue.config_job_index, 1);
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::SetTracks,
+            Ok(json!({"applied": 1})),
+        );
+
+        assert!(matches!(app.queue.jobs[0].status, JobStatus::Ready));
+        assert!(matches!(
+            app.queue.jobs[1].status,
+            JobStatus::AwaitingConfig
+        ));
+        assert_eq!(app.queue.config_job_index, 1);
+        assert_eq!(app.current_screen, Screen::TrackConfig);
+    }
+
+    #[test]
+    fn reconnecting_asks_again_whether_host_settings_are_editable() {
+        let (mut app, sent, events) = attached_app();
+        events
+            .send(ClientEvent::Unreachable("refused".into()))
+            .unwrap();
+        events.send(ClientEvent::Reachable).unwrap();
+
+        app.process_client_events();
+
+        assert_eq!(sent_requests(&sent), vec![ClientRequest::SettingsAccess]);
+    }
+
+    #[test]
+    fn the_explorer_keeps_its_rows_until_the_daemon_lists_the_folder() {
+        let (mut app, sent, _events) = attached_app();
+        let row = Entry {
+            path: PathBuf::from("/srv/old.mkv"),
+            is_dir: false,
+            size: None,
+        };
+        app.dir_entries = vec![row.clone()];
+        app.current_dir = PathBuf::from("/srv/new");
+
+        app.refresh_dir_entries();
+
+        assert_eq!(app.dir_entries, vec![row]);
+        assert_eq!(sent_requests(&sent).len(), 1);
+    }
+
+    #[test]
+    fn leaving_the_disc_screen_while_unreachable_sends_nothing() {
+        let (mut app, sent, events) = attached_app();
+        let mut listing = snapshot_with(901, false, &[]);
+        listing.disc.active = true;
+        listing.disc.listing = true;
+        feed(&mut app, &events, listing);
+        app.current_screen = Screen::DiscDrives;
+        events
+            .send(ClientEvent::Unreachable("refused".into()))
+            .unwrap();
+        app.process_client_events();
+
+        app.leave_disc_screen();
+
+        assert_eq!(sent_requests(&sent), vec![]);
+        assert_eq!(app.current_screen, Screen::Home);
+    }
+
+    #[test]
+    fn opening_settings_while_attached_loads_the_daemon_config() {
+        let (mut app, sent, events) = attached_app();
+
+        app.navigate_to_configuration();
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::SettingsAccess, ClientRequest::SettingsGet]
+        );
+        assert_eq!(app.current_screen, Screen::Configuration);
+
+        let mut daemon_config = AppConfig::default();
+        daemon_config.output.suffix = "_daemon".into();
+        daemon_config.daemon.port = 9123;
+        let mut body = serde_json::to_value(&daemon_config).unwrap();
+        body["daemon"]["auth_token"] = json!("");
+        reply(
+            &mut app,
+            &events,
+            RequestKind::SettingsGet,
+            Ok(body.clone()),
+        );
+
+        assert_eq!(app.config.output.suffix, "_daemon");
+        assert_eq!(app.config.daemon.port, 9123);
+        assert!(!app.config_is_dirty());
+
+        app.config.output.suffix = "_mine".into();
+        reply(&mut app, &events, RequestKind::SettingsGet, Ok(body));
+        assert_eq!(app.config.output.suffix, "_mine");
+        assert!(app.config_is_dirty());
+    }
+
+    #[test]
+    fn a_remote_attach_marks_host_settings_read_only() {
+        let (mut app, _sent, events) = attached_app();
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::SettingsAccess,
+            Ok(json!({"local": false})),
+        );
+        assert!(app.host_settings_read_only());
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::SettingsAccess,
+            Ok(json!({"local": true})),
+        );
+        assert!(!app.host_settings_read_only());
+        assert!(!App::new().host_settings_read_only());
+    }
+
+    #[test]
+    fn attaching_to_an_idle_daemon_opens_on_home() {
+        let (session, _sent, _events) = session();
+        let (first, _) = daemon_snapshot(false);
+
+        let app = App::attached(AppConfig::default(), session, &first);
+
+        assert_eq!(app.current_screen, Screen::Home);
+        assert!(!app.encoding_active);
+        assert_eq!(app.queue.jobs.len(), 2);
+        let Backend::Remote(remote) = &app.backend else {
+            panic!("not attached");
+        };
+        assert!(!remote.was_encoding);
+        assert!(remote.reachable);
+    }
+
+    #[test]
+    fn an_ended_encode_session_releases_the_tui_lock() {
+        let path = std::env::temp_dir().join(format!("av1c_app_tui_lock_{}", std::process::id()));
+        let mut app = App::new();
+        app.tui_lock = Some(crate::daemon::lifecycle::write_tui_lock_at(&path).unwrap());
+        app.encoding_active = true;
+        let (tx, rx) = mpsc::channel();
+        app.progress_receiver = Some(rx);
+        tx.send(WorkerMessage::Finished).unwrap();
+
+        app.process_progress_messages();
+
+        assert!(!app.encoding_active);
+        assert!(app.tui_lock.is_none());
+        assert!(!path.exists());
+    }
 
     #[test]
     fn empty_encode_session_does_not_arm_encoding() {
@@ -2972,7 +5299,7 @@ mod tests {
         app.toggle_all_disc_titles();
         assert_eq!(app.disc_selected, vec![0, 1, 2]);
         app.toggle_all_disc_titles();
-        assert!(app.disc_selected.is_empty());
+        assert_eq!(app.disc_selected, Vec::<u32>::new());
     }
 
     #[test]
@@ -3217,5 +5544,345 @@ mod tests {
             app.queue.jobs[0].output_path,
             Some(PathBuf::from("/tmp/movie_saved.mkv"))
         );
+    }
+
+    /// A snapshot of one job with `status`, taken at `taken_ms`.
+    fn snapshot_of_status(
+        taken_ms: u64,
+        encoding: bool,
+        status: JobStatus,
+    ) -> crate::daemon::client::RemoteSnapshot {
+        let mut snapshot = snapshot_with(taken_ms, encoding, &["/n/a.mkv"]);
+        snapshot.queue.state.jobs[0].status = status;
+        snapshot
+    }
+
+    #[test]
+    fn an_encode_ending_on_settings_or_the_explorer_keeps_the_screen() {
+        for screen in [Screen::Configuration, Screen::FileExplorer] {
+            let (mut app, _sent, events) = attached_app();
+            feed(&mut app, &events, snapshot_with(900, true, &["/n/a.mkv"]));
+            app.current_screen = screen;
+
+            feed(
+                &mut app,
+                &events,
+                snapshot_of_status(901, false, JobStatus::Done),
+            );
+
+            assert_eq!(app.current_screen, screen);
+            assert!(!remote(&app).was_encoding);
+        }
+    }
+
+    #[test]
+    fn a_restarted_daemon_with_an_older_clock_is_applied() {
+        let (mut app, _sent, events) = attached_app();
+        feed(
+            &mut app,
+            &events,
+            snapshot_with(90_000, false, &["/n/a.mkv"]),
+        );
+        let mut restarted = snapshot_with(5, false, &["/n/new.mkv", "/n/new2.mkv"]);
+        restarted.instance = remote(&app).instance + 1;
+
+        feed(&mut app, &events, restarted);
+
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert_eq!(app.queue.jobs[0].path, PathBuf::from("/n/new.mkv"));
+        assert_eq!(remote(&app).last_taken_ms, 5);
+        assert!(!app.daemon_blocked());
+    }
+
+    #[test]
+    fn a_restart_ending_the_old_encode_does_not_open_finish() {
+        let (mut app, _sent, events) = attached_app();
+        feed(
+            &mut app,
+            &events,
+            snapshot_with(90_000, true, &["/n/a.mkv"]),
+        );
+        app.navigate_to_queue();
+        let mut restarted = snapshot_of_status(5, false, JobStatus::Done);
+        restarted.instance = remote(&app).instance + 1;
+
+        feed(&mut app, &events, restarted);
+
+        assert_eq!(app.current_screen, Screen::Queue);
+        assert!(!remote(&app).was_encoding);
+    }
+
+    #[test]
+    fn a_restarted_daemon_of_another_version_is_blocked_with_a_message() {
+        let (mut app, _sent, events) = attached_app();
+        let mut restarted = snapshot_with(5, false, &["/n/other.mkv"]);
+        restarted.instance = remote(&app).instance + 1;
+        restarted.version = "0.0.1-old".into();
+
+        feed(&mut app, &events, restarted);
+
+        assert!(app.daemon_blocked());
+        assert_eq!(remote(&app).version_mismatch.as_deref(), Some("0.0.1-old"));
+        assert_eq!(
+            app.message.as_deref(),
+            Some(
+                crate::i18n::t(app.config.language, crate::i18n::Msg::DaemonVersionMismatch)
+                    .replace("{daemon}", "0.0.1-old")
+                    .replace("{tui}", env!("CARGO_PKG_VERSION"))
+                    .as_str()
+            )
+        );
+        assert_eq!(app.queue.jobs[0].path, PathBuf::from("/nonexistent/a.mkv"));
+    }
+
+    #[test]
+    fn a_rejected_token_shows_its_own_message_until_a_snapshot_arrives() {
+        let (mut app, _sent, events) = attached_app();
+        events.send(ClientEvent::TokenRejected).unwrap();
+        app.process_client_events();
+
+        let rejected = crate::i18n::t(app.config.language, crate::i18n::Msg::DaemonTokenRejected);
+        assert!(app.daemon_blocked());
+        assert!(remote(&app).reachable);
+        assert_eq!(app.message.as_deref(), Some(rejected));
+
+        feed(&mut app, &events, snapshot_with(900, false, &["/n/a.mkv"]));
+
+        assert!(!app.daemon_blocked());
+        assert!(app.message.is_none());
+    }
+
+    #[test]
+    fn a_401_reply_blocks_with_the_token_message() {
+        let (mut app, _sent, events) = attached_app();
+        reply(
+            &mut app,
+            &events,
+            RequestKind::Remove,
+            Err(ClientError::Http {
+                status: 401,
+                error: "missing or invalid token".into(),
+            }),
+        );
+
+        assert!(remote(&app).token_rejected);
+        assert_eq!(
+            app.message.as_deref(),
+            Some(crate::i18n::t(
+                app.config.language,
+                crate::i18n::Msg::DaemonTokenRejected
+            ))
+        );
+    }
+
+    #[test]
+    fn an_unreachable_preview_reply_ends_the_scan_with_an_error() {
+        let (mut app, _sent, events) = attached_app();
+        app.current_screen = Screen::FileExplorer;
+        app.selection_mode = SelectionMode::FolderRecursive;
+        app.scan_folder(PathBuf::from("/srv/media"), true);
+        assert!(app.folder_scan_active());
+
+        reply(
+            &mut app,
+            &events,
+            RequestKind::AddPreview,
+            Err(ClientError::Unreachable("timed out".into())),
+        );
+
+        assert!(!app.folder_scan_active());
+        assert_eq!(
+            app.message.as_deref(),
+            Some("The daemon did not answer: timed out")
+        );
+        assert_eq!(app.message_kind, MessageKind::Error);
+    }
+
+    #[test]
+    fn analysis_ending_while_attached_opens_track_config() {
+        let (mut app, _sent, events) = attached_app();
+        app.navigate_to_queue();
+        feed(
+            &mut app,
+            &events,
+            snapshot_of_status(900, false, JobStatus::Analyzing),
+        );
+
+        feed(
+            &mut app,
+            &events,
+            snapshot_of_status(901, false, JobStatus::AwaitingConfig),
+        );
+
+        assert_eq!(app.current_screen, Screen::TrackConfig);
+        assert_eq!(app.queue.config_job_index, 0);
+    }
+
+    #[test]
+    fn analysis_ending_on_settings_or_the_explorer_keeps_the_screen() {
+        for screen in [Screen::Configuration, Screen::FileExplorer] {
+            let (mut app, _sent, events) = attached_app();
+            feed(
+                &mut app,
+                &events,
+                snapshot_of_status(900, false, JobStatus::Analyzing),
+            );
+            app.current_screen = screen;
+
+            feed(
+                &mut app,
+                &events,
+                snapshot_of_status(901, false, JobStatus::AwaitingConfig),
+            );
+
+            assert_eq!(app.current_screen, screen);
+        }
+    }
+
+    #[test]
+    fn jobs_still_awaiting_config_do_not_reopen_track_config() {
+        let (mut app, _sent, events) = attached_app();
+        app.navigate_to_queue();
+        feed(
+            &mut app,
+            &events,
+            snapshot_of_status(900, false, JobStatus::Analyzing),
+        );
+        feed(
+            &mut app,
+            &events,
+            snapshot_of_status(901, false, JobStatus::AwaitingConfig),
+        );
+        assert_eq!(app.current_screen, Screen::TrackConfig);
+        app.navigate_to_queue();
+
+        feed(
+            &mut app,
+            &events,
+            snapshot_of_status(902, false, JobStatus::AwaitingConfig),
+        );
+
+        assert_eq!(app.current_screen, Screen::Queue);
+    }
+
+    #[test]
+    fn an_add_that_added_nothing_says_so() {
+        for kind in [RequestKind::Add, RequestKind::AddFolder] {
+            let (mut app, _sent, events) = attached_app();
+            app.clear_message();
+            reply(
+                &mut app,
+                &events,
+                kind,
+                Ok(json!({"added": 0, "already_queued": 2})),
+            );
+            assert_eq!(
+                app.message.as_deref(),
+                Some(crate::i18n::t(
+                    app.config.language,
+                    crate::i18n::Msg::WebNothingAdded
+                ))
+            );
+
+            let (mut app, _sent, events) = attached_app();
+            app.clear_message();
+            reply(
+                &mut app,
+                &events,
+                kind,
+                Ok(json!({"added": 1, "already_queued": 0})),
+            );
+            assert!(app.message.is_none());
+        }
+    }
+
+    #[test]
+    fn new_conversion_while_attached_clears_finished_and_goes_home() {
+        let (mut app, sent, _events) = attached_app();
+        app.queue.jobs[0].status = JobStatus::Done;
+        app.current_screen = Screen::Finish;
+
+        app.new_conversion();
+
+        assert_eq!(app.current_screen, Screen::Home);
+        assert!(app.confirm_dialog.is_none());
+        assert_eq!(
+            sent_requests(&sent),
+            vec![ClientRequest::ClearFinished(json!({"confirm": false}))]
+        );
+        assert_eq!(app.queue.jobs.len(), 2);
+    }
+
+    #[test]
+    fn new_conversion_while_attached_with_a_finished_rip_asks_first() {
+        let (mut app, sent, _events) = attached_app();
+        app.queue.jobs[0].status = JobStatus::Done;
+        app.queue.jobs[0].temporary = true;
+        app.current_screen = Screen::Finish;
+
+        app.new_conversion();
+
+        assert_eq!(app.current_screen, Screen::Home);
+        assert_eq!(
+            app.confirm_dialog,
+            Some((ConfirmAction::ClearFinishedRips, false))
+        );
+        assert_eq!(sent_requests(&sent), vec![]);
+        assert_eq!(app.queue.jobs.len(), 2);
+    }
+
+    /// A local app with one ripped Ready job that has no destination.
+    fn app_with_undeliverable_job() -> App {
+        let mut app = App::new();
+        let mut job = EncodingJob::new(PathBuf::from("ripped.mkv"));
+        job.status = JobStatus::Ready;
+        job.temporary = true;
+        job.metadata = Some(crate::analyzer::VideoMetadata {
+            width: 1920,
+            height: 1080,
+            hdr_type: crate::analyzer::HdrType::Sdr,
+            dv_profile: None,
+            dv_bl_compat: None,
+            hdr10_static: None,
+            codec_name: "h264".into(),
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            duration_secs: 1.0,
+        });
+        job.source_identity = Some(crate::queue::SourceIdentity::from_metadata(
+            &std::fs::metadata(std::env::current_exe().unwrap()).unwrap(),
+        ));
+        app.queue.jobs.push(job);
+        app
+    }
+
+    #[test]
+    fn a_running_daemon_refuses_a_local_encode() {
+        let mut app = app_with_undeliverable_job();
+        app.daemon_running = || Some(4242);
+
+        app.start_encoding();
+
+        assert!(!app.encoding_active);
+        assert!(app.progress_receiver.is_none());
+        assert!(app.tui_lock.is_none());
+        assert!(matches!(app.queue.jobs[0].status, JobStatus::Ready));
+        assert_eq!(
+            app.message.as_deref(),
+            Some(crate::i18n::t(
+                app.config.language,
+                crate::i18n::Msg::DaemonStartedElsewhere
+            ))
+        );
+    }
+
+    #[test]
+    fn no_running_daemon_lets_a_local_encode_go_ahead() {
+        let mut app = app_with_undeliverable_job();
+        app.daemon_running = || None;
+
+        app.start_encoding();
+
+        assert!(matches!(app.queue.jobs[0].status, JobStatus::Error { .. }));
     }
 }

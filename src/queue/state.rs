@@ -700,7 +700,7 @@ mod tests {
 
         // `Ready`, not `Pending`: an encode session only claims `Ready` jobs.
         assert!(matches!(queue.state.jobs[0].status, JobStatus::Ready));
-        assert!(needs_analysis(&queue).is_empty());
+        assert_eq!(needs_analysis(&queue), Vec::<(usize, String)>::new());
         assert!(!partial.exists(), "the partial encode should be gone");
         assert!(output.exists(), "the destination is not ours to delete");
         assert!(bystander.exists(), "only tagged scratch files are scratch");
@@ -835,7 +835,7 @@ mod tests {
             !queue.state.jobs[0].temporary,
             "the sweep must be free to delete the partial rip"
         );
-        assert!(needs_analysis(&queue).is_empty());
+        assert_eq!(needs_analysis(&queue), Vec::<(usize, String)>::new());
     }
 
     /// Unparseable, misshapen and inconsistent queue files all load as empty.

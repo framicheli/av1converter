@@ -1,4 +1,5 @@
 pub mod api;
+pub mod client;
 pub mod lifecycle;
 pub mod server;
 pub mod service;
@@ -29,7 +30,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// threads detached.
 const HTTP_JOIN_GRACE: Duration = Duration::from_secs(5);
 /// Number of HTTP worker threads.
-const SERVER_THREADS: usize = 4;
+pub(crate) const SERVER_THREADS: usize = 6;
 
 /// Bind the web server and append the bound address to `pid_path`.
 fn start_server_at(
@@ -1785,7 +1786,7 @@ mod tests {
             state.queue.state.jobs[0].status,
             JobStatus::Error { .. }
         ));
-        assert!(reprobe.is_empty());
+        assert_eq!(reprobe, Vec::<(u64, String)>::new());
         assert!(
             partial.exists(),
             "resume must not delete files outside browse_root"

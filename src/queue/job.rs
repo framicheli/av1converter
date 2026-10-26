@@ -926,7 +926,7 @@ mod tests {
 
         collect_video_files_cancellable_result(&dir, &mut found, &cancel).unwrap();
 
-        assert!(found.is_empty());
+        assert_eq!(found, Vec::<std::path::PathBuf>::new());
         let _ = std::fs::remove_dir_all(dir);
     }
 

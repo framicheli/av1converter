@@ -39,6 +39,60 @@ pub fn pid_file() -> PathBuf {
     data_dir().join("daemon.pid")
 }
 
+/// Pid file held by a standalone TUI while it encodes.
+pub fn tui_lock_file() -> PathBuf {
+    #[cfg(test)]
+    {
+        std::env::temp_dir().join(format!("av1c_tui_lock_{}", std::process::id()))
+    }
+    #[cfg(not(test))]
+    {
+        data_dir().join("tui.lock")
+    }
+}
+
+/// Owns the TUI lock file; the file is removed on drop.
+pub struct TuiLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for TuiLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Write this process's pid to the TUI lock file, replacing a stale one.
+pub fn write_tui_lock() -> io::Result<TuiLockGuard> {
+    #[cfg(not(test))]
+    crate::utils::ensure_private_dir(&data_dir())?;
+    write_tui_lock_at(&tui_lock_file())
+}
+
+pub(crate) fn write_tui_lock_at(path: &std::path::Path) -> io::Result<TuiLockGuard> {
+    std::fs::write(path, std::process::id().to_string())?;
+    Ok(TuiLockGuard {
+        path: path.to_path_buf(),
+    })
+}
+
+/// Pid of the TUI that is encoding, if its process is alive. A dead or
+/// unreadable lock file is removed.
+pub fn tui_encoding_pid() -> Option<u32> {
+    tui_encoding_pid_in(&tui_lock_file())
+}
+
+pub(crate) fn tui_encoding_pid_in(path: &std::path::Path) -> Option<u32> {
+    let pid = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .filter(|&pid| alive(pid));
+    if pid.is_none() {
+        let _ = std::fs::remove_file(path);
+    }
+    pid
+}
+
 /// Stdout and stderr of the detached daemon, holding whatever it prints before
 /// its log is open. Rewritten at every start; the daemon's own log is the
 /// rolling `daemon.log.<date>` next to it.
@@ -402,6 +456,43 @@ mod tests {
     }
 
     use super::*;
+
+    fn tui_lock_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("av1c_tui_lock_{name}_{}", std::process::id()))
+    }
+
+    #[test]
+    fn a_live_tui_lock_names_its_pid() {
+        let path = tui_lock_path("live");
+        let _guard = write_tui_lock_at(&path).unwrap();
+        assert_eq!(tui_encoding_pid_in(&path), Some(std::process::id()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_tui_lock_is_stale_and_removed() {
+        let path = tui_lock_path("dead");
+        std::fs::write(&path, "999999999").unwrap();
+        assert_eq!(tui_encoding_pid_in(&path), None);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_garbage_tui_lock_is_stale() {
+        let path = tui_lock_path("garbage");
+        std::fs::write(&path, "x").unwrap();
+        assert_eq!(tui_encoding_pid_in(&path), None);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn dropping_the_tui_lock_guard_removes_the_file() {
+        let path = tui_lock_path("drop");
+        let guard = write_tui_lock_at(&path).unwrap();
+        assert!(path.exists());
+        drop(guard);
+        assert!(!path.exists());
+    }
 
     #[cfg(unix)]
     #[test]

@@ -100,6 +100,42 @@ mod tests {
     }
 
     #[test]
+    fn finish_and_file_confirm_show_an_unreachable_daemon() {
+        let (mut app, _sent, events) = crate::app::tests::attached_app();
+        events
+            .send(crate::daemon::client::ClientEvent::Unreachable(
+                "refused".into(),
+            ))
+            .unwrap();
+        app.process_client_events();
+        let retrying = t(app.config.language, Msg::DaemonUnreachableRetrying);
+
+        let finish = rendered(100, 30, |frame| super::render_finish(frame, &mut app));
+        let confirm = rendered(100, 30, |frame| super::render_file_confirm(frame, &mut app));
+
+        assert!(finish.contains(retrying));
+        assert!(confirm.contains(retrying));
+    }
+
+    #[test]
+    fn finish_shows_the_daemon_session_time() {
+        let (mut app, _sent, events) = crate::app::tests::attached_app();
+        let mut snapshot = crate::app::tests::snapshot_with(901, false, &["/n/a.mkv"]);
+        snapshot.queue.state.jobs[0].status = JobStatus::Done;
+        snapshot.elapsed_secs = Some(90);
+        events
+            .send(crate::daemon::client::ClientEvent::Snapshot(Box::new(
+                snapshot,
+            )))
+            .unwrap();
+        app.process_client_events();
+
+        let finish = rendered(100, 30, |frame| super::render_finish(frame, &mut app));
+
+        assert!(finish.contains("01:30"), "{finish}");
+    }
+
+    #[test]
     fn compact_terminals_get_the_resize_screen() {
         assert!(terminal_too_small(Screen::Home, Rect::new(0, 0, 40, 14)));
         assert!(!terminal_too_small(Screen::Home, Rect::new(0, 0, 50, 18)));

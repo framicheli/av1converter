@@ -97,6 +97,17 @@ pub fn get_vmaf_color(score: f64) -> Color {
     }
 }
 
+/// Draws `app.message` on one line across the frame's top margin row.
+pub fn render_margin_message(f: &mut ratatui::Frame, app: &crate::app::App) {
+    if let Some(msg) = app.message.as_deref() {
+        let area = f.area();
+        let row = Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1);
+        let line = ratatui::widgets::Paragraph::new(truncate_end(msg, usize::from(row.width)))
+            .style(Style::default().fg(message_color(app.message_kind)));
+        f.render_widget(line, row);
+    }
+}
+
 pub fn message_color(kind: MessageKind) -> Color {
     match kind {
         MessageKind::Info => Color::Cyan,

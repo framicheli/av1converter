@@ -97,4 +97,5 @@ pub fn render_file_confirm(f: &mut Frame, app: &mut App) {
         .block(Block::default().borders(Borders::NONE))
         .wrap(Wrap { trim: true });
     f.render_widget(help, chunks[2]);
+    super::common::render_margin_message(f, app);
 }

@@ -15,6 +15,89 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
+use std::time::Duration;
+
+/// Full daemon state for an attached client, its tag (a hash of the body that
+/// changes whenever the body does) and the milliseconds since daemon start at
+/// which the state was read.
+pub fn snapshot(shared: &SharedState) -> (Value, String, u64) {
+    use std::hash::{Hash, Hasher};
+
+    let state = lock(shared);
+    let queue = &state.queue.state;
+    let progress: Vec<Value> = queue
+        .jobs
+        .iter()
+        .zip(state.queue.ids())
+        .filter_map(|(job, id)| match job.status {
+            JobStatus::Encoding { progress } | JobStatus::Ripping { progress } => {
+                Some(json!({"id": id, "progress": progress}))
+            }
+            _ => None,
+        })
+        .collect();
+    let disc = &state.disc;
+    let body = json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "instance": state.instance,
+        "queue": state.queue.as_persistable(),
+        "progress": progress,
+        "elapsed_secs": queue.elapsed_time().map(|d| d.as_secs()),
+        "eta_secs": queue.estimated_time_remaining().map(|d| d.as_secs()),
+        "encoding_active": state.encoding_active,
+        "recursive_scan_active": state.recursive_scan_active,
+        "disc": {
+            "drives": disc.drives,
+            "scanned_source": disc.scanned_source,
+            "disc_type": disc.disc_type,
+            "titles": disc.titles,
+            "active": disc.active,
+            "scanning": disc.scanning,
+            "listing": disc.listing,
+            "error": disc.error,
+        },
+    });
+    let taken_ms = u64::try_from(state.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    drop(state);
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_vec(&body)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    let tag = format!("{:016x}", hasher.finish());
+    (body, tag, taken_ms)
+}
+
+/// Waits until the tag differs from `since` or `max_wait` passes, re-checking
+/// every `every`. Returns the final body with `tag` and `taken_ms` inserted.
+pub fn snapshot_wait(
+    shared: &SharedState,
+    since: Option<&str>,
+    every: Duration,
+    max_wait: Duration,
+) -> Value {
+    let deadline = std::time::Instant::now() + max_wait;
+    #[cfg(test)]
+    let mut waited = false;
+    loop {
+        let (mut body, tag, taken_ms) = snapshot(shared);
+        if since != Some(tag.as_str()) || std::time::Instant::now() >= deadline {
+            #[cfg(test)]
+            if waited {
+                lock(shared).waiting_snapshots -= 1;
+            }
+            body["tag"] = json!(tag);
+            body["taken_ms"] = json!(taken_ms);
+            return body;
+        }
+        #[cfg(test)]
+        if !waited {
+            lock(shared).waiting_snapshots += 1;
+            waited = true;
+        }
+        std::thread::sleep(every);
+    }
+}
 
 /// Dashboard poll: overall daemon and encode-session status.
 pub fn status(shared: &SharedState) -> Value {
@@ -211,7 +294,7 @@ fn tracks_editable(state: &super::state::DaemonState, id: u64, job: &EncodingJob
 const DV_KEEP: &str = "keep";
 const DV_HDR10: &str = "hdr10";
 
-fn dv_mode_name(mode: DvMode) -> &'static str {
+pub(crate) fn dv_mode_name(mode: DvMode) -> &'static str {
     match mode {
         DvMode::KeepDolbyVision => DV_KEEP,
         DvMode::ToHdr10 => DV_HDR10,
@@ -598,6 +681,10 @@ pub fn queue_add(
         return (400, json!({"error": "missing 'path'"}));
     };
     let mode = body.get("mode").and_then(Value::as_str).unwrap_or("file");
+    let dry_run = match optional_bool(body, "dry_run") {
+        Ok(value) => value.unwrap_or(false),
+        Err(error) => return (400, json!({"error": error})),
+    };
     let (browse_root, lang) = {
         let state = lock(shared);
         (
@@ -689,6 +776,14 @@ pub fn queue_add(
         return (400, json!({"error": t(lang, Msg::NoVideoFiles)}));
     }
     files.sort();
+
+    if dry_run {
+        let files: Vec<String> = files
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        return (200, json!({"files": files}));
+    }
 
     let (added, already_queued, skipped) = super::add_paths(shared, probe_tx, files, &browse_root);
     (
@@ -1655,6 +1750,7 @@ mod tests {
         RecursiveScanGuard, queue, queue_cancel, queue_cancel_analysis, queue_clear_finished,
         queue_move_up, queue_remove, settings_access, status, within_root,
     };
+    use super::{snapshot, snapshot_wait};
     use crate::config::AppConfig;
     #[cfg(unix)]
     use crate::config::DaemonConfig;
@@ -1665,6 +1761,131 @@ mod tests {
     #[cfg(unix)]
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    fn shared_with_two_jobs() -> (SharedState, Vec<u64>) {
+        let mut state = DaemonState::new(AppConfig::default());
+        let a = state
+            .queue
+            .push(EncodingJob::new(PathBuf::from("/nonexistent/a.mkv")));
+        let b = state
+            .queue
+            .push(EncodingJob::new(PathBuf::from("/nonexistent/b.mkv")));
+        (Arc::new(Mutex::new(state)), vec![a, b])
+    }
+
+    fn set_status(shared: &SharedState, index: usize, status: JobStatus) {
+        lock(shared).queue.state.jobs[index].status = status;
+    }
+
+    #[test]
+    fn snapshot_carries_ids_progress_and_version() {
+        let (shared, ids) = shared_with_two_jobs();
+        set_status(&shared, 1, JobStatus::Encoding { progress: 42.5 });
+
+        let (body, _, _) = snapshot(&shared);
+
+        assert_eq!(
+            body["progress"],
+            serde_json::json!([{"id": ids[1], "progress": 42.5}])
+        );
+        assert_eq!(body["queue"]["ids"], serde_json::json!(ids));
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn the_tag_is_stable_while_nothing_changes_and_moves_when_a_job_does() {
+        let (shared, _) = shared_with_two_jobs();
+        let (_, first, _) = snapshot(&shared);
+        let (_, second, _) = snapshot(&shared);
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 16);
+
+        set_status(&shared, 0, JobStatus::Done);
+        let (_, third, _) = snapshot(&shared);
+        assert_ne!(first, third);
+    }
+
+    #[test]
+    fn taken_ms_never_goes_back_and_stays_out_of_the_tag() {
+        let (shared, _) = shared_with_two_jobs();
+        let (_, first_tag, first_ms) = snapshot(&shared);
+        let (_, second_tag, second_ms) = snapshot(&shared);
+        assert_eq!(first_tag, second_tag);
+        assert!(second_ms >= first_ms);
+
+        set_status(&shared, 0, JobStatus::Done);
+        let (body, third_tag, third_ms) = snapshot(&shared);
+        assert_ne!(first_tag, third_tag);
+        assert!(third_ms >= second_ms);
+        assert!(body.get("taken_ms").is_none());
+        assert!(body.get("tag").is_none());
+    }
+
+    #[test]
+    fn the_snapshot_carries_the_state_instance() {
+        let (shared, _) = shared_with_two_jobs();
+        lock(&shared).instance = 0xDEAD_BEEF_0000_0001;
+        let (body, _, _) = snapshot(&shared);
+        assert_eq!(body["instance"], json!(0xDEAD_BEEF_0000_0001_u64));
+    }
+
+    #[test]
+    fn a_stale_since_answers_at_once() {
+        let (shared, _) = shared_with_two_jobs();
+        let body = snapshot_wait(
+            &shared,
+            Some("nope"),
+            Duration::from_millis(10),
+            Duration::from_secs(60),
+        );
+        assert_ne!(body["tag"], "nope");
+        assert!(body["taken_ms"].is_u64());
+    }
+
+    #[test]
+    fn a_current_since_times_out_with_the_same_tag() {
+        let (shared, _) = shared_with_two_jobs();
+        let (_, tag, _) = snapshot(&shared);
+        let body = snapshot_wait(
+            &shared,
+            Some(&tag),
+            Duration::from_millis(1),
+            Duration::from_millis(5),
+        );
+        assert_eq!(body["tag"], tag.as_str());
+    }
+
+    #[test]
+    fn a_change_during_the_wait_wakes_it() {
+        let (shared, _) = shared_with_two_jobs();
+        let (_, tag, _) = snapshot(&shared);
+        let waiter = {
+            let shared = shared.clone();
+            let tag = tag.clone();
+            std::thread::spawn(move || {
+                snapshot_wait(
+                    &shared,
+                    Some(&tag),
+                    Duration::from_millis(1),
+                    Duration::from_secs(60),
+                )
+            })
+        };
+        let mut spins = 0_u32;
+        while lock(&shared).waiting_snapshots == 0 {
+            assert!(
+                !waiter.is_finished(),
+                "the waiter returned before it waited"
+            );
+            spins += 1;
+            assert!(spins < 60_000, "the waiter never started waiting");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        set_status(&shared, 0, JobStatus::Done);
+        let body = waiter.join().expect("the waiting thread");
+        assert_ne!(body["tag"], tag.as_str());
+    }
 
     #[test]
     fn settings_access_carries_the_named_preset_tables() {
@@ -2169,6 +2390,121 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    fn dry_run_fixture(name: &str) -> (PathBuf, SharedState) {
+        let base = std::env::temp_dir().join(format!("{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        for file in ["b.mp4", "a.mkv", "notes.txt"] {
+            std::fs::write(base.join(file), b"x").unwrap();
+        }
+        let base = base.canonicalize().unwrap();
+        let config = AppConfig {
+            daemon: DaemonConfig {
+                browse_root: base.to_string_lossy().into_owned(),
+                ..DaemonConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        (base, Arc::new(Mutex::new(DaemonState::new(config))))
+    }
+
+    #[test]
+    fn a_dry_run_lists_the_folder_and_queues_nothing() {
+        let (base, shared) = dry_run_fixture("av1c_dry_list");
+        let (tx, rx) = mpsc::channel();
+        let (code, body) = queue_add(
+            &shared,
+            &tx,
+            &json!({"path": base, "mode": "folder", "dry_run": true}),
+            &AtomicBool::new(false),
+        );
+        assert_eq!(code, 200);
+        assert_eq!(
+            body,
+            json!({"files": [
+                base.join("a.mkv").to_string_lossy(),
+                base.join("b.mp4").to_string_lossy(),
+            ]})
+        );
+        assert!(lock(&shared).queue.state.jobs.is_empty());
+        assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_dry_run_lists_what_a_real_add_queues() {
+        let (base, shared) = dry_run_fixture("av1c_dry_real");
+        let (tx, _rx) = mpsc::channel();
+        let shutdown = AtomicBool::new(false);
+        let (_, dry) = queue_add(
+            &shared,
+            &tx,
+            &json!({"path": base, "mode": "folder", "dry_run": true}),
+            &shutdown,
+        );
+        let (code, _) = queue_add(
+            &shared,
+            &tx,
+            &json!({"path": base, "mode": "folder"}),
+            &shutdown,
+        );
+        assert_eq!(code, 200);
+        let queued: Vec<Value> = lock(&shared)
+            .queue
+            .state
+            .jobs
+            .iter()
+            .map(|j| json!(j.path.to_string_lossy()))
+            .collect();
+        assert_eq!(dry["files"], json!(queued));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_dry_run_outside_browse_root_is_refused() {
+        let (base, shared) = dry_run_fixture("av1c_dry_outside");
+        let outside = std::env::temp_dir();
+        let (tx, _rx) = mpsc::channel();
+        let (code, _) = queue_add(
+            &shared,
+            &tx,
+            &json!({"path": outside, "mode": "folder", "dry_run": true}),
+            &AtomicBool::new(false),
+        );
+        assert_eq!(code, 403);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn two_recursive_dry_runs_in_a_row_both_answer() {
+        let (base, shared) = dry_run_fixture("av1c_dry_twice");
+        let (tx, _rx) = mpsc::channel();
+        let shutdown = AtomicBool::new(false);
+        let body = json!({"path": base, "mode": "folder_recursive", "dry_run": true});
+        let (first, _) = queue_add(&shared, &tx, &body, &shutdown);
+        let (second, files) = queue_add(&shared, &tx, &body, &shutdown);
+        assert_eq!((first, second), (200, 200));
+        assert_eq!(files["files"].as_array().map(Vec::len), Some(2));
+        assert!(!lock(&shared).recursive_scan_active);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_non_boolean_dry_run_is_rejected() {
+        let (base, shared) = dry_run_fixture("av1c_dry_bad");
+        let (tx, rx) = mpsc::channel();
+        let (code, _) = queue_add(
+            &shared,
+            &tx,
+            &json!({"path": base, "mode": "folder", "dry_run": "yes"}),
+            &AtomicBool::new(false),
+        );
+        assert_eq!(code, 400);
+        assert!(lock(&shared).queue.state.jobs.is_empty());
+        assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     mod discs {
         use super::super::*;
         use crate::daemon::state::DaemonState;
@@ -2466,7 +2802,7 @@ mod tests {
             discs_list(&shared);
             let state = lock(&shared);
             assert_eq!(state.disc.error, None);
-            assert!(state.disc.titles.is_empty());
+            assert_eq!(state.disc.titles, Vec::<crate::disc::DiscTitle>::new());
             assert_eq!(state.disc.disc_type, None);
             assert_eq!(state.disc.scanned_source, None);
             assert!(!state.disc.active);

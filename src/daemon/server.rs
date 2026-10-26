@@ -194,6 +194,15 @@ fn handle_request(
             return respond_bytes(request, FAVICON_PNG, "image/png");
         }
         (Method::Get, "/api/status") => (200, api::status(shared)),
+        (Method::Get, "/api/snapshot") => (
+            200,
+            api::snapshot_wait(
+                shared,
+                query_param(query, "since").as_deref(),
+                Duration::from_millis(50),
+                Duration::from_secs(1),
+            ),
+        ),
         (Method::Get, "/api/queue") => (200, api::queue(shared)),
         (Method::Get, "/api/fs") => api::fs_browse(
             shared,
@@ -356,6 +365,7 @@ fn percent_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::state::lock;
 
     #[test]
     fn percent_decoding() {
@@ -507,6 +517,117 @@ mod tests {
 
         shutdown.store(true, Ordering::SeqCst);
         worker.join().expect("the server thread");
+    }
+
+    /// Starts `SERVER_THREADS` serve loops on an ephemeral port.
+    fn snapshot_harness(
+        token: &'static str,
+    ) -> (
+        u16,
+        crate::daemon::state::SharedState,
+        std::sync::Arc<AtomicBool>,
+        Vec<std::thread::JoinHandle<()>>,
+    ) {
+        use crate::config::AppConfig;
+        use crate::daemon::state::DaemonState;
+        use std::sync::{Arc, Mutex, mpsc};
+
+        let mut config = AppConfig::default();
+        config.daemon.auth_token = token.to_string();
+        let shared: SharedState = Arc::new(Mutex::new(DaemonState::new(config)));
+        let server = Arc::new(bind("127.0.0.1:0").expect("an ephemeral port"));
+        let port = server.server_addr().to_ip().expect("an IP listener").port();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (probe_tx, _probe_rx) = mpsc::channel();
+        let (disc_tx, _disc_rx) = mpsc::channel();
+        let handles = (0..crate::daemon::SERVER_THREADS)
+            .map(|_| {
+                let (server, shared, shutdown) = (server.clone(), shared.clone(), shutdown.clone());
+                let (probe_tx, disc_tx) = (probe_tx.clone(), disc_tx.clone());
+                std::thread::spawn(move || serve(&server, &shared, &probe_tx, &disc_tx, &shutdown))
+            })
+            .collect();
+        (port, shared, shutdown, handles)
+    }
+
+    fn get(port: u16, path: &str, token: Option<&str>) -> String {
+        use std::io::Write;
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        let auth = token.map_or(String::new(), |t| format!("Authorization: Bearer {t}\r\n"));
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}Connection: close\r\n\r\n"
+        )
+        .expect("write");
+        let mut response = String::new();
+        std::io::Read::read_to_string(&mut stream, &mut response).expect("read");
+        response
+    }
+
+    fn body_of(response: &str) -> serde_json::Value {
+        let (_, body) = response.split_once("\r\n\r\n").expect("a body");
+        serde_json::from_str(body).expect("JSON")
+    }
+
+    #[test]
+    fn snapshot_route_is_token_guarded() {
+        const TOKEN: &str = "a-token-long-enough-to-be-a-real-one";
+        let (port, _shared, shutdown, handles) = snapshot_harness(TOKEN);
+
+        let anonymous = get(port, "/api/snapshot", None);
+        assert!(anonymous.starts_with("HTTP/1.1 401"), "{anonymous}");
+        let authorized = get(port, "/api/snapshot", Some(TOKEN));
+        assert!(authorized.starts_with("HTTP/1.1 200"), "{authorized}");
+        assert_eq!(body_of(&authorized)["tag"].as_str().map(str::len), Some(16));
+
+        shutdown.store(true, Ordering::SeqCst);
+        for handle in handles {
+            handle.join().expect("a server thread");
+        }
+    }
+
+    #[test]
+    fn an_action_answers_while_two_long_polls_wait() {
+        const TOKEN: &str = "a-token-long-enough-to-be-a-real-one";
+        let (port, shared, shutdown, handles) = snapshot_harness(TOKEN);
+        let tag = body_of(&get(port, "/api/snapshot", Some(TOKEN)))["tag"]
+            .as_str()
+            .expect("a tag")
+            .to_string();
+
+        let pollers: Vec<_> = (0..2)
+            .map(|_| {
+                let path = format!("/api/snapshot?since={tag}");
+                std::thread::spawn(move || get(port, &path, Some(TOKEN)))
+            })
+            .collect();
+        let mut spins = 0_u32;
+        while lock(&shared).waiting_snapshots < 2 {
+            assert!(
+                pollers.iter().all(|poller| !poller.is_finished()),
+                "a long poll returned before it waited"
+            );
+            spins += 1;
+            assert!(spins < 60_000, "the long polls never started waiting");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let status = get(port, "/api/status", Some(TOKEN));
+        assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+        lock(&shared)
+            .queue
+            .push(crate::queue::EncodingJob::new(std::path::PathBuf::from(
+                "/nonexistent/a.mkv",
+            )));
+        for poller in pollers {
+            let response = poller.join().expect("a poller");
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            assert_ne!(body_of(&response)["tag"].as_str(), Some(tag.as_str()));
+        }
+
+        shutdown.store(true, Ordering::SeqCst);
+        for handle in handles {
+            handle.join().expect("a server thread");
+        }
     }
 
     /// With no token configured the API answers 401 to every request,

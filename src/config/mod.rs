@@ -197,6 +197,14 @@ impl AppConfig {
             .unwrap_or_default()
     }
 
+    /// `daemon.auth_token` of the configuration file at `path`, sanitized;
+    /// `None` when the file is missing or cannot be parsed.
+    pub fn auth_token_at(path: &std::path::Path) -> Option<String> {
+        let mut config = Self::load_from_file(path).ok()?;
+        config.sanitize();
+        Some(config.daemon.auth_token)
+    }
+
     /// The configuration file as loaded, with the parse error when it could
     /// not be read; `None` when there is no file.
     fn read_existing() -> Option<(Self, Option<String>)> {
@@ -806,7 +814,7 @@ mod tests {
 
         // A file that parses needs no copy.
         AppConfig::default().save_to_path(&path).unwrap();
-        assert!(copies().is_empty());
+        assert_eq!(copies(), Vec::<Vec<u8>>::new());
 
         // Each one that does not is kept verbatim, under a name of its own.
         let broken: [&[u8]; 3] = [
