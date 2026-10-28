@@ -446,8 +446,10 @@ pub fn sidecar_subtitles(
 /// [`SIDECAR_EXTENSIONS`], optionally with a language code and `forced`,
 /// `sdh`, `cc` or `default` labels between stem and extension
 /// (`Movie.en.forced.srt`), sorted by file name, with the language and forced
-/// flag the name gives. A `.sub` file with an `.idx` of the same name is left
-/// out; the `.idx` stands for both.
+/// flag the name gives. When `input` is the only video file in its folder,
+/// every subtitle file there is listed, with labels read by
+/// [`loose_sidecar_labels`]. A `.sub` file with an `.idx` of the same name is
+/// left out; the `.idx` stands for both.
 fn sidecar_files(input: &std::path::Path) -> Vec<(std::path::PathBuf, Option<String>, bool)> {
     let (Some(dir), Some(stem)) = (input.parent(), input.file_stem()) else {
         return Vec::new();
@@ -461,13 +463,26 @@ fn sidecar_files(input: &std::path::Path) -> Vec<(std::path::PathBuf, Option<Str
         return Vec::new();
     };
     let stem = stem.to_string_lossy();
-    let found: Vec<(String, std::path::PathBuf, Option<String>, bool)> = entries
+    let files: Vec<(String, std::path::PathBuf)> = entries
         .flatten()
         .filter(|entry| entry.file_type().is_ok_and(|t| t.is_file()))
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let (language, forced) = sidecar_labels(&name, &stem)?;
-            Some((name, entry.path(), language, forced))
+        .map(|entry| {
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                entry.path(),
+            )
+        })
+        .collect();
+    let input_name = input.file_name().map(|n| n.to_string_lossy());
+    let only_video = !files.iter().any(|(name, path)| {
+        Some(name.as_str()) != input_name.as_deref() && crate::queue::is_video_file(path)
+    });
+    let found: Vec<(String, std::path::PathBuf, Option<String>, bool)> = files
+        .into_iter()
+        .filter_map(|(name, path)| {
+            let (language, forced) = sidecar_labels(&name, &stem)
+                .or_else(|| only_video.then(|| loose_sidecar_labels(&name)).flatten())?;
+            Some((name, path, language, forced))
         })
         .collect();
     let vobsub_data = |path: &std::path::Path| {
@@ -528,6 +543,87 @@ fn sidecar_labels(name: &str, stem: &str) -> Option<(Option<String>, bool)> {
         }
     }
     Some((language, forced))
+}
+
+/// Language and forced flag from the name of a subtitle file that does not
+/// start with the video's name (`Brazilian.por.srt`, `English.srt`,
+/// `SDH.eng.HI.srt`). The last dot-separated label that is a 2- or 3-letter
+/// code or an English language name gives the language; `forced` sets the
+/// flag. `None` for a `.txt` file or an extension outside
+/// [`SIDECAR_EXTENSIONS`].
+fn loose_sidecar_labels(name: &str) -> Option<(Option<String>, bool)> {
+    let (base, extension) = name.rsplit_once('.')?;
+    if extension.eq_ignore_ascii_case("txt")
+        || !SIDECAR_EXTENSIONS
+            .iter()
+            .any(|known| extension.eq_ignore_ascii_case(known))
+    {
+        return None;
+    }
+    let mut language = None;
+    let mut forced = false;
+    for label in base.split('.').rev().map(str::trim) {
+        match label.to_ascii_lowercase().as_str() {
+            "forced" => forced = true,
+            "sdh" | "cc" | "hi" | "default" => {}
+            _ if language.is_some() => {}
+            _ if (2..=3).contains(&label.len())
+                && label.chars().all(|c| c.is_ascii_alphabetic()) =>
+            {
+                language = Some(canonical_language(label));
+            }
+            lower => language = language_from_name(lower).map(str::to_string),
+        }
+    }
+    Some((language, forced))
+}
+
+/// The shared 3-letter code of a lowercase English language name.
+fn language_from_name(name: &str) -> Option<&'static str> {
+    let code = match name {
+        "english" => "eng",
+        "italian" => "ita",
+        "spanish" => "spa",
+        "french" => "fra",
+        "german" => "deu",
+        "chinese" | "mandarin" => "zho",
+        "japanese" => "jpn",
+        "korean" => "kor",
+        "portuguese" => "por",
+        "russian" => "rus",
+        "dutch" => "nld",
+        "polish" => "pol",
+        "swedish" => "swe",
+        "norwegian" => "nor",
+        "danish" => "dan",
+        "finnish" => "fin",
+        "czech" => "ces",
+        "hungarian" => "hun",
+        "romanian" => "ron",
+        "greek" => "ell",
+        "turkish" => "tur",
+        "arabic" => "ara",
+        "hindi" => "hin",
+        "hebrew" => "heb",
+        "thai" => "tha",
+        "vietnamese" => "vie",
+        "ukrainian" => "ukr",
+        "slovak" => "slk",
+        "slovenian" => "slv",
+        "icelandic" => "isl",
+        "persian" => "fas",
+        "croatian" => "hrv",
+        "serbian" => "srp",
+        "bulgarian" => "bul",
+        "catalan" => "cat",
+        "indonesian" => "ind",
+        "malay" => "msa",
+        "estonian" => "est",
+        "latvian" => "lav",
+        "lithuanian" => "lit",
+        _ => return None,
+    };
+    Some(code)
 }
 
 /// Pixel format of the first video stream of `path`. `None` when ffprobe
@@ -811,7 +907,9 @@ mod tests {
             "Movie.fr.sub",
             "Movie.de.forced.sup",
             "Movie.nfo",
+            "Other.mkv",
             "Other.srt",
+            "eng.srt",
         ] {
             std::fs::write(dir.join(name), "").unwrap();
         }
@@ -831,6 +929,84 @@ mod tests {
                 entry("Movie.fr.sub", Some("fra"), false),
                 entry("Movie.idx", None, false),
                 entry("Movie.it.srt", Some("ita"), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn subtitle_names_without_the_video_name_give_language_and_forced_flag() {
+        let labels =
+            |language: Option<&str>, forced: bool| Some((language.map(str::to_string), forced));
+        assert_eq!(loose_sidecar_labels("ara.srt"), labels(Some("ara"), false));
+        assert_eq!(loose_sidecar_labels("fil.srt"), labels(Some("fil"), false));
+        assert_eq!(
+            loose_sidecar_labels("Brazilian.por.srt"),
+            labels(Some("por"), false)
+        );
+        assert_eq!(
+            loose_sidecar_labels("Mandarin, Traditional.chi.srt"),
+            labels(Some("zho"), false)
+        );
+        assert_eq!(
+            loose_sidecar_labels("Latin American.spa.SRT"),
+            labels(Some("spa"), false)
+        );
+        assert_eq!(
+            loose_sidecar_labels("SDH.eng.HI.srt"),
+            labels(Some("eng"), false)
+        );
+        assert_eq!(
+            loose_sidecar_labels("English.srt"),
+            labels(Some("eng"), false)
+        );
+        assert_eq!(
+            loose_sidecar_labels("Italian.forced.ass"),
+            labels(Some("ita"), true)
+        );
+        assert_eq!(loose_sidecar_labels("Commentary.srt"), labels(None, false));
+    }
+
+    #[test]
+    fn text_and_non_subtitle_files_are_not_loose_sidecars() {
+        assert_eq!(loose_sidecar_labels("YTSProxies.com.txt"), None);
+        assert_eq!(loose_sidecar_labels("eng.txt"), None);
+        assert_eq!(loose_sidecar_labels("Official site.jpg"), None);
+        assert_eq!(loose_sidecar_labels("Movie.mkv"), None);
+        assert_eq!(loose_sidecar_labels("srt"), None);
+    }
+
+    #[test]
+    fn the_only_video_in_a_folder_gets_every_subtitle_file_there() {
+        let dir = std::env::temp_dir().join(format!("av1c-loose-sidecars-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "Movie.mkv",
+            "Movie.srt",
+            "Brazilian.por.srt",
+            "English.srt",
+            "SDH.eng.HI.srt",
+            "Proxies.txt",
+            "Movie.txt",
+            "cover.jpg",
+        ] {
+            std::fs::write(dir.join(name), "").unwrap();
+        }
+
+        let files = sidecar_files(&dir.join("Movie.mkv"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let entry = |name: &str, language: Option<&str>| {
+            (dir.join(name), language.map(str::to_string), false)
+        };
+        assert_eq!(
+            files,
+            vec![
+                entry("Brazilian.por.srt", Some("por")),
+                entry("English.srt", Some("eng")),
+                entry("Movie.srt", None),
+                entry("Movie.txt", None),
+                entry("SDH.eng.HI.srt", Some("eng")),
             ]
         );
     }
