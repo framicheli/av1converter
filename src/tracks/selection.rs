@@ -103,6 +103,7 @@ impl TrackSelection {
         OutputTracks {
             audio,
             subtitle_indices,
+            external_subtitles: Vec::new(),
         }
     }
 
@@ -234,6 +235,8 @@ fn standard_spelling(layout: &str) -> Option<&'static str> {
 pub struct OutputTracks {
     pub audio: Vec<AudioStreamPlan>,
     pub subtitle_indices: Vec<usize>,
+    /// Selected sidecar subtitle tracks, each read as an extra input.
+    pub external_subtitles: Vec<crate::tracks::SubtitleTrack>,
 }
 
 impl OutputTracks {
@@ -271,7 +274,7 @@ mod tests {
 
         sel.toggle_audio(1);
         assert!(!sel.is_opus(1));
-        assert!(sel.audio_to_opus.is_empty());
+        assert_eq!(sel.audio_to_opus, Vec::<usize>::new());
     }
 
     /// Marking an unselected track for Opus also selects it.

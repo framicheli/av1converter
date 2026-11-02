@@ -2,7 +2,7 @@ use crate::analyzer::{DvMode, HdrType, VideoMetadata};
 use crate::config::{AudioConfig, Encoder, OutputConfig, TrackPresetConfig};
 use crate::tracks::{AudioTrack, SubtitleTrack, TrackSelection};
 use std::collections::HashSet;
-use std::fs::Metadata;
+use std::fs::{File, Metadata};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tracing::warn;
@@ -19,9 +19,23 @@ pub struct SourceIdentity {
     dev: u64,
     #[cfg(unix)]
     ino: u64,
+    /// Volume serial number and file index; `None` in identities saved
+    /// without them.
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    file_id: Option<WindowsFileId>,
+}
+
+/// Volume serial number and file index of a file on Windows.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct WindowsFileId {
+    volume: u32,
+    index: u64,
 }
 
 impl SourceIdentity {
+    /// Identity from `metadata` alone, without a Windows file id.
     pub fn from_metadata(metadata: &Metadata) -> Self {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
@@ -34,20 +48,92 @@ impl SourceIdentity {
             dev: metadata.dev(),
             #[cfg(unix)]
             ino: metadata.ino(),
+            #[cfg(windows)]
+            file_id: None,
         }
     }
 
+    /// Identity of the open `file`, with its Windows file id.
+    pub fn from_file(file: &File) -> std::io::Result<Self> {
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut identity = Self::from_metadata(&file.metadata()?);
+        #[cfg(windows)]
+        {
+            identity.file_id = Some(windows_file_id(file)?);
+        }
+        Ok(identity)
+    }
+
     pub fn from_path(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        std::fs::metadata(path).map(|metadata| Self::from_metadata(&metadata))
+        #[cfg(windows)]
+        {
+            Self::from_file(&open_for_identity(path.as_ref())?)
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::metadata(path).map(|metadata| Self::from_metadata(&metadata))
+        }
+    }
+
+    /// Whether `current` is the file this identity was taken from. An
+    /// identity without a Windows file id compares every other field.
+    pub fn matches(&self, current: &Self) -> bool {
+        #[cfg(windows)]
+        if self.file_id.is_none() {
+            return *self
+                == Self {
+                    file_id: None,
+                    ..current.clone()
+                };
+        }
+        self == current
     }
 
     pub fn matches_path(&self, path: impl AsRef<Path>) -> bool {
-        Self::from_path(path).is_ok_and(|current| *self == current)
+        Self::from_path(path).is_ok_and(|current| self.matches(&current))
     }
 
     pub fn size_bytes(&self) -> u64 {
         self.len
     }
+}
+
+/// Opens `path` for reading its attributes only, directories included.
+#[cfg(windows)]
+fn open_for_identity(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
+
+    std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
+
+/// Volume serial number and file index of the open `file`.
+#[cfg(windows)]
+fn windows_file_id(file: &File) -> std::io::Result<WindowsFileId> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    // SAFETY: `BY_HANDLE_FILE_INFORMATION` is plain data; all-zero is a valid
+    // value for the call to overwrite.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: the handle belongs to `file`, which outlives the call, and
+    // `info` is a valid, writable struct.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(WindowsFileId {
+        volume: info.dwVolumeSerialNumber,
+        index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    })
 }
 
 /// Status of a job in the encoding queue
@@ -452,7 +538,7 @@ fn language_matches(preferred: &str, track: &str) -> bool {
 
 /// Map a 2- or 3-letter language tag to a shared lowercase 3-letter key.
 /// BCP-47 region/script subtags are stripped (`en-US` → `en`, `zh-Hans` → `zh`).
-fn language_canonical(tag: &str) -> Option<&'static str> {
+pub(crate) fn language_canonical(tag: &str) -> Option<&'static str> {
     let lower = tag.to_ascii_lowercase();
     let primary = lower.split(['-', '_']).next().unwrap_or(lower.as_str());
     match primary {
@@ -719,6 +805,94 @@ mod tests {
     use super::*;
     use crate::config::OutputConfig;
 
+    /// Two files with the same size and the same modified and created times
+    /// in a fresh scratch directory; returns the directory and both paths.
+    fn twin_files(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("av1c_twins_{}_{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let stamp = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let [a, b] = ["a.mkv", "b.mkv"].map(|name| dir.join(name));
+        for path in [&a, &b] {
+            let file = File::create(path).unwrap();
+            let times = std::fs::FileTimes::new().set_modified(stamp);
+            #[cfg(windows)]
+            let times = std::os::windows::fs::FileTimesExt::set_created(times, stamp);
+            file.set_times(times).unwrap();
+        }
+        (dir, a, b)
+    }
+
+    #[test]
+    fn two_files_with_the_same_size_and_times_are_different_sources() {
+        let (dir, a, b) = twin_files("distinct");
+        let first = SourceIdentity::from_path(&a).unwrap();
+        let second = SourceIdentity::from_path(&b).unwrap();
+        assert_eq!(first.len, second.len);
+        assert_eq!(first.modified, second.modified);
+        #[cfg(windows)]
+        assert_eq!(first.created, second.created);
+
+        assert_ne!(first, second);
+        assert!(first.matches_path(&a));
+        assert!(!first.matches_path(&b));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_open_file_has_the_identity_of_its_path() {
+        let (dir, a, _) = twin_files("open");
+        let file = File::open(&a).unwrap();
+        assert_eq!(
+            SourceIdentity::from_file(&file).unwrap(),
+            SourceIdentity::from_path(&a).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_saved_file_id_is_reloaded_and_still_tells_the_twin_apart() {
+        let (dir, a, b) = twin_files("reload");
+        let identity = SourceIdentity::from_path(&a).unwrap();
+        let saved = serde_json::to_string(&identity).unwrap();
+
+        let reloaded: SourceIdentity = serde_json::from_str(&saved).unwrap();
+
+        assert!(reloaded.file_id.is_some());
+        assert_eq!(reloaded, identity);
+        assert!(reloaded.matches_path(&a));
+        assert!(!reloaded.matches_path(&b));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_identity_saved_without_a_file_id_matches_on_the_other_fields() {
+        let (dir, a, _) = twin_files("legacy");
+        let mut saved = serde_json::to_value(SourceIdentity::from_path(&a).unwrap()).unwrap();
+        saved.as_object_mut().unwrap().remove("file_id").unwrap();
+
+        let legacy: SourceIdentity = serde_json::from_value(saved).unwrap();
+
+        assert_eq!(legacy.file_id, None);
+        assert!(legacy.matches_path(&a));
+        std::fs::write(&a, b"a replacement").unwrap();
+        assert!(!legacy.matches_path(&a));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_malformed_saved_file_id_fails_to_load() {
+        let (dir, a, _) = twin_files("malformed");
+        let mut saved = serde_json::to_value(SourceIdentity::from_path(&a).unwrap()).unwrap();
+        saved["file_id"] = serde_json::json!("not an id");
+
+        assert!(serde_json::from_value::<SourceIdentity>(saved).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// No suffix and container combination puts the output on the source file.
     #[test]
     fn output_path_never_collides_with_the_source() {
@@ -926,7 +1100,7 @@ mod tests {
 
         collect_video_files_cancellable_result(&dir, &mut found, &cancel).unwrap();
 
-        assert!(found.is_empty());
+        assert_eq!(found, Vec::<std::path::PathBuf>::new());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -989,6 +1163,8 @@ mod tests {
             codec: "subrip".into(),
             title: None,
             forced: false,
+            external: None,
+            external_stream: 0,
         }
     }
 

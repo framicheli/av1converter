@@ -436,7 +436,7 @@ fn is_rf_field(field: ConfigField) -> bool {
     matches!(field, ConfigField::Preset(_, _))
 }
 
-#[cfg(test)]
+/// The serialized setting path of `field`; `None` for autostart.
 fn config_field_path(field: ConfigField) -> Option<String> {
     let path = match field {
         ConfigField::Language => "language",
@@ -489,6 +489,13 @@ fn config_field_path(field: ConfigField) -> Option<String> {
         }
     };
     Some(path.to_string())
+}
+
+/// Whether `field` is a host-level setting: `daemon.*`, `disc.*` or autostart.
+pub fn is_host_field(field: ConfigField) -> bool {
+    field == ConfigField::DaemonAutostart
+        || config_field_path(field)
+            .is_some_and(|path| path.starts_with("daemon.") || path.starts_with("disc."))
 }
 
 /// The config rows actually shown for the current config.
@@ -754,6 +761,7 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
     // Config items
     let items = build_config_items(
         &app.config,
+        app.host_settings_read_only(),
         app.config_selected,
         app.config_edit_buffer.is_some(),
         app.config_edit_buffer.as_deref().unwrap_or(""),
@@ -802,10 +810,13 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
 
 /// Yellow footer for rows that need a warning rather than the key help.
 fn selected_config_hint(app: &App) -> Option<Msg> {
-    match visible_config_items(&app.config)
+    let field = visible_config_items(&app.config)
         .get(app.config_selected)
-        .map(|item| item.field)
-    {
+        .map(|item| item.field);
+    if app.host_settings_read_only() && field.is_some_and(is_host_field) {
+        return Some(Msg::HostSettingsReadOnly);
+    }
+    match field {
         Some(ConfigField::DeleteSource) => Some(Msg::WebDeleteSourceWarning),
         Some(ConfigField::DaemonAutostart) => Some(Msg::CfgDaemonAutostartHint),
         Some(
@@ -820,6 +831,7 @@ fn selected_config_hint(app: &App) -> Option<Msg> {
 
 fn build_config_items(
     config: &AppConfig,
+    host_read_only: bool,
     selected: usize,
     editing: bool,
     input_buffer: &str,
@@ -835,7 +847,8 @@ fn build_config_items(
 
             let prefix = if is_selected { "> " } else { "  " };
             let label = format!("{}{}: ", prefix, config_item_label(config.language, item));
-            let hint = if is_text && is_selected && !editing {
+            let locked = host_read_only && is_host_field(item.field);
+            let hint = if is_text && is_selected && !editing && !locked {
                 t(config.language, Msg::EnterToEdit)
             } else {
                 ""
@@ -852,14 +865,22 @@ fn build_config_items(
                 get_config_value(config, i)
             };
 
-            let label_style = if is_selected {
+            let label_style = if locked {
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM)
+            } else if is_selected {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
-            let value_style = if is_selected {
+            let value_style = if locked {
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM)
+            } else if is_selected {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
@@ -967,6 +988,82 @@ fn config_group(field: ConfigField) -> Option<Msg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rendered rows of the Configuration screen with the cursor on
+    /// `field`, as (text, modifier of the row's first cell) per line.
+    fn rendered_rows(app: &mut App, field: ConfigField) -> Vec<(String, Modifier)> {
+        use ratatui::{Terminal, backend::TestBackend};
+        app.config_selected = visible_config_items(&app.config)
+            .iter()
+            .position(|item| item.field == field)
+            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|f| render_config_screen(f, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                let text: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                let first = (0..buffer.area.width)
+                    .find(|&x| buffer[(x, y)].symbol() == ">")
+                    .map_or(Modifier::empty(), |x| buffer[(x, y)].modifier);
+                (text, first)
+            })
+            .collect()
+    }
+
+    fn remote_attach(local: bool) -> App {
+        let (mut app, _sent, events) = crate::app::tests::attached_app();
+        events
+            .send(crate::daemon::client::ClientEvent::Reply {
+                request: crate::daemon::client::RequestKind::SettingsAccess,
+                result: Ok(serde_json::json!({"local": local})),
+            })
+            .unwrap();
+        app.process_client_events();
+        app.clear_message();
+        app
+    }
+
+    #[test]
+    fn host_rows_render_dimmed_with_a_note_for_a_remote_attach() {
+        let mut app = remote_attach(false);
+        let lang = app.config.language;
+        let note = t(lang, Msg::HostSettingsReadOnly);
+
+        let rows = rendered_rows(&mut app, ConfigField::DaemonPort);
+        let port = rows
+            .iter()
+            .find(|(text, _)| text.contains(&format!("> {}", t(lang, Msg::CfgDaemonPort))))
+            .expect("the port row");
+        assert!(port.1.contains(Modifier::DIM));
+        let screen: String = rows.iter().map(|(text, _)| text.as_str()).collect();
+        let start: String = note.chars().take(20).collect();
+        assert!(screen.contains(&start), "{screen}");
+
+        let rows = rendered_rows(&mut app, ConfigField::Language);
+        let language = rows
+            .iter()
+            .find(|(text, _)| text.contains(&format!("> {}", t(lang, Msg::CfgLanguage))))
+            .expect("the language row");
+        assert!(!language.1.contains(Modifier::DIM));
+        assert_eq!(selected_config_hint(&app), None);
+    }
+
+    #[test]
+    fn host_rows_render_normally_for_a_local_attach() {
+        let mut app = remote_attach(true);
+        let lang = app.config.language;
+
+        let rows = rendered_rows(&mut app, ConfigField::DaemonPort);
+        let port = rows
+            .iter()
+            .find(|(text, _)| text.contains(&format!("> {}", t(lang, Msg::CfgDaemonPort))))
+            .expect("the port row");
+        assert!(!port.1.contains(Modifier::DIM));
+        assert_ne!(selected_config_hint(&app), Some(Msg::HostSettingsReadOnly));
+    }
 
     #[test]
     fn a_fractional_vmaf_threshold_keeps_its_decimals() {

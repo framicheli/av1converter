@@ -50,7 +50,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Upper bound on retained `MSG` lines; the newest are kept.
 const MAX_MESSAGES: usize = 200;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiscDrive {
     pub id: u32,
     pub name: String,
@@ -60,7 +60,7 @@ pub struct DiscDrive {
 
 /// Where `MakeMKV` reads a disc from: a drive, or a ripped folder or ISO image
 /// on disk.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DiscSource {
     Drive(DiscDrive),
     Folder(PathBuf),
@@ -134,7 +134,7 @@ pub(crate) fn is_iso(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("iso"))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiscTitle {
     pub id: u32,
     pub name: String,

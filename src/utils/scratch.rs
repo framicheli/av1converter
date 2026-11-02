@@ -126,7 +126,7 @@ mod tests {
     /// An empty scratch directory is removed; one still holding a file stays.
     #[test]
     fn the_scratch_directory_goes_only_when_it_is_empty() {
-        let dir = std::env::temp_dir().join(format!("av1c_scratch_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("av1c_scratch_empty_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         super::create_private_dir(&dir).unwrap();
         let busy = dir.join("job.progress");
@@ -199,7 +199,8 @@ mod tests {
     /// A name already taken is refused, including when taken by a symlink.
     #[test]
     fn an_occupied_name_is_refused() {
-        let base = std::env::temp_dir().join(format!("av1c_scratch_{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("av1c_scratch_occupied_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
 

@@ -99,7 +99,7 @@ pub fn render_explorer(f: &mut Frame, app: &mut App) {
     f.render_stateful_widget(list, chunks[2], &mut app.explorer_list_state);
 
     // Help
-    let help_text = if app.folder_scan_receiver.is_some() {
+    let help_text = if app.folder_scan_active() {
         Line::from(vec![
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(format!("\u{a0}{}", t(lang, Msg::Cancel))),

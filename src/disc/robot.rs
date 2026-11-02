@@ -268,7 +268,7 @@ mod tests {
             }
         }
         assert!(scan.disc_type().is_none());
-        assert!(scan.finish().is_empty());
+        assert_eq!(scan.finish(), Vec::<crate::disc::DiscTitle>::new());
         assert!(split_fields("").is_none());
     }
 

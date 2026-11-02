@@ -29,9 +29,9 @@ pub fn render_confirm_dialog(f: &mut Frame, app: &App) {
             format!(" {} ", t(lang, Msg::ExitAppTitle)),
             t(
                 lang,
-                if app.work_active() {
+                if !app.is_attached() && app.work_active() {
                     Msg::ExitAppActivePrompt
-                } else if app.queue.jobs.iter().any(|job| job.temporary) {
+                } else if !app.is_attached() && app.queue.jobs.iter().any(|job| job.temporary) {
                     Msg::ExitAppRipsPrompt
                 } else if app.current_screen == Screen::Configuration && app.config_is_dirty() {
                     Msg::ExitAppUnsavedPrompt
@@ -180,5 +180,28 @@ mod tests {
             .collect();
 
         assert!(screen.contains("Unsaved settings"));
+    }
+
+    #[test]
+    fn quitting_while_attached_does_not_warn_about_local_work_or_rips() {
+        let (mut app, _sent, _events) = crate::app::tests::attached_app();
+        app.config.language = crate::i18n::Language::English;
+        app.encoding_active = true;
+        app.queue.jobs[0].temporary = true;
+        app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| render_confirm_dialog(f, &app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+
+        assert!(screen.contains("Are you sure you want to exit?"));
+        assert!(!screen.contains("Active work"));
+        assert!(!screen.contains("Ripped titles"));
     }
 }

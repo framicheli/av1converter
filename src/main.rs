@@ -21,6 +21,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend, widgets::Clear};
 use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -166,6 +167,13 @@ fn run_daemon_entry(foreground: bool) -> io::Result<()> {
         eprintln!("{} (PID {pid})", t(lang, Msg::DaemonAlreadyRunning));
         std::process::exit(1);
     }
+    if let Some(pid) = daemon::lifecycle::tui_encoding_pid() {
+        eprintln!(
+            "{}",
+            t(lang, Msg::DaemonRefusedTuiEncoding).replace("{pid}", &pid.to_string())
+        );
+        std::process::exit(1);
+    }
 
     if config.daemon.refuses_public_bind() {
         eprintln!("{}", t(lang, Msg::DaemonPublicHttpRefused));
@@ -257,6 +265,14 @@ fn restart_daemon_entry() -> io::Result<()> {
 
     if !config.daemon.enabled {
         eprintln!("{}", t(lang, Msg::DaemonDisabledError));
+        std::process::exit(1);
+    }
+
+    if let Some(pid) = daemon::lifecycle::tui_encoding_pid() {
+        eprintln!(
+            "{}",
+            t(lang, Msg::DaemonRefusedTuiEncoding).replace("{pid}", &pid.to_string())
+        );
         std::process::exit(1);
     }
 
@@ -544,6 +560,82 @@ fn uninstall_service_or_exit() {
     }
 }
 
+/// What `main` does for the TUI.
+enum TuiMode {
+    /// No daemon runs: queue and encode in this process.
+    Local,
+    /// Attach to the daemon at this address, starting from its snapshot.
+    Attach(SocketAddr, Box<daemon::client::RemoteSnapshot>),
+    /// Print the message and exit with code 1.
+    Refuse(String),
+}
+
+/// Chooses the TUI mode for a daemon listening on `listen`, probing its
+/// snapshot on the connect address. A rejected token refusal ends with
+/// `load_error`, the config file's load error.
+fn tui_mode(
+    listen: Option<SocketAddr>,
+    probe: impl Fn(SocketAddr) -> Result<daemon::client::RemoteSnapshot, daemon::client::ClientError>,
+    lang: i18n::Language,
+    load_error: Option<&str>,
+) -> TuiMode {
+    use daemon::client::ClientError;
+
+    let Some(listen) = listen else {
+        return TuiMode::Local;
+    };
+    let addr = daemon::client::attach_addr(listen);
+    let mismatch = |version: &str| {
+        TuiMode::Refuse(
+            t(lang, Msg::DaemonVersionMismatch)
+                .replace("{daemon}", version)
+                .replace("{tui}", env!("CARGO_PKG_VERSION")),
+        )
+    };
+    match probe(addr) {
+        Ok(snapshot) if snapshot.version == env!("CARGO_PKG_VERSION") => {
+            TuiMode::Attach(addr, Box::new(snapshot))
+        }
+        Ok(snapshot) => mismatch(&snapshot.version),
+        Err(ClientError::Http { status: 404, .. } | ClientError::BadResponse(_)) => mismatch("?"),
+        Err(ClientError::Http { status: 401, .. }) => {
+            let rejected = t(lang, Msg::DaemonTokenRejected);
+            TuiMode::Refuse(match load_error {
+                Some(error) => format!("{rejected}\n{} ({error})", t(lang, Msg::ConfigLoadFailed)),
+                None => rejected.to_string(),
+            })
+        }
+        Err(_) => {
+            TuiMode::Refuse(t(lang, Msg::DaemonUnreachable).replace("{addr}", &addr.to_string()))
+        }
+    }
+}
+
+/// The running daemon's address and snapshot when the TUI attaches to it;
+/// prints the refusal and exits with code 1 when it refuses.
+fn attach_or_exit(
+    config: &config::AppConfig,
+    load_error: Option<&str>,
+) -> Option<(SocketAddr, Box<daemon::client::RemoteSnapshot>)> {
+    match tui_mode(
+        daemon::lifecycle::running_listen(),
+        |addr| {
+            daemon::client::DaemonClient::new(addr, config.daemon.auth_token.clone())
+                .get("/api/snapshot")
+                .and_then(daemon::client::parse_snapshot)
+        },
+        config.language,
+        load_error,
+    ) {
+        TuiMode::Local => None,
+        TuiMode::Attach(addr, first) => Some((addr, first)),
+        TuiMode::Refuse(message) => {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
     match parse_cli(
         std::env::args_os()
@@ -617,6 +709,9 @@ fn main() -> io::Result<()> {
         let _ = config::AppConfig::load();
     }
 
+    let (config, load_error) = config::AppConfig::load_reporting();
+    let attach = attach_or_exit(&config, load_error.as_deref());
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -634,6 +729,31 @@ fn main() -> io::Result<()> {
     };
 
     // Create app and run
+    let mut app = create_app(config, attach);
+    let res = run_app(&mut terminal, &mut app);
+    if res.is_err() {
+        shutdown_after_error(&app);
+    }
+    utils::remove_scratch_dir_if_empty();
+
+    // Restore terminal
+    let restore = restore_terminal();
+    res?;
+    restore
+}
+
+/// The app attached to the daemon at `attach`, or a local one.
+fn create_app(
+    config: config::AppConfig,
+    attach: Option<(SocketAddr, Box<daemon::client::RemoteSnapshot>)>,
+) -> App {
+    if let Some((addr, first)) = attach {
+        let token = config.daemon.auth_token.clone();
+        let (events_tx, events) = std::sync::mpsc::channel();
+        let requests =
+            daemon::client::spawn(daemon::client::attached_client(addr, token), events_tx);
+        return App::attached(config, app::RemoteSession::new(requests, events), &first);
+    }
     let mut app = App::new();
     // Staged rips named by a stopped daemon's queue stay for its next start.
     let (daemon_queue, unreadable_queue) = queue::state::load(&daemon::lifecycle::queue_file());
@@ -648,23 +768,66 @@ fn main() -> io::Result<()> {
         &daemon_queue.state.jobs,
         disc::staging::ACTIVE_RIP_WINDOW,
     );
-    let res = run_app(&mut terminal, &mut app);
-    if res.is_err() {
-        shutdown_after_error(&app);
-    }
-    utils::remove_scratch_dir_if_empty();
-
-    // Restore terminal
-    let restore = restore_terminal();
-    res?;
-    restore
+    app
 }
 
 /// Cleanup for an event-loop error, which returns before the quit path runs:
 /// kills tracked children and removes the staging copies of queued rips.
+/// An attached app leaves the daemon's work alone.
 fn shutdown_after_error(app: &App) {
-    crate::utils::child::kill_all();
-    app.discard_staged_jobs();
+    run_exit_cleanup(app, error_cleanup(app));
+}
+
+/// Cleanup owed by an exiting app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExitCleanup {
+    /// Kill tracked ffmpeg/makemkvcon children.
+    kill_children: bool,
+    /// Remove the staging copies of queued rips.
+    discard_rips: bool,
+}
+
+/// Cleanup after an event-loop error: all of it for a local app, none for an
+/// attached one.
+fn error_cleanup(app: &App) -> ExitCleanup {
+    let local = !app.is_attached();
+    ExitCleanup {
+        kill_children: local,
+        discard_rips: local,
+    }
+}
+
+/// Cleanup for a quitting app, or `None` while a local app still waits for
+/// its work. A local app discards rips and, once `deadline_reached` with work
+/// still running, kills children; an attached app exits with no cleanup.
+fn quit_cleanup(app: &App, deadline_reached: bool) -> Option<ExitCleanup> {
+    if app.is_attached() {
+        return Some(ExitCleanup {
+            kill_children: false,
+            discard_rips: false,
+        });
+    }
+    let idle = !app.encoding_active
+        && app.analysis_receiver.is_none()
+        && app.folder_scan_receiver.is_none()
+        && app.disc_drive_receiver.is_none()
+        && app.disc_receiver.is_none();
+    if !idle && !deadline_reached {
+        return None;
+    }
+    Some(ExitCleanup {
+        kill_children: !idle,
+        discard_rips: true,
+    })
+}
+
+fn run_exit_cleanup(app: &App, cleanup: ExitCleanup) {
+    if cleanup.kill_children {
+        crate::utils::child::kill_all();
+    }
+    if cleanup.discard_rips {
+        app.discard_staged_jobs();
+    }
 }
 
 /// Best-effort terminal restoration used by setup errors, runtime errors and
@@ -684,6 +847,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         app.process_folder_scan();
         app.process_disc_drive_events();
         app.process_disc_events();
+        app.process_client_events();
         app.tick_message();
 
         terminal.draw(|f| {
@@ -731,7 +895,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     || (compact && key.code == KeyCode::Char('q') && app.confirm_dialog.is_none());
                 if quit_request {
                     if !app.should_quit {
-                        app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+                        app.request_exit();
                     }
                 } else if !(app.config_edit_buffer.is_some() && is_shortcut_char(key)) {
                     handle_key(app, key.code);
@@ -739,23 +903,22 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
         }
 
-        // Match the daemon: wait for children, then kill leftover ffmpeg/makemkvcon.
         if app.should_quit {
-            let idle = !app.encoding_active
-                && app.analysis_receiver.is_none()
-                && app.folder_scan_receiver.is_none()
-                && app.disc_drive_receiver.is_none()
-                && app.disc_receiver.is_none();
             let deadline = *quit_deadline.get_or_insert(Instant::now() + Duration::from_secs(10));
-            if idle || Instant::now() >= deadline {
-                if !idle {
-                    crate::utils::child::kill_all();
-                }
-                app.discard_staged_jobs();
+            if try_finish_quit(app, Instant::now() >= deadline) {
                 return Ok(());
             }
         }
     }
+}
+
+/// Whether a quitting app may exit now; runs its [`quit_cleanup`] when it may.
+fn try_finish_quit(app: &App, deadline_reached: bool) -> bool {
+    let Some(cleanup) = quit_cleanup(app, deadline_reached) else {
+        return false;
+    };
+    run_exit_cleanup(app, cleanup);
+    true
 }
 
 /// A character typed with either Control or Alt held. `AltGr`, which some
@@ -768,6 +931,9 @@ fn is_shortcut_char(key: event::KeyEvent) -> bool {
 
 fn handle_key(app: &mut App, key: KeyCode) {
     if app.should_quit {
+        return;
+    }
+    if app.daemon_blocked() && !allowed_while_unreachable(app, key) {
         return;
     }
     if app.confirm_dialog.is_some() {
@@ -783,7 +949,7 @@ fn handle_key(app: &mut App, key: KeyCode) {
     // Global quit shortcut, available on every screen. Suppressed while typing
     // in a Configuration text field, where 'q' is an ordinary character.
     if key == KeyCode::Char('q') && app.config_edit_buffer.is_none() {
-        app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
+        app.request_exit();
         return;
     }
 
@@ -797,6 +963,33 @@ fn handle_key(app: &mut App, key: KeyCode) {
         Screen::Finish => handle_finish_key(app, key),
         Screen::Configuration => handle_config_key(app, key),
     }
+}
+
+/// Whether `key` may act while the attached daemon is blocked:
+/// navigation, quitting, and answers to confirmations that send nothing to
+/// the daemon.
+fn allowed_while_unreachable(app: &App, key: KeyCode) -> bool {
+    let local_confirm = matches!(
+        app.confirm_dialog,
+        Some((
+            ConfirmAction::ExitApp
+                | ConfirmAction::AbandonTrackConfig
+                | ConfirmAction::DiscardConfigChanges,
+            _
+        ))
+    );
+    local_confirm
+        || matches!(
+            key,
+            KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Esc
+                | KeyCode::Char('q')
+        )
 }
 
 fn handle_confirm_dialog_key(app: &mut App, key: KeyCode) {
@@ -850,9 +1043,7 @@ fn handle_dv_dialog_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Enter | KeyCode::Char(' ') => app.confirm_dv_dialog(),
         KeyCode::Esc => app.dismiss_dv_dialog(),
-        KeyCode::Char('q') => {
-            app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
-        }
+        KeyCode::Char('q') => app.request_exit(),
         _ => {}
     }
 }
@@ -863,8 +1054,8 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
     // dialog is not itself treated as stale.
     let still_active = match action {
         ConfirmAction::CancelEncoding => app.encoding_active,
-        ConfirmAction::CancelAnalysis => app.analysis_receiver.is_some(),
-        ConfirmAction::CancelDisc => app.disc_receiver.is_some(),
+        ConfirmAction::CancelAnalysis => app.analysis_active(),
+        ConfirmAction::CancelDisc => app.disc_run_active(),
         _ => true,
     };
     if !still_active {
@@ -897,7 +1088,7 @@ fn execute_confirm_action(app: &mut App, action: ConfirmAction) {
         ConfirmAction::CancelAnalysis => {
             app.cancel_analysis();
         }
-        ConfirmAction::NewConversion => app.reset(),
+        ConfirmAction::NewConversion => app.new_conversion(),
         ConfirmAction::RemoveRip(index) => app.remove_job(index),
         ConfirmAction::ClearFinishedRips => {
             app.clear_finished();
@@ -918,9 +1109,7 @@ fn handle_home_key(app: &mut App, key: KeyCode) {
             2 => app.navigate_to_explorer(true, true),   // Open folder recursive
             3 => app.start_disc_flow(),                  // Rip DVD / Blu-ray
             4 => app.navigate_to_configuration(),        // Configuration
-            5 => {
-                app.confirm_dialog = Some((ConfirmAction::ExitApp, false));
-            }
+            5 => app.request_exit(),
             _ => {}
         },
         _ => {}
@@ -960,7 +1149,7 @@ fn handle_disc_key(app: &mut App, key: KeyCode) {
 }
 
 fn handle_explorer_key(app: &mut App, key: KeyCode) {
-    if app.folder_scan_receiver.is_some() {
+    if app.folder_scan_active() {
         if key == KeyCode::Esc {
             app.cancel_folder_scan();
         }
@@ -1053,7 +1242,7 @@ fn handle_track_config_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('A') => app.apply_track_config_to_remaining(),
         KeyCode::Esc => {
-            if app.encoding_active || app.disc_operation_active() {
+            if app.encoding_active || app.disc_operation_active() || app.is_attached() {
                 app.navigate_to_queue();
             } else {
                 app.confirm_dialog = Some((ConfirmAction::AbandonTrackConfig, false));
@@ -1180,7 +1369,7 @@ fn handle_queue_key(app: &mut App, key: KeyCode) {
         KeyCode::Esc if app.disc_operation_active() => {
             app.confirm_dialog = Some((ConfirmAction::CancelDisc, false));
         }
-        KeyCode::Esc | KeyCode::Char('A') if app.analysis_receiver.is_some() => {
+        KeyCode::Esc | KeyCode::Char('A') if app.analysis_active() => {
             app.confirm_dialog = Some((ConfirmAction::CancelAnalysis, false));
         }
         KeyCode::Esc | KeyCode::Char('E') if app.encoding_active => {
@@ -1272,6 +1461,8 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
     let config_item_count = ui::config_screen::visible_config_items(&app.config).len();
 
     match key {
+        KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l' | 'b') | KeyCode::Enter
+            if host_row_locked(app, app.config_selected) => {}
         KeyCode::Esc => {
             if app.config_is_dirty() {
                 app.confirm_dialog = Some((ConfirmAction::DiscardConfigChanges, false));
@@ -1304,6 +1495,15 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('b') => browse_config_folder(app),
         _ => {}
     }
+}
+
+/// Whether the Configuration row at `index` is a host setting the attached
+/// daemon keeps read-only for this app.
+fn host_row_locked(app: &App, index: usize) -> bool {
+    app.host_settings_read_only()
+        && ui::config_screen::visible_config_items(&app.config)
+            .get(index)
+            .is_some_and(|item| ui::config_screen::is_host_field(item.field))
 }
 
 /// Open the folder explorer for the selected path setting.
@@ -1354,8 +1554,19 @@ fn validate_and_save_config(
     })
 }
 
-/// Validate and persist the configuration screen values.
+/// Validate and persist the configuration screen values. While attached, the
+/// daemon validates and saves them; a blank auth token is left out.
 fn save_config(app: &mut App) {
+    if app.is_attached() {
+        let mut body = serde_json::to_value(&app.config).unwrap_or_default();
+        if app.config.daemon.auth_token.trim().is_empty()
+            && let Some(daemon) = body.get_mut("daemon").and_then(|d| d.as_object_mut())
+        {
+            daemon.remove("auth_token");
+        }
+        app.send_to_daemon(daemon::client::ClientRequest::SettingsSet(body));
+        return;
+    }
     let lang = app.config.language;
     let previous = app.saved_config.clone();
     let queued: Vec<(std::path::PathBuf, Option<std::path::PathBuf>, bool)> = app
@@ -1541,8 +1752,17 @@ fn parse_lang_list(s: &str) -> Vec<String> {
 }
 
 /// Flip login autostart. Enabling saves the live config first, including a
-/// port just typed in Settings, and sets `daemon.enabled`.
+/// port just typed in Settings, and sets `daemon.enabled`. While attached,
+/// the daemon does both, and nothing is sent while it is unreachable.
 fn apply_autostart(app: &mut App, enable: bool) {
+    if app.is_attached() {
+        if !app.daemon_blocked() {
+            app.send_to_daemon(daemon::client::ClientRequest::ServiceSet(
+                serde_json::json!({"enabled": enable}),
+            ));
+        }
+        return;
+    }
     let lang = app.config.language;
     if !daemon::service::supported() {
         app.set_timed_message(t(lang, Msg::DaemonServiceUnsupported), 5);
@@ -1786,6 +2006,483 @@ fn adjust_preset_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use daemon::client::ClientError;
+
+    #[test]
+    fn unreachable_blocks_actions_and_recovers() {
+        let (mut app, sent, events) = app::tests::attached_app();
+        app.navigate_to_queue();
+        for job in &mut app.queue.jobs {
+            job.status = crate::queue::JobStatus::Ready;
+        }
+        events
+            .send(daemon::client::ClientEvent::Unreachable("refused".into()))
+            .unwrap();
+        app.process_client_events();
+
+        handle_key(&mut app, KeyCode::Delete);
+        handle_key(&mut app, KeyCode::Char('C'));
+        handle_key(&mut app, KeyCode::Char('a'));
+        handle_key(&mut app, KeyCode::Down);
+
+        assert!(sent.try_recv().is_err());
+        assert_eq!(app.current_screen, Screen::Queue);
+        assert!(app.confirm_dialog.is_none());
+        assert_eq!(app.queue.jobs.len(), 2);
+        assert_eq!(app.queue_cursor, 1);
+        assert_eq!(
+            app.message.as_deref(),
+            Some(t(app.config.language, Msg::DaemonUnreachableRetrying))
+        );
+
+        events.send(daemon::client::ClientEvent::Reachable).unwrap();
+        app.process_client_events();
+
+        let app::Backend::Remote(remote) = &app.backend else {
+            panic!("not attached");
+        };
+        assert!(remote.reachable);
+    }
+
+    /// An attached app on the Queue with two Ready jobs.
+    fn attached_on_ready_queue() -> (
+        App,
+        std::sync::mpsc::Receiver<daemon::client::ClientRequest>,
+        std::sync::mpsc::Sender<daemon::client::ClientEvent>,
+    ) {
+        let (mut app, sent, events) = app::tests::attached_app();
+        app.navigate_to_queue();
+        for job in &mut app.queue.jobs {
+            job.status = crate::queue::JobStatus::Ready;
+        }
+        (app, sent, events)
+    }
+
+    #[test]
+    fn a_restarted_daemon_of_another_version_blocks_actions() {
+        let (mut app, sent, events) = attached_on_ready_queue();
+        let mut restarted =
+            app::tests::snapshot_with(5, false, &["/nonexistent/a.mkv", "/nonexistent/b.mkv"]);
+        restarted.version = "0.0.1-old".into();
+        restarted.instance = 2;
+        events
+            .send(daemon::client::ClientEvent::Snapshot(Box::new(restarted)))
+            .unwrap();
+        app.process_client_events();
+
+        handle_key(&mut app, KeyCode::Delete);
+
+        assert!(sent.try_recv().is_err());
+        assert_eq!(
+            app.message.as_deref(),
+            Some(
+                t(app.config.language, Msg::DaemonVersionMismatch)
+                    .replace("{daemon}", "0.0.1-old")
+                    .replace("{tui}", env!("CARGO_PKG_VERSION"))
+                    .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn a_restart_into_another_version_closes_job_dialogs_and_the_track_edit() {
+        let (mut app, sent, events) = attached_on_ready_queue();
+        app.confirm_dialog = Some((ConfirmAction::RemoveRip(0), true));
+        app.queue.config_job_index = 0;
+        app.current_screen = Screen::TrackConfig;
+        let mut restarted =
+            app::tests::snapshot_with(5, false, &["/nonexistent/a.mkv", "/nonexistent/b.mkv"]);
+        restarted.version = "0.0.1-old".into();
+        restarted.instance = 2;
+        events
+            .send(daemon::client::ClientEvent::Snapshot(Box::new(restarted)))
+            .unwrap();
+        app.process_client_events();
+
+        assert_eq!(app.confirm_dialog, None);
+        assert_eq!(app.current_screen, Screen::Queue);
+        let version_message = t(app.config.language, Msg::DaemonVersionMismatch)
+            .replace("{daemon}", "0.0.1-old")
+            .replace("{tui}", env!("CARGO_PKG_VERSION"));
+        assert_eq!(app.message.as_deref(), Some(version_message.as_str()));
+
+        handle_key(&mut app, KeyCode::Delete);
+
+        assert!(sent.try_recv().is_err());
+        assert_eq!(app.message.as_deref(), Some(version_message.as_str()));
+    }
+
+    #[test]
+    fn a_rejected_token_blocks_actions() {
+        let (mut app, sent, events) = attached_on_ready_queue();
+        events
+            .send(daemon::client::ClientEvent::TokenRejected)
+            .unwrap();
+        app.process_client_events();
+
+        handle_key(&mut app, KeyCode::Delete);
+
+        assert!(sent.try_recv().is_err());
+        assert_eq!(
+            app.message.as_deref(),
+            Some(t(app.config.language, Msg::DaemonTokenRejected))
+        );
+    }
+
+    #[test]
+    fn new_conversion_on_finish_while_attached_clears_finished() {
+        let (mut app, sent, _events) = app::tests::attached_app();
+        app.queue.jobs[0].status = crate::queue::JobStatus::Done;
+        app.current_screen = Screen::Finish;
+
+        handle_key(&mut app, KeyCode::Enter);
+        handle_key(&mut app, KeyCode::Char('y'));
+
+        assert_eq!(app.current_screen, Screen::Home);
+        assert_eq!(
+            sent.try_iter().collect::<Vec<_>>(),
+            vec![daemon::client::ClientRequest::ClearFinished(
+                serde_json::json!({"confirm": false})
+            )]
+        );
+    }
+
+    #[test]
+    fn the_remove_key_reaches_the_daemon_once_it_is_reachable_again() {
+        let (mut app, sent, events) = app::tests::attached_app();
+        app.navigate_to_queue();
+        for job in &mut app.queue.jobs {
+            job.status = crate::queue::JobStatus::Ready;
+        }
+        app.queue_cursor = 1;
+        let app::Backend::Remote(remote) = &app.backend else {
+            panic!("not attached");
+        };
+        let id = remote.ids[1];
+        events
+            .send(daemon::client::ClientEvent::Unreachable("refused".into()))
+            .unwrap();
+        events.send(daemon::client::ClientEvent::Reachable).unwrap();
+        app.process_client_events();
+
+        handle_key(&mut app, KeyCode::Delete);
+
+        assert_eq!(
+            sent.try_iter().collect::<Vec<_>>(),
+            vec![
+                daemon::client::ClientRequest::SettingsAccess,
+                daemon::client::ClientRequest::Remove(id),
+            ]
+        );
+    }
+
+    fn select_config_row(app: &mut App, field: ui::config_screen::ConfigField) {
+        app.config_selected = ui::config_screen::visible_config_items(&app.config)
+            .iter()
+            .position(|item| item.field == field)
+            .unwrap();
+    }
+
+    fn read_only_attached_app() -> (
+        App,
+        std::sync::mpsc::Receiver<daemon::client::ClientRequest>,
+        std::sync::mpsc::Sender<daemon::client::ClientEvent>,
+    ) {
+        let (mut app, sent, events) = app::tests::attached_app();
+        events
+            .send(daemon::client::ClientEvent::Reply {
+                request: daemon::client::RequestKind::SettingsAccess,
+                result: Ok(serde_json::json!({"local": false})),
+            })
+            .unwrap();
+        app.process_client_events();
+        app.current_screen = Screen::Configuration;
+        (app, sent, events)
+    }
+
+    #[test]
+    fn host_rows_are_read_only_for_a_remote_attach() {
+        use ui::config_screen::ConfigField;
+        let (mut app, sent, _events) = read_only_attached_app();
+        let port = app.config.daemon.port;
+        let enabled = app.config.daemon.enabled;
+
+        select_config_row(&mut app, ConfigField::DaemonPort);
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.config_edit_buffer.is_none());
+        select_config_row(&mut app, ConfigField::DaemonEnabled);
+        handle_key(&mut app, KeyCode::Right);
+        select_config_row(&mut app, ConfigField::DiscStagingDirectory);
+        handle_key(&mut app, KeyCode::Char('b'));
+        handle_key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.current_screen, Screen::Configuration);
+        assert!(app.config_edit_buffer.is_none());
+        assert_eq!(app.config.daemon.port, port);
+        assert_eq!(app.config.daemon.enabled, enabled);
+        assert!(sent.try_recv().is_err());
+
+        let language = app.config.language;
+        select_config_row(&mut app, ConfigField::Language);
+        handle_key(&mut app, KeyCode::Right);
+        assert_ne!(app.config.language, language);
+        select_config_row(&mut app, ConfigField::OutputSuffix);
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.config_edit_buffer.is_some());
+    }
+
+    #[test]
+    fn host_rows_stay_editable_for_a_local_attach() {
+        let (mut app, _sent, _events) = app::tests::attached_app();
+        app.current_screen = Screen::Configuration;
+        let enabled = app.config.daemon.enabled;
+
+        select_config_row(&mut app, ui::config_screen::ConfigField::DaemonEnabled);
+        handle_key(&mut app, KeyCode::Right);
+
+        assert_eq!(app.config.daemon.enabled, !enabled);
+    }
+
+    #[test]
+    fn saving_settings_never_sends_a_blank_token() {
+        let (mut app, sent, events) = app::tests::attached_app();
+        app.current_screen = Screen::Configuration;
+        app.config.daemon.auth_token = String::new();
+        app.config.output.suffix = "_remote".into();
+
+        save_config(&mut app);
+
+        let requests: Vec<_> = sent.try_iter().collect();
+        assert_eq!(requests.len(), 1);
+        let daemon::client::ClientRequest::SettingsSet(body) = &requests[0] else {
+            panic!("expected SettingsSet, got {requests:?}");
+        };
+        assert_eq!(body["output"]["suffix"], serde_json::json!("_remote"));
+        assert!(body["daemon"].get("auth_token").is_none(), "{body}");
+        assert!(body["daemon"].get("port").is_some());
+        assert!(app.config_is_dirty());
+
+        let mut saved = serde_json::to_value(&app.config).unwrap();
+        saved["daemon"]["auth_token"] = serde_json::json!("");
+        events
+            .send(daemon::client::ClientEvent::Reply {
+                request: daemon::client::RequestKind::SettingsSet,
+                result: Ok(saved),
+            })
+            .unwrap();
+        app.process_client_events();
+        assert!(!app.config_is_dirty());
+        assert_eq!(
+            app.message.as_deref(),
+            Some(t(app.config.language, Msg::SavedExclaim))
+        );
+    }
+
+    #[test]
+    fn saving_settings_sends_a_typed_token() {
+        let (mut app, sent, _events) = app::tests::attached_app();
+        app.config.daemon.auth_token = "x".repeat(40);
+
+        save_config(&mut app);
+
+        let requests: Vec<_> = sent.try_iter().collect();
+        let [daemon::client::ClientRequest::SettingsSet(body)] = requests.as_slice() else {
+            panic!("expected one SettingsSet, got {requests:?}");
+        };
+        assert_eq!(
+            body["daemon"]["auth_token"],
+            serde_json::json!("x".repeat(40))
+        );
+    }
+
+    #[test]
+    fn a_refused_save_keeps_the_edits() {
+        let (mut app, _sent, events) = app::tests::attached_app();
+        app.config.output.suffix = "_remote".into();
+        save_config(&mut app);
+
+        events
+            .send(daemon::client::ClientEvent::Reply {
+                request: daemon::client::RequestKind::SettingsSet,
+                result: Err(ClientError::Http {
+                    status: 400,
+                    error: "invalid settings".into(),
+                }),
+            })
+            .unwrap();
+        app.process_client_events();
+
+        assert!(app.config_is_dirty());
+        assert_eq!(app.config.output.suffix, "_remote");
+        assert_eq!(app.message.as_deref(), Some("invalid settings"));
+    }
+
+    #[test]
+    fn autostart_while_attached_asks_the_daemon() {
+        let (mut app, sent, _events) = app::tests::attached_app();
+
+        apply_autostart(&mut app, true);
+        apply_autostart(&mut app, false);
+
+        assert_eq!(
+            sent.try_iter().collect::<Vec<_>>(),
+            vec![
+                daemon::client::ClientRequest::ServiceSet(serde_json::json!({"enabled": true})),
+                daemon::client::ClientRequest::ServiceSet(serde_json::json!({"enabled": false})),
+            ]
+        );
+        assert!(!app.config_is_dirty());
+    }
+
+    #[test]
+    fn autostart_sends_nothing_while_the_daemon_is_unreachable() {
+        let (mut app, sent, events) = app::tests::attached_app();
+        events
+            .send(daemon::client::ClientEvent::Unreachable("refused".into()))
+            .unwrap();
+        app.process_client_events();
+
+        apply_autostart(&mut app, true);
+
+        assert!(sent.try_recv().is_err());
+    }
+
+    #[test]
+    fn autostart_is_read_only_for_a_remote_attach() {
+        let (mut app, sent, _events) = read_only_attached_app();
+        if !daemon::service::supported() {
+            return;
+        }
+        select_config_row(&mut app, ui::config_screen::ConfigField::DaemonAutostart);
+
+        handle_key(&mut app, KeyCode::Right);
+
+        assert!(sent.try_recv().is_err());
+    }
+
+    #[test]
+    fn quitting_while_attached_does_not_ask_or_kill() {
+        let (mut app, _sent, _events) = app::tests::attached_app();
+        app.encoding_active = true;
+        app.navigate_to_queue();
+
+        handle_key(&mut app, KeyCode::Char('q'));
+
+        assert!(app.confirm_dialog.is_none());
+        assert!(app.should_quit);
+        let none = ExitCleanup {
+            kill_children: false,
+            discard_rips: false,
+        };
+        assert_eq!(quit_cleanup(&app, false), Some(none));
+        assert_eq!(quit_cleanup(&app, true), Some(none));
+        assert_eq!(error_cleanup(&app), none);
+    }
+
+    #[test]
+    fn quitting_an_idle_attached_app_still_asks() {
+        let (mut app, _sent, _events) = app::tests::attached_app();
+        for job in &mut app.queue.jobs {
+            job.status = crate::queue::JobStatus::Done;
+        }
+
+        handle_key(&mut app, KeyCode::Char('q'));
+
+        assert!(matches!(
+            app.confirm_dialog,
+            Some((ConfirmAction::ExitApp, false))
+        ));
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn a_local_quit_cleans_up_after_its_work() {
+        let mut app = App::new();
+        let all = ExitCleanup {
+            kill_children: true,
+            discard_rips: true,
+        };
+        assert_eq!(
+            quit_cleanup(&app, false),
+            Some(ExitCleanup {
+                kill_children: false,
+                discard_rips: true,
+            })
+        );
+        assert_eq!(error_cleanup(&app), all);
+
+        app.encoding_active = true;
+
+        assert_eq!(quit_cleanup(&app, false), None);
+        assert_eq!(quit_cleanup(&app, true), Some(all));
+    }
+
+    #[test]
+    fn an_unreachable_daemon_still_answers_the_exit_confirmation() {
+        let (mut app, sent, events) = app::tests::attached_app();
+        events
+            .send(daemon::client::ClientEvent::Unreachable("refused".into()))
+            .unwrap();
+        app.process_client_events();
+        handle_key(&mut app, KeyCode::Char('q'));
+
+        handle_key(&mut app, KeyCode::Char('y'));
+
+        assert!(app.should_quit);
+        assert!(sent.try_recv().is_err());
+    }
+
+    #[test]
+    fn an_unreachable_daemon_blocks_a_cancel_confirmation() {
+        let (mut app, sent, events) = app::tests::attached_app();
+        app.encoding_active = true;
+        app.navigate_to_queue();
+        events
+            .send(daemon::client::ClientEvent::Unreachable("refused".into()))
+            .unwrap();
+        app.process_client_events();
+        app.confirm_dialog = Some((ConfirmAction::CancelEncoding, false));
+
+        handle_key(&mut app, KeyCode::Char('y'));
+        handle_key(&mut app, KeyCode::Enter);
+
+        assert!(matches!(
+            app.confirm_dialog,
+            Some((ConfirmAction::CancelEncoding, false))
+        ));
+        assert!(app.encoding_active);
+        assert!(sent.try_recv().is_err());
+    }
+
+    #[test]
+    fn quitting_locally_still_asks() {
+        let mut app = App::new();
+
+        handle_key(&mut app, KeyCode::Char('q'));
+
+        assert!(matches!(
+            app.confirm_dialog,
+            Some((ConfirmAction::ExitApp, false))
+        ));
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn quitting_while_attached_keeps_the_daemon_rips() {
+        let root = std::env::temp_dir().join(format!("av1c-attached-quit-{}", std::process::id()));
+        let file = disc::staging::staged_rip(&root, u32::MAX);
+        let (mut app, _sent, _events) = app::tests::attached_app();
+        app.config.disc.staging_directory = Some(root.to_string_lossy().into_owned());
+        app.queue.jobs[0].path.clone_from(&file);
+        app.queue.jobs[0].temporary = true;
+        app.should_quit = true;
+
+        assert!(try_finish_quit(&app, true));
+        shutdown_after_error(&app);
+
+        assert!(file.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn the_home_cursor_stops_on_the_last_menu_entry() {
@@ -1838,7 +2535,7 @@ mod tests {
     #[test]
     fn purge_dirs_are_unique() {
         let dirs = purge_dirs();
-        assert!(!dirs.is_empty());
+        assert_ne!(dirs, Vec::<PathBuf>::new());
         for (i, dir) in dirs.iter().enumerate() {
             assert!(
                 !dirs[i + 1..].iter().any(|other| other == dir),
@@ -2256,5 +2953,190 @@ mod tests {
             Some(picked.to_string_lossy().into_owned())
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn snapshot_with_version(version: &str) -> daemon::client::RemoteSnapshot {
+        let mut snapshot = daemon::client::snapshot_of(daemon::state::DaemonState::new(
+            config::AppConfig::default(),
+        ));
+        snapshot.version = version.to_string();
+        snapshot
+    }
+
+    fn never_probed(_: SocketAddr) -> Result<daemon::client::RemoteSnapshot, ClientError> {
+        panic!("probed without a running daemon")
+    }
+
+    fn refusal(mode: TuiMode) -> String {
+        match mode {
+            TuiMode::Refuse(message) => message,
+            TuiMode::Local => panic!("ran locally"),
+            TuiMode::Attach(addr, _) => panic!("attached to {addr}"),
+        }
+    }
+
+    const LISTEN: &str = "0.0.0.0:7777";
+
+    #[test]
+    fn no_daemon_runs_locally() {
+        assert!(matches!(
+            tui_mode(None, never_probed, i18n::Language::English, None),
+            TuiMode::Local
+        ));
+    }
+
+    #[test]
+    fn a_matching_daemon_attaches() {
+        let probed = std::cell::Cell::new(None);
+        let mode = tui_mode(
+            Some(LISTEN.parse().unwrap()),
+            |addr| {
+                probed.set(Some(addr));
+                let mut snapshot = snapshot_with_version(env!("CARGO_PKG_VERSION"));
+                snapshot.taken_ms = 4242;
+                Ok(snapshot)
+            },
+            i18n::Language::English,
+            None,
+        );
+        let loopback: SocketAddr = "127.0.0.1:7777".parse().unwrap();
+        assert_eq!(probed.get(), Some(loopback));
+        let TuiMode::Attach(addr, first) = mode else {
+            panic!("did not attach");
+        };
+        assert_eq!(addr, loopback);
+        assert_eq!(first.taken_ms, 4242);
+    }
+
+    #[test]
+    fn a_different_version_refuses_naming_both() {
+        let message = refusal(tui_mode(
+            Some(LISTEN.parse().unwrap()),
+            |_| Ok(snapshot_with_version("0.0.1-old")),
+            i18n::Language::English,
+            None,
+        ));
+        assert_eq!(
+            message,
+            format!(
+                "The running daemon is version 0.0.1-old, this TUI is {}. Run `av1converter --restart`.",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+    }
+
+    #[test]
+    fn every_language_names_both_versions_and_the_address() {
+        for lang in i18n::Language::ALL {
+            let mismatch = refusal(tui_mode(
+                Some(LISTEN.parse().unwrap()),
+                |_| Ok(snapshot_with_version("0.0.1-old")),
+                lang,
+                None,
+            ));
+            assert!(mismatch.contains("0.0.1-old"), "{lang:?}: {mismatch}");
+            assert!(
+                mismatch.contains(env!("CARGO_PKG_VERSION")),
+                "{lang:?}: {mismatch}"
+            );
+            assert!(mismatch.contains("--restart"), "{lang:?}: {mismatch}");
+            assert!(!mismatch.contains('{'), "{lang:?}: {mismatch}");
+            let unreachable = refusal(tui_mode(
+                Some(LISTEN.parse().unwrap()),
+                |_| Err(ClientError::Unreachable("refused".to_string())),
+                lang,
+                None,
+            ));
+            assert!(
+                unreachable.contains("127.0.0.1:7777"),
+                "{lang:?}: {unreachable}"
+            );
+            assert!(!unreachable.contains('{'), "{lang:?}: {unreachable}");
+        }
+    }
+
+    #[test]
+    fn a_daemon_without_snapshot_refuses() {
+        let message = refusal(tui_mode(
+            Some(LISTEN.parse().unwrap()),
+            |_| {
+                Err(ClientError::Http {
+                    status: 404,
+                    error: "not found".to_string(),
+                })
+            },
+            i18n::Language::English,
+            None,
+        ));
+        assert_eq!(
+            message,
+            format!(
+                "The running daemon is version ?, this TUI is {}. Run `av1converter --restart`.",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+    }
+
+    #[test]
+    fn an_unparseable_snapshot_refuses_as_a_version_mismatch() {
+        let message = refusal(tui_mode(
+            Some(LISTEN.parse().unwrap()),
+            |_| Err(ClientError::BadResponse("missing field `tag`".to_string())),
+            i18n::Language::English,
+            None,
+        ));
+        assert!(
+            message.starts_with("The running daemon is version ?,"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_unanswering_daemon_refuses_instead_of_running_locally() {
+        let mode = tui_mode(
+            Some(LISTEN.parse().unwrap()),
+            |_| Err(ClientError::Unreachable("connection refused".to_string())),
+            i18n::Language::English,
+            None,
+        );
+        assert!(matches!(&mode, TuiMode::Refuse(_)));
+        assert_eq!(
+            refusal(mode),
+            "The daemon is running but not answering on 127.0.0.1:7777."
+        );
+    }
+
+    #[test]
+    fn a_daemon_rejecting_the_token_refuses_with_the_token_message() {
+        let rejected = || {
+            Err(ClientError::Http {
+                status: 401,
+                error: "unauthorized".to_string(),
+            })
+        };
+        let message = refusal(tui_mode(
+            Some(LISTEN.parse().unwrap()),
+            |_| rejected(),
+            i18n::Language::English,
+            None,
+        ));
+        assert_eq!(
+            message,
+            "The daemon rejected this TUI's access token. Check `daemon.auth_token` in config.toml."
+        );
+
+        let message = refusal(tui_mode(
+            Some(LISTEN.parse().unwrap()),
+            |_| rejected(),
+            i18n::Language::English,
+            Some("expected `=` at line 3"),
+        ));
+        assert_eq!(
+            message,
+            format!(
+                "The daemon rejected this TUI's access token. Check `daemon.auth_token` in config.toml.\n{} (expected `=` at line 3)",
+                t(i18n::Language::English, Msg::ConfigLoadFailed)
+            )
+        );
     }
 }

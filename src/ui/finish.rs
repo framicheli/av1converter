@@ -19,6 +19,7 @@ pub fn render_finish(f: &mut Frame, app: &mut App) {
     } else {
         render_multi_file_finish(f, app);
     }
+    super::common::render_margin_message(f, app);
 }
 
 #[allow(clippy::too_many_lines)]

@@ -199,6 +199,11 @@ pub struct DaemonState {
     pub deps: Capabilities,
     /// Where an unreadable `queue.json` found at startup was moved.
     pub unreadable_queue: Option<std::path::PathBuf>,
+    /// Random id of this daemon run, served as the snapshot's `instance`.
+    pub instance: u64,
+    /// Number of `snapshot_wait` calls currently sleeping between re-checks.
+    #[cfg(test)]
+    pub waiting_snapshots: usize,
 }
 
 /// `FFmpeg` capabilities the daemon depends on.
@@ -230,6 +235,7 @@ impl DaemonState {
             bound_publicly: config.daemon.binds_publicly(),
             deps: Capabilities::default(),
             unreadable_queue: None,
+            instance: getrandom::u64().unwrap_or_else(|_| u64::from(std::process::id())),
             queue: DaemonQueue::new(),
             config,
             encoding_active: false,
@@ -237,6 +243,8 @@ impl DaemonState {
             session: None,
             disc: DiscSession::default(),
             started_at: Instant::now(),
+            #[cfg(test)]
+            waiting_snapshots: 0,
             encode_worker: None,
             disc_worker: None,
             shutting_down: Arc::new(AtomicBool::new(false)),
@@ -284,6 +292,14 @@ mod tests {
             q.push(EncodingJob::new(PathBuf::from(format!("/tmp/f{i}.mkv"))));
         }
         q
+    }
+
+    #[test]
+    fn each_daemon_state_gets_its_own_instance() {
+        let a = DaemonState::new(AppConfig::default()).instance;
+        let b = DaemonState::new(AppConfig::default()).instance;
+        assert_ne!(a, b);
+        assert_ne!(a, u64::from(std::process::id()));
     }
 
     #[test]

@@ -357,6 +357,7 @@ pub enum Msg {
     DaemonStarted,
     DaemonStartFailed,
     DaemonAlreadyRunning,
+    DaemonRefusedTuiEncoding,
     DaemonRunning,
     DaemonNotRunning,
     DaemonStopped,
@@ -498,6 +499,15 @@ pub enum Msg {
     WebDurationMinutesSeconds,
     WebDurationSeconds,
     TerminalTooSmall,
+    DaemonVersionMismatch,
+    DaemonUnreachable,
+    DaemonUnreachableRetrying,
+    DaemonTokenRejected,
+    DaemonStartedElsewhere,
+    JobRemovedByDaemon,
+    DaemonRestartedEditDiscarded,
+    DaemonRequestFailed,
+    HostSettingsReadOnly,
 }
 
 /// Resolve a message key for the given language.
@@ -2847,6 +2857,20 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Daemon läuft bereits",
             Zh => "守护进程已在运行",
         },
+        Msg::DaemonRefusedTuiEncoding => match lang {
+            En => "A TUI (pid {pid}) is encoding. Finish or quit it before starting the daemon.",
+            It => {
+                "Una TUI (pid {pid}) sta codificando. Termina o chiudila prima di avviare il daemon."
+            }
+            Es => {
+                "Una TUI (pid {pid}) está codificando. Termínala o ciérrala antes de iniciar el daemon."
+            }
+            Fr => {
+                "Une TUI (pid {pid}) est en cours d'encodage. Terminez-la ou quittez-la avant de démarrer le daemon."
+            }
+            De => "Eine TUI (PID {pid}) kodiert gerade. Beende sie, bevor du den Daemon startest.",
+            Zh => "TUI（pid {pid}）正在编码。请先完成或退出它，再启动守护进程。",
+        },
         Msg::DaemonRunning => match lang {
             En => "Daemon is running",
             It => "Il daemon è in esecuzione",
@@ -4034,6 +4058,110 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             It | Es | Fr => "{s} s",
             De => "{s} Sek.",
             Zh => "{s}秒",
+        },
+        Msg::DaemonVersionMismatch => match lang {
+            En => {
+                "The running daemon is version {daemon}, this TUI is {tui}. Run `av1converter --restart`."
+            }
+            It => {
+                "Il daemon in esecuzione è la versione {daemon}, questa TUI è la {tui}. Esegui `av1converter --restart`."
+            }
+            Es => {
+                "El daemon en ejecución es la versión {daemon}, esta TUI es la {tui}. Ejecuta `av1converter --restart`."
+            }
+            Fr => {
+                "Le daemon en cours d'exécution est en version {daemon}, cette TUI est en {tui}. Lancez `av1converter --restart`."
+            }
+            De => {
+                "Der laufende Daemon hat Version {daemon}, diese TUI hat {tui}. Führe `av1converter --restart` aus."
+            }
+            Zh => {
+                "正在运行的守护进程版本为 {daemon}，此 TUI 版本为 {tui}。请运行 `av1converter --restart`。"
+            }
+        },
+        Msg::DaemonUnreachable => match lang {
+            En => "The daemon is running but not answering on {addr}.",
+            It => "Il daemon è in esecuzione ma non risponde su {addr}.",
+            Es => "El daemon está en ejecución pero no responde en {addr}.",
+            Fr => "Le daemon est en cours d'exécution mais ne répond pas sur {addr}.",
+            De => "Der Daemon läuft, antwortet aber nicht auf {addr}.",
+            Zh => "守护进程正在运行，但在 {addr} 上没有响应。",
+        },
+        Msg::DaemonUnreachableRetrying => match lang {
+            En => "Daemon unreachable, retrying…",
+            It => "Daemon non raggiungibile, nuovo tentativo…",
+            Es => "Daemon inaccesible, reintentando…",
+            Fr => "Daemon injoignable, nouvelle tentative…",
+            De => "Daemon nicht erreichbar, neuer Versuch…",
+            Zh => "无法连接守护进程，正在重试…",
+        },
+        Msg::DaemonTokenRejected => match lang {
+            En => {
+                "The daemon rejected this TUI's access token. Check `daemon.auth_token` in config.toml."
+            }
+            It => {
+                "Il daemon ha rifiutato il token di accesso di questa TUI. Controlla `daemon.auth_token` in config.toml."
+            }
+            Es => {
+                "El daemon rechazó el token de acceso de esta TUI. Revisa `daemon.auth_token` en config.toml."
+            }
+            Fr => {
+                "Le daemon a refusé le jeton d'accès de cette TUI. Vérifiez `daemon.auth_token` dans config.toml."
+            }
+            De => {
+                "Der Daemon hat das Zugriffstoken dieser TUI abgelehnt. Prüfe `daemon.auth_token` in config.toml."
+            }
+            Zh => "守护进程拒绝了此 TUI 的访问令牌。请检查 config.toml 中的 `daemon.auth_token`。",
+        },
+        Msg::DaemonStartedElsewhere => match lang {
+            En => "The daemon is running. Restart av1converter to attach to it.",
+            It => "Il daemon è in esecuzione. Riavvia av1converter per collegarti a esso.",
+            Es => "El daemon está en ejecución. Reinicia av1converter para conectarte a él.",
+            Fr => {
+                "Le daemon est en cours d'exécution. Redémarrez av1converter pour vous y connecter."
+            }
+            De => "Der Daemon läuft. Starte av1converter neu, um dich mit ihm zu verbinden.",
+            Zh => "守护进程正在运行。请重新启动 av1converter 以连接到它。",
+        },
+        Msg::JobRemovedByDaemon => match lang {
+            En => "This job is no longer in the daemon's queue.",
+            It => "Questo lavoro non è più nella coda del daemon.",
+            Es => "Este trabajo ya no está en la cola del daemon.",
+            Fr => "Cette tâche n'est plus dans la file du daemon.",
+            De => "Dieser Auftrag ist nicht mehr in der Warteschlange des Daemons.",
+            Zh => "此任务已不在守护进程的队列中。",
+        },
+        Msg::DaemonRestartedEditDiscarded => match lang {
+            En => "The daemon restarted; the track selection was discarded.",
+            It => "Il daemon è stato riavviato; la selezione delle tracce è stata scartata.",
+            Es => "El daemon se reinició; se descartó la selección de pistas.",
+            Fr => "Le daemon a redémarré ; la sélection des pistes a été abandonnée.",
+            De => "Der Daemon wurde neu gestartet; die Spurauswahl wurde verworfen.",
+            Zh => "守护进程已重启；音轨选择已被丢弃。",
+        },
+        Msg::DaemonRequestFailed => match lang {
+            En => "The daemon did not answer: {error}",
+            It => "Il daemon non ha risposto: {error}",
+            Es => "El daemon no respondió: {error}",
+            Fr => "Le daemon n'a pas répondu : {error}",
+            De => "Der Daemon hat nicht geantwortet: {error}",
+            Zh => "守护进程没有响应：{error}",
+        },
+        Msg::HostSettingsReadOnly => match lang {
+            En => "Host settings are read-only: the daemon sees this TUI as a remote client.",
+            It => {
+                "Le impostazioni dell'host sono di sola lettura: il daemon vede questa TUI come un client remoto."
+            }
+            Es => {
+                "Los ajustes del host son de solo lectura: el daemon ve esta TUI como un cliente remoto."
+            }
+            Fr => {
+                "Les paramètres de l'hôte sont en lecture seule : le daemon voit cette TUI comme un client distant."
+            }
+            De => {
+                "Host-Einstellungen sind schreibgeschützt: Der Daemon sieht diese TUI als entfernten Client."
+            }
+            Zh => "主机设置为只读：守护进程将此 TUI 视为远程客户端。",
         },
         Msg::TerminalTooSmall => match lang {
             En => "Terminal too small. Resize to at least {w} × {h}. Press q to quit.",

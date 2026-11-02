@@ -257,12 +257,8 @@ pub fn run_encoding_pipeline(
     let _source_guard = if config.quality.delete_source_on_success {
         match File::open(input) {
             Ok(file)
-                if file
-                    .metadata()
-                    .ok()
-                    .map(|metadata| SourceIdentity::from_metadata(&metadata))
-                    .as_ref()
-                    == Some(expected_source) =>
+                if SourceIdentity::from_file(&file)
+                    .is_ok_and(|current| expected_source.matches(&current)) =>
             {
                 Some(file)
             }
