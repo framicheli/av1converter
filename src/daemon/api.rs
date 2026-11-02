@@ -1745,22 +1745,19 @@ fn status_json(status: &JobStatus) -> Value {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use super::{Msg, SharedState, Value, fs_browse, json, queue_add};
+    use super::{Msg, fs_browse};
     use super::{
         RecursiveScanGuard, queue, queue_cancel, queue_cancel_analysis, queue_clear_finished,
         queue_move_up, queue_remove, settings_access, status, within_root,
     };
+    use super::{SharedState, Value, json, queue_add};
     use super::{snapshot, snapshot_wait};
-    use crate::config::AppConfig;
-    #[cfg(unix)]
-    use crate::config::DaemonConfig;
+    use crate::config::{AppConfig, DaemonConfig};
     use crate::daemon::state::{DaemonState, EncodeSession, lock};
     use crate::queue::{EncodingJob, JobStatus};
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
-    #[cfg(unix)]
-    use std::sync::mpsc;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
 
     fn shared_with_two_jobs() -> (SharedState, Vec<u64>) {
