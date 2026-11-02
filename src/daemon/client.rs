@@ -1165,8 +1165,10 @@ mod tests {
         let server_stop = stop.clone();
         let server = std::thread::spawn(move || {
             let mut held = Vec::new();
+            let mut released = false;
             while !server_stop.load(Ordering::SeqCst) {
-                if release.try_recv().is_ok() {
+                released |= release.try_recv().is_ok();
+                if released {
                     for request in held.drain(..) {
                         let _ = tiny_http::Request::respond(
                             request,
@@ -1228,10 +1230,10 @@ mod tests {
         let server_stop = stop.clone();
         let server = std::thread::spawn(move || {
             let mut held = None;
+            let mut released = false;
             while !server_stop.load(Ordering::SeqCst) {
-                if release.try_recv().is_ok()
-                    && let Some(request) = held.take()
-                {
+                released |= release.try_recv().is_ok();
+                if released && let Some(request) = held.take() {
                     let _ = tiny_http::Request::respond(
                         request,
                         tiny_http::Response::from_string(r#"{"path":"/A"}"#),
