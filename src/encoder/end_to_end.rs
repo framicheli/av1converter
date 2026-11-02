@@ -222,7 +222,8 @@ fn sidecar_subtitles_are_muxed_into_the_output() {
             "clip.fr.vtt",
             "WEBVTT\n\n00:00:00.000 --> 00:00:00.500\nBonjour\n",
         ),
-        ("clip.de.sub", "{0}{12}Hallo\n"),
+        // FFmpeg 9 detects MicroDVD from three cue lines.
+        ("clip.de.sub", "{0}{4}Hallo\n{5}{8}und\n{9}{12}Tschüss\n"),
     ];
     for (name, text) in sidecars {
         std::fs::write(dir.join(name), text).unwrap();
