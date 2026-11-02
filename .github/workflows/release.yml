@@ -1,25 +1,46 @@
-# Publishes to crates.io after the GitHub release; needs the CARGO_REGISTRY_TOKEN secret.
+# Releases the version in Cargo.toml when its tag does not exist yet: builds, tags, publishes the
+# GitHub release, then updates the Homebrew tap (HOMEBREW_TAP_TOKEN secret) and publishes to
+# crates.io (CARGO_REGISTRY_TOKEN secret). A manual run on an existing tag repeats only the tap
+# update and the crates.io publish.
 name: Release
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   check-version:
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.check.outputs.should_release }}
+      should_publish: ${{ steps.check.outputs.should_publish }}
+      tag: ${{ steps.check.outputs.tag }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Check version tag
         id: check
         run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Releases run from main only, not $GITHUB_REF"
+            exit 1
+          fi
           VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q .; then
             echo "should_release=false" >> "$GITHUB_OUTPUT"
+            if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+              echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
 
   quality:
@@ -121,27 +142,52 @@ jobs:
         working-directory: dist
         run: sha256sum av1converter* > SHA256SUMS
       - name: Tag release
-        id: tag
+        env:
+          TAG: ${{ needs.check-version.outputs.tag }}
         run: |
-          VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
-          echo "name=v$VERSION" >> "$GITHUB_OUTPUT"
+          REMOTE=$(git ls-remote origin "refs/tags/$TAG^{}" "refs/tags/$TAG" | awk 'NR == 1 {print $1}')
+          if [ -n "$REMOTE" ]; then
+            if [ "$REMOTE" != "$GITHUB_SHA" ]; then
+              echo "::error::$TAG already points at $REMOTE, not $GITHUB_SHA"
+              exit 1
+            fi
+            echo "$TAG already points at $GITHUB_SHA"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "v$VERSION"
-          git push origin "v$VERSION"
+          git tag "$TAG"
+          git push origin "$TAG"
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          tag_name: ${{ steps.tag.outputs.name }}
+          tag_name: ${{ needs.check-version.outputs.tag }}
           generate_release_notes: true
           files: |
             dist/av1converter*
             dist/SHA256SUMS
+
+  homebrew:
+    needs: [check-version, release]
+    if: >-
+      always()
+      && needs.check-version.outputs.should_publish == 'true'
+      && (needs.release.result == 'success'
+        || (needs.release.result == 'skipped' && needs.check-version.outputs.should_release == 'false'))
+    runs-on: ubuntu-latest
+    steps:
       - name: Update Homebrew tap
         env:
+          GH_TOKEN: ${{ github.token }}
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          TAG: ${{ steps.tag.outputs.name }}
+          TAG: ${{ needs.check-version.outputs.tag }}
         run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::error::The HOMEBREW_TAP_TOKEN secret is not set; it needs Contents: write on framicheli/homebrew-tap"
+            exit 1
+          fi
           VERSION="${TAG#v}"
+          mkdir -p dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir dist
           ARM=$(awk '$2 == "av1converter-aarch64-apple-darwin.tar.gz" {print $1}' dist/SHA256SUMS)
           INTEL=$(awk '$2 == "av1converter-x86_64-apple-darwin.tar.gz" {print $1}' dist/SHA256SUMS)
           LINUX=$(awk '$2 == "av1converter-x86_64-unknown-linux-musl.tar.gz" {print $1}' dist/SHA256SUMS)
@@ -193,14 +239,34 @@ jobs:
 
   publish-crate:
     needs: [check-version, release]
-    if: needs.check-version.outputs.should_release == 'true'
+    if: >-
+      always()
+      && needs.check-version.outputs.should_publish == 'true'
+      && (needs.release.result == 'success'
+        || (needs.release.result == 'skipped' && needs.check-version.outputs.should_release == 'false'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.check-version.outputs.tag }}
+      - name: Check crates.io
+        id: crate
+        env:
+          TAG: ${{ needs.check-version.outputs.tag }}
+        run: |
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' -A "av1converter-release ($GITHUB_REPOSITORY)" \
+            "https://crates.io/api/v1/crates/av1converter/${TAG#v}")
+          case "$STATUS" in
+            200) echo "published=true" >> "$GITHUB_OUTPUT"; echo "${TAG#v} is already on crates.io" ;;
+            404) echo "published=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::crates.io answered $STATUS"; exit 1 ;;
+          esac
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        if: steps.crate.outputs.published == 'false'
         with:
           toolchain: stable
       - name: Publish to crates.io
+        if: steps.crate.outputs.published == 'false'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --locked
