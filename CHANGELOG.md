@@ -5,6 +5,7 @@
 ### Fixed
 
 - The terminal UI exits when its terminal window closes, even when started with `nohup` or with hang-ups otherwise ignored; before, it kept running in the background and used a full CPU core. An attached TUI leaves the daemon's encode running; a standalone one stops its encode, as closing the window always did.
+- Correction to the 3.0.0 notes: MKV output keeps attachments such as embedded fonts, but not cover art. Cover art is dropped from every container, and a source that has it is never deleted automatically.
 
 ## [3.1.1] - Unreleased
 
