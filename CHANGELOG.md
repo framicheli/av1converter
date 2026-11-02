@@ -15,6 +15,7 @@
 - An attached TUI follows a daemon that was restarted, even one that runs under the same process id, closes dialogs about queue jobs and discards a track selection in progress, and stops with a version message when the new daemon is a different release.
 - An attached TUI picks up a changed `daemon.auth_token` from config.toml, and says so when the daemon rejects its token instead of reporting it unreachable.
 - Adding a large folder recursively from an attached TUI waits for the daemon's scan instead of failing silently after 5 seconds, and other actions such as cancelling are answered while it scans.
+- On Windows, two different files with the same size and timestamps are both queued; before, the second was skipped as already queued. The check that a source is unchanged before it is deleted also tells such files apart.
 
 ## [3.0.0] - 2026-09-19
 

@@ -29,3 +29,6 @@ tracing-appender = "0.2.5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
