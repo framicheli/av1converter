@@ -28,19 +28,19 @@ AV1Converter is a single Rust binary that drives FFmpeg to re-encode whole folde
 
 ## Highlights
 
-|  |  |
-|---|---|
-| ⚡ **Hardware first** | Detects NVIDIA NVENC, Intel QSV and AMD AMF, falls back to SVT-AV1 ([details](docs/usage.md#encoder-detection)) |
-| 🎯 **VMAF-verified** | The source is deleted only when the output passes VMAF and nothing else was lost ([details](#when-is-the-source-deleted)) |
+|                           |                                                                                                                                                 |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| ⚡ **Hardware first**     | Detects NVIDIA NVENC, Intel QSV and AMD AMF, falls back to SVT-AV1 ([details](docs/usage.md#encoder-detection))                                 |
+| 🎯 **VMAF-verified**      | The source is deleted only when the output passes VMAF and nothing else was lost ([details](#when-is-the-source-deleted))                       |
 | 🌈 **HDR & Dolby Vision** | Keeps Dolby Vision as AV1 profile 10 or converts to HDR10; profile 5 is tone-mapped on the GPU ([details](docs/usage.md#dolby-vision-handling)) |
-| 🎚️ **Smart presets** | Quality picked per resolution and HDR type, with Low, Medium, High or Custom presets ([details](docs/usage.md#encoding-presets)) |
-| 🔊 **Track control** | Auto-selects audio and subtitles by preferred language, and picks up subtitle files next to the video |
-| 🎵 **Opus audio** | Copy audio untouched, or convert any track to Opus at its own channel layout ([details](docs/usage.md#audio-transcoding)) |
-| 📦 **Remux mode** | Repackage and strip tracks without re-encoding the video |
-| 💿 **Disc ripping** | Imports DVD and Blu-ray titles through MakeMKV, ripping the next title while the previous one encodes ([details](docs/disc-ripping.md)) |
-| 🌐 **Headless daemon** | A persistent queue and a token-protected web UI with the same features as the TUI ([details](docs/daemon.md)) |
-| 🗂️ **Batch anything** | A single file, a folder, or a whole directory tree recursively |
-| 🌍 **Six languages** | English, Italian, Spanish, French, German and Chinese, in both UIs |
+| 🎚️ **Smart presets**      | Quality picked per resolution and HDR type, with Low, Medium, High or Custom presets ([details](docs/usage.md#encoding-presets))                |
+| 🔊 **Track control**      | Auto-selects audio and subtitles by preferred language, and picks up subtitle files next to the video                                           |
+| 🎵 **Opus audio**         | Copy audio untouched, or convert any track to Opus at its own channel layout ([details](docs/usage.md#audio-transcoding))                       |
+| 📦 **Remux mode**         | Repackage and strip tracks without re-encoding the video                                                                                        |
+| 💿 **Disc ripping**       | Imports DVD and Blu-ray titles through MakeMKV, ripping the next title while the previous one encodes ([details](docs/disc-ripping.md))         |
+| 🌐 **Headless daemon**    | A persistent queue and a token-protected web UI with the same features as the TUI ([details](docs/daemon.md))                                   |
+| 🗂️ **Batch anything**     | A single file, a folder, or a whole directory tree recursively                                                                                  |
+| 🌍 **Six languages**      | English, Italian, Spanish, French, German and Chinese, in both UIs                                                                              |
 
 ## Quick start
 
@@ -64,13 +64,13 @@ av1converter --start           # prints the web UI link with its access token
 
 Not every FFmpeg build includes every feature. What you need depends on what you use:
 
-| FFmpeg capability | Needed for | Required? |
-|-------------------|-----------|-----------|
-| `libsvtav1` | Software AV1 encoding; Dolby Vision passthrough (AV1 profile 10) | Yes, unless you only use hardware encoders |
-| `libvmaf` | VMAF quality verification (and source auto-deletion, which depends on it) | Optional |
-| `libopus` | Converting audio tracks to Opus | Optional — only if you transcode audio |
-| `libplacebo` + a working Vulkan driver | Dolby Vision **profile 5** → HDR10 tone-mapping | Optional — only for DV profile 5 conversion |
-| `av1_nvenc` / `av1_qsv` / `av1_amf` | Hardware encoding (needs a matching GPU driver: NVIDIA driver, Intel media driver + libvpl, or AMD AMF runtime) | Optional |
+| FFmpeg capability                      | Needed for                                                                                                      | Required?                                   |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `libsvtav1`                            | Software AV1 encoding; Dolby Vision passthrough (AV1 profile 10)                                                | Yes, unless you only use hardware encoders  |
+| `libvmaf`                              | VMAF quality verification (and source auto-deletion, which depends on it)                                       | Optional                                    |
+| `libopus`                              | Converting audio tracks to Opus                                                                                 | Optional — only if you transcode audio      |
+| `libplacebo` + a working Vulkan driver | Dolby Vision **profile 5** → HDR10 tone-mapping                                                                 | Optional — only for DV profile 5 conversion |
+| `av1_nvenc` / `av1_qsv` / `av1_amf`    | Hardware encoding (needs a matching GPU driver: NVIDIA driver, Intel media driver + libvpl, or AMD AMF runtime) | Optional                                    |
 
 Check what your build supports:
 
@@ -96,15 +96,15 @@ vulkaninfo --summary                             # Vulkan driver (DV profile 5 o
 
 ## Installation
 
-| Method | Command |
-|---|---|
-| Cargo | `cargo install av1converter` |
-| Homebrew (macOS, x86_64 Linux) | `brew tap framicheli/tap && brew install av1converter` |
-| Nix | `nix profile install github:framicheli/av1converter` |
-| Arch Linux (AUR) | `git clone https://aur.archlinux.org/av1converter.git && cd av1converter && makepkg -si` |
-| Debian / Ubuntu | `sudo apt install ./av1converter_VERSION_amd64.deb` from the [release page](https://github.com/framicheli/av1converter/releases) |
-| Fedora | `sudo dnf install ./av1converter-VERSION-1.x86_64.rpm` (needs RPM Fusion) |
-| Binary or source | Download from the [release page](https://github.com/framicheli/av1converter/releases), or `cargo build --release` |
+| Method                         | Command                                                                                                                          |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| Cargo                          | `cargo install av1converter`                                                                                                     |
+| Homebrew (macOS, x86_64 Linux) | `brew tap framicheli/tap && brew install av1converter`                                                                           |
+| Nix                            | `nix profile install github:framicheli/av1converter`                                                                             |
+| Arch Linux (AUR)               | `git clone https://aur.archlinux.org/av1converter.git && cd av1converter && makepkg -si`                                         |
+| Debian / Ubuntu                | `sudo apt install ./av1converter_VERSION_amd64.deb` from the [release page](https://github.com/framicheli/av1converter/releases) |
+| Fedora                         | `sudo dnf install ./av1converter-VERSION-1.x86_64.rpm` (needs RPM Fusion)                                                        |
+| Binary or source               | Download from the [release page](https://github.com/framicheli/av1converter/releases), or `cargo build --release`                |
 
 See [docs/installation.md](docs/installation.md) for details and for uninstalling (`av1converter --purge` removes configuration and daemon state).
 
