@@ -196,8 +196,8 @@ pub const BLURAY_SCAN: &str = r#"  echo 'MSG:3007,0,0,"Using direct disc access 
   echo 'TINFO:0,2,0,"Blade Runner, The \"Final\" Cut"'
   echo 'TINFO:0,8,0,"32"'
   echo 'TINFO:0,9,0,"1:57:31"'
-  echo 'TINFO:0,10,0,"27.6 GB"'
-  echo 'TINFO:0,11,0,"29715223808"'
+  echo 'TINFO:0,10,0,"50.0 MB"'
+  echo 'TINFO:0,11,0,"52428800"'
   echo 'TINFO:0,27,0,"title_t00.mkv"'
   echo 'SINFO:0,0,1,6201,"Video"'
   echo 'SINFO:0,0,6,0,"MPEG-4 AVC"'
@@ -212,7 +212,7 @@ pub const BLURAY_SCAN: &str = r#"  echo 'MSG:3007,0,0,"Using direct disc access 
   echo 'SINFO:0,2,40,0,"2.0"'
   echo 'TINFO:1,2,0,"Commentary"'
   echo 'TINFO:1,9,0,"1:57:31"'
-  echo 'TINFO:1,11,0,"8000000000"'"#;
+  echo 'TINFO:1,11,0,"26214400"'"#;
 
 const EXPIRED_KEY: &str = "  echo 'MSG:5021,0,0,\"The beta registration key has expired\",\"x\"'";
 

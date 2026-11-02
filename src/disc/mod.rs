@@ -696,7 +696,7 @@ mod tests {
         assert_eq!(bluray.disc_type.as_deref(), Some("Blu-ray disc"));
         assert_eq!(bluray.titles.len(), 2);
         assert_eq!(bluray.titles[0].name, "Blade Runner, The \"Final\" Cut");
-        assert_eq!(bluray.titles[0].size_bytes, 29_715_223_808);
+        assert_eq!(bluray.titles[0].size_bytes, 52_428_800);
         assert_eq!(bluray.titles[1].name, "Commentary");
     }
 
