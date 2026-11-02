@@ -1,5 +1,5 @@
 # Releases the version in Cargo.toml when its tag does not exist yet: builds, tags, publishes the
-# GitHub release, then updates the Homebrew tap (HOMEBREW_TAP_TOKEN secret) and publishes to
+# GitHub release, then updates the Homebrew tap (HOMEBREW_TAP_DEPLOY_KEY secret) and publishes to
 # crates.io (CARGO_REGISTRY_TOKEN secret). A manual run on an existing tag repeats only the tap
 # update and the crates.io publish.
 name: Release
@@ -178,13 +178,18 @@ jobs:
       - name: Update Homebrew tap
         env:
           GH_TOKEN: ${{ github.token }}
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           TAG: ${{ needs.check-version.outputs.tag }}
         run: |
-          if [ -z "$TAP_TOKEN" ]; then
-            echo "::error::The HOMEBREW_TAP_TOKEN secret is not set; it needs Contents: write on framicheli/homebrew-tap"
+          if [ -z "$TAP_DEPLOY_KEY" ]; then
+            echo "::error::The HOMEBREW_TAP_DEPLOY_KEY secret is not set; it holds the private half of a deploy key with write access on framicheli/homebrew-tap"
             exit 1
           fi
+          SSH_DIR="$RUNNER_TEMP/tap-ssh"
+          (umask 077 && mkdir -p "$SSH_DIR" && printf '%s\n' "$TAP_DEPLOY_KEY" > "$SSH_DIR/key")
+          trap 'rm -rf "$SSH_DIR"' EXIT
+          gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$SSH_DIR/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $SSH_DIR/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o StrictHostKeyChecking=yes"
           VERSION="${TAG#v}"
           mkdir -p dist
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir dist
@@ -192,7 +197,7 @@ jobs:
           INTEL=$(awk '$2 == "av1converter-x86_64-apple-darwin.tar.gz" {print $1}' dist/SHA256SUMS)
           LINUX=$(awk '$2 == "av1converter-x86_64-unknown-linux-musl.tar.gz" {print $1}' dist/SHA256SUMS)
           [ -n "$ARM" ] && [ -n "$INTEL" ] && [ -n "$LINUX" ]
-          git clone --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/framicheli/homebrew-tap.git" tap
+          git clone --depth 1 git@github.com:framicheli/homebrew-tap.git tap
           mkdir -p tap/Formula
           cat > tap/Formula/av1converter.rb <<EOF
           class Av1converter < Formula
