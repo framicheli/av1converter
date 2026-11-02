@@ -1,6 +1,12 @@
 # Changelog
 
-## [3.1.0] - Unreleased
+## [3.1.1] - Unreleased
+
+### Fixed
+
+- 3.1.1 is published to Homebrew and crates.io, which never received 3.1.0. The Homebrew formula now installs the prebuilt release binary instead of building from source, so it needs no Rust toolchain.
+
+## [3.1.0] - 2026-11-02
 
 ### Added
 
