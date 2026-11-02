@@ -20,7 +20,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend, widgets::Clear};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -730,6 +730,9 @@ fn main() -> io::Result<()> {
 
     // Create app and run
     let mut app = create_app(config, attach);
+    if io::stdout().is_terminal() {
+        spawn_terminal_watch(app.is_attached());
+    }
     let res = run_app(&mut terminal, &mut app);
     if res.is_err() {
         shutdown_after_error(&app);
@@ -740,6 +743,34 @@ fn main() -> io::Result<()> {
     let restore = restore_terminal();
     res?;
     restore
+}
+
+/// Interval between checks that the TUI's terminal is still open.
+const TERMINAL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Exit status of a TUI whose terminal closed, matching a process ended by
+/// SIGHUP.
+const TERMINAL_LOST_EXIT_STATUS: i32 = 129;
+
+/// Starts a thread that ends the process once stdout stops being a terminal.
+/// A local app's tracked ffmpeg/makemkvcon children are killed first; an
+/// attached app leaves the daemon's work running.
+fn spawn_terminal_watch(attached: bool) {
+    std::thread::spawn(move || {
+        wait_for_terminal_loss(|| io::stdout().is_terminal(), TERMINAL_CHECK_INTERVAL);
+        tracing::info!("Terminal closed, exiting");
+        if !attached {
+            utils::child::kill_all();
+        }
+        std::process::exit(TERMINAL_LOST_EXIT_STATUS);
+    });
+}
+
+/// Returns once `is_terminal` reports false, checking every `interval`.
+fn wait_for_terminal_loss(is_terminal: impl Fn() -> bool, interval: Duration) {
+    while is_terminal() {
+        std::thread::sleep(interval);
+    }
 }
 
 /// The app attached to the daemon at `attach`, or a local one.
@@ -2377,6 +2408,19 @@ mod tests {
         assert_eq!(quit_cleanup(&app, false), Some(none));
         assert_eq!(quit_cleanup(&app, true), Some(none));
         assert_eq!(error_cleanup(&app), none);
+    }
+
+    #[test]
+    fn the_terminal_watch_returns_on_the_first_check_without_a_terminal() {
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let is_terminal = || {
+            let n = checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            n < 2
+        };
+
+        wait_for_terminal_loss(is_terminal, Duration::ZERO);
+
+        assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
     #[test]

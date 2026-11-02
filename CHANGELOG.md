@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.2.0] - Unreleased
+
+### Fixed
+
+- The terminal UI exits when its terminal window closes, even when started with `nohup` or with hang-ups otherwise ignored; before, it kept running in the background and used a full CPU core. An attached TUI leaves the daemon's encode running; a standalone one stops its encode, as closing the window always did.
+
 ## [3.1.1] - Unreleased
 
 ### Fixed

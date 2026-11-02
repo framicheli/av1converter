@@ -50,7 +50,7 @@ Track selection and Dolby Vision handling are resolved automatically, using your
 
 Running `av1converter` while the daemon is running opens the TUI attached to it instead of starting a separate session: the same screens and keys, showing and changing the daemon's queue, disc runs and settings.
 
-- Quitting with `q` or `Ctrl+C` closes only the TUI and leaves the encode, the queue and any staged rips running in the daemon.
+- Quitting with `q` or `Ctrl+C`, or closing the terminal window, closes only the TUI and leaves the encode, the queue and any staged rips running in the daemon.
 - When the daemon finishes analysing new files, Track configuration opens as it does in a standalone TUI, as long as you are on the queue. `Esc` there returns to the queue and leaves the jobs waiting in the daemon.
 - The Finish screen opens when the daemon's encode ends while you are on the queue, and its **New conversion** clears the daemon's finished jobs as `C` does.
 - If the daemon stops answering, the TUI shows `Daemon unreachable, retrying…` and accepts only navigation and quit keys until it is back; other request failures show `The daemon did not answer: …`.
