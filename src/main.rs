@@ -1954,6 +1954,21 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         ConfigField::SkipAlreadyOpus => {
             app.config.audio.skip_already_opus = !app.config.audio.skip_already_opus;
         }
+        ConfigField::VideoCrop => {
+            app.config.video.crop = !app.config.video.crop;
+        }
+        ConfigField::VideoDeinterlace => {
+            app.config.video.deinterlace = !app.config.video.deinterlace;
+        }
+        ConfigField::VideoInverseTelecine => {
+            app.config.video.inverse_telecine = !app.config.video.inverse_telecine;
+        }
+        ConfigField::VideoDiscRipsOnly => {
+            app.config.video.disc_rips_only = !app.config.video.disc_rips_only;
+        }
+        ConfigField::VideoDeleteProcessedSource => {
+            app.config.video.delete_processed_source = !app.config.video.delete_processed_source;
+        }
         ConfigField::SelectAllFallback => {
             app.config.tracks.select_all_fallback = !app.config.tracks.select_all_fallback;
         }

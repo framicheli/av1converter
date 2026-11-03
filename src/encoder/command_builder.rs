@@ -1,3 +1,4 @@
+use crate::analyzer::picture::PictureFilter;
 use crate::analyzer::{DvMode, Hdr10StaticMetadata, HdrType, ResolutionTier, VideoMetadata};
 use crate::config::{AppConfig, Encoder};
 use crate::tracks::{AudioStreamPlan, OpusLayout, OutputTracks};
@@ -27,6 +28,8 @@ pub struct EncodingParams {
     /// Subtitle codec per selected track, in index order; `None` leaves the
     /// track out of the output.
     pub subtitle_codecs: Vec<Option<&'static str>>,
+    /// Cropping and deinterlacing applied ahead of the format conversion.
+    pub picture: PictureFilter,
     /// Language the encode step reports its own failures in.
     pub lang: crate::i18n::Language,
 }
@@ -81,6 +84,23 @@ impl EncodingParams {
             nvenc_preset: config.performance.nvenc_preset.clone(),
             remux_only,
             subtitle_codecs,
+            picture: PictureFilter::default(),
+        }
+    }
+
+    /// Whether a crop or deinterlace filter may run on this job: an encode
+    /// that neither keeps Dolby Vision nor tone-maps profile 5.
+    pub fn accepts_picture_filter(&self) -> bool {
+        !self.remux_only && !self.keeps_dolby_vision() && !self.needs_dv_tonemap()
+    }
+
+    /// The crop and deinterlace chain this job applies, `None` when it applies
+    /// none.
+    pub fn picture_chain(&self) -> Option<String> {
+        if self.accepts_picture_filter() {
+            self.picture.chain()
+        } else {
+            None
         }
     }
 
@@ -427,7 +447,8 @@ fn build_video_filter(params: &EncodingParams) -> String {
             .to_string();
     }
 
-    let mut filters = vec!["format=yuv420p10le".to_string()];
+    let mut filters: Vec<String> = params.picture_chain().into_iter().collect();
+    filters.push("format=yuv420p10le".to_string());
 
     if params.hdr_type == HdrType::DolbyVision {
         // Cross-compatible profiles (7/8) have a PQ or HLG (8.4) BT.2020 base
@@ -487,6 +508,7 @@ mod tests {
             nvenc_preset: "p4".to_string(),
             remux_only: false,
             subtitle_codecs: Vec::new(),
+            picture: PictureFilter::default(),
         }
     }
 

@@ -7,8 +7,10 @@ pub mod ffmpeg;
 pub use command_builder::EncodingParams;
 pub use ffmpeg::{EncodeResult, ProgressCallback, encode_video, orphaned_partials};
 
+use crate::analyzer::picture::{self, PictureFilter, PictureRequest};
 use crate::analyzer::{DvMode, HdrType, VideoMetadata};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, VideoConfig};
+use crate::error::AppError;
 use crate::queue::SourceIdentity;
 use crate::tracks::OutputTracks;
 use crate::verifier;
@@ -74,6 +76,8 @@ pub enum KeepReason {
     DeleteFailed,
     /// The deletion ledger could not be written.
     LedgerUnwritable,
+    /// The output was cropped or deinterlaced.
+    PictureProcessed,
 }
 
 impl KeepReason {
@@ -101,6 +105,7 @@ impl KeepReason {
             Self::SourceChanged => "it changed while the job was running",
             Self::DeleteFailed => "deleting it failed",
             Self::LedgerUnwritable => "the deletion ledger could not be written",
+            Self::PictureProcessed => "the output was cropped or deinterlaced",
         }
     }
 
@@ -123,6 +128,7 @@ impl KeepReason {
             Self::SourceChanged => Msg::KeepSourceChanged,
             Self::DeleteFailed => Msg::KeepDeleteFailed,
             Self::LedgerUnwritable => Msg::KeepLedgerUnwritable,
+            Self::PictureProcessed => Msg::KeepPictureProcessed,
         }
     }
 }
@@ -231,7 +237,8 @@ fn record_and_delete(
     }
 }
 
-/// Orchestrate the full encoding pipeline: encode -> verify
+/// Orchestrate the full encoding pipeline: encode -> verify. `disc_rip` is
+/// whether the source was ripped from a disc.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn run_encoding_pipeline(
     input: &str,
@@ -242,6 +249,7 @@ pub fn run_encoding_pipeline(
     dv_mode: DvMode,
     remux_only: bool,
     subtitle_codecs: Vec<Option<&'static str>>,
+    disc_rip: bool,
     config: &AppConfig,
     progress_callback: Option<ProgressCallback>,
     cancel_flag: &AtomicBool,
@@ -278,7 +286,7 @@ pub fn run_encoding_pipeline(
     };
 
     // Encoding parameters
-    let params = EncodingParams::from_metadata(
+    let mut params = EncodingParams::from_metadata(
         input,
         output,
         metadata,
@@ -290,13 +298,30 @@ pub fn run_encoding_pipeline(
     );
     let duration = metadata.duration_secs;
 
+    match detect_picture(
+        input,
+        metadata,
+        &params,
+        &config.video,
+        disc_rip,
+        cancel_flag,
+    ) {
+        Ok(filter) => params.picture = filter,
+        Err(AppError::Cancelled) => return FullEncodeResult::Cancelled,
+        Err(e) => warn!("Encoding without cropping or deinterlacing: {e}"),
+    }
+
     // Total frame count for frame-based progress fallback (some sources, e.g.
     // Dolby Vision, make FFmpeg report out_time=N/A but still emit frame counts).
-    let total_frames = if metadata.frame_rate_den > 0 {
+    // Inverse telecine keeps four frames in five.
+    let mut total_frames = if metadata.frame_rate_den > 0 {
         duration * f64::from(metadata.frame_rate_num) / f64::from(metadata.frame_rate_den)
     } else {
         0.0
     };
+    if params.picture.drops_frames() {
+        total_frames *= 0.8;
+    }
 
     // Encode
     let encode_result = encode_video(
@@ -344,6 +369,7 @@ pub fn run_encoding_pipeline(
                 metadata.hdr_type,
                 metadata.width,
                 metadata.height,
+                &params.picture,
                 cancel_flag,
             );
 
@@ -364,7 +390,9 @@ pub fn run_encoding_pipeline(
                             KeepReason::Cancelled.log()
                         );
                         *keep_reason = Some(KeepReason::Cancelled);
-                    } else if let Some(reason) = keep_source_reason(&params, dv_mode, cancel_flag) {
+                    } else if let Some(reason) = picture_keep_reason(&params, &config.video)
+                        .or_else(|| keep_source_reason(&params, dv_mode, cancel_flag))
+                    {
                         info!("Keeping source file {input}: {}", reason.log());
                         *keep_reason = Some(reason);
                     } else if !output_identity
@@ -427,6 +455,40 @@ pub fn run_encoding_pipeline(
         EncodeResult::Cancelled => FullEncodeResult::Cancelled,
         EncodeResult::Error(e) => FullEncodeResult::Error(e),
     }
+}
+
+/// The crop and deinterlace filter `video` asks for on this job, detected in
+/// the source. An empty filter when nothing is asked for or `params` takes
+/// no picture filter.
+fn detect_picture(
+    input: &str,
+    metadata: &VideoMetadata,
+    params: &EncodingParams,
+    video: &VideoConfig,
+    disc_rip: bool,
+    cancel: &AtomicBool,
+) -> Result<PictureFilter, AppError> {
+    let request = PictureRequest::from_config(video, disc_rip);
+    if !request.any() || !params.accepts_picture_filter() {
+        return Ok(PictureFilter::default());
+    }
+    let field_order = crate::analyzer::ffprobe::probe_field_order(input, cancel);
+    picture::detect(
+        input,
+        metadata.width,
+        metadata.height,
+        metadata.duration_secs,
+        field_order.as_deref(),
+        request,
+        cancel,
+    )
+}
+
+/// [`KeepReason::PictureProcessed`] when the output was cropped or
+/// deinterlaced and `video` does not allow deleting such a source.
+fn picture_keep_reason(params: &EncodingParams, video: &VideoConfig) -> Option<KeepReason> {
+    (params.picture_chain().is_some() && !video.delete_processed_source)
+        .then_some(KeepReason::PictureProcessed)
 }
 
 /// Flush `path`'s contents, and on Unix its directory entry, to disk.
@@ -515,6 +577,7 @@ fn is_yuv420_within_10_bit(pix_fmt: &str) -> bool {
 }
 
 /// Run VMAF quality check after encoding
+#[allow(clippy::too_many_arguments)]
 fn run_vmaf_check(
     input: &str,
     output: &str,
@@ -522,6 +585,7 @@ fn run_vmaf_check(
     hdr_type: HdrType,
     width: u32,
     height: u32,
+    picture: &PictureFilter,
     cancel_flag: &AtomicBool,
 ) -> FullEncodeResult {
     let Some(threshold) = threshold else {
@@ -539,6 +603,7 @@ fn run_vmaf_check(
         hdr_type,
         width,
         height,
+        picture,
         cancel_flag,
     ) {
         // Cancel during verification: the finished output is removed and
@@ -598,8 +663,10 @@ mod tests {
     use super::verifier;
     use super::{
         DvMode, EncodingParams, HdrType, KeepReason, SourceIdentity, VideoMetadata, flush_to_disk,
-        is_yuv420_within_10_bit, keep_source_reason, skips_vmaf,
+        is_yuv420_within_10_bit, keep_source_reason, picture_keep_reason, skips_vmaf,
     };
+    use crate::analyzer::picture::{Crop, FieldTreatment, PictureFilter};
+    use crate::config::VideoConfig;
     use crate::config::{AppConfig, Encoder};
     use crate::tracks::OutputTracks;
 
@@ -622,6 +689,8 @@ mod tests {
             KeepReason::Symlink,
             KeepReason::SourceChanged,
             KeepReason::DeleteFailed,
+            KeepReason::LedgerUnwritable,
+            KeepReason::PictureProcessed,
         ];
         let mut texts: Vec<&'static str> = all
             .iter()
@@ -642,6 +711,149 @@ mod tests {
         assert_eq!(
             KeepReason::AudioTranscoded.log(),
             "audio was transcoded and VMAF does not verify it"
+        );
+    }
+
+    fn picture_params(
+        hdr_type: HdrType,
+        dv_mode: DvMode,
+        picture: PictureFilter,
+    ) -> EncodingParams {
+        let metadata = VideoMetadata {
+            width: 720,
+            height: 480,
+            hdr_type,
+            dv_profile: (hdr_type == HdrType::DolbyVision).then_some(8),
+            dv_bl_compat: None,
+            hdr10_static: None,
+            codec_name: "mpeg2video".to_string(),
+            frame_rate_num: 30000,
+            frame_rate_den: 1001,
+            duration_secs: 60.0,
+        };
+        let mut params = EncodingParams::from_metadata(
+            "in.mkv",
+            "out.mkv",
+            &metadata,
+            &AppConfig::default(),
+            OutputTracks::default(),
+            dv_mode,
+            false,
+            Vec::new(),
+        );
+        params.picture = picture;
+        params
+    }
+
+    fn letterbox() -> PictureFilter {
+        PictureFilter {
+            crop: Some(Crop {
+                width: 720,
+                height: 360,
+                x: 0,
+                y: 60,
+            }),
+            fields: FieldTreatment::None,
+        }
+    }
+
+    #[test]
+    fn a_processed_output_keeps_its_source_unless_deletion_is_allowed() {
+        let params = picture_params(HdrType::Sdr, DvMode::ToHdr10, letterbox());
+        assert_eq!(
+            picture_keep_reason(&params, &VideoConfig::default()),
+            Some(KeepReason::PictureProcessed)
+        );
+        let allowed = VideoConfig {
+            delete_processed_source: true,
+            ..VideoConfig::default()
+        };
+        assert_eq!(picture_keep_reason(&params, &allowed), None);
+    }
+
+    #[test]
+    fn an_unprocessed_output_is_not_kept_for_its_picture() {
+        let params = picture_params(HdrType::Sdr, DvMode::ToHdr10, PictureFilter::default());
+        assert_eq!(picture_keep_reason(&params, &VideoConfig::default()), None);
+    }
+
+    #[test]
+    fn a_kept_dolby_vision_layer_is_never_cropped() {
+        let params = picture_params(HdrType::DolbyVision, DvMode::KeepDolbyVision, letterbox());
+        assert!(!params.accepts_picture_filter());
+        assert_eq!(params.picture_chain(), None);
+        assert_eq!(picture_keep_reason(&params, &VideoConfig::default()), None);
+        let args = super::command_builder::build_ffmpeg_args(&params);
+        assert!(!args.iter().any(|arg| arg.contains("crop=")));
+    }
+
+    #[test]
+    fn the_crop_runs_ahead_of_the_format_conversion() {
+        let params = picture_params(HdrType::Sdr, DvMode::ToHdr10, letterbox());
+        let args = super::command_builder::build_ffmpeg_args(&params);
+        let vf = args
+            .iter()
+            .position(|arg| arg == "-vf")
+            .map(|i| args[i + 1].clone());
+        assert_eq!(vf.as_deref(), Some("crop=720:360:0:60,format=yuv420p10le"));
+    }
+
+    #[test]
+    fn nothing_is_detected_when_every_option_is_off() {
+        let params = picture_params(HdrType::Sdr, DvMode::ToHdr10, PictureFilter::default());
+        let metadata = VideoMetadata {
+            width: 720,
+            height: 480,
+            hdr_type: HdrType::Sdr,
+            dv_profile: None,
+            dv_bl_compat: None,
+            hdr10_static: None,
+            codec_name: "mpeg2video".to_string(),
+            frame_rate_num: 25,
+            frame_rate_den: 1,
+            duration_secs: 60.0,
+        };
+        let filter = super::detect_picture(
+            "/nonexistent/in.mkv",
+            &metadata,
+            &params,
+            &VideoConfig::default(),
+            true,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .expect("no detection runs");
+        assert_eq!(filter, PictureFilter::default());
+    }
+
+    #[test]
+    fn a_requested_detection_on_a_missing_file_fails() {
+        let params = picture_params(HdrType::Sdr, DvMode::ToHdr10, PictureFilter::default());
+        let metadata = VideoMetadata {
+            width: 720,
+            height: 480,
+            hdr_type: HdrType::Sdr,
+            dv_profile: None,
+            dv_bl_compat: None,
+            hdr10_static: None,
+            codec_name: "mpeg2video".to_string(),
+            frame_rate_num: 25,
+            frame_rate_den: 1,
+            duration_secs: 60.0,
+        };
+        let video = VideoConfig {
+            crop: true,
+            ..VideoConfig::default()
+        };
+        assert!(
+            super::detect_picture(
+                "/nonexistent/in.mkv",
+                &metadata,
+                &params,
+                &video,
+                false,
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .is_err()
         );
     }
 

@@ -736,6 +736,7 @@ fn run_deleting_pipeline(
         DvMode::ToHdr10,
         false,
         Vec::new(),
+        false,
         &config,
         None,
         cancel,
@@ -1015,5 +1016,322 @@ fn unsaved_tui_settings_do_not_reach_the_encode() {
         app.queue.jobs[0].status
     );
     assert!(input.exists(), "an unsaved setting deleted the source");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A four-second `testsrc2` clip passed through `filter` and encoded with
+/// libx264 at near-lossless quality with `flags`.
+fn make_picture_fixture(dir: &Path, rate: &str, filter: &str, flags: &[&str]) -> PathBuf {
+    let path = dir.join("picture.mkv");
+    let built = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+        ])
+        .arg(format!("testsrc2=size=320x240:rate={rate}:duration=4"))
+        .args([
+            "-vf", filter, "-c:v", "libx264", "-crf", "8", "-pix_fmt", "yuv420p",
+        ])
+        .args(flags)
+        .arg(&path)
+        .status()
+        .is_ok_and(|status| status.success());
+    assert!(built, "ffmpeg builds the picture fixture with libx264");
+    path
+}
+
+/// The number of video frames in `path`.
+fn frame_count(path: &Path) -> u64 {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-count_frames",
+            "-select_streams",
+            "V:0",
+            "-show_entries",
+            "stream=nb_read_frames",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .expect("ffprobe runs");
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .expect("ffprobe counts the frames")
+}
+
+/// Whether this machine can build the picture fixtures, encode AV1 and score
+/// VMAF.
+fn can_run_picture_pipeline() -> bool {
+    DependencyStatus::check()
+        && DependencyStatus::encoder_available("libsvtav1")
+        && DependencyStatus::encoder_available("libx264")
+        && DependencyStatus::vmaf_available()
+}
+
+/// Runs the full pipeline with source deletion on and `video` as the picture
+/// settings, on a fixture built by [`make_picture_fixture`].
+fn run_picture_pipeline(
+    name: &str,
+    rate: &str,
+    filter: &str,
+    flags: &[&str],
+    video: crate::config::VideoConfig,
+) -> (super::FullEncodeResult, PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_pic_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = make_picture_fixture(&dir, rate, filter, flags);
+    let output = dir.join("out.mkv");
+    let mut config = AppConfig {
+        encoder: Encoder::SvtAv1,
+        video,
+        ..AppConfig::default()
+    };
+    config.performance.svt_preset = 12;
+    config.quality.vmaf_enabled = true;
+    config.quality.vmaf_threshold = 70.0;
+    config.quality.delete_source_on_success = true;
+
+    let cancel = AtomicBool::new(false);
+    let mut metadata = metadata_for(&input);
+    let (num, den) = rate.split_once('/').unwrap_or((rate, "1"));
+    metadata.frame_rate_num = num.parse().unwrap();
+    metadata.frame_rate_den = den.parse().unwrap();
+    let identity = crate::queue::SourceIdentity::from_path(&input).unwrap();
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        &identity,
+        &metadata,
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        false,
+        Vec::new(),
+        true,
+        &config,
+        None,
+        &cancel,
+        None,
+    );
+    (result, input, output)
+}
+
+const LETTERBOX: &str = "scale=320:160,pad=320:240:0:40";
+const INTERLACE: &str = "interlace=scan=tff,setfield=tff";
+const TELECINE: &str = "telecine=first_field=top:pattern=23";
+const INTERLACED_FLAGS: &[&str] = &["-flags", "+ildct+ilme"];
+
+/// Black bars are found on a real clip, cropped away, and the crop is scored
+/// against a reference cropped the same way; deletion is allowed here.
+#[test]
+fn a_letterboxed_source_is_cropped_and_may_be_deleted_when_allowed() {
+    if !can_run_picture_pipeline() {
+        eprintln!("skipping: this FFmpeg cannot build the fixture, encode AV1 or score VMAF");
+        return;
+    }
+    let video = crate::config::VideoConfig {
+        crop: true,
+        delete_processed_source: true,
+        ..crate::config::VideoConfig::default()
+    };
+    let (result, input, output) = run_picture_pipeline("crop", "24", LETTERBOX, &[], video);
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: true,
+                keep_reason: None,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(!input.exists());
+    assert_eq!(probe(&output, "stream=width,height"), vec!["320,160"]);
+    let _ = std::fs::remove_dir_all(output.parent().unwrap());
+}
+
+/// A cropped output keeps its source while deleting processed sources is off.
+#[test]
+fn a_cropped_output_keeps_its_source_by_default() {
+    if !can_run_picture_pipeline() {
+        eprintln!("skipping: this FFmpeg cannot build the fixture, encode AV1 or score VMAF");
+        return;
+    }
+    let video = crate::config::VideoConfig {
+        crop: true,
+        ..crate::config::VideoConfig::default()
+    };
+    let (result, input, output) = run_picture_pipeline("crop_keep", "24", LETTERBOX, &[], video);
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: false,
+                keep_reason: Some(super::KeepReason::PictureProcessed),
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(input.exists());
+    assert_eq!(probe(&output, "stream=width,height"), vec!["320,160"]);
+    let _ = std::fs::remove_dir_all(output.parent().unwrap());
+}
+
+/// With every picture option off, the letterboxed clip is encoded whole.
+#[test]
+fn a_letterboxed_source_is_left_whole_when_cropping_is_off() {
+    if !can_run_picture_pipeline() {
+        eprintln!("skipping: this FFmpeg cannot build the fixture, encode AV1 or score VMAF");
+        return;
+    }
+    let (result, input, output) = run_picture_pipeline(
+        "crop_off",
+        "24",
+        LETTERBOX,
+        &[],
+        crate::config::VideoConfig::default(),
+    );
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: true,
+                keep_reason: None,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(!input.exists());
+    assert_eq!(probe(&output, "stream=width,height"), vec!["320,240"]);
+    let _ = std::fs::remove_dir_all(output.parent().unwrap());
+}
+
+/// An interlaced clip is deinterlaced into one frame per source frame, keeps
+/// its source, and passes VMAF.
+#[test]
+fn an_interlaced_source_is_deinterlaced_frame_for_frame_and_passes_vmaf() {
+    if !can_run_picture_pipeline() {
+        eprintln!("skipping: this FFmpeg cannot build the fixture, encode AV1 or score VMAF");
+        return;
+    }
+    let video = crate::config::VideoConfig {
+        deinterlace: true,
+        ..crate::config::VideoConfig::default()
+    };
+    let (result, input, output) =
+        run_picture_pipeline("deint", "50", INTERLACE, INTERLACED_FLAGS, video);
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                keep_reason: Some(super::KeepReason::PictureProcessed),
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert_eq!(frame_count(&output), frame_count(&input));
+    let _ = std::fs::remove_dir_all(output.parent().unwrap());
+}
+
+/// A 3:2 telecined clip has its film frames restored, four in every five,
+/// and passes VMAF against a reference restored the same way.
+#[test]
+fn a_telecined_source_is_inverse_telecined_and_verified() {
+    if !can_run_picture_pipeline() {
+        eprintln!("skipping: this FFmpeg cannot build the fixture, encode AV1 or score VMAF");
+        return;
+    }
+    let video = crate::config::VideoConfig {
+        deinterlace: true,
+        inverse_telecine: true,
+        ..crate::config::VideoConfig::default()
+    };
+    let (result, input, output) =
+        run_picture_pipeline("ivtc", "24000/1001", TELECINE, INTERLACED_FLAGS, video);
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                keep_reason: Some(super::KeepReason::PictureProcessed),
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert_eq!(frame_count(&output) * 5, frame_count(&input) * 4);
+    let _ = std::fs::remove_dir_all(output.parent().unwrap());
+}
+
+/// Detection on real clips: the letterbox, the field parity and the
+/// telecine pattern.
+#[test]
+fn detection_reads_real_letterboxes_interlacing_and_telecine() {
+    use crate::analyzer::picture::{Crop, FieldTreatment, PictureRequest, detect};
+    if !(DependencyStatus::check() && DependencyStatus::encoder_available("libx264")) {
+        eprintln!("skipping: this FFmpeg cannot build the fixtures");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_detect_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cancel = AtomicBool::new(false);
+    let all = PictureRequest {
+        crop: true,
+        deinterlace: true,
+        inverse_telecine: true,
+    };
+    let detect_in = |path: &Path| {
+        let path = path.to_str().unwrap();
+        let order = crate::analyzer::ffprobe::probe_field_order(path, &cancel);
+        detect(path, 320, 240, 4.0, order.as_deref(), all, &cancel).expect("detection runs")
+    };
+
+    let letterboxed = detect_in(&make_picture_fixture(&dir, "24", LETTERBOX, &[]));
+    assert_eq!(
+        letterboxed.crop,
+        Some(Crop {
+            width: 320,
+            height: 160,
+            x: 0,
+            y: 40,
+        })
+    );
+    assert_eq!(letterboxed.fields, FieldTreatment::None);
+
+    let interlaced = detect_in(&make_picture_fixture(
+        &dir,
+        "50",
+        INTERLACE,
+        INTERLACED_FLAGS,
+    ));
+    assert_eq!(interlaced.crop, None);
+    assert_eq!(
+        interlaced.fields,
+        FieldTreatment::Deinterlace {
+            top_field_first: true
+        }
+    );
+
+    let telecined = detect_in(&make_picture_fixture(
+        &dir,
+        "24000/1001",
+        TELECINE,
+        INTERLACED_FLAGS,
+    ));
+    assert_eq!(telecined.fields, FieldTreatment::InverseTelecine);
+
     let _ = std::fs::remove_dir_all(&dir);
 }

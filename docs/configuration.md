@@ -34,6 +34,13 @@ default_mode = "copy"          # What newly queued files start as: "copy" or "op
 opus_bitrate_per_channel = 64  # kbps per channel (16–256); stereo → 128k, 5.1 → 384k
 skip_already_opus = true       # Leave tracks that are already Opus alone
 
+[video]
+crop = false                    # Detect black bars and crop them away
+deinterlace = false             # Detect interlaced video and deinterlace it (bwdif)
+inverse_telecine = false        # With deinterlace: restore telecined film (NTSC DVD) to its original frames
+disc_rips_only = false          # Crop and deinterlace only titles ripped from a disc
+delete_processed_source = false # Allow source deletion when the output was cropped or deinterlaced
+
 [daemon]
 enabled = false            # Required before `--start` will start the daemon
 bind_address = "127.0.0.1" # Loopback by default; see the security notes in docs/daemon.md
@@ -56,7 +63,7 @@ behind_proxy = false       # Treat every web request as remote; set when a rever
 
 **Output directory.** When `same_directory` is disabled, `output_directory` is required and must be an existing directory; a leading `~` is expanded. A saved directory that has since disappeared does not block saving other settings: the save goes through with a warning. In the web UI, a new or changed `output_directory` must exist and lie inside `browse_root` even while `same_directory` is on, since disc rips always write there; it cannot be cleared while ripped titles are waiting to encode.
 
-**Settings screens.** Every field exists in both the TUI and web settings pages. The TUI hides rows that do not apply (per-tier values outside `custom`, VMAF options while VMAF is off, `film_grain` unless the encoder is SVT-AV1) and the web page greys them out or omits them. Remote browsers see the `[daemon]` and `[disc]` blocks read-only (see [Host-level settings](daemon.md#host-level-settings)). The web Settings tab re-reads the configuration each time it opens, unless it has unsaved edits.
+**Settings screens.** Every field exists in both the TUI and web settings pages. The TUI hides rows that do not apply (per-tier values outside `custom`, VMAF options while VMAF is off, `film_grain` unless the encoder is SVT-AV1, picture options that depend on one that is off) and the web page greys them out or omits them. Remote browsers see the `[daemon]` and `[disc]` blocks read-only (see [Host-level settings](daemon.md#host-level-settings)). The web Settings tab re-reads the configuration each time it opens, unless it has unsaved edits.
 
 **When changes apply.** Edits take effect once saved. Bind-address and port changes take effect after a daemon restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
 

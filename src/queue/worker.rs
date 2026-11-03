@@ -55,6 +55,8 @@ pub struct WorkerJob {
     /// Per-selected-track subtitle codecs (`copy`, a compatible conversion, or
     /// `None` for a track the container cannot hold).
     pub subtitle_codecs: Vec<Option<&'static str>>,
+    /// Whether the source was ripped from a disc.
+    pub disc_rip: bool,
 }
 
 /// The span every line about job `index` carries: its queue id and its file.
@@ -108,6 +110,7 @@ pub fn run_worker(
                 job.dv_mode,
                 job.remux_only,
                 job.subtitle_codecs,
+                job.disc_rip,
                 config,
                 Some(Box::new(move |progress| {
                     let _ = tx_progress.send(WorkerMessage::Progress(idx, progress));

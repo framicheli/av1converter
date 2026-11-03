@@ -2135,6 +2135,7 @@ impl App {
                             .resolve_for(&j.audio_tracks, &audio_config, &output)
                     },
                     input: j.path.clone(),
+                    disc_rip: j.temporary,
                     output,
                     source_identity,
                     metadata,

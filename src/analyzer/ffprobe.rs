@@ -645,6 +645,25 @@ pub fn probe_video_pix_fmt(path: &str, cancel: &AtomicBool) -> Option<String> {
     (!pix_fmt.is_empty() && pix_fmt != "unknown").then(|| pix_fmt.to_string())
 }
 
+/// The `field_order` ffprobe reports for the first video stream, such as
+/// `progressive`, `tt` or `bb`. `None` when ffprobe reports none.
+pub fn probe_field_order(path: &str, cancel: &AtomicBool) -> Option<String> {
+    let args = [
+        "-v",
+        "error",
+        "-select_streams",
+        "V:0",
+        "-show_entries",
+        "stream=field_order",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        path,
+    ];
+    let output = run_ffprobe(&args, cancel).ok()?;
+    let order = output.lines().next()?.trim();
+    (!order.is_empty() && order != "unknown").then(|| order.to_string())
+}
+
 /// Streams of a file that an encode does not pick by track selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnselectableStreams {
@@ -715,7 +734,7 @@ fn run_ffprobe(args: &[&str], cancel: &AtomicBool) -> Result<String, AppError> {
 }
 
 /// Run a probe, aborting it on cancellation or once `timeout` elapses.
-fn run_command(
+pub(crate) fn run_command(
     command: &mut Command,
     cancel: &AtomicBool,
     timeout: Duration,

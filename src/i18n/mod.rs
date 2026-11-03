@@ -232,6 +232,7 @@ pub enum Msg {
     KeepSourceChanged,
     KeepDeleteFailed,
     KeepLedgerUnwritable,
+    KeepPictureProcessed,
     TimeLabel,
     ResultTitle,
     Summary,
@@ -339,6 +340,13 @@ pub enum Msg {
     CfgDaemonBrowseRoot,
     CfgMakemkvconPath,
     CfgStagingDirectory,
+    CfgCrop,
+    CfgDeinterlace,
+    CfgInverseTelecine,
+    CfgDiscRipsOnly,
+    CfgDeleteProcessedSource,
+    DeleteProcessedSourceWarning,
+    InverseTelecineHint,
     CfgDaemonAuthToken,
     CfgDaemonAllowInsecureLan,
     CfgDaemonBehindProxy,
@@ -435,6 +443,7 @@ pub enum Msg {
     WebGroupAudio,
     WebGroupDaemon,
     WebGroupDisc,
+    WebGroupVideo,
     WebGroupRateFactors,
     WebCfgOutputDirectory,
     WebCfgSelectAllFallback,
@@ -1820,6 +1829,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "das Löschprotokoll konnte nicht geschrieben werden",
             Zh => "无法写入删除记录",
         },
+        Msg::KeepPictureProcessed => match lang {
+            En => "the output was cropped or deinterlaced",
+            It => "l'uscita è stata ritagliata o deinterlacciata",
+            Es => "la salida se recortó o se desentrelazó",
+            Fr => "la sortie a été recadrée ou désentrelacée",
+            De => "die Ausgabe wurde beschnitten oder deinterlaced",
+            Zh => "输出已裁剪或去隔行",
+        },
         Msg::TimeLabel => match lang {
             En => "Time",
             It => "Tempo",
@@ -2645,6 +2662,81 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Zwischenordner für Discs",
             Zh => "光盘暂存目录",
         },
+        Msg::CfgCrop => match lang {
+            En => "Crop black bars",
+            It => "Ritaglia le bande nere",
+            Es => "Recortar bandas negras",
+            Fr => "Recadrer les bandes noires",
+            De => "Schwarze Balken entfernen",
+            Zh => "裁剪黑边",
+        },
+        Msg::CfgDeinterlace => match lang {
+            En => "Deinterlace",
+            It => "Deinterlaccia",
+            Es => "Desentrelazar",
+            Fr => "Désentrelacer",
+            De => "Deinterlacing",
+            Zh => "去隔行",
+        },
+        Msg::CfgInverseTelecine => match lang {
+            En => "Inverse telecine",
+            It | Es => "Telecine inverso",
+            Fr => "Télécinéma inverse",
+            De => "Inverse Telecine",
+            Zh => "反胶转视",
+        },
+        Msg::CfgDiscRipsOnly => match lang {
+            En => "Crop/deinterlace disc rips only",
+            It => "Ritaglia/deinterlaccia solo i dischi",
+            Es => "Recortar/desentrelazar solo discos",
+            Fr => "Recadrer/désentrelacer les disques seulement",
+            De => "Nur Disc-Rips beschneiden/deinterlacen",
+            Zh => "仅对光盘提取裁剪/去隔行",
+        },
+        Msg::CfgDeleteProcessedSource => match lang {
+            En => "Delete cropped/deinterlaced sources",
+            It => "Elimina sorgenti ritagliate/deinterlacciate",
+            Es => "Eliminar orígenes recortados/desentrelazados",
+            Fr => "Supprimer les sources recadrées/désentrelacées",
+            De => "Beschnittene/deinterlacte Quellen löschen",
+            Zh => "删除已裁剪/去隔行的源文件",
+        },
+        Msg::DeleteProcessedSourceWarning => match lang {
+            En => {
+                "VMAF compares against the source cropped or deinterlaced the same way: it cannot show that the crop or deinterlace itself was right."
+            }
+            It => {
+                "VMAF confronta con la sorgente ritagliata o deinterlacciata allo stesso modo: non può dimostrare che il ritaglio o il deinterlacciamento fossero corretti."
+            }
+            Es => {
+                "VMAF compara con el origen recortado o desentrelazado de la misma forma: no puede demostrar que el recorte o el desentrelazado fueran correctos."
+            }
+            Fr => {
+                "VMAF compare à la source recadrée ou désentrelacée de la même façon : il ne peut pas montrer que le recadrage ou le désentrelacement étaient justes."
+            }
+            De => {
+                "VMAF vergleicht mit der gleich beschnittenen oder deinterlacten Quelle: Es kann nicht zeigen, dass der Beschnitt oder das Deinterlacing selbst richtig war."
+            }
+            Zh => "VMAF 与以相同方式裁剪或去隔行的源进行比较：无法证明裁剪或去隔行本身是正确的。",
+        },
+        Msg::InverseTelecineHint => match lang {
+            En => {
+                "Telecined film (NTSC DVD) is restored to its original frames instead of deinterlaced. Needs Deinterlace."
+            }
+            It => {
+                "I film in telecine (DVD NTSC) tornano ai fotogrammi originali invece di essere deinterlacciati. Richiede Deinterlaccia."
+            }
+            Es => {
+                "Las películas con telecine (DVD NTSC) recuperan sus fotogramas originales en lugar de desentrelazarse. Requiere Desentrelazar."
+            }
+            Fr => {
+                "Les films télécinémas (DVD NTSC) retrouvent leurs images d'origine au lieu d'être désentrelacés. Nécessite Désentrelacer."
+            }
+            De => {
+                "Telecine-Filme (NTSC-DVD) erhalten ihre Originalbilder zurück, statt deinterlaced zu werden. Erfordert Deinterlacing."
+            }
+            Zh => "胶转视影片（NTSC DVD）恢复为原始帧，而不是去隔行。需要开启去隔行。",
+        },
         Msg::CfgDaemonAuthToken => match lang {
             En => "Daemon Access Token",
             It => "Token di accesso daemon",
@@ -3444,6 +3536,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
         Msg::WebGroupDaemon => match lang {
             En | It | Es | Fr | De => "Daemon",
             Zh => "守护进程",
+        },
+        Msg::WebGroupVideo => match lang {
+            En => "Picture",
+            It => "Immagine",
+            Es => "Imagen",
+            Fr => "Image",
+            De => "Bild",
+            Zh => "画面",
         },
         Msg::WebGroupDisc => match lang {
             En => "Disc ripping",
@@ -4269,6 +4369,16 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("cfg_select_all_fallback", Msg::WebCfgSelectAllFallback),
     ("cfg_skip_already_opus", Msg::SkipAlreadyOpus),
     ("cfg_staging_directory", Msg::CfgStagingDirectory),
+    ("cfg_crop", Msg::CfgCrop),
+    ("cfg_deinterlace", Msg::CfgDeinterlace),
+    ("cfg_inverse_telecine", Msg::CfgInverseTelecine),
+    ("cfg_disc_rips_only", Msg::CfgDiscRipsOnly),
+    ("cfg_delete_processed_source", Msg::CfgDeleteProcessedSource),
+    (
+        "delete_processed_source_warning",
+        Msg::DeleteProcessedSourceWarning,
+    ),
+    ("inverse_telecine_hint", Msg::InverseTelecineHint),
     ("cfg_subtitle_languages", Msg::CfgSubtitleLanguages),
     ("cfg_svt_preset", Msg::CfgSvtPreset),
     ("cfg_vmaf_enabled", Msg::CfgVmafEnabled),
@@ -4308,6 +4418,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("group_audio", Msg::WebGroupAudio),
     ("group_daemon", Msg::WebGroupDaemon),
     ("group_disc", Msg::WebGroupDisc),
+    ("group_video", Msg::WebGroupVideo),
     ("group_general", Msg::WebGroupGeneral),
     ("group_output", Msg::WebGroupOutput),
     ("group_performance", Msg::WebGroupPerformance),

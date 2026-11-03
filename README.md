@@ -38,6 +38,7 @@ AV1Converter is a single Rust binary that drives FFmpeg to re-encode whole folde
 | 🎵 **Opus audio**         | Copy audio untouched, or convert any track to Opus at its own channel layout ([details](docs/usage.md#audio-transcoding))                       |
 | 📦 **Remux mode**         | Repackage and strip tracks without re-encoding the video                                                                                        |
 | 💿 **Disc ripping**       | Imports DVD and Blu-ray titles through MakeMKV, ripping the next title while the previous one encodes ([details](docs/disc-ripping.md))         |
+| ✂️ **Crop & deinterlace** | Optional black-bar cropping, deinterlacing and inverse telecine, verified by VMAF ([details](docs/usage.md#cropping-and-deinterlacing))         |
 | 🌐 **Headless daemon**    | A persistent queue and a token-protected web UI with the same features as the TUI ([details](docs/daemon.md))                                   |
 | 🗂️ **Batch anything**     | A single file, a folder, or a whole directory tree recursively                                                                                  |
 | 🌍 **Six languages**      | English, Italian, Spanish, French, German and Chinese, in both UIs                                                                              |
@@ -123,7 +124,7 @@ Never by default. With `delete_source_on_success` on, a source is deleted only w
 
 - the file was encoded (not remuxed) and the job was not cancelled,
 - both the mean and the minimum sampled-frame VMAF score meet `vmaf_threshold`, and
-- nothing besides the video changed: no audio transcoded, no subtitle, attachment, Dolby Vision layer or other stream lost or converted, and no chroma or bit depth reduced.
+- nothing besides the video changed: no audio transcoded, no subtitle, attachment, Dolby Vision layer or other stream lost or converted, no chroma or bit depth reduced, and the picture not cropped or deinterlaced (unless `delete_processed_source` is on).
 
 Otherwise the source is kept and both UIs say why. Every decision is recorded in `deletions.jsonl` before anything is removed. The full list of rules is in [Source deletion](docs/usage.md#source-deletion).
 

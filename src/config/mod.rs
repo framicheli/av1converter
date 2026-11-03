@@ -40,6 +40,9 @@ pub struct AppConfig {
     /// Audio transcoding settings
     #[serde(default)]
     pub audio: AudioConfig,
+    /// Crop and deinterlace settings
+    #[serde(default)]
+    pub video: VideoConfig,
     /// Daemon / web UI settings
     #[serde(default)]
     pub daemon: DaemonConfig,
@@ -719,6 +722,47 @@ mod tests {
                 0
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every picture option is off by default and in a config written before
+    /// the `[video]` table existed; each one written survives a save and load,
+    /// and a value of the wrong type is refused.
+    #[test]
+    fn picture_settings_default_off_and_round_trip() {
+        let defaults = AppConfig::default().video;
+        assert_eq!(
+            defaults,
+            VideoConfig {
+                crop: false,
+                deinterlace: false,
+                inverse_telecine: false,
+                disc_rips_only: false,
+                delete_processed_source: false,
+            }
+        );
+        let legacy: AppConfig = toml::from_str("encoder = \"SvtAv1\"").unwrap();
+        assert_eq!(legacy.video, defaults);
+
+        let dir = std::env::temp_dir().join(format!("av1c_cfg_video_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.toml");
+        let cfg = AppConfig {
+            video: VideoConfig {
+                crop: true,
+                deinterlace: true,
+                inverse_telecine: true,
+                disc_rips_only: true,
+                delete_processed_source: true,
+            },
+            ..AppConfig::default()
+        };
+        cfg.save_to_path(&path).unwrap();
+        assert_eq!(AppConfig::load_from_file(&path).unwrap().video, cfg.video);
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, written.replace("crop = true", "crop = \"yes\"")).unwrap();
+        assert!(AppConfig::load_from_file(&path).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

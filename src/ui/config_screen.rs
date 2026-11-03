@@ -45,6 +45,11 @@ pub enum ConfigField {
     AudioDefaultMode,
     OpusBitratePerChannel,
     SkipAlreadyOpus,
+    VideoCrop,
+    VideoDeinterlace,
+    VideoInverseTelecine,
+    VideoDiscRipsOnly,
+    VideoDeleteProcessedSource,
     DaemonEnabled,
     DaemonAutostart,
     DaemonBindAddress,
@@ -380,6 +385,31 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         field: ConfigField::SkipAlreadyOpus,
     },
     ConfigItem {
+        label: Msg::CfgCrop,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VideoCrop,
+    },
+    ConfigItem {
+        label: Msg::CfgDeinterlace,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VideoDeinterlace,
+    },
+    ConfigItem {
+        label: Msg::CfgInverseTelecine,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VideoInverseTelecine,
+    },
+    ConfigItem {
+        label: Msg::CfgDiscRipsOnly,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VideoDiscRipsOnly,
+    },
+    ConfigItem {
+        label: Msg::CfgDeleteProcessedSource,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VideoDeleteProcessedSource,
+    },
+    ConfigItem {
         label: Msg::CfgDaemonEnabled,
         kind: ConfigItemKind::Toggle,
         field: ConfigField::DaemonEnabled,
@@ -457,6 +487,11 @@ fn config_field_path(field: ConfigField) -> Option<String> {
         ConfigField::AudioDefaultMode => "audio.default_mode",
         ConfigField::OpusBitratePerChannel => "audio.opus_bitrate_per_channel",
         ConfigField::SkipAlreadyOpus => "audio.skip_already_opus",
+        ConfigField::VideoCrop => "video.crop",
+        ConfigField::VideoDeinterlace => "video.deinterlace",
+        ConfigField::VideoInverseTelecine => "video.inverse_telecine",
+        ConfigField::VideoDiscRipsOnly => "video.disc_rips_only",
+        ConfigField::VideoDeleteProcessedSource => "video.delete_processed_source",
         ConfigField::DaemonEnabled => "daemon.enabled",
         ConfigField::DaemonBindAddress => "daemon.bind_address",
         ConfigField::DaemonPort => "daemon.port",
@@ -519,10 +554,27 @@ pub fn visible_config_items(config: &AppConfig) -> Vec<&'static ConfigItem> {
                     ConfigField::VmafThreshold | ConfigField::DeleteSource
                 )
         })
+        .filter(|item| picture_item_visible(config, item.field))
         .filter(|item| {
             item.field != ConfigField::DaemonAutostart || crate::daemon::service::supported()
         })
         .collect()
+}
+
+/// Whether a picture row is shown: inverse telecine with deinterlacing on,
+/// the disc-only row with cropping or deinterlacing on, and processed-source
+/// deletion when source deletion is also on. Other rows are always shown.
+fn picture_item_visible(config: &AppConfig, field: ConfigField) -> bool {
+    let video = &config.video;
+    let processing = video.crop || video.deinterlace;
+    match field {
+        ConfigField::VideoInverseTelecine => video.deinterlace,
+        ConfigField::VideoDiscRipsOnly => processing,
+        ConfigField::VideoDeleteProcessedSource => {
+            processing && config.quality.vmaf_enabled && config.quality.delete_source_on_success
+        }
+        _ => true,
+    }
 }
 
 /// Localized display name for a quality preset.
@@ -587,6 +639,17 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::OpusBitratePerChannel => config.audio.opus_bitrate_per_channel.to_string(),
         ConfigField::SkipAlreadyOpus => {
             bool_display(config.language, config.audio.skip_already_opus)
+        }
+        ConfigField::VideoCrop => bool_display(config.language, config.video.crop),
+        ConfigField::VideoDeinterlace => bool_display(config.language, config.video.deinterlace),
+        ConfigField::VideoInverseTelecine => {
+            bool_display(config.language, config.video.inverse_telecine)
+        }
+        ConfigField::VideoDiscRipsOnly => {
+            bool_display(config.language, config.video.disc_rips_only)
+        }
+        ConfigField::VideoDeleteProcessedSource => {
+            bool_display(config.language, config.video.delete_processed_source)
         }
         ConfigField::DaemonEnabled => bool_display(config.language, config.daemon.enabled),
         ConfigField::DaemonAutostart => {
@@ -818,6 +881,8 @@ fn selected_config_hint(app: &App) -> Option<Msg> {
     }
     match field {
         Some(ConfigField::DeleteSource) => Some(Msg::WebDeleteSourceWarning),
+        Some(ConfigField::VideoDeleteProcessedSource) => Some(Msg::DeleteProcessedSourceWarning),
+        Some(ConfigField::VideoInverseTelecine) => Some(Msg::InverseTelecineHint),
         Some(ConfigField::DaemonAutostart) => Some(Msg::CfgDaemonAutostartHint),
         Some(
             ConfigField::DaemonEnabled

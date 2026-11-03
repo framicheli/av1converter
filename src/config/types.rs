@@ -503,6 +503,25 @@ impl AudioMode {
     }
 }
 
+/// Picture processing applied before encoding: black-bar cropping and
+/// deinterlacing. Every option is off by default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct VideoConfig {
+    /// Detect black bars and crop them away.
+    pub crop: bool,
+    /// Detect interlaced video and deinterlace it with `bwdif`.
+    pub deinterlace: bool,
+    /// Detect telecined film and restore its progressive frames with
+    /// `fieldmatch` and `decimate`. Applies only with `deinterlace`.
+    pub inverse_telecine: bool,
+    /// Apply cropping and deinterlacing only to titles ripped from a disc.
+    pub disc_rips_only: bool,
+    /// Allow source deletion when the output was cropped or deinterlaced.
+    pub delete_processed_source: bool,
+}
+
 /// Audio transcoding configuration
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

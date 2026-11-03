@@ -946,6 +946,7 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
                     .resolve_for(&job.audio_tracks, &audio_config, &output)
             },
             input: job.path.clone(),
+            disc_rip: job.temporary,
             output,
             source_identity,
             metadata,

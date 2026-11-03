@@ -25,6 +25,12 @@ DVD decryption is free permanently. Blu-ray needs a purchased MakeMKV licence or
 - The staging file is deleted once its encode succeeds. It is kept when the encode fails, scores under the VMAF threshold, or its VMAF check cannot run. With `vmaf_enabled = false` nothing judges the output, so a finished encode deletes the rip: leave verification on for a disc you cannot rip again.
 - Staging directories left behind by an interrupted rip are removed when the TUI or the daemon starts and whenever a disc run ends. Only the folders AV1Converter created for a rip are removed; anything else in the staging directory is left alone.
 
+## Cropping and deinterlacing
+
+DVD titles are often interlaced or telecined, and films on disc often carry black bars. Turn on `crop`, `deinterlace` and `inverse_telecine` in the `[video]` settings to handle them. With `disc_rips_only` on, they apply only to ripped titles and not to files you add yourself. See [Cropping and deinterlacing](usage.md#cropping-and-deinterlacing).
+
+A staged rip is not your source file, so it is deleted after a passing VMAF score whether or not the picture was cropped or deinterlaced. `delete_processed_source` applies only to files you added yourself.
+
 ## Known limitation: Dolby Vision profile 7 (UHD Blu-ray)
 
 MakeMKV extracts profile 7 discs with the Dolby Vision enhancement layer as a *separate* MKV track, and FFmpeg will not recombine it. Those discs encode from the HDR10 base layer, and the EL/RPU track shows up as a stray stream on the track screen. This is a MakeMKV/FFmpeg limitation, not a bug in the conversion.

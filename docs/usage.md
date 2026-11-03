@@ -70,6 +70,19 @@ A fast, lossless repackaging mode that copies the video, audio, and subtitle str
 
 Audio is the one exception: tracks you convert to Opus are re-encoded even here, so an already-AV1 file with an oversized lossless track can be shrunk without touching the video.
 
+## Cropping and deinterlacing
+
+DVDs are often interlaced or telecined, and many films carry black bars. The `[video]` settings (the **Picture** section of both settings screens) handle both. Every option is off by default.
+
+- **Crop black bars** (`crop`) decodes a short stretch at eight points across the video with FFmpeg's `cropdetect` and crops to the area that any of them showed as picture. A dark scene therefore never loses picture another sample saw. No crop is applied when fewer than half the samples show a picture, or when the crop would keep less than a quarter of the width or height.
+- **Deinterlace** (`deinterlace`) samples the same points with `idet`. When at least a fifth of the frames are interlaced, the video is deinterlaced with `bwdif`, one output frame per source frame, in the field order found. A stream ffprobe reports as progressive is never deinterlaced.
+- **Inverse telecine** (`inverse_telecine`, needs `deinterlace`) treats video with the repeated fields of 3:2 pulldown as telecined film. Instead of deinterlacing it, `fieldmatch` and `decimate` restore the original 23.976 fps frames.
+- **Crop/deinterlace disc rips only** (`disc_rips_only`) applies all of the above only to titles ripped from a disc.
+
+Detection runs when each encode starts. Remuxes, encodes that keep Dolby Vision, and tone-mapped profile 5 encodes are never cropped or deinterlaced. If detection fails, the file is encoded unchanged and the log says why.
+
+VMAF scores the output against the source cropped and deinterlaced in exactly the same way. After inverse telecine, frames are paired by position, since the dropped frames change the timestamps. A passing score shows that the encode matches the processed picture. It cannot show that the crop or deinterlace itself was right, so such a source is kept unless `delete_processed_source` is on (see [Source deletion](#source-deletion)).
+
 ## Dolby Vision handling
 
 When a Dolby Vision source is queued for encoding with SVT-AV1, a dialog asks how to convert it (reopen it anytime with `d`). Hardware encoders (NVENC, QSV, AMF) cannot write the RPU, so with them the output is HDR10 without asking.
@@ -111,7 +124,8 @@ VMAF compares video only, so the source is also kept whenever something besides 
 - convert or leave out a selected subtitle (bitmap subtitles in MP4/WebM, ASS styling turned into `mov_text` or WebVTT);
 - drop cover art or attachments (every container except MKV drops attachments; cover art is dropped everywhere);
 - drop streams that cannot be selected (a second video stream, data streams such as timecode or GPS tracks, a Dolby Vision profile 7 enhancement layer);
-- reduce the source's chroma or bit depth (everything is encoded as 4:2:0 10-bit, so 4:2:2, 4:4:4, RGB, alpha and 12-bit sources lose detail VMAF does not measure).
+- reduce the source's chroma or bit depth (everything is encoded as 4:2:0 10-bit, so 4:2:2, 4:4:4, RGB, alpha and 12-bit sources lose detail VMAF does not measure);
+- crop or deinterlace the picture, unless `delete_processed_source` is on (see [Cropping and deinterlacing](#cropping-and-deinterlacing)).
 
 A kept source says why: in the queue and Finish screens of the TUI, on the queue row in the web UI, and in the log.
 
