@@ -95,7 +95,7 @@ When a Dolby Vision source is queued for encoding with SVT-AV1, a dialog asks ho
 
 ## HDR10+ sources
 
-HDR10+ dynamic metadata (SMPTE ST 2094-40) is not carried into the AV1 output: FFmpeg's AV1 encoders do not pass it through. Only the static HDR10 mastering display and MaxCLL/MaxFALL metadata (on SVT-AV1) and the PQ color tags carry forward, so the output plays as HDR10.
+HDR10+ dynamic metadata (SMPTE ST 2094-40) is not carried into the AV1 output: FFmpeg's AV1 encoders do not pass it through. Everything else about the HDR carries forward as usual: an HDR10+ source becomes HDR10, with its static mastering display and MaxCLL/MaxFALL metadata (on SVT-AV1) and PQ color tags. A Dolby Vision source that also carries HDR10+ follows its [Dolby Vision choice](#dolby-vision-handling): **Keep Dolby Vision** still writes AV1 with Dolby Vision, and only the HDR10+ layer is lost.
 
 AV1Converter reads the first frame of every HDR10 and Dolby Vision source to find HDR10+; a source whose first frame cannot be read fails analysis. Such a file is labelled **HDR10+** (or **Dolby Vision + HDR10+**) on its queue row in the web UI and in Track configuration in the TUI, and Track configuration in both UIs warns that the dynamic metadata will be dropped. A remux copies the video untouched and keeps HDR10+.
 

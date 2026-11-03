@@ -9,7 +9,7 @@
 - Both UIs show what was applied to each file, such as "cropped to 720×432, deinterlaced". It appears on the queue row from the start of the encode, and on the Finish screen.
 - Automatic CRF selection, a new **CRF selection** setting in the Quality section of the TUI and web settings (`crf_mode` in the configuration file). **Fixed**, the default, keeps using the presets table. **Automatic** encodes short samples of each file at several CRF values, scores them with VMAF and encodes the file at the highest value that meets the VMAF threshold. If the full encode still misses it, the file is encoded once more at a lower CRF. The queue shows a **Finding CRF...** phase with its progress. Automatic mode needs VMAF to be on.
 - The CRF each encode used is shown on the queue row and on the Finish screen in both UIs.
-- HDR10+ sources are recognised. Both UIs label them **HDR10+** (or **Dolby Vision + HDR10+**), and Track configuration warns that the AV1 output keeps only the static HDR10 metadata, not the HDR10+ dynamic metadata.
+- HDR10+ sources are recognised. Both UIs label them **HDR10+** (or **Dolby Vision + HDR10+**), and Track configuration warns that the HDR10+ dynamic metadata is not carried into the AV1 output. A Dolby Vision source encoded with **Keep Dolby Vision** still keeps its Dolby Vision.
 - An HDR10+ source keeps its source file, even after a passing VMAF score, unless the new **Delete HDR10+ sources** setting (`delete_hdr10plus_source`) is turned on. Before, such a source was deleted and its HDR10+ metadata was lost.
 
 ### Fixed
