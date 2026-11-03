@@ -79,6 +79,8 @@ pub enum KeepReason {
     LedgerUnwritable,
     /// The output was cropped or deinterlaced.
     PictureProcessed,
+    /// The source HDR10+ dynamic metadata is not carried over.
+    Hdr10PlusDropped,
 }
 
 impl KeepReason {
@@ -107,6 +109,7 @@ impl KeepReason {
             Self::DeleteFailed => "deleting it failed",
             Self::LedgerUnwritable => "the deletion ledger could not be written",
             Self::PictureProcessed => "the output was cropped or deinterlaced",
+            Self::Hdr10PlusDropped => "its HDR10+ dynamic metadata is not carried into the output",
         }
     }
 
@@ -130,6 +133,7 @@ impl KeepReason {
             Self::DeleteFailed => Msg::KeepDeleteFailed,
             Self::LedgerUnwritable => Msg::KeepLedgerUnwritable,
             Self::PictureProcessed => Msg::KeepPictureProcessed,
+            Self::Hdr10PlusDropped => Msg::KeepHdr10PlusDropped,
         }
     }
 }
@@ -524,6 +528,7 @@ fn decide_deletion(
         );
         *keep_reason = Some(KeepReason::Cancelled);
     } else if let Some(reason) = picture_keep_reason(params, &config.video)
+        .or_else(|| hdr10_plus_keep_reason(params, &config.video))
         .or_else(|| keep_source_reason(params, dv_mode, cancel_flag))
     {
         info!("Keeping source file {input}: {}", reason.log());
@@ -607,6 +612,14 @@ fn detect_picture(
 fn picture_keep_reason(params: &EncodingParams, video: &VideoConfig) -> Option<KeepReason> {
     (params.picture_chain().is_some() && !video.delete_processed_source)
         .then_some(KeepReason::PictureProcessed)
+}
+
+/// [`KeepReason::Hdr10PlusDropped`] when an encode of a source carrying
+/// HDR10+ dynamic metadata ran and `video` does not allow deleting such a
+/// source.
+fn hdr10_plus_keep_reason(params: &EncodingParams, video: &VideoConfig) -> Option<KeepReason> {
+    (params.hdr10_plus && !params.remux_only && !video.delete_hdr10plus_source)
+        .then_some(KeepReason::Hdr10PlusDropped)
 }
 
 /// Flush `path`'s contents, and on Unix its directory entry, to disk.
@@ -782,7 +795,8 @@ mod tests {
     use super::verifier;
     use super::{
         DvMode, EncodingParams, HdrType, KeepReason, SourceIdentity, VideoMetadata, flush_to_disk,
-        is_yuv420_within_10_bit, keep_source_reason, picture_keep_reason, skips_vmaf,
+        hdr10_plus_keep_reason, is_yuv420_within_10_bit, keep_source_reason, picture_keep_reason,
+        skips_vmaf,
     };
     use crate::analyzer::picture::{Crop, FieldTreatment, PictureFilter};
     use crate::config::VideoConfig;
@@ -810,6 +824,7 @@ mod tests {
             KeepReason::DeleteFailed,
             KeepReason::LedgerUnwritable,
             KeepReason::PictureProcessed,
+            KeepReason::Hdr10PlusDropped,
         ];
         let mut texts: Vec<&'static str> = all
             .iter()
@@ -845,6 +860,7 @@ mod tests {
             dv_profile: (hdr_type == HdrType::DolbyVision).then_some(8),
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "mpeg2video".to_string(),
             frame_rate_num: 30000,
             frame_rate_den: 1001,
@@ -885,6 +901,7 @@ mod tests {
         );
         let allowed = VideoConfig {
             delete_processed_source: true,
+            delete_hdr10plus_source: true,
             ..VideoConfig::default()
         };
         assert_eq!(picture_keep_reason(&params, &allowed), None);
@@ -894,6 +911,83 @@ mod tests {
     fn an_unprocessed_output_is_not_kept_for_its_picture() {
         let params = picture_params(HdrType::Sdr, DvMode::ToHdr10, PictureFilter::default());
         assert_eq!(picture_keep_reason(&params, &VideoConfig::default()), None);
+    }
+
+    #[test]
+    fn an_hdr10_plus_encode_keeps_its_source_unless_deletion_is_allowed() {
+        let mut params = picture_params(HdrType::Pq, DvMode::ToHdr10, PictureFilter::default());
+        params.hdr10_plus = true;
+        assert_eq!(
+            hdr10_plus_keep_reason(&params, &VideoConfig::default()),
+            Some(KeepReason::Hdr10PlusDropped)
+        );
+        let allowed = VideoConfig {
+            delete_hdr10plus_source: true,
+            ..VideoConfig::default()
+        };
+        assert_eq!(hdr10_plus_keep_reason(&params, &allowed), None);
+    }
+
+    #[test]
+    fn a_dolby_vision_encode_with_hdr10_plus_keeps_its_source_in_either_mode() {
+        for mode in [DvMode::KeepDolbyVision, DvMode::ToHdr10] {
+            let mut params = picture_params(HdrType::DolbyVision, mode, PictureFilter::default());
+            params.hdr10_plus = true;
+            assert_eq!(
+                hdr10_plus_keep_reason(&params, &VideoConfig::default()),
+                Some(KeepReason::Hdr10PlusDropped),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_hdr10_plus_remux_is_not_kept_for_its_dynamic_metadata() {
+        let mut params = picture_params(HdrType::Pq, DvMode::ToHdr10, PictureFilter::default());
+        params.hdr10_plus = true;
+        params.remux_only = true;
+        assert_eq!(
+            hdr10_plus_keep_reason(&params, &VideoConfig::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_plain_hdr10_encode_is_not_kept_for_dynamic_metadata() {
+        let params = picture_params(HdrType::Pq, DvMode::ToHdr10, PictureFilter::default());
+        assert!(!params.hdr10_plus);
+        assert_eq!(
+            hdr10_plus_keep_reason(&params, &VideoConfig::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn encoding_params_carry_the_hdr10_plus_flag_from_the_metadata() {
+        let metadata = VideoMetadata {
+            width: 3840,
+            height: 2160,
+            hdr_type: HdrType::Pq,
+            dv_profile: None,
+            dv_bl_compat: None,
+            hdr10_static: None,
+            hdr10_plus: true,
+            codec_name: "hevc".to_string(),
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            duration_secs: 60.0,
+        };
+        let params = EncodingParams::from_metadata(
+            "in.mkv",
+            "out.mkv",
+            &metadata,
+            &AppConfig::default(),
+            OutputTracks::default(),
+            DvMode::ToHdr10,
+            false,
+            Vec::new(),
+        );
+        assert!(params.hdr10_plus);
     }
 
     #[test]
@@ -927,6 +1021,7 @@ mod tests {
             dv_profile: None,
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "mpeg2video".to_string(),
             frame_rate_num: 25,
             frame_rate_den: 1,
@@ -954,6 +1049,7 @@ mod tests {
             dv_profile: None,
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "mpeg2video".to_string(),
             frame_rate_num: 25,
             frame_rate_den: 1,
@@ -985,6 +1081,7 @@ mod tests {
             dv_profile: Some(5),
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "hevc".to_string(),
             frame_rate_num: 24000,
             frame_rate_den: 1001,
@@ -1017,6 +1114,7 @@ mod tests {
             dv_profile: Some(8),
             dv_bl_compat: Some(1),
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "hevc".to_string(),
             frame_rate_num: 24000,
             frame_rate_den: 1001,
@@ -1055,6 +1153,7 @@ mod tests {
             dv_profile: Some(7),
             dv_bl_compat: Some(6),
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "hevc".to_string(),
             frame_rate_num: 24000,
             frame_rate_den: 1001,
@@ -1091,6 +1190,7 @@ mod tests {
             dv_profile: None,
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "h264".to_string(),
             frame_rate_num: 24,
             frame_rate_den: 1,

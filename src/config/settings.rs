@@ -69,6 +69,7 @@ pub const SERIALIZED_SETTING_PATHS: &[&str] = &[
     "video.inverse_telecine",
     "video.disc_rips_only",
     "video.delete_processed_source",
+    "video.delete_hdr10plus_source",
     "daemon.enabled",
     "daemon.bind_address",
     "daemon.port",

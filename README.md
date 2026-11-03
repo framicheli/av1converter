@@ -125,7 +125,7 @@ Never by default. With `delete_source_on_success` on, a source is deleted only w
 
 - the file was encoded (not remuxed) and the job was not cancelled,
 - both the mean and the minimum sampled-frame VMAF score meet `vmaf_threshold`, and
-- nothing besides the video changed: no audio transcoded, no subtitle, attachment, Dolby Vision layer or other stream lost or converted, no chroma or bit depth reduced, and the picture not cropped or deinterlaced (unless `delete_processed_source` is on).
+- nothing besides the video changed: no audio transcoded, no subtitle, attachment, Dolby Vision layer or other stream lost or converted, no chroma or bit depth reduced, the picture not cropped or deinterlaced (unless `delete_processed_source` is on), and no HDR10+ dynamic metadata dropped (unless `delete_hdr10plus_source` is on).
 
 Otherwise the source is kept and both UIs say why. Every decision is recorded in `deletions.jsonl` before anything is removed. The full list of rules is in [Source deletion](docs/usage.md#source-deletion).
 

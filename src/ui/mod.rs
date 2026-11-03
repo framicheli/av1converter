@@ -178,6 +178,7 @@ mod tests {
             dv_profile: Some(5),
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "hevc".to_string(),
             frame_rate_num: 24,
             frame_rate_den: 1,

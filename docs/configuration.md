@@ -41,6 +41,7 @@ deinterlace = false             # Detect interlaced video and deinterlace it (bw
 inverse_telecine = false        # With deinterlace: restore telecined film (NTSC DVD) to its original frames
 disc_rips_only = false          # Crop and deinterlace only titles ripped from a disc
 delete_processed_source = false # Allow source deletion when the output was cropped or deinterlaced
+delete_hdr10plus_source = false # Allow source deletion when the source's HDR10+ dynamic metadata is dropped
 
 [daemon]
 enabled = false            # Required before `--start` will start the daemon

@@ -739,6 +739,7 @@ mod tests {
                 inverse_telecine: false,
                 disc_rips_only: false,
                 delete_processed_source: false,
+                delete_hdr10plus_source: false,
             }
         );
         let legacy: AppConfig = toml::from_str("encoder = \"SvtAv1\"").unwrap();
@@ -754,6 +755,7 @@ mod tests {
                 inverse_telecine: true,
                 disc_rips_only: true,
                 delete_processed_source: true,
+                delete_hdr10plus_source: true,
             },
             ..AppConfig::default()
         };

@@ -109,6 +109,9 @@ pub struct VideoMetadata {
     pub dv_bl_compat: Option<u8>,
     /// HDR10 static metadata, when present in the source
     pub hdr10_static: Option<Hdr10StaticMetadata>,
+    /// HDR10+ dynamic metadata (SMPTE ST 2094-40) found on the first frame
+    #[serde(default)]
+    pub hdr10_plus: bool,
     pub codec_name: String,
     pub frame_rate_num: u32,
     pub frame_rate_den: u32,
@@ -121,8 +124,60 @@ impl VideoMetadata {
         format!("{}x{}", self.width, self.height)
     }
 
-    /// Get HDR status string
+    /// Get HDR status string, with `HDR10+` added for a source carrying
+    /// HDR10+ dynamic metadata
     pub fn hdr_string(&self) -> &'static str {
-        self.hdr_type.display_string()
+        match (self.hdr_type, self.hdr10_plus) {
+            (HdrType::Pq, true) => "HDR10+",
+            (HdrType::DolbyVision, true) => "Dolby Vision + HDR10+",
+            (hdr_type, _) => hdr_type.display_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HdrType, VideoMetadata};
+
+    fn metadata(hdr_type: HdrType, hdr10_plus: bool) -> VideoMetadata {
+        VideoMetadata {
+            width: 3840,
+            height: 2160,
+            hdr_type,
+            dv_profile: None,
+            dv_bl_compat: None,
+            hdr10_static: None,
+            hdr10_plus,
+            codec_name: "hevc".to_string(),
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            duration_secs: 60.0,
+        }
+    }
+
+    #[test]
+    fn hdr10_plus_is_named_in_the_hdr_string() {
+        assert_eq!(metadata(HdrType::Pq, true).hdr_string(), "HDR10+");
+        assert_eq!(metadata(HdrType::Pq, false).hdr_string(), "HDR10");
+        assert_eq!(
+            metadata(HdrType::DolbyVision, true).hdr_string(),
+            "Dolby Vision + HDR10+"
+        );
+        assert_eq!(
+            metadata(HdrType::DolbyVision, false).hdr_string(),
+            "Dolby Vision"
+        );
+    }
+
+    #[test]
+    fn metadata_saved_without_the_hdr10_plus_flag_loads_as_not_hdr10_plus() {
+        let mut json = serde_json::to_value(metadata(HdrType::Pq, true)).unwrap();
+        json.as_object_mut().unwrap().remove("hdr10_plus");
+        let loaded: VideoMetadata = serde_json::from_value(json).unwrap();
+        assert!(!loaded.hdr10_plus);
+        let round_trip: VideoMetadata =
+            serde_json::from_value(serde_json::to_value(metadata(HdrType::Pq, true)).unwrap())
+                .unwrap();
+        assert!(round_trip.hdr10_plus);
     }
 }

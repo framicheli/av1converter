@@ -4,6 +4,7 @@
 - [Workflow](#workflow)
 - [Modes](#modes)
 - [Dolby Vision handling](#dolby-vision-handling)
+- [HDR10+ sources](#hdr10-sources)
 - [Audio transcoding](#audio-transcoding)
 - [Source deletion](#source-deletion)
 - [Keyboard controls](#keyboard-controls)
@@ -92,7 +93,13 @@ When a Dolby Vision source is queued for encoding with SVT-AV1, a dialog asks ho
 
 **Profile 5** sources (IPT-PQ-c2, no HDR10-compatible base layer) are special: converting to HDR10 tone-maps the video on the GPU via `libplacebo` (requires Vulkan), while keeping DV produces output that only plays correctly on DV-capable players. HDR10 conversion is the recommended default for profile 5; keeping DV is recommended for profiles 7/8. VMAF verification is skipped for tone-mapped profile 5 output, since the pixels are intentionally changed. Sources that carry Dolby Vision side data without a readable `dv_profile` are rejected at analysis so a missing profile cannot skip tonemap and produce wrong colors.
 
-HDR10+ dynamic metadata is not preserved; only static HDR10 mastering/CLL (on SVT-AV1) and PQ/HLG color tags are carried forward.
+## HDR10+ sources
+
+HDR10+ dynamic metadata (SMPTE ST 2094-40) is not carried into the AV1 output: FFmpeg's AV1 encoders do not pass it through. Only the static HDR10 mastering display and MaxCLL/MaxFALL metadata (on SVT-AV1) and the PQ color tags carry forward, so the output plays as HDR10.
+
+AV1Converter reads the first frame of every HDR10 and Dolby Vision source to find HDR10+; a source whose first frame cannot be read fails analysis. Such a file is labelled **HDR10+** (or **Dolby Vision + HDR10+**) on its queue row in the web UI and in Track configuration in the TUI, and Track configuration in both UIs warns that the dynamic metadata will be dropped. A remux copies the video untouched and keeps HDR10+.
+
+The source of an HDR10+ encode is kept even after a passing VMAF score, unless `delete_hdr10plus_source` is on (see [Source deletion](#source-deletion)).
 
 ## Audio transcoding
 
@@ -125,7 +132,8 @@ VMAF compares video only, so the source is also kept whenever something besides 
 - drop cover art or attachments (every container except MKV drops attachments; cover art is dropped everywhere);
 - drop streams that cannot be selected (a second video stream, data streams such as timecode or GPS tracks, a Dolby Vision profile 7 enhancement layer);
 - reduce the source's chroma or bit depth (everything is encoded as 4:2:0 10-bit, so 4:2:2, 4:4:4, RGB, alpha and 12-bit sources lose detail VMAF does not measure);
-- crop or deinterlace the picture, unless `delete_processed_source` is on (see [Cropping and deinterlacing](#cropping-and-deinterlacing)).
+- crop or deinterlace the picture, unless `delete_processed_source` is on (see [Cropping and deinterlacing](#cropping-and-deinterlacing));
+- drop HDR10+ dynamic metadata, unless `delete_hdr10plus_source` is on (see [HDR10+ sources](#hdr10-sources)).
 
 A kept source says why: in the queue and Finish screens of the TUI, on the queue row in the web UI, and in the log.
 

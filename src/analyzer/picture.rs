@@ -486,6 +486,7 @@ mod tests {
             inverse_telecine: true,
             disc_rips_only: true,
             delete_processed_source: false,
+            delete_hdr10plus_source: false,
         };
         assert_eq!(
             PictureRequest::from_config(&config, false),

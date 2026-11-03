@@ -81,6 +81,7 @@ fn metadata_for(path: &Path) -> VideoMetadata {
         dv_profile: None,
         dv_bl_compat: None,
         hdr10_static: None,
+        hdr10_plus: false,
         codec_name: "h264".to_string(),
         frame_rate_num: 24,
         frame_rate_den: 1,
@@ -1719,5 +1720,281 @@ fn a_remux_reports_no_crf() {
     let reports = reports.lock().unwrap();
     assert_eq!(reports.crfs, Vec::<u8>::new());
     assert_eq!(reports.searching, Vec::<f64>::new());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Writes an x265 `dhdr10-info` file describing one 24-frame scene.
+fn write_hdr10_plus_json(path: &Path) {
+    let scenes: Vec<serde_json::Value> = (0..24)
+        .map(|frame| {
+            serde_json::json!({
+                "BezierCurveData": {
+                    "Anchors": [256, 512, 768, 1000, 1500, 2000, 2500, 3000, 3500],
+                    "KneePointX": 100,
+                    "KneePointY": 200
+                },
+                "LuminanceParameters": {
+                    "AverageRGB": 1000,
+                    "LuminanceDistributions": {
+                        "DistributionIndex": [1, 5, 10, 25, 50, 75, 90, 95, 99],
+                        "DistributionValues": [10, 20, 30, 40, 50, 60, 70, 80, 90]
+                    },
+                    "MaxScl": [4000, 3000, 2000]
+                },
+                "NumberOfWindows": 1,
+                "TargetedSystemDisplayMaximumLuminance": 400,
+                "SceneFrameIndex": frame,
+                "SceneId": 0,
+                "SequenceFrameIndex": frame
+            })
+        })
+        .collect();
+    let info = serde_json::json!({
+        "JSONInfo": { "HDR10plusProfile": "B", "Version": "1.0" },
+        "SceneInfo": scenes,
+        "SceneInfoSummary": { "SceneFirstFrameIndex": [0], "SceneFrameNumbers": [24] },
+        "ToolInfo": { "Tool": "av1converter tests", "Version": "1" }
+    });
+    std::fs::write(path, info.to_string()).unwrap();
+}
+
+/// A one-second 10-bit PQ HEVC clip in `dir` with HDR10 static metadata, and
+/// HDR10+ dynamic metadata when `dynamic` is set. `None` when this `FFmpeg`
+/// cannot build it.
+fn make_pq_fixture(dir: &Path, dynamic: bool) -> Option<PathBuf> {
+    let path = dir.join(if dynamic {
+        "hdr10plus.mkv"
+    } else {
+        "hdr10.mkv"
+    });
+    let mut x265 = "hdr10=1:hdr10-opt=1:colorprim=bt2020:transfer=smpte2084:\
+                    colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)\
+                    R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400:\
+                    log-level=error"
+        .to_string();
+    if dynamic {
+        let json = dir.join("hdr10plus.json");
+        write_hdr10_plus_json(&json);
+        x265.push_str(":dhdr10-info=");
+        x265.push_str(json.to_str()?);
+    }
+    Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=24:duration=1",
+            "-pix_fmt",
+            "yuv420p10le",
+            "-c:v",
+            "libx265",
+            "-x265-params",
+            &x265,
+        ])
+        .arg(&path)
+        .status()
+        .is_ok_and(|status| status.success())
+        .then_some(path)
+}
+
+/// Whether ffprobe itself reports HDR10+ on the first frame of `path`.
+fn ffprobe_sees_hdr10_plus(path: &Path) -> bool {
+    probe_first_frame_side_data(path).contains("SMPTE2094-40")
+}
+
+/// `ffprobe -show_entries frame_side_data_list` for the first frame of `path`.
+fn probe_first_frame_side_data(path: &Path) -> String {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "V:0",
+            "-read_intervals",
+            "%+#1",
+            "-show_entries",
+            "frame_side_data_list",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .output()
+        .expect("ffprobe runs");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// A fresh directory holding an HDR10+ clip and a plain HDR10 clip. `None`
+/// when this `FFmpeg` or its x265 cannot write HDR10+.
+fn hdr10_plus_fixtures(name: &str) -> Option<(PathBuf, PathBuf, PathBuf)> {
+    if !(DependencyStatus::check() && DependencyStatus::encoder_available("libx265")) {
+        eprintln!("skipping: this FFmpeg has no libx265");
+        return None;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_hdr10p_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let fixtures = make_pq_fixture(&dir, true).zip(make_pq_fixture(&dir, false));
+    match fixtures {
+        Some((plus, plain)) if ffprobe_sees_hdr10_plus(&plus) => Some((dir, plus, plain)),
+        _ => {
+            eprintln!("skipping: this x265 cannot write HDR10+ dynamic metadata");
+            let _ = std::fs::remove_dir_all(&dir);
+            None
+        }
+    }
+}
+
+#[test]
+fn analysis_finds_hdr10_plus_on_a_real_clip_and_not_on_plain_hdr10() {
+    let Some((dir, plus, plain)) = hdr10_plus_fixtures("analyze") else {
+        return;
+    };
+    let cancel = AtomicBool::new(false);
+    let found = crate::analyzer::analyze(plus.to_str().unwrap(), &cancel)
+        .unwrap()
+        .metadata;
+    assert_eq!(found.hdr_type, HdrType::Pq);
+    assert!(found.hdr10_plus);
+    assert_eq!(found.hdr_string(), "HDR10+");
+    let hdr10 = found
+        .hdr10_static
+        .expect("static metadata on the first frame");
+    assert_eq!((hdr10.max_cll, hdr10.max_fall), (1000, 400));
+
+    let without = crate::analyzer::analyze(plain.to_str().unwrap(), &cancel)
+        .unwrap()
+        .metadata;
+    assert_eq!(without.hdr_type, HdrType::Pq);
+    assert!(!without.hdr10_plus);
+    assert_eq!(without.hdr_string(), "HDR10");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Encodes `input` with source deletion on and a VMAF threshold of 1, so
+/// every encode passes. `None` when this machine cannot encode AV1 and score
+/// VMAF.
+fn run_hdr10_plus_pipeline(
+    input: &Path,
+    delete_hdr10plus_source: bool,
+) -> Option<(super::FullEncodeResult, PathBuf)> {
+    if !(DependencyStatus::encoder_available("libsvtav1") && DependencyStatus::vmaf_available()) {
+        eprintln!("skipping: this FFmpeg cannot encode AV1 and score VMAF");
+        return None;
+    }
+    let cancel = AtomicBool::new(false);
+    let metadata = crate::analyzer::analyze(input.to_str().unwrap(), &cancel)
+        .unwrap()
+        .metadata;
+    let output = input.with_file_name("out.mkv");
+    let mut config = AppConfig {
+        encoder: Encoder::SvtAv1,
+        ..AppConfig::default()
+    };
+    config.quality.vmaf_enabled = true;
+    config.quality.vmaf_threshold = 1.0;
+    config.quality.delete_source_on_success = true;
+    config.video.delete_hdr10plus_source = delete_hdr10plus_source;
+    let identity = crate::queue::SourceIdentity::from_path(input).unwrap();
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        &identity,
+        &metadata,
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        false,
+        Vec::new(),
+        false,
+        &config,
+        super::PipelineHooks::default(),
+        &cancel,
+    );
+    Some((result, output))
+}
+
+#[test]
+fn an_hdr10_plus_source_is_kept_after_a_passing_score() {
+    let Some((dir, plus, _)) = hdr10_plus_fixtures("keep") else {
+        return;
+    };
+    let Some((result, output)) = run_hdr10_plus_pipeline(&plus, false) else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: false,
+                keep_reason: Some(super::KeepReason::Hdr10PlusDropped),
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(plus.exists());
+    assert!(output.exists());
+
+    let ledger = std::fs::read_to_string(super::ledger_path()).unwrap();
+    let recorded: serde_json::Value = serde_json::from_str(ledger.lines().next().unwrap()).unwrap();
+    assert_eq!(recorded["action"], serde_json::json!("kept"));
+    assert_eq!(recorded["reason"], serde_json::json!("Hdr10PlusDropped"));
+
+    let _ = std::fs::remove_dir_all(super::ledger_dir());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_hdr10_plus_source_is_deleted_when_allowed() {
+    let Some((dir, plus, _)) = hdr10_plus_fixtures("allow") else {
+        return;
+    };
+    let Some((result, output)) = run_hdr10_plus_pipeline(&plus, true) else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: true,
+                keep_reason: None,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(!plus.exists());
+    assert!(output.exists());
+    let _ = std::fs::remove_dir_all(super::ledger_dir());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_plain_hdr10_source_is_deleted_after_a_passing_score() {
+    let Some((dir, _, plain)) = hdr10_plus_fixtures("plain") else {
+        return;
+    };
+    let Some((result, _)) = run_hdr10_plus_pipeline(&plain, false) else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: true,
+                keep_reason: None,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(!plain.exists());
+    let _ = std::fs::remove_dir_all(super::ledger_dir());
     let _ = std::fs::remove_dir_all(&dir);
 }

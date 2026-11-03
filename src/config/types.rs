@@ -545,8 +545,9 @@ impl AudioMode {
     }
 }
 
-/// Picture processing applied before encoding: black-bar cropping and
-/// deinterlacing. Every option is off by default.
+/// Picture processing applied before encoding (black-bar cropping and
+/// deinterlacing) and source deletion for processed or HDR10+ sources. Every
+/// option is off by default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 #[allow(clippy::struct_excessive_bools)]
@@ -562,6 +563,9 @@ pub struct VideoConfig {
     pub disc_rips_only: bool,
     /// Allow source deletion when the output was cropped or deinterlaced.
     pub delete_processed_source: bool,
+    /// Allow source deletion when the source carries HDR10+ dynamic metadata
+    /// the output drops.
+    pub delete_hdr10plus_source: bool,
 }
 
 /// Audio transcoding configuration

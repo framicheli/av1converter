@@ -114,14 +114,17 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
         stream.color_transfer.as_deref(),
     )?;
 
-    // HDR10 static metadata: prefer container/stream-level side data; for
-    // PQ/DV sources without it, probe the first frame (SEI-carried metadata)
+    // HDR10 static metadata: prefer container/stream-level side data, else
+    // the first frame's. HDR10+ is read from the first frame of PQ/DV sources.
     let mut hdr10_static = stream
         .side_data_list
         .as_deref()
         .and_then(parse_hdr10_static);
-    if hdr10_static.is_none() && matches!(hdr_type, HdrType::Pq | HdrType::DolbyVision) {
-        hdr10_static = probe_frame_hdr10_static(input_path, cancel);
+    let mut hdr10_plus = stream.side_data_list.as_deref().is_some_and(has_hdr10_plus);
+    if matches!(hdr_type, HdrType::Pq | HdrType::DolbyVision) {
+        let frame = probe_first_frame_hdr(input_path, cancel)?;
+        hdr10_static = hdr10_static.or(frame.hdr10_static);
+        hdr10_plus |= frame.hdr10_plus;
     }
 
     // Parse frame rate. `avg_frame_rate` carries the playback rate;
@@ -142,6 +145,7 @@ fn analyze_video_stream(input_path: &str, cancel: &AtomicBool) -> Result<VideoMe
         dv_profile,
         dv_bl_compat,
         hdr10_static,
+        hdr10_plus,
         codec_name: stream.codec_name.unwrap_or_else(|| "unknown".to_string()),
         frame_rate_num,
         frame_rate_den,
@@ -215,9 +219,41 @@ fn parse_hdr10_static(side_data: &[Value]) -> Option<Hdr10StaticMetadata> {
     })
 }
 
-/// Probe the first video frame for SEI-carried HDR10 static metadata
-/// (sources that don't expose it at container level). Best-effort.
-fn probe_frame_hdr10_static(input_path: &str, cancel: &AtomicBool) -> Option<Hdr10StaticMetadata> {
+/// Whether a ffprobe `side_data_list` holds HDR10+ dynamic metadata
+/// (SMPTE ST 2094-40).
+fn has_hdr10_plus(side_data: &[Value]) -> bool {
+    side_data.iter().any(|v| {
+        v.get("side_data_type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.contains("SMPTE2094-40") || t.contains("HDR10+"))
+    })
+}
+
+/// HDR metadata carried on the first video frame.
+#[derive(Debug, Default, PartialEq)]
+struct FrameHdr {
+    hdr10_static: Option<Hdr10StaticMetadata>,
+    hdr10_plus: bool,
+}
+
+/// HDR metadata of the first frame in a ffprobe `-show_frames` JSON output.
+fn parse_frame_hdr(output: &str) -> Result<FrameHdr, AppError> {
+    let data: FramesOutput = serde_json::from_str(output)
+        .map_err(|e| AppError::Analysis(format!("Failed to parse ffprobe frame output: {e}")))?;
+    let side_data: Vec<&[Value]> = data
+        .frames
+        .iter()
+        .filter_map(|f| f.side_data_list.as_deref())
+        .collect();
+    Ok(FrameHdr {
+        hdr10_static: side_data.iter().copied().find_map(parse_hdr10_static),
+        hdr10_plus: side_data.iter().copied().any(has_hdr10_plus),
+    })
+}
+
+/// Probe the first video frame for SEI-carried HDR10 static metadata and
+/// HDR10+ dynamic metadata.
+fn probe_first_frame_hdr(input_path: &str, cancel: &AtomicBool) -> Result<FrameHdr, AppError> {
     let args = [
         "-v",
         "error",
@@ -232,12 +268,8 @@ fn probe_frame_hdr10_static(input_path: &str, cancel: &AtomicBool) -> Option<Hdr
         input_path,
     ];
 
-    let output = run_ffprobe(&args, cancel).ok()?;
-    let data: FramesOutput = serde_json::from_str(&output).ok()?;
-    data.frames
-        .iter()
-        .filter_map(|f| f.side_data_list.as_deref())
-        .find_map(parse_hdr10_static)
+    let output = run_ffprobe(&args, cancel)?;
+    parse_frame_hdr(&output)
 }
 
 /// Duration of the primary video stream: its own duration or Matroska
@@ -1243,5 +1275,70 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let error = run_command(&mut command, &cancel, Duration::from_millis(10)).unwrap_err();
         assert!(error.to_string().contains("timed out"));
+    }
+
+    /// First frame of an x265 HDR10+ encode, from
+    /// `ffprobe -read_intervals %+#1 -show_entries frame_side_data_list`
+    /// (`FFmpeg` 9), with the per-percentile keys repeated as ffprobe prints them.
+    const HDR10_PLUS_FRAME: &str = r#"{
+        "frames": [{
+            "side_data_list": [
+                {"side_data_type": "H.26[45] User Data Unregistered SEI message"},
+                {
+                    "side_data_type": "Mastering display metadata",
+                    "red_x": "34000/50000", "red_y": "16000/50000",
+                    "green_x": "13250/50000", "green_y": "34500/50000",
+                    "blue_x": "7500/50000", "blue_y": "3000/50000",
+                    "white_point_x": "15635/50000", "white_point_y": "16450/50000",
+                    "min_luminance": "1/10000", "max_luminance": "10000000/10000"
+                },
+                {"side_data_type": "Content light level metadata", "max_content": 1000, "max_average": 400},
+                {
+                    "side_data_type": "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)",
+                    "application version": 1,
+                    "num_windows": 1,
+                    "maxscl": "4000/100000",
+                    "maxscl": "3000/100000",
+                    "distribution_maxrgb_percentage": 1,
+                    "distribution_maxrgb_percentage": 5
+                }
+            ]
+        }]
+    }"#;
+
+    #[test]
+    fn the_first_frame_reports_hdr10_plus_and_static_metadata() {
+        let frame = parse_frame_hdr(HDR10_PLUS_FRAME).unwrap();
+        assert!(frame.hdr10_plus);
+        let hdr10 = frame.hdr10_static.unwrap();
+        assert_eq!(hdr10.max_cll, 1000);
+        assert_eq!(hdr10.max_fall, 400);
+    }
+
+    #[test]
+    fn a_frame_with_only_static_metadata_is_not_hdr10_plus() {
+        let output = HDR10_PLUS_FRAME.replace(
+            "HDR Dynamic Metadata SMPTE2094-40 (HDR10+)",
+            "Spherical Mapping",
+        );
+        let frame = parse_frame_hdr(&output).unwrap();
+        assert!(!frame.hdr10_plus);
+        assert!(frame.hdr10_static.is_some());
+    }
+
+    #[test]
+    fn a_stream_without_frames_has_no_hdr_metadata() {
+        assert_eq!(
+            parse_frame_hdr(r#"{"frames": []}"#).unwrap(),
+            FrameHdr::default()
+        );
+    }
+
+    #[test]
+    fn unreadable_frame_output_is_an_analysis_error() {
+        assert!(matches!(
+            parse_frame_hdr("{\"frames\": [{"),
+            Err(AppError::Analysis(_))
+        ));
     }
 }

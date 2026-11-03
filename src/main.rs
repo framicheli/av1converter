@@ -1976,6 +1976,9 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         ConfigField::VideoDeleteProcessedSource => {
             app.config.video.delete_processed_source = !app.config.video.delete_processed_source;
         }
+        ConfigField::VideoDeleteHdr10PlusSource => {
+            app.config.video.delete_hdr10plus_source = !app.config.video.delete_hdr10plus_source;
+        }
         ConfigField::SelectAllFallback => {
             app.config.tracks.select_all_fallback = !app.config.tracks.select_all_fallback;
         }
@@ -2839,6 +2842,7 @@ mod tests {
             dv_profile: Some(8),
             dv_bl_compat: Some(1),
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "hevc".into(),
             frame_rate_num: 24,
             frame_rate_den: 1,

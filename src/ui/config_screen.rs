@@ -51,6 +51,7 @@ pub enum ConfigField {
     VideoInverseTelecine,
     VideoDiscRipsOnly,
     VideoDeleteProcessedSource,
+    VideoDeleteHdr10PlusSource,
     DaemonEnabled,
     DaemonAutostart,
     DaemonBindAddress,
@@ -416,6 +417,11 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         field: ConfigField::VideoDeleteProcessedSource,
     },
     ConfigItem {
+        label: Msg::CfgDeleteHdr10PlusSource,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VideoDeleteHdr10PlusSource,
+    },
+    ConfigItem {
         label: Msg::CfgDaemonEnabled,
         kind: ConfigItemKind::Toggle,
         field: ConfigField::DaemonEnabled,
@@ -499,6 +505,7 @@ fn config_field_path(field: ConfigField) -> Option<String> {
         ConfigField::VideoInverseTelecine => "video.inverse_telecine",
         ConfigField::VideoDiscRipsOnly => "video.disc_rips_only",
         ConfigField::VideoDeleteProcessedSource => "video.delete_processed_source",
+        ConfigField::VideoDeleteHdr10PlusSource => "video.delete_hdr10plus_source",
         ConfigField::DaemonEnabled => "daemon.enabled",
         ConfigField::DaemonBindAddress => "daemon.bind_address",
         ConfigField::DaemonPort => "daemon.port",
@@ -569,8 +576,9 @@ pub fn visible_config_items(config: &AppConfig) -> Vec<&'static ConfigItem> {
 }
 
 /// Whether a picture row is shown: inverse telecine with deinterlacing on,
-/// the disc-only row with cropping or deinterlacing on, and processed-source
-/// deletion when source deletion is also on. Other rows are always shown.
+/// the disc-only row with cropping or deinterlacing on, processed-source
+/// deletion when source deletion is also on, and HDR10+ source deletion when
+/// source deletion is on. Other rows are always shown.
 fn picture_item_visible(config: &AppConfig, field: ConfigField) -> bool {
     let video = &config.video;
     let processing = video.crop || video.deinterlace;
@@ -579,6 +587,9 @@ fn picture_item_visible(config: &AppConfig, field: ConfigField) -> bool {
         ConfigField::VideoDiscRipsOnly => processing,
         ConfigField::VideoDeleteProcessedSource => {
             processing && config.quality.vmaf_enabled && config.quality.delete_source_on_success
+        }
+        ConfigField::VideoDeleteHdr10PlusSource => {
+            config.quality.vmaf_enabled && config.quality.delete_source_on_success
         }
         _ => true,
     }
@@ -669,6 +680,9 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         }
         ConfigField::VideoDeleteProcessedSource => {
             bool_display(config.language, config.video.delete_processed_source)
+        }
+        ConfigField::VideoDeleteHdr10PlusSource => {
+            bool_display(config.language, config.video.delete_hdr10plus_source)
         }
         ConfigField::DaemonEnabled => bool_display(config.language, config.daemon.enabled),
         ConfigField::DaemonAutostart => {
@@ -901,6 +915,7 @@ fn selected_config_hint(app: &App) -> Option<Msg> {
     match field {
         Some(ConfigField::DeleteSource) => Some(Msg::WebDeleteSourceWarning),
         Some(ConfigField::VideoDeleteProcessedSource) => Some(Msg::DeleteProcessedSourceWarning),
+        Some(ConfigField::VideoDeleteHdr10PlusSource) => Some(Msg::DeleteHdr10PlusSourceWarning),
         Some(ConfigField::VideoInverseTelecine) => Some(Msg::InverseTelecineHint),
         Some(ConfigField::CrfMode) => Some(Msg::CrfModeHint),
         Some(ConfigField::DaemonAutostart) => Some(Msg::CfgDaemonAutostartHint),

@@ -993,6 +993,7 @@ async function openTracks(id) {
       remuxOnly: data.remux_only,
       dv: data.dv,
       dvMode: data.dv ? data.dv.mode : null,
+      hdr10Plus: data.hdr10_plus === true,
     };
     editor.snapshot = tracksSnapshot(editor);
     editor.filename = data.filename;
@@ -1061,6 +1062,11 @@ function renderTracks() {
   body.appendChild(groupHeading(tr("options")));
   body.appendChild(remuxRow());
   if (trackEditor.dv) body.appendChild(dvRow());
+  if (trackEditor.hdr10Plus && !trackEditor.remuxOnly) {
+    const note = emptyNote(`⚠ ${tr("hdr10plus_hint")}`);
+    note.className = "track-warning";
+    body.appendChild(note);
+  }
 
   // Toggles, not select-all buttons: when everything is already selected the
   // second press clears it, matching the TUI's 'a' and 's' keys.
@@ -2030,6 +2036,7 @@ function settingsFields(cfg) {
     { path: "video.inverse_telecine", label: tr("cfg_inverse_telecine"), type: "checkbox", disabled: !cfg.video.deinterlace, hint: tr("inverse_telecine_hint") },
     { path: "video.disc_rips_only", label: tr("cfg_disc_rips_only"), type: "checkbox", disabled: !cfg.video.crop && !cfg.video.deinterlace },
     { path: "video.delete_processed_source", label: tr("cfg_delete_processed_source"), type: "checkbox", disabled: (!cfg.video.crop && !cfg.video.deinterlace) || !cfg.quality.vmaf_enabled || !cfg.quality.delete_source_on_success, warning: tr("delete_processed_source_warning") },
+    { path: "video.delete_hdr10plus_source", label: tr("cfg_delete_hdr10plus_source"), type: "checkbox", disabled: !cfg.quality.vmaf_enabled || !cfg.quality.delete_source_on_success, warning: tr("delete_hdr10plus_source_warning") },
     { group: tr("group_daemon") },
     { note: tr("daemon_note") },
     { path: "daemon.enabled", label: tr("cfg_daemon_enabled"), type: "checkbox", disabled: !local, hint: [localHint, restartHint].filter(Boolean).join(" ") },

@@ -431,6 +431,7 @@ pub fn job_tracks(shared: &SharedState, id_param: &str) -> (u16, Value) {
                 .map(|path| path.file_name().map(|name| name.to_string_lossy()))
                 .collect::<Vec<_>>(),
             "dv": dv,
+            "hdr10_plus": job.metadata.as_ref().is_some_and(|meta| meta.hdr10_plus),
             "remaining": remaining,
         }),
     )
@@ -3354,6 +3355,7 @@ mod tests {
                 dv_profile,
                 dv_bl_compat: None,
                 hdr10_static: None,
+                hdr10_plus: false,
                 codec_name: "hevc".to_string(),
                 frame_rate_num: 24000,
                 frame_rate_den: 1001,
@@ -3362,6 +3364,26 @@ mod tests {
             job.status = JobStatus::Ready;
             let id = state.queue.push(job);
             (Arc::new(Mutex::new(state)), id)
+        }
+
+        #[test]
+        fn the_tracks_response_flags_an_hdr10_plus_source() {
+            let (shared, id) = shared_with_dv_job(Encoder::SvtAv1, Some(8));
+            assert_eq!(
+                job_tracks(&shared, &id.to_string()).1["hdr10_plus"],
+                json!(false)
+            );
+            shared
+                .lock()
+                .unwrap()
+                .queue
+                .job_by_id_mut(id)
+                .and_then(|job| job.metadata.as_mut())
+                .expect("the job has metadata")
+                .hdr10_plus = true;
+            let (code, body) = job_tracks(&shared, &id.to_string());
+            assert_eq!(code, 200);
+            assert_eq!(body["hdr10_plus"], json!(true));
         }
 
         fn shared_with_job() -> (SharedState, u64) {

@@ -29,7 +29,7 @@ DVD decryption is free permanently. Blu-ray needs a purchased MakeMKV licence or
 
 DVD titles are often interlaced or telecined, and films on disc often carry black bars. Turn on `crop`, `deinterlace` and `inverse_telecine` in the `[video]` settings to handle them. With `disc_rips_only` on, they apply only to ripped titles and not to files you add yourself. See [Cropping and deinterlacing](usage.md#cropping-and-deinterlacing).
 
-A staged rip is not your source file, so it is deleted after a passing VMAF score whether or not the picture was cropped or deinterlaced. `delete_processed_source` applies only to files you added yourself.
+A staged rip is not your source file, so it is deleted after a passing VMAF score whether or not the picture was cropped or deinterlaced or the title carries HDR10+. `delete_processed_source` and `delete_hdr10plus_source` apply only to files you added yourself.
 
 ## Known limitation: Dolby Vision profile 7 (UHD Blu-ray)
 

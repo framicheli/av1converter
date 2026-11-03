@@ -16,6 +16,8 @@ pub struct EncodingParams {
     pub dv_profile: Option<u8>,
     pub dv_bl_compat: Option<u8>,
     pub hdr10_static: Option<Hdr10StaticMetadata>,
+    /// The source carries HDR10+ dynamic metadata.
+    pub hdr10_plus: bool,
     pub tracks: OutputTracks,
     /// Source frame rate. Not passed to ffmpeg: timestamps pass through.
     #[allow(dead_code)]
@@ -77,6 +79,7 @@ impl EncodingParams {
             dv_profile: metadata.dv_profile,
             dv_bl_compat: metadata.dv_bl_compat,
             hdr10_static: metadata.hdr10_static,
+            hdr10_plus: metadata.hdr10_plus,
             tracks,
             frame_rate_num: metadata.frame_rate_num,
             frame_rate_den: metadata.frame_rate_den,
@@ -529,6 +532,7 @@ mod tests {
             dv_profile,
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             tracks: OutputTracks::default(),
             frame_rate_num: 24000,
             frame_rate_den: 1001,
@@ -570,6 +574,7 @@ mod tests {
             dv_profile: Some(8),
             dv_bl_compat: Some(4),
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "hevc".to_string(),
             frame_rate_num: 30,
             frame_rate_den: 1,
@@ -703,6 +708,7 @@ mod tests {
             dv_profile: Some(8),
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "hevc".to_string(),
             frame_rate_num: 24000,
             frame_rate_den: 1001,

@@ -234,6 +234,7 @@ pub enum Msg {
     KeepDeleteFailed,
     KeepLedgerUnwritable,
     KeepPictureProcessed,
+    KeepHdr10PlusDropped,
     TimeLabel,
     ResultTitle,
     Summary,
@@ -351,6 +352,9 @@ pub enum Msg {
     CfgDiscRipsOnly,
     CfgDeleteProcessedSource,
     DeleteProcessedSourceWarning,
+    CfgDeleteHdr10PlusSource,
+    DeleteHdr10PlusSourceWarning,
+    Hdr10PlusDroppedHint,
     InverseTelecineHint,
     CfgDaemonAuthToken,
     CfgDaemonAllowInsecureLan,
@@ -1852,6 +1856,58 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "la sortie a été recadrée ou désentrelacée",
             De => "die Ausgabe wurde beschnitten oder deinterlaced",
             Zh => "输出已裁剪或去隔行",
+        },
+        Msg::KeepHdr10PlusDropped => match lang {
+            En => "its HDR10+ dynamic metadata is not carried into the output",
+            It => "i suoi metadati dinamici HDR10+ non vengono riportati nell'uscita",
+            Es => "sus metadatos dinámicos HDR10+ no se trasladan a la salida",
+            Fr => "ses métadonnées dynamiques HDR10+ ne sont pas reprises dans la sortie",
+            De => "seine dynamischen HDR10+-Metadaten werden nicht in die Ausgabe übernommen",
+            Zh => "其 HDR10+ 动态元数据未带入输出",
+        },
+        Msg::CfgDeleteHdr10PlusSource => match lang {
+            En => "Delete HDR10+ sources",
+            It => "Elimina sorgenti HDR10+",
+            Es => "Eliminar orígenes HDR10+",
+            Fr => "Supprimer les sources HDR10+",
+            De => "HDR10+-Quellen löschen",
+            Zh => "删除 HDR10+ 源文件",
+        },
+        Msg::DeleteHdr10PlusSourceWarning => match lang {
+            En => {
+                "The AV1 output keeps the static HDR10 metadata but not the HDR10+ dynamic metadata. Deleting the source loses it for good."
+            }
+            It => {
+                "L'uscita AV1 mantiene i metadati HDR10 statici ma non i metadati dinamici HDR10+. Eliminando la sorgente vanno persi per sempre."
+            }
+            Es => {
+                "La salida AV1 conserva los metadatos HDR10 estáticos pero no los metadatos dinámicos HDR10+. Al eliminar el origen se pierden para siempre."
+            }
+            Fr => {
+                "La sortie AV1 conserve les métadonnées HDR10 statiques mais pas les métadonnées dynamiques HDR10+. Supprimer la source les perd définitivement."
+            }
+            De => {
+                "Die AV1-Ausgabe behält die statischen HDR10-Metadaten, aber nicht die dynamischen HDR10+-Metadaten. Mit dem Löschen der Quelle gehen sie endgültig verloren."
+            }
+            Zh => {
+                "AV1 输出保留 HDR10 静态元数据，但不保留 HDR10+ 动态元数据。删除源文件会使其永久丢失。"
+            }
+        },
+        Msg::Hdr10PlusDroppedHint => match lang {
+            En => "HDR10+ dynamic metadata is not carried into the AV1 output; it plays as HDR10.",
+            It => {
+                "I metadati dinamici HDR10+ non vengono riportati nell'uscita AV1, che viene riprodotta come HDR10."
+            }
+            Es => {
+                "Los metadatos dinámicos HDR10+ no se trasladan a la salida AV1, que se reproduce como HDR10."
+            }
+            Fr => {
+                "Les métadonnées dynamiques HDR10+ ne sont pas reprises dans la sortie AV1, qui est lue en HDR10."
+            }
+            De => {
+                "Die dynamischen HDR10+-Metadaten werden nicht in die AV1-Ausgabe übernommen; sie wird als HDR10 wiedergegeben."
+            }
+            Zh => "HDR10+ 动态元数据不会带入 AV1 输出，输出按 HDR10 播放。",
         },
         Msg::TimeLabel => match lang {
             En => "Time",
@@ -4466,6 +4522,12 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
         "delete_processed_source_warning",
         Msg::DeleteProcessedSourceWarning,
     ),
+    ("cfg_delete_hdr10plus_source", Msg::CfgDeleteHdr10PlusSource),
+    (
+        "delete_hdr10plus_source_warning",
+        Msg::DeleteHdr10PlusSourceWarning,
+    ),
+    ("hdr10plus_hint", Msg::Hdr10PlusDroppedHint),
     ("inverse_telecine_hint", Msg::InverseTelecineHint),
     ("cfg_subtitle_languages", Msg::CfgSubtitleLanguages),
     ("cfg_svt_preset", Msg::CfgSvtPreset),
