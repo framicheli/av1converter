@@ -1,7 +1,7 @@
 use crate::analyzer::picture::PictureFilter;
 use crate::analyzer::{DvMode, VideoMetadata};
 use crate::config::AppConfig;
-use crate::encoder::{self, FullEncodeResult, KeepReason};
+use crate::encoder::{self, FullEncodeResult, KeepReason, PipelineHooks};
 use crate::i18n::{Msg, t};
 use crate::queue::SourceIdentity;
 use crate::tracks::OutputTracks;
@@ -40,6 +40,10 @@ pub enum WorkerMessage {
     SourceKept(usize, KeepReason),
     /// The crop and deinterlace the encode applies, sent before it starts
     Picture(usize, PictureFilter),
+    /// CRF search progress for a file (index, percent 0–100)
+    Searching(usize, f64),
+    /// The quality value an encode uses, sent before each encode starts
+    Crf(usize, u8),
 }
 
 /// Data needed by the worker thread for one job
@@ -83,7 +87,6 @@ pub fn run_worker(
         let _span = job_span(job.index, &job.input).entered();
         let _ = tx.send(WorkerMessage::Progress(job.index, 0.0));
 
-        let tx_progress = tx.clone();
         let idx = job.index;
 
         // The pipeline takes `&str` paths; a non-UTF-8 path is reported as a
@@ -99,9 +102,7 @@ pub fn run_worker(
         let input_str = input_str.to_string();
         let output_str = output_str.to_string();
 
-        let tx_picture = tx.clone();
-        let tx_verifying = tx.clone();
-        let verifying_idx = job.index;
+        let hooks = job_hooks(tx, idx);
 
         // A pipeline panic becomes a per-job error and the session continues.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -116,16 +117,8 @@ pub fn run_worker(
                 job.subtitle_codecs,
                 job.disc_rip,
                 config,
-                Some(Box::new(move |progress| {
-                    let _ = tx_progress.send(WorkerMessage::Progress(idx, progress));
-                })),
+                hooks,
                 cancel_flag.as_ref(),
-                Some(Box::new(move |picture| {
-                    let _ = tx_picture.send(WorkerMessage::Picture(idx, picture));
-                })),
-                Some(Box::new(move || {
-                    let _ = tx_verifying.send(WorkerMessage::Verifying(verifying_idx));
-                })),
             )
         }))
         .unwrap_or_else(|_| {
@@ -140,6 +133,29 @@ pub fn run_worker(
         }
     }
     let _ = tx.send(WorkerMessage::Finished);
+}
+
+/// The pipeline callbacks of job `idx`, each forwarding its report to `tx`.
+fn job_hooks(tx: &Sender<WorkerMessage>, idx: usize) -> PipelineHooks {
+    let (progress, picture, searching, crf, verifying) =
+        (tx.clone(), tx.clone(), tx.clone(), tx.clone(), tx.clone());
+    PipelineHooks {
+        progress: Some(Box::new(move |percent| {
+            let _ = progress.send(WorkerMessage::Progress(idx, percent));
+        })),
+        picture: Some(Box::new(move |filter| {
+            let _ = picture.send(WorkerMessage::Picture(idx, filter));
+        })),
+        searching: Some(Box::new(move |percent| {
+            let _ = searching.send(WorkerMessage::Searching(idx, percent));
+        })),
+        crf: Some(Box::new(move |value| {
+            let _ = crf.send(WorkerMessage::Crf(idx, value));
+        })),
+        before_vmaf: Some(Box::new(move || {
+            let _ = verifying.send(WorkerMessage::Verifying(idx));
+        })),
+    }
 }
 
 /// Turn one pipeline result into the messages the UIs read. Returns `false`
@@ -347,6 +363,35 @@ mod tests {
         assert!(matches!(
             messages[..],
             [WorkerMessage::QualityWarning(7, 97.0, 96.0, 98.0)]
+        ));
+    }
+
+    /// Every pipeline callback reaches the channel as its own message for
+    /// the job.
+    #[test]
+    fn job_hooks_forward_every_report_for_their_job() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut hooks = job_hooks(&tx, 4);
+        (hooks.searching.as_mut().unwrap())(37.5);
+        (hooks.crf.as_mut().unwrap())(29);
+        (hooks.progress.as_mut().unwrap())(12.0);
+        (hooks.before_vmaf.as_mut().unwrap())();
+        (hooks.crf.as_mut().unwrap())(25);
+        (hooks.picture.take().unwrap())(PictureFilter::default());
+        drop(hooks);
+        drop(tx);
+        let messages: Vec<WorkerMessage> = rx.iter().collect();
+
+        assert!(matches!(
+            messages[..],
+            [
+                WorkerMessage::Searching(4, 37.5),
+                WorkerMessage::Crf(4, 29),
+                WorkerMessage::Progress(4, 12.0),
+                WorkerMessage::Verifying(4),
+                WorkerMessage::Crf(4, 25),
+                WorkerMessage::Picture(4, _),
+            ]
         ));
     }
 

@@ -1,5 +1,6 @@
 use crate::i18n::{Msg, t};
 pub mod command_builder;
+pub mod crf_search;
 #[cfg(test)]
 mod end_to_end;
 pub mod ffmpeg;
@@ -237,9 +238,25 @@ fn record_and_delete(
     }
 }
 
-/// Orchestrate the full encoding pipeline: encode -> verify. `disc_rip` is
-/// whether the source was ripped from a disc. `on_picture` receives the crop
-/// and deinterlace filter before the encode starts.
+/// The callbacks a pipeline run reports through. Each is optional.
+#[derive(Default)]
+pub struct PipelineHooks {
+    /// Encode progress, 0–100. Starts over when the encode is redone.
+    pub progress: Option<ProgressCallback>,
+    /// The crop and deinterlace filter, before the encode starts.
+    pub picture: Option<Box<dyn FnOnce(PictureFilter) + Send>>,
+    /// CRF search progress, 0–100.
+    pub searching: Option<Box<dyn FnMut(f64) + Send>>,
+    /// The quality value of each encode, before it starts. A remux reports
+    /// none.
+    pub crf: Option<Box<dyn FnMut(u8) + Send>>,
+    /// Each VMAF check of the whole output, before it starts.
+    pub before_vmaf: Option<Box<dyn FnMut() + Send>>,
+}
+
+/// Orchestrate the full encoding pipeline: search -> encode -> verify, with
+/// one lower-CRF re-encode when an automatic CRF misses the threshold.
+/// `disc_rip` is whether the source was ripped from a disc.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn run_encoding_pipeline(
     input: &str,
@@ -252,10 +269,8 @@ pub fn run_encoding_pipeline(
     subtitle_codecs: Vec<Option<&'static str>>,
     disc_rip: bool,
     config: &AppConfig,
-    progress_callback: Option<ProgressCallback>,
+    mut hooks: PipelineHooks,
     cancel_flag: &AtomicBool,
-    on_picture: Option<Box<dyn FnOnce(PictureFilter) + Send>>,
-    on_before_vmaf: Option<Box<dyn FnOnce() + Send>>,
 ) -> FullEncodeResult {
     if !expected_source.matches_path(input) {
         return FullEncodeResult::Error(
@@ -312,7 +327,7 @@ pub fn run_encoding_pipeline(
         Err(AppError::Cancelled) => return FullEncodeResult::Cancelled,
         Err(e) => warn!("Encoding without cropping or deinterlacing: {e}"),
     }
-    if let Some(cb) = on_picture {
+    if let Some(cb) = hooks.picture.take() {
         cb(params.picture);
     }
 
@@ -328,137 +343,235 @@ pub fn run_encoding_pipeline(
         total_frames *= 0.8;
     }
 
-    // Encode
-    let encode_result = encode_video(
-        &params,
-        progress_callback,
-        cancel_flag,
-        duration,
-        total_frames,
-    );
+    let tone_mapped = skips_vmaf(&params);
+    if tone_mapped && config.quality.vmaf_enabled {
+        info!("Skipping VMAF: DV profile 5 tone-mapped output is not comparable");
+    }
+    let verifies = config.quality.vmaf_enabled && !remux_only && !tone_mapped;
 
-    match encode_result {
-        EncodeResult::Success => {
-            // The file the encoder placed at the output path is remembered
-            // and re-checked before VMAF and source deletion.
-            let output_identity = config
-                .quality
-                .delete_source_on_success
-                .then(|| SourceIdentity::from_path(output).ok())
-                .flatten();
-            let tone_mapped = skips_vmaf(&params);
-            if tone_mapped && config.quality.vmaf_enabled {
-                info!("Skipping VMAF: DV profile 5 tone-mapped output is not comparable");
+    // The lower value a failed full check is re-encoded at, once.
+    let mut retry_crf = None;
+    if verifies && config.quality.searches_crf() {
+        match search_crf(&params, metadata, config, cancel_flag, &mut hooks) {
+            Ok(found) => {
+                info!(
+                    "CRF search chose {} (presets table: {})",
+                    found.crf, params.crf
+                );
+                params.crf = found.crf;
+                retry_crf = found
+                    .passed
+                    .then(|| found.crf.saturating_sub(crf_search::RETRY_STEP).max(1))
+                    .filter(|&lower| lower < found.crf);
             }
-
-            // A cancel between the ffmpeg exit and verification removes the
-            // finished output.
-            if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
-                let _ = std::fs::remove_file(output);
-                return FullEncodeResult::Cancelled;
+            Err(crf_search::SearchError::Cancelled) => return FullEncodeResult::Cancelled,
+            Err(crf_search::SearchError::Failed(e)) => {
+                warn!(
+                    "CRF search failed, encoding at the presets value {}: {e}",
+                    params.crf
+                );
             }
-
-            // Notify the UI for VMAF verification phase
-            let vmaf_threshold = if config.quality.vmaf_enabled && !remux_only && !tone_mapped {
-                if let Some(cb) = on_before_vmaf {
-                    cb();
-                }
-                Some(config.quality.vmaf_threshold)
-            } else {
-                None
-            };
-            let mut result = run_vmaf_check(
-                input,
-                output,
-                vmaf_threshold,
-                metadata.hdr_type,
-                metadata.width,
-                metadata.height,
-                &params.picture,
-                cancel_flag,
-            );
-
-            // The source is only ever deleted against a VMAF score that met the
-            // threshold. A plain `Success` means no comparison ran at all (VMAF
-            // disabled, a remux, or a tone-mapped DV profile 5 output).
-            if config.quality.delete_source_on_success {
-                if let FullEncodeResult::SuccessWithVmaf {
-                    ref vmaf,
-                    ref mut source_deleted,
-                    ref mut keep_reason,
-                } = result
-                {
-                    let threshold = config.quality.vmaf_threshold;
-                    if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
-                        warn!(
-                            "Keeping source file {input}: {}",
-                            KeepReason::Cancelled.log()
-                        );
-                        *keep_reason = Some(KeepReason::Cancelled);
-                    } else if let Some(reason) = picture_keep_reason(&params, &config.video)
-                        .or_else(|| keep_source_reason(&params, dv_mode, cancel_flag))
-                    {
-                        info!("Keeping source file {input}: {}", reason.log());
-                        *keep_reason = Some(reason);
-                    } else if !output_identity
-                        .as_ref()
-                        .is_some_and(|identity| identity.matches_path(output))
-                    {
-                        warn!(
-                            "Keeping source file {input}: {}",
-                            KeepReason::OutputChanged.log()
-                        );
-                        *keep_reason = Some(KeepReason::OutputChanged);
-                    } else if let Err(e) = flush_to_disk(output) {
-                        warn!(
-                            "Keeping source file {input}: {}: {e}",
-                            KeepReason::FlushFailed.log()
-                        );
-                        *keep_reason = Some(KeepReason::FlushFailed);
-                    } else if std::fs::symlink_metadata(input)
-                        .is_ok_and(|m| m.file_type().is_symlink())
-                    {
-                        warn!("Keeping source file {input}: {}", KeepReason::Symlink.log());
-                        *keep_reason = Some(KeepReason::Symlink);
-                    } else if !expected_source.matches_path(input) {
-                        warn!(
-                            "Keeping source file {input}: {}",
-                            KeepReason::SourceChanged.log()
-                        );
-                        *keep_reason = Some(KeepReason::SourceChanged);
-                    } else {
-                        match record_and_delete(input, output, vmaf, threshold) {
-                            None => {
-                                info!("Deleted source file: {input}");
-                                *source_deleted = true;
-                            }
-                            Some(reason) => *keep_reason = Some(reason),
-                        }
-                    }
-
-                    // Every decision that kept the source is recorded as well.
-                    // A ledger that could not be written cannot record that.
-                    if let Some(reason) = *keep_reason
-                        && reason != KeepReason::LedgerUnwritable
-                        && let Err(e) = append_ledger(&DeletionRecord::new(
-                            input,
-                            output,
-                            vmaf,
-                            threshold,
-                            Some(reason),
-                        ))
-                    {
-                        warn!("Could not record the kept source file {input}: {e}");
-                    }
-                } else if matches!(result, FullEncodeResult::Success) {
-                    info!("Keeping source file {input}: no VMAF verification ran for this job");
-                }
-            }
-
-            result
         }
-        EncodeResult::Cancelled => FullEncodeResult::Cancelled,
-        EncodeResult::Error(e) => FullEncodeResult::Error(e),
+    }
+
+    loop {
+        if !remux_only && let Some(cb) = hooks.crf.as_mut() {
+            cb(params.crf);
+        }
+        let progress = hooks
+            .progress
+            .as_mut()
+            .map(|cb| cb.as_mut() as &mut dyn FnMut(f64));
+        match encode_video(&params, progress, cancel_flag, duration, total_frames) {
+            EncodeResult::Success => {}
+            EncodeResult::Cancelled => return FullEncodeResult::Cancelled,
+            EncodeResult::Error(e) => return FullEncodeResult::Error(e),
+        }
+
+        // The file the encoder placed at the output path is remembered and
+        // re-checked before VMAF and source deletion.
+        let output_identity = config
+            .quality
+            .delete_source_on_success
+            .then(|| SourceIdentity::from_path(output).ok())
+            .flatten();
+
+        // A cancel between the ffmpeg exit and verification removes the
+        // finished output.
+        if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
+            let _ = std::fs::remove_file(output);
+            return FullEncodeResult::Cancelled;
+        }
+
+        // Notify the UI for VMAF verification phase
+        let vmaf_threshold = if verifies {
+            if let Some(cb) = hooks.before_vmaf.as_mut() {
+                cb();
+            }
+            Some(config.quality.vmaf_threshold)
+        } else {
+            None
+        };
+        let mut result = run_vmaf_check(
+            input,
+            output,
+            vmaf_threshold,
+            metadata.hdr_type,
+            metadata.width,
+            metadata.height,
+            &params.picture,
+            cancel_flag,
+        );
+
+        if let FullEncodeResult::QualityWarning { .. } = result
+            && let Some(lower) = retry_crf.take()
+        {
+            info!(
+                "Re-encoding at CRF {lower}: CRF {} missed the VMAF threshold",
+                params.crf
+            );
+            if let Err(e) = remove_own_output(output, output_identity.as_ref()) {
+                warn!("Keeping the first encode: {e}");
+                return result;
+            }
+            params.crf = lower;
+            continue;
+        }
+
+        // The source is only ever deleted against a VMAF score that met the
+        // threshold. A plain `Success` means no comparison ran at all (VMAF
+        // disabled, a remux, or a tone-mapped DV profile 5 output).
+        if config.quality.delete_source_on_success {
+            if let FullEncodeResult::SuccessWithVmaf {
+                ref vmaf,
+                ref mut source_deleted,
+                ref mut keep_reason,
+            } = result
+            {
+                decide_deletion(
+                    input,
+                    output,
+                    expected_source,
+                    output_identity.as_ref(),
+                    &params,
+                    dv_mode,
+                    config,
+                    vmaf,
+                    source_deleted,
+                    keep_reason,
+                    cancel_flag,
+                );
+            } else if matches!(result, FullEncodeResult::Success) {
+                info!("Keeping source file {input}: no VMAF verification ran for this job");
+            }
+        }
+
+        return result;
+    }
+}
+
+/// Run the CRF search for `params`, reporting through `hooks.searching`.
+fn search_crf(
+    params: &EncodingParams,
+    metadata: &VideoMetadata,
+    config: &AppConfig,
+    cancel_flag: &AtomicBool,
+    hooks: &mut PipelineHooks,
+) -> Result<crf_search::SearchResult, crf_search::SearchError> {
+    let mut ignore = |_: f64| {};
+    let on_progress: &mut dyn FnMut(f64) = match hooks.searching.as_mut() {
+        Some(cb) => cb.as_mut(),
+        None => &mut ignore,
+    };
+    crf_search::search(
+        params,
+        metadata,
+        config.quality.vmaf_threshold,
+        cancel_flag,
+        on_progress,
+    )
+}
+
+/// Remove the output this pipeline wrote, when it is still the same file.
+fn remove_own_output(output: &str, identity: Option<&SourceIdentity>) -> Result<(), String> {
+    if identity.is_some_and(|identity| !identity.matches_path(output)) {
+        return Err(KeepReason::OutputChanged.log().to_string());
+    }
+    std::fs::remove_file(output).map_err(|e| format!("could not remove {output}: {e}"))
+}
+
+/// Delete the source of a job whose VMAF met the threshold, or record in
+/// `keep_reason` why it is kept. Every decision goes into the ledger.
+#[allow(clippy::too_many_arguments)]
+fn decide_deletion(
+    input: &str,
+    output: &str,
+    expected_source: &SourceIdentity,
+    output_identity: Option<&SourceIdentity>,
+    params: &EncodingParams,
+    dv_mode: DvMode,
+    config: &AppConfig,
+    vmaf: &verifier::VmafResult,
+    source_deleted: &mut bool,
+    keep_reason: &mut Option<KeepReason>,
+    cancel_flag: &AtomicBool,
+) {
+    let threshold = config.quality.vmaf_threshold;
+    if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
+        warn!(
+            "Keeping source file {input}: {}",
+            KeepReason::Cancelled.log()
+        );
+        *keep_reason = Some(KeepReason::Cancelled);
+    } else if let Some(reason) = picture_keep_reason(params, &config.video)
+        .or_else(|| keep_source_reason(params, dv_mode, cancel_flag))
+    {
+        info!("Keeping source file {input}: {}", reason.log());
+        *keep_reason = Some(reason);
+    } else if !output_identity.is_some_and(|identity| identity.matches_path(output)) {
+        warn!(
+            "Keeping source file {input}: {}",
+            KeepReason::OutputChanged.log()
+        );
+        *keep_reason = Some(KeepReason::OutputChanged);
+    } else if let Err(e) = flush_to_disk(output) {
+        warn!(
+            "Keeping source file {input}: {}: {e}",
+            KeepReason::FlushFailed.log()
+        );
+        *keep_reason = Some(KeepReason::FlushFailed);
+    } else if std::fs::symlink_metadata(input).is_ok_and(|m| m.file_type().is_symlink()) {
+        warn!("Keeping source file {input}: {}", KeepReason::Symlink.log());
+        *keep_reason = Some(KeepReason::Symlink);
+    } else if !expected_source.matches_path(input) {
+        warn!(
+            "Keeping source file {input}: {}",
+            KeepReason::SourceChanged.log()
+        );
+        *keep_reason = Some(KeepReason::SourceChanged);
+    } else {
+        match record_and_delete(input, output, vmaf, threshold) {
+            None => {
+                info!("Deleted source file: {input}");
+                *source_deleted = true;
+            }
+            Some(reason) => *keep_reason = Some(reason),
+        }
+    }
+
+    // Every decision that kept the source is recorded as well. A ledger that
+    // could not be written cannot record that.
+    if let Some(reason) = *keep_reason
+        && reason != KeepReason::LedgerUnwritable
+        && let Err(e) = append_ledger(&DeletionRecord::new(
+            input,
+            output,
+            vmaf,
+            threshold,
+            Some(reason),
+        ))
+    {
+        warn!("Could not record the kept source file {input}: {e}");
     }
 }
 
@@ -605,6 +718,7 @@ fn run_vmaf_check(
     match verifier::calculate_vmaf(
         input_path,
         output_path,
+        None,
         hdr_type,
         width,
         height,

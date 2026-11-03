@@ -1,6 +1,6 @@
 use super::common::{message_color, wrapped_rows};
 use crate::app::App;
-use crate::config::{AppConfig, AudioMode, EncodingPreset, QualityPreset};
+use crate::config::{AppConfig, AudioMode, CrfMode, EncodingPreset, QualityPreset};
 use crate::i18n::{Msg, t};
 use ratatui::{
     Frame,
@@ -31,6 +31,7 @@ pub enum ConfigField {
     VmafThreshold,
     VmafEnabled,
     DeleteSource,
+    CrfMode,
     SvtPreset,
     NvencPreset,
     QualityPreset,
@@ -133,6 +134,11 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         label: Msg::CfgDeleteSource,
         kind: ConfigItemKind::Toggle,
         field: ConfigField::DeleteSource,
+    },
+    ConfigItem {
+        label: Msg::CfgCrfMode,
+        kind: ConfigItemKind::Cycle,
+        field: ConfigField::CrfMode,
     },
     ConfigItem {
         label: Msg::CfgRfSd,
@@ -474,6 +480,7 @@ fn config_field_path(field: ConfigField) -> Option<String> {
         ConfigField::VmafThreshold => "quality.vmaf_threshold",
         ConfigField::VmafEnabled => "quality.vmaf_enabled",
         ConfigField::DeleteSource => "quality.delete_source_on_success",
+        ConfigField::CrfMode => "quality.crf_mode",
         ConfigField::SvtPreset => "performance.svt_preset",
         ConfigField::NvencPreset => "performance.nvenc_preset",
         ConfigField::QualityPreset => "quality_preset",
@@ -551,7 +558,7 @@ pub fn visible_config_items(config: &AppConfig) -> Vec<&'static ConfigItem> {
             config.quality.vmaf_enabled
                 || !matches!(
                     item.field,
-                    ConfigField::VmafThreshold | ConfigField::DeleteSource
+                    ConfigField::VmafThreshold | ConfigField::DeleteSource | ConfigField::CrfMode
                 )
         })
         .filter(|item| picture_item_visible(config, item.field))
@@ -590,6 +597,17 @@ fn quality_preset_name(lang: crate::i18n::Language, preset: QualityPreset) -> &'
     )
 }
 
+/// Localized display name for a CRF mode.
+fn crf_mode_name(lang: crate::i18n::Language, mode: CrfMode) -> &'static str {
+    t(
+        lang,
+        match mode {
+            CrfMode::Fixed => Msg::CrfModeFixed,
+            CrfMode::Auto => Msg::CrfModeAuto,
+        },
+    )
+}
+
 /// Localized display name for an audio mode.
 fn audio_mode_name(lang: crate::i18n::Language, mode: AudioMode) -> String {
     match mode {
@@ -615,6 +633,7 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::DeleteSource => {
             bool_display(config.language, config.quality.delete_source_on_success)
         }
+        ConfigField::CrfMode => crf_mode_name(config.language, config.quality.crf_mode).to_string(),
         ConfigField::SvtPreset => config.performance.svt_preset.to_string(),
         ConfigField::NvencPreset => config.performance.nvenc_preset.clone(),
         ConfigField::Preset(tier, metric) => {
@@ -883,6 +902,7 @@ fn selected_config_hint(app: &App) -> Option<Msg> {
         Some(ConfigField::DeleteSource) => Some(Msg::WebDeleteSourceWarning),
         Some(ConfigField::VideoDeleteProcessedSource) => Some(Msg::DeleteProcessedSourceWarning),
         Some(ConfigField::VideoInverseTelecine) => Some(Msg::InverseTelecineHint),
+        Some(ConfigField::CrfMode) => Some(Msg::CrfModeHint),
         Some(ConfigField::DaemonAutostart) => Some(Msg::CfgDaemonAutostartHint),
         Some(
             ConfigField::DaemonEnabled
@@ -1128,6 +1148,30 @@ mod tests {
             .expect("the port row");
         assert!(!port.1.contains(Modifier::DIM));
         assert_ne!(selected_config_hint(&app), Some(Msg::HostSettingsReadOnly));
+    }
+
+    /// The CRF selection row shows its translated mode, carries its hint, and
+    /// is hidden with VMAF off.
+    #[test]
+    fn the_crf_mode_row_follows_vmaf_and_names_its_mode() {
+        let mut app = App::new();
+        app.config = AppConfig::default();
+        let index = visible_config_items(&app.config)
+            .iter()
+            .position(|item| item.field == ConfigField::CrfMode)
+            .unwrap();
+        assert_eq!(get_config_value(&app.config, index), "Fixed");
+        app.config.quality.crf_mode = CrfMode::Auto;
+        assert_eq!(get_config_value(&app.config, index), "Automatic");
+        app.config_selected = index;
+        assert_eq!(selected_config_hint(&app), Some(Msg::CrfModeHint));
+
+        app.config.quality.vmaf_enabled = false;
+        assert!(
+            !visible_config_items(&app.config)
+                .iter()
+                .any(|item| item.field == ConfigField::CrfMode)
+        );
     }
 
     #[test]

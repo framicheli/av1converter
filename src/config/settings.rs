@@ -11,6 +11,7 @@ pub const SERIALIZED_SETTING_PATHS: &[&str] = &[
     "quality.vmaf_threshold",
     "quality.vmaf_enabled",
     "quality.delete_source_on_success",
+    "quality.crf_mode",
     "performance.svt_preset",
     "performance.nvenc_preset",
     "presets.sd.crf",

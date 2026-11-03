@@ -242,6 +242,13 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
         )]));
     }
 
+    if let Some(crf) = job.crf {
+        lines.push(Line::from(vec![
+            Span::styled("CRF: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(crf.to_string()),
+        ]));
+    }
+
     if let Some(picture) = job.picture.and_then(|picture| picture.summary(lang)) {
         lines.push(Line::from(vec![
             Span::styled(
@@ -494,14 +501,14 @@ fn source_kept_text(job: &crate::queue::EncodingJob, lang: Language) -> String {
     }
 }
 
-/// The result line under the multi-file list: the outcome, then the crop
-/// and deinterlace the encode applied.
+/// The result line under the multi-file list: the outcome, then the CRF of
+/// the encode and the crop and deinterlace it applied.
 fn result_detail(job: &crate::queue::EncodingJob, lang: Language) -> String {
-    let outcome = result_outcome(job, lang);
-    match job.picture.and_then(|picture| picture.summary(lang)) {
-        Some(picture) => format!("{outcome} · {picture}"),
-        None => outcome,
-    }
+    std::iter::once(result_outcome(job, lang))
+        .chain(job.crf.map(|crf| format!("CRF {crf}")))
+        .chain(job.picture.and_then(|picture| picture.summary(lang)))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn result_outcome(job: &crate::queue::EncodingJob, lang: Language) -> String {
@@ -682,6 +689,21 @@ mod tests {
         assert_eq!(
             source_kept_text(&mean_failed, Language::English),
             "Source kept (VMAF 93.0 < 95)"
+        );
+    }
+
+    #[test]
+    fn the_result_line_names_the_crf_of_the_encode() {
+        let mut job = job_with(JobStatus::DoneWithVmaf { score: 97.0 });
+        job.crf = Some(28);
+        assert_eq!(result_detail(&job, Language::English), "VMAF 97.0 · CRF 28");
+        job.set_picture(crate::analyzer::picture::PictureFilter {
+            crop: None,
+            fields: crate::analyzer::picture::FieldTreatment::InverseTelecine,
+        });
+        assert_eq!(
+            result_detail(&job, Language::English),
+            "VMAF 97.0 · CRF 28 · inverse telecined"
         );
     }
 

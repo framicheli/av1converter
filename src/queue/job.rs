@@ -158,6 +158,12 @@ pub enum JobStatus {
         #[serde(skip)]
         progress: f64,
     },
+    /// Searching the CRF on samples before encoding. The percentage is not
+    /// persisted.
+    Searching {
+        #[serde(skip)]
+        progress: f64,
+    },
     /// Running VMAF quality check after encoding
     Verifying,
     /// Successfully encoded (no VMAF run)
@@ -481,7 +487,9 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
                 job.status.is_terminal()
                     || matches!(
                         job.status,
-                        JobStatus::Encoding { .. } | JobStatus::Verifying
+                        JobStatus::Searching { .. }
+                            | JobStatus::Encoding { .. }
+                            | JobStatus::Verifying
                     )
             })
             .filter_map(|job| job.output_path.as_deref().map(output_key)),
@@ -491,7 +499,7 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
         if job.status.is_terminal()
             || matches!(
                 job.status,
-                JobStatus::Encoding { .. } | JobStatus::Verifying
+                JobStatus::Searching { .. } | JobStatus::Encoding { .. } | JobStatus::Verifying
             )
         {
             continue;

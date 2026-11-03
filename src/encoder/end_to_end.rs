@@ -699,7 +699,7 @@ fn run_deleting_pipeline(
     name: &str,
     threshold: f64,
     cancel: &std::sync::Arc<AtomicBool>,
-    on_before_vmaf: impl FnOnce(&Path, &Path) + Send + 'static,
+    mut on_before_vmaf: impl FnMut(&Path, &Path) + Send + 'static,
 ) -> Option<(super::FullEncodeResult, PathBuf, PathBuf)> {
     if !(DependencyStatus::check()
         && DependencyStatus::encoder_available("libsvtav1")
@@ -738,10 +738,11 @@ fn run_deleting_pipeline(
         Vec::new(),
         false,
         &config,
-        None,
+        super::PipelineHooks {
+            before_vmaf: Some(Box::new(move || on_before_vmaf(&hook_input, &hook_output))),
+            ..super::PipelineHooks::default()
+        },
         cancel,
-        None,
-        Some(Box::new(move || on_before_vmaf(&hook_input, &hook_output))),
     );
     Some((result, input, output))
 }
@@ -1126,12 +1127,13 @@ fn run_picture_pipeline(
         Vec::new(),
         true,
         &config,
-        None,
+        super::PipelineHooks {
+            picture: Some(Box::new(move |filter| {
+                *reported_into.lock().unwrap() = Some(filter);
+            })),
+            ..super::PipelineHooks::default()
+        },
         &cancel,
-        Some(Box::new(move |filter| {
-            *reported_into.lock().unwrap() = Some(filter);
-        })),
-        None,
     );
     let reported = *reported.lock().unwrap();
     (result, input, output, reported)
@@ -1367,5 +1369,355 @@ fn detection_reads_real_letterboxes_interlacing_and_telecine() {
     ));
     assert_eq!(telecined.fields, FieldTreatment::InverseTelecine);
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What an automatic-CRF pipeline run reported: the search progress and the
+/// quality value of each encode, in order.
+#[derive(Default)]
+struct AutoReports {
+    searching: Vec<f64>,
+    crfs: Vec<u8>,
+}
+
+/// Runs the full pipeline in automatic CRF mode against a fresh video-only
+/// clip. `None` when this machine cannot encode AV1 and score VMAF.
+fn run_auto_pipeline(
+    name: &str,
+    threshold: f64,
+    delete_source: bool,
+    mut on_before_vmaf: impl FnMut(&Path, &Path) + Send + 'static,
+) -> Option<(super::FullEncodeResult, PathBuf, PathBuf, AutoReports)> {
+    use std::sync::{Arc, Mutex};
+    if !(DependencyStatus::check()
+        && DependencyStatus::encoder_available("libsvtav1")
+        && DependencyStatus::vmaf_available())
+    {
+        eprintln!("skipping: this FFmpeg cannot encode AV1 and score VMAF");
+        return None;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_auto_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(input) = make_video_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return None;
+    };
+    let output = dir.join("out.mkv");
+    let mut config = AppConfig {
+        encoder: Encoder::SvtAv1,
+        ..AppConfig::default()
+    };
+    config.performance.svt_preset = 12;
+    config.quality.vmaf_enabled = true;
+    config.quality.vmaf_threshold = threshold;
+    config.quality.delete_source_on_success = delete_source;
+    config.quality.crf_mode = crate::config::CrfMode::Auto;
+
+    let reports = Arc::new(Mutex::new(AutoReports::default()));
+    let (searching, crfs) = (Arc::clone(&reports), Arc::clone(&reports));
+    let identity = crate::queue::SourceIdentity::from_path(&input).unwrap();
+    let (hook_input, hook_output) = (input.clone(), output.clone());
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        &identity,
+        &metadata_for(&input),
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        false,
+        Vec::new(),
+        false,
+        &config,
+        super::PipelineHooks {
+            searching: Some(Box::new(move |percent| {
+                searching.lock().unwrap().searching.push(percent);
+            })),
+            crf: Some(Box::new(move |value| crfs.lock().unwrap().crfs.push(value))),
+            before_vmaf: Some(Box::new(move || on_before_vmaf(&hook_input, &hook_output))),
+            ..super::PipelineHooks::default()
+        },
+        &AtomicBool::new(false),
+    );
+    let reports = std::mem::take(&mut *reports.lock().unwrap());
+    Some((result, input, output, reports))
+}
+
+/// The presets-table value of the fixture clip, which is SD.
+fn fixture_table_crf() -> u8 {
+    crate::config::EncodingPresetsConfig::default().sd.crf
+}
+
+/// Replaces `output` with a blurred, downscaled H.264 encode of `input`,
+/// which scores far below any useful threshold.
+fn replace_with_blurred_encode(input: &Path, output: &Path) {
+    let blurred = output.with_extension("blurred.mkv");
+    let built = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(input)
+        .args([
+            "-vf",
+            "scale=40:30,boxblur=4,scale=320:240",
+            "-c:v",
+            "libx264",
+        ])
+        .arg(&blurred)
+        .status()
+        .is_ok_and(|status| status.success());
+    assert!(built, "ffmpeg builds the blurred replacement");
+    std::fs::rename(&blurred, output).unwrap();
+}
+
+/// The search runs on samples before the encode, reports its progress from
+/// zero to done, and the encode uses a value inside the search range that
+/// then passes the full check.
+#[test]
+fn automatic_crf_searches_before_encoding_and_passes() {
+    let Some((result, input, output, reports)) = run_auto_pipeline("pass", 80.0, false, |_, _| {})
+    else {
+        return;
+    };
+    assert!(
+        matches!(result, super::FullEncodeResult::SuccessWithVmaf { .. }),
+        "{result:?}"
+    );
+    assert_eq!(reports.searching.first(), Some(&0.0));
+    assert_eq!(reports.searching.last(), Some(&100.0));
+    assert_eq!(reports.crfs.len(), 1, "one encode: {:?}", reports.crfs);
+    let (lo, hi) = super::crf_search::search_range(fixture_table_crf(), 63);
+    assert!((lo..=hi).contains(&reports.crfs[0]), "{:?}", reports.crfs);
+    assert!(output.exists());
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+/// When no searched value meets the threshold, the encode runs once at the
+/// lowest value searched and is not redone.
+#[test]
+fn an_unreachable_threshold_encodes_once_at_the_lowest_searched_value() {
+    let Some((result, input, _, reports)) =
+        run_auto_pipeline("unreachable", 101.0, false, |_, _| {})
+    else {
+        return;
+    };
+    assert!(
+        matches!(result, super::FullEncodeResult::QualityWarning { .. }),
+        "{result:?}"
+    );
+    let (lo, _) = super::crf_search::search_range(fixture_table_crf(), 63);
+    assert_eq!(reports.crfs, vec![lo]);
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+/// A full output that misses the threshold after a passing search is
+/// re-encoded once, lower by the retry step, and the redone output passes.
+#[test]
+fn a_failed_full_check_is_redone_once_at_a_lower_crf() {
+    let mut first = true;
+    let Some((result, input, output, reports)) =
+        run_auto_pipeline("retry", 80.0, false, move |input, output| {
+            if std::mem::take(&mut first) {
+                replace_with_blurred_encode(input, output);
+            }
+        })
+    else {
+        return;
+    };
+    assert!(
+        matches!(result, super::FullEncodeResult::SuccessWithVmaf { .. }),
+        "{result:?}"
+    );
+    assert_eq!(reports.crfs.len(), 2, "{:?}", reports.crfs);
+    assert_eq!(
+        reports.crfs[1],
+        reports.crfs[0] - super::crf_search::RETRY_STEP
+    );
+    assert!(output.exists());
+    assert!(input.exists(), "deletion is off");
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+/// With deletion on, an output that is no longer the file the encoder wrote
+/// is neither removed for the re-encode nor allowed to delete the source.
+#[test]
+fn a_replaced_output_is_not_redone_and_keeps_the_source() {
+    let Some((result, input, output, reports)) =
+        run_auto_pipeline("replaced", 80.0, true, replace_with_blurred_encode)
+    else {
+        return;
+    };
+    assert!(
+        matches!(result, super::FullEncodeResult::QualityWarning { .. }),
+        "{result:?}"
+    );
+    assert_eq!(reports.crfs.len(), 1, "{:?}", reports.crfs);
+    assert!(output.exists(), "the replaced output is left alone");
+    assert!(input.exists());
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+/// Fixed mode never searches: the encode uses the presets-table value.
+#[test]
+fn fixed_crf_encodes_at_the_presets_value_without_searching() {
+    use std::sync::{Arc, Mutex};
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    if !(DependencyStatus::check()
+        && DependencyStatus::encoder_available("libsvtav1")
+        && DependencyStatus::vmaf_available())
+    {
+        eprintln!("skipping: this FFmpeg cannot encode AV1 and score VMAF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_fixed_crf_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(input) = make_video_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    let mut config = AppConfig::default();
+    config.performance.svt_preset = 12;
+    config.quality.vmaf_threshold = 101.0;
+    let reports = Arc::new(Mutex::new(AutoReports::default()));
+    let (searching, crfs) = (Arc::clone(&reports), Arc::clone(&reports));
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        dir.join("out.mkv").to_str().unwrap(),
+        &crate::queue::SourceIdentity::from_path(&input).unwrap(),
+        &metadata_for(&input),
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        false,
+        Vec::new(),
+        false,
+        &config,
+        super::PipelineHooks {
+            searching: Some(Box::new(move |percent| {
+                searching.lock().unwrap().searching.push(percent);
+            })),
+            crf: Some(Box::new(move |value| crfs.lock().unwrap().crfs.push(value))),
+            ..super::PipelineHooks::default()
+        },
+        &cancel,
+    );
+    assert!(
+        matches!(result, super::FullEncodeResult::QualityWarning { .. }),
+        "{result:?}"
+    );
+    let reports = reports.lock().unwrap();
+    assert_eq!(reports.searching, Vec::<f64>::new());
+    assert_eq!(reports.crfs, vec![fixture_table_crf()]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A cancel during the CRF search ends the job as cancelled before any
+/// encode, leaving no output behind and the source in place.
+#[test]
+fn a_cancel_during_the_crf_search_encodes_nothing() {
+    use std::sync::{Arc, Mutex};
+    if !(DependencyStatus::check()
+        && DependencyStatus::encoder_available("libsvtav1")
+        && DependencyStatus::vmaf_available())
+    {
+        eprintln!("skipping: this FFmpeg cannot encode AV1 and score VMAF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_auto_cancel_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(input) = make_video_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    let output = dir.join("out.mkv");
+    let mut config = AppConfig::default();
+    config.performance.svt_preset = 12;
+    config.quality.delete_source_on_success = true;
+    config.quality.crf_mode = crate::config::CrfMode::Auto;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
+    let crfs = Arc::new(Mutex::new(Vec::new()));
+    let crfs_into = Arc::clone(&crfs);
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        &crate::queue::SourceIdentity::from_path(&input).unwrap(),
+        &metadata_for(&input),
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        false,
+        Vec::new(),
+        false,
+        &config,
+        super::PipelineHooks {
+            searching: Some(Box::new(move |percent| {
+                if percent > 0.0 {
+                    flag.store(true, std::sync::atomic::Ordering::Release);
+                }
+            })),
+            crf: Some(Box::new(move |value| crfs_into.lock().unwrap().push(value))),
+            ..super::PipelineHooks::default()
+        },
+        &cancel,
+    );
+    assert!(
+        matches!(result, super::FullEncodeResult::Cancelled),
+        "{result:?}"
+    );
+    assert_eq!(*crfs.lock().unwrap(), Vec::<u8>::new());
+    assert!(!output.exists());
+    assert!(input.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A remux copies the video and reports no CRF, also in automatic mode.
+#[test]
+fn a_remux_reports_no_crf() {
+    use std::sync::{Arc, Mutex};
+    if !DependencyStatus::check() {
+        eprintln!("skipping: ffmpeg/ffprobe not available");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_remux_crf_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(input) = make_video_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    let mut config = AppConfig::default();
+    config.quality.crf_mode = crate::config::CrfMode::Auto;
+    let reports = Arc::new(Mutex::new(AutoReports::default()));
+    let (searching, crfs) = (Arc::clone(&reports), Arc::clone(&reports));
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        dir.join("out_remux.mkv").to_str().unwrap(),
+        &crate::queue::SourceIdentity::from_path(&input).unwrap(),
+        &metadata_for(&input),
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        true,
+        Vec::new(),
+        false,
+        &config,
+        super::PipelineHooks {
+            searching: Some(Box::new(move |percent| {
+                searching.lock().unwrap().searching.push(percent);
+            })),
+            crf: Some(Box::new(move |value| crfs.lock().unwrap().crfs.push(value))),
+            ..super::PipelineHooks::default()
+        },
+        &AtomicBool::new(false),
+    );
+    assert!(
+        matches!(result, super::FullEncodeResult::Success),
+        "{result:?}"
+    );
+    let reports = reports.lock().unwrap();
+    assert_eq!(reports.crfs, Vec::<u8>::new());
+    assert_eq!(reports.searching, Vec::<f64>::new());
     let _ = std::fs::remove_dir_all(&dir);
 }

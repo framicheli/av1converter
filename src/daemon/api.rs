@@ -30,9 +30,9 @@ pub fn snapshot(shared: &SharedState) -> (Value, String, u64) {
         .iter()
         .zip(state.queue.ids())
         .filter_map(|(job, id)| match job.status {
-            JobStatus::Encoding { progress } | JobStatus::Ripping { progress } => {
-                Some(json!({"id": id, "progress": progress}))
-            }
+            JobStatus::Encoding { progress }
+            | JobStatus::Searching { progress }
+            | JobStatus::Ripping { progress } => Some(json!({"id": id, "progress": progress})),
             _ => None,
         })
         .collect();
@@ -111,7 +111,7 @@ pub fn status(shared: &SharedState) -> Value {
             queue.jobs.get(*i).is_some_and(|job| {
                 matches!(
                     job.status,
-                    JobStatus::Encoding { .. } | JobStatus::Verifying
+                    JobStatus::Searching { .. } | JobStatus::Encoding { .. } | JobStatus::Verifying
                 )
             })
         })
@@ -1722,6 +1722,7 @@ fn status_json(status: &JobStatus) -> Value {
         JobStatus::Ready => json!({"kind": "ready"}),
         JobStatus::Encoding { progress } => json!({"kind": "encoding", "progress": progress}),
         JobStatus::Ripping { progress } => json!({"kind": "ripping", "progress": progress}),
+        JobStatus::Searching { progress } => json!({"kind": "searching", "progress": progress}),
         JobStatus::Verifying => json!({"kind": "verifying"}),
         JobStatus::Done => json!({"kind": "done"}),
         JobStatus::DoneWithVmaf { score } => json!({"kind": "done_vmaf", "vmaf": score}),
@@ -2149,6 +2150,7 @@ mod tests {
         for (phase, kind) in [
             (JobStatus::Ripping { progress: 12.5 }, "ripping"),
             (JobStatus::Analyzing, "analyzing"),
+            (JobStatus::Searching { progress: 20.0 }, "searching"),
             (JobStatus::Verifying, "verifying"),
             (JobStatus::Encoding { progress: 40.0 }, "encoding"),
         ] {

@@ -23,7 +23,7 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
     let detail_job = app.queue.jobs.get(app.queue_cursor);
     let is_live_gauge = matches!(
         detail_job.map(|j| &j.status),
-        Some(JobStatus::Encoding { .. } | JobStatus::Ripping { .. })
+        Some(JobStatus::Encoding { .. } | JobStatus::Searching { .. } | JobStatus::Ripping { .. })
     );
     let detail_height = if is_live_gauge {
         3
@@ -74,13 +74,13 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
         if let Some(job) = app.queue.jobs.get(app.queue.current_job_index) {
             if matches!(
                 job.status,
-                JobStatus::Encoding { .. } | JobStatus::Verifying
+                JobStatus::Searching { .. } | JobStatus::Encoding { .. } | JobStatus::Verifying
             ) {
                 let current_number = (app.queue.encoding_progress_done + 1).min(total_to_encode);
-                let phase = if matches!(job.status, JobStatus::Verifying) {
-                    t(lang, Msg::StatusVerifying)
-                } else {
-                    t(lang, Msg::Encoding)
+                let phase = match job.status {
+                    JobStatus::Verifying => t(lang, Msg::StatusVerifying),
+                    JobStatus::Searching { .. } => t(lang, Msg::StatusSearching),
+                    _ => t(lang, Msg::Encoding),
                 };
                 format!(
                     "[{}/{}] {}: {}",
@@ -221,6 +221,21 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 .ratio(progress.clamp(0.0, 100.0) / 100.0)
                 .label(label);
             f.render_widget(gauge, chunks[3]);
+        } else if let JobStatus::Searching { progress } = &job.status {
+            let gauge = Gauge::default()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray))
+                        .title(format!(" {} ", job.filename())),
+                )
+                .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+                .ratio(progress.clamp(0.0, 100.0) / 100.0)
+                .label(format!(
+                    "{progress:.1}%  |  {}",
+                    t(lang, Msg::StatusSearching)
+                ));
+            f.render_widget(gauge, chunks[3]);
         } else if let JobStatus::Ripping { progress } = &job.status {
             let label = if app.disc_state == DiscState::Cancelling {
                 t(lang, Msg::Cancelling)
@@ -265,7 +280,9 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
                 JobStatus::Skipped { reason } => translate_reason(lang, reason),
                 JobStatus::Error { message } => message.clone(),
                 // Handled by the gauge branches above; unreachable here.
-                JobStatus::Encoding { .. } | JobStatus::Ripping { .. } => String::new(),
+                JobStatus::Encoding { .. }
+                | JobStatus::Searching { .. }
+                | JobStatus::Ripping { .. } => String::new(),
             };
             let status_text = if matches!(
                 job.status,
@@ -399,6 +416,7 @@ fn queue_item_name(job: &crate::queue::EncodingJob, lang: Language) -> String {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn create_queue_item(
     name: &str,
     status: &JobStatus,
@@ -437,6 +455,11 @@ fn create_queue_item(
             ListItem::new(format!("{prefix}▶ {name} {progress:.1}%{crf_str}"))
                 .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod))
         }
+        JobStatus::Searching { progress } => ListItem::new(format!(
+            "{prefix}◇ {name} {} {progress:.1}%",
+            t(lang, Msg::StatusSearching)
+        ))
+        .style(Style::default().fg(Color::Cyan).add_modifier(bold_mod)),
         JobStatus::Ripping { progress } => ListItem::new(format!(
             "{prefix}⟳ {name} {} {progress:.1}%",
             t(lang, Msg::StatusRipping)
@@ -533,5 +556,25 @@ mod tests {
         );
         job.set_picture(PictureFilter::default());
         assert_eq!(queue_item_name(&job, Language::English), "TITLE_t01.mkv");
+    }
+
+    #[test]
+    fn a_searching_row_shows_the_phase_and_its_progress() {
+        let item = super::create_queue_item(
+            "film.mkv",
+            &crate::queue::JobStatus::Searching { progress: 42.0 },
+            false,
+            false,
+            Some(28),
+            Language::English,
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 1)).unwrap();
+        terminal
+            .draw(|f| f.render_widget(ratatui::widgets::List::new([item]), f.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..60).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert_eq!(row.trim_end(), "  ◇ film.mkv Finding CRF... 42.0%");
     }
 }

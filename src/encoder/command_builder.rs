@@ -249,6 +249,34 @@ pub fn build_ffmpeg_args(params: &EncodingParams) -> Vec<String> {
     args
 }
 
+/// `FFmpeg` arguments that encode only the video of `window` with `params`'
+/// quality and picture settings into `output`. Audio, subtitles and
+/// attachments are left out.
+pub fn build_sample_args(
+    params: &EncodingParams,
+    window: &crate::verifier::Window,
+    output: &str,
+) -> Vec<String> {
+    let mut sample = params.clone();
+    sample.tracks = OutputTracks::default();
+    sample.subtitle_codecs = Vec::new();
+    sample.output = output.to_string();
+    let mut args = build_ffmpeg_args(&sample);
+    if let Some(at) = args
+        .windows(2)
+        .position(|pair| pair[0] == "-map" && pair[1] == "0:t?")
+    {
+        args.drain(at..at + 2);
+    }
+    if let Some(at) = args
+        .windows(2)
+        .position(|pair| pair[0] == "-i" && pair[1] == sample.input)
+    {
+        args.splice(at..at, window.input_args());
+    }
+    args
+}
+
 /// Per-stream audio codec options, in output stream order. Every mapped stream
 /// gets an explicit `-c:a:N`, never a global `-c:a` with overrides.
 fn build_audio_args(plan: &[AudioStreamPlan]) -> Vec<String> {
@@ -966,5 +994,46 @@ mod tests {
         let svt = arg_after(&args, "-svtav1-params").unwrap();
         assert!(svt.contains("mastering-display=G(0.17000,0.79700)"));
         assert!(svt.contains("content-light=1000,400"));
+    }
+
+    /// A sample encodes only the video of its window, at the job's quality,
+    /// into its own file.
+    #[test]
+    fn a_sample_encodes_only_the_video_of_its_window() {
+        let mut params = dv_params(Encoder::SvtAv1, DvMode::ToHdr10, Some(8));
+        params.hdr_type = HdrType::Sdr;
+        params.crf = 31;
+        params.tracks = OutputTracks {
+            audio: vec![audio(0, None)],
+            subtitle_indices: vec![0],
+            ..OutputTracks::default()
+        };
+        params.subtitle_codecs = vec![Some("copy")];
+        let window = crate::verifier::Window {
+            start_secs: 60.0,
+            length_secs: 10.0,
+        };
+
+        let args = build_sample_args(&params, &window, "/scratch/sample.mkv");
+
+        let input = args.iter().position(|a| a == "-i").unwrap();
+        assert_eq!(
+            args[input - 4..=input + 1],
+            ["-ss", "60.000", "-t", "10.000", "-i", "in.mkv"]
+        );
+        let maps: Vec<&String> = args
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i > &0 && args[i - 1] == "-map")
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(maps, vec!["0:V:0"]);
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.starts_with("-c:a") || a.starts_with("-c:s"))
+        );
+        assert_eq!(arg_after(&args, "-crf").as_deref(), Some("31"));
+        assert_eq!(args.last().map(String::as_str), Some("/scratch/sample.mkv"));
     }
 }

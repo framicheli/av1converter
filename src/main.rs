@@ -1882,6 +1882,13 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             app.config.quality.delete_source_on_success =
                 !app.config.quality.delete_source_on_success;
         }
+        ConfigField::CrfMode => {
+            app.config.quality.crf_mode = if increase {
+                app.config.quality.crf_mode.next()
+            } else {
+                app.config.quality.crf_mode.prev()
+            };
+        }
         ConfigField::SvtPreset => {
             if increase {
                 app.config.performance.svt_preset =

@@ -32,7 +32,7 @@ fn escape_filter_value(value: &str) -> String {
 
 /// Wait for a child process, killing it as soon as the cancel flag is raised.
 /// `Ok(None)` means it was cancelled rather than allowed to finish.
-fn wait_or_cancel(
+pub(crate) fn wait_or_cancel(
     child: &mut std::process::Child,
     cancel_flag: &AtomicBool,
 ) -> Result<Option<std::process::ExitStatus>, AppError> {
@@ -54,6 +54,25 @@ fn wait_or_cancel(
                 )));
             }
         }
+    }
+}
+
+/// A stretch of the source, in seconds from its start.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Window {
+    pub start_secs: f64,
+    pub length_secs: f64,
+}
+
+impl Window {
+    /// The input options that read only this stretch of the next input.
+    pub fn input_args(&self) -> [String; 4] {
+        [
+            "-ss".to_string(),
+            format!("{:.3}", self.start_secs),
+            "-t".to_string(),
+            format!("{:.3}", self.length_secs),
+        ]
     }
 }
 
@@ -152,13 +171,15 @@ fn vmaf_graph(
     )
 }
 
-/// Calculate VMAF score between original and encoded video. Honours
-/// `cancel_flag` as encoding does: the ffmpeg process is killed and its log
-/// file cleaned up.
-#[allow(clippy::too_many_lines)]
+/// Calculate VMAF score between original and encoded video. With `window`,
+/// only that stretch of the original is the reference. Honours `cancel_flag`
+/// as encoding does: the ffmpeg process is killed and its log file cleaned
+/// up.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub fn calculate_vmaf(
     original: &Path,
     encoded: &Path,
+    window: Option<&Window>,
     hdr_type: HdrType,
     width: u32,
     height: u32,
@@ -215,10 +236,12 @@ pub fn calculate_vmaf(
         .map_err(|e| AppError::Vmaf(format!("Failed to create VMAF log file: {e}")))?;
 
     let mut ffmpeg = Command::new("ffmpeg");
+    ffmpeg.args(["-nostdin", "-nostats"]);
+    if let Some(window) = window {
+        ffmpeg.args(window.input_args());
+    }
     ffmpeg
         .args([
-            "-nostdin",
-            "-nostats",
             "-i",
             &original.to_string_lossy(),
             "-i",
@@ -286,7 +309,7 @@ pub fn calculate_vmaf(
 mod tests {
     #[cfg(unix)]
     use super::wait_or_cancel;
-    use super::{VmafJson, VmafResult, escape_filter_value, vmaf_failure, vmaf_graph};
+    use super::{VmafJson, VmafResult, Window, escape_filter_value, vmaf_failure, vmaf_graph};
     use crate::analyzer::picture::{Crop, FieldTreatment, PictureFilter};
     #[cfg(unix)]
     use std::process::Stdio;
@@ -444,6 +467,15 @@ mod tests {
              [1:V]format=yuv420p10le,settb=1,setpts=N[dist];"
         ));
         assert!(!graph.contains("STARTPTS"));
+    }
+
+    #[test]
+    fn a_window_reads_its_stretch_to_the_millisecond() {
+        let window = Window {
+            start_secs: 125.5,
+            length_secs: 8.0,
+        };
+        assert_eq!(window.input_args(), ["-ss", "125.500", "-t", "8.000"]);
     }
 
     /// Option-level escapes are escaped again for the graph parser.

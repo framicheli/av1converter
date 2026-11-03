@@ -2852,6 +2852,16 @@ impl App {
                         job.status = JobStatus::Verifying;
                     }
                 }
+                WorkerMessage::Searching(idx, progress) => {
+                    if let Some(job) = self.queue.jobs.get_mut(idx) {
+                        job.status = JobStatus::Searching { progress };
+                    }
+                }
+                WorkerMessage::Crf(idx, value) => {
+                    if let Some(job) = self.queue.jobs.get_mut(idx) {
+                        job.crf = Some(value);
+                    }
+                }
                 WorkerMessage::DoneVmafFailed(idx, reason) => {
                     self.finish_job(idx, JobStatus::DoneVmafFailed { reason });
                 }
@@ -4624,6 +4634,34 @@ pub(crate) mod tests {
         assert!(!app.encoding_active);
         assert!(app.tui_lock.is_none());
         assert!(!path.exists());
+    }
+
+    /// The CRF search progress and each encode's CRF reach the TUI job, and
+    /// the encode's progress takes over from the search.
+    #[test]
+    fn the_crf_search_and_chosen_crf_reach_the_tui_job() {
+        let mut app = App::new();
+        let mut job = EncodingJob::new(PathBuf::from("film.mkv"));
+        job.status = JobStatus::Encoding { progress: 0.0 };
+        app.queue.jobs.push(job);
+        let (tx, rx) = mpsc::channel();
+        app.progress_receiver = Some(rx);
+
+        tx.send(WorkerMessage::Searching(0, 25.0)).unwrap();
+        app.process_progress_messages();
+        assert!(matches!(
+            app.queue.jobs[0].status,
+            JobStatus::Searching { progress } if (progress - 25.0).abs() < f64::EPSILON
+        ));
+
+        tx.send(WorkerMessage::Crf(0, 31)).unwrap();
+        tx.send(WorkerMessage::Progress(0, 5.0)).unwrap();
+        app.process_progress_messages();
+        assert_eq!(app.queue.jobs[0].crf, Some(31));
+        assert!(matches!(
+            app.queue.jobs[0].status,
+            JobStatus::Encoding { progress } if (progress - 5.0).abs() < f64::EPSILON
+        ));
     }
 
     #[test]

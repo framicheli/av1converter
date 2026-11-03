@@ -187,6 +187,17 @@ Presets are selected automatically based on resolution and HDR format. Classific
 
 The 4K VMAF models are used when the longer side is at least 3840 pixels (portrait 2160×3840 included); narrower 4K-tier sources use the 1080p models. Dolby Vision counts as HDR for model selection. VMAF scores every 10th frame (`n_subsample=10`).
 
+### Automatic CRF
+
+**CRF selection** in the settings (`crf_mode` in the configuration file) chooses how each encode's CRF is picked. **Fixed**, the default, uses the presets table above. **Automatic** searches for it before the encode:
+
+1. Short samples of the source are taken: the whole file when it is 30 seconds or shorter, otherwise one 10-second sample per ten minutes of running time, between two and five, spread evenly.
+2. The samples are encoded at a candidate value and scored with VMAF against the same stretch of the source, cropped and deinterlaced like the encode. A value passes when the samples' mean score is at least one point above `vmaf_threshold` and their worst frame meets it.
+3. The search starts at the presets-table value and bisects up to 12 values either side of it, keeping the highest value that passes, which gives the smallest file that still meets the threshold. It takes about five rounds of sample encodes.
+4. The whole file is encoded at that value and verified as usual. If the full output still misses the threshold, it is removed and encoded once more, 4 lower, and that result is verified and used. When no value in the range passed on the samples, the file is encoded once at the lowest value tried and not redone.
+
+The queue shows **Finding CRF...** with its progress during the search, and the CRF each encode uses appears on the queue row, on the Finish screen and in the web UI. A search that cannot run (for example when the source duration is unknown) falls back to the presets-table value. Automatic mode needs VMAF; with VMAF off, and for remuxes and tone-mapped Dolby Vision profile 5 encodes, the presets table is used.
+
 ## Encoder detection
 
 On first run (when no `config.toml` exists yet) the tool encodes one test frame with each hardware AV1 encoder, in this order, and picks the first that succeeds. A test encode that takes longer than 10 seconds counts as a failure. Change the encoder in Settings afterwards:

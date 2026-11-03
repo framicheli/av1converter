@@ -360,6 +360,7 @@ fn preserve_unreadable(path: &Path) -> Option<PathBuf> {
 /// - `Encoding` — the `.part` scratch file is deleted and the job re-queued to
 ///   encode from the start. The destination is untouched: the scratch file is
 ///   published to it only once the encode finishes.
+/// - `Searching` — re-queued; its samples live in the scratch directory.
 /// - `Verifying` with its output on disk — recorded as encoded-but-unverified.
 ///   Without its output, it is handled like `Encoding`.
 /// - `Analyzing`, and anything else unfinished — `Ready` when analyzed,
@@ -407,6 +408,7 @@ pub fn resume(queue: &mut PersistedQueue) {
                 };
             }
             JobStatus::Encoding { .. }
+            | JobStatus::Searching { .. }
             | JobStatus::Verifying
             | JobStatus::Analyzing
             | JobStatus::Pending
@@ -834,6 +836,33 @@ mod tests {
 
         assert!(matches!(queue.state.jobs[0].status, JobStatus::Ready));
         assert!(queue.state.jobs[0].temporary);
+    }
+
+    /// A job stopped during the CRF search is persisted without its
+    /// percentage and reloads ready to encode again, with the CRF it last
+    /// reported.
+    #[test]
+    fn a_job_stopped_during_the_crf_search_is_encoded_again() {
+        let mut job = EncodingJob::new(PathBuf::from("/movies/film.mkv"));
+        job.metadata = Some(meta());
+        job.source_identity = Some(source_identity());
+        job.status = JobStatus::Searching { progress: 40.0 };
+        job.crf = Some(27);
+        let saved = serde_json::to_value(&job).unwrap();
+        assert_eq!(saved["status"], serde_json::json!({"Searching": {}}));
+        let reloaded: EncodingJob = serde_json::from_value(saved).unwrap();
+        assert!(matches!(
+            reloaded.status,
+            JobStatus::Searching { progress } if progress == 0.0
+        ));
+        let mut state = QueueState::new();
+        state.jobs.push(reloaded);
+        let mut queue = persisted(state, vec![1], 2);
+
+        resume(&mut queue);
+
+        assert!(matches!(queue.state.jobs[0].status, JobStatus::Ready));
+        assert_eq!(queue.state.jobs[0].crf, Some(27));
     }
 
     /// A rip cut short by a restart records the failure and stops claiming its

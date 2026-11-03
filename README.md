@@ -34,6 +34,7 @@ AV1Converter is a single Rust binary that drives FFmpeg to re-encode whole folde
 | 🎯 **VMAF-verified**      | The source is deleted only when the output passes VMAF and nothing else was lost ([details](#when-is-the-source-deleted))                       |
 | 🌈 **HDR & Dolby Vision** | Keeps Dolby Vision as AV1 profile 10 or converts to HDR10; profile 5 is tone-mapped on the GPU ([details](docs/usage.md#dolby-vision-handling)) |
 | 🎚️ **Smart presets**      | Quality picked per resolution and HDR type, with Low, Medium, High or Custom presets ([details](docs/usage.md#encoding-presets))                |
+| 🔎 **Automatic CRF**      | Optionally searches each file's CRF on short samples against the VMAF threshold ([details](docs/usage.md#automatic-crf))                        |
 | 🔊 **Track control**      | Auto-selects audio and subtitles by preferred language, and picks up subtitle files next to the video                                           |
 | 🎵 **Opus audio**         | Copy audio untouched, or convert any track to Opus at its own channel layout ([details](docs/usage.md#audio-transcoding))                       |
 | 📦 **Remux mode**         | Repackage and strip tracks without re-encoding the video                                                                                        |

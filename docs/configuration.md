@@ -13,6 +13,7 @@ quality_preset = "medium"      # Quality preset: low, medium, high, custom (new 
 vmaf_threshold = 90.0          # Mean and min sampled-frame VMAF must both meet this (0–100; above 0 while delete_source_on_success is on)
 vmaf_enabled = true            # Enable/disable VMAF verification after encoding
 delete_source_on_success = false  # Delete source when mean and min VMAF both meet the threshold
+crf_mode = "fixed"             # fixed: the presets-table value; auto: search the CRF on samples against vmaf_threshold (needs vmaf_enabled)
 
 [performance]
 svt_preset = 4             # SVT-AV1 preset: 0 (slowest) – 13 (fastest)
@@ -60,6 +61,8 @@ behind_proxy = false       # Treat every web request as remote; set when a rever
 **Unreadable file.** If `config.toml` cannot be parsed it is left untouched and defaults are used for that run. Saving settings afterwards first copies the broken file to `config.toml.unreadable-<seconds since the epoch>`, so a second broken file never overwrites the first. `--install-service`, and `--start` when it has to generate an access token, refuse to run until the file is fixed or removed.
 
 **Quality presets.** Each resolution preset exposes per-encoder quality values (`crf`, `nvenc_cq`, `qsv_quality`, `amf_quality`). `film_grain` synthesis strength is SVT-AV1 only. `quality_preset` controls how those values are managed: `low`, `medium`, and `high` apply built-in values across every tier at once (the `[presets.*]` tables are rewritten whenever the configuration is loaded or saved), while `custom` leaves the complete preset matrix editable in either settings interface or the configuration file.
+
+**CRF selection.** With `crf_mode = "fixed"` every encode uses its tier's value from the presets table. With `"auto"`, that value is only the starting point of a sample search for the highest value that meets `vmaf_threshold` (see [Automatic CRF](usage.md#automatic-crf)). The search applies to whichever encoder is selected, through its own quality value (`crf`, `nvenc_cq`, `qsv_quality` or `amf_quality`). It needs VMAF: with `vmaf_enabled = false`, `auto` behaves like `fixed` and the TUI hides the row.
 
 **Output directory.** When `same_directory` is disabled, `output_directory` is required and must be an existing directory; a leading `~` is expanded. A saved directory that has since disappeared does not block saving other settings: the save goes through with a warning. In the web UI, a new or changed `output_directory` must exist and lie inside `browse_root` even while `same_directory` is on, since disc rips always write there; it cannot be cleared while ripped titles are waiting to encode.
 

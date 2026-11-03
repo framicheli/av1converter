@@ -201,6 +201,7 @@ pub enum Msg {
     StatusConfiguring,
     StatusReady,
     StatusVerifying,
+    StatusSearching,
     StatusDone,
     Elapsed,
     Eta,
@@ -304,6 +305,10 @@ pub enum Msg {
     CfgVmafThreshold,
     CfgVmafEnabled,
     CfgDeleteSource,
+    CfgCrfMode,
+    CrfModeFixed,
+    CrfModeAuto,
+    CrfModeHint,
     CfgSvtPreset,
     CfgNvencPreset,
     CfgQualityPreset,
@@ -1591,6 +1596,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Bereit",
             Zh => "就绪",
         },
+        Msg::StatusSearching => match lang {
+            En => "Finding CRF...",
+            It => "Ricerca del CRF...",
+            Es => "Buscando CRF...",
+            Fr => "Recherche du CRF...",
+            De => "CRF wird gesucht...",
+            Zh => "正在寻找 CRF...",
+        },
         Msg::StatusVerifying => match lang {
             En => "Verifying quality...",
             It => "Verifica qualità...",
@@ -2474,6 +2487,50 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Haute",
             De => "Hoch",
             Zh => "高",
+        },
+        Msg::CfgCrfMode => match lang {
+            En => "CRF Selection",
+            It => "Scelta del CRF",
+            Es => "Selección de CRF",
+            Fr => "Choix du CRF",
+            De => "CRF-Auswahl",
+            Zh => "CRF 选择",
+        },
+        Msg::CrfModeFixed => match lang {
+            En => "Fixed",
+            It => "Fisso",
+            Es => "Fijo",
+            Fr => "Fixe",
+            De => "Fest",
+            Zh => "固定",
+        },
+        Msg::CrfModeAuto => match lang {
+            En => "Automatic",
+            It => "Automatico",
+            Es => "Automático",
+            Fr => "Automatique",
+            De => "Automatisch",
+            Zh => "自动",
+        },
+        Msg::CrfModeHint => match lang {
+            En => {
+                "Automatic encodes short samples at several CRF values and keeps the highest one that meets the VMAF threshold. A full encode that still misses it is redone once at a lower CRF."
+            }
+            It => {
+                "Automatico codifica brevi campioni con diversi valori di CRF e sceglie il più alto che raggiunge la soglia VMAF. Una codifica completa che la manca viene rifatta una volta con un CRF più basso."
+            }
+            Es => {
+                "Automático codifica muestras cortas con varios valores de CRF y elige el más alto que alcanza el umbral VMAF. Una codificación completa que no lo alcanza se repite una vez con un CRF más bajo."
+            }
+            Fr => {
+                "Automatique encode de courts extraits à plusieurs valeurs de CRF et retient la plus haute qui atteint le seuil VMAF. Un encodage complet qui le manque est refait une fois avec un CRF plus bas."
+            }
+            De => {
+                "Automatisch kodiert kurze Ausschnitte mit mehreren CRF-Werten und wählt den höchsten, der die VMAF-Schwelle erreicht. Eine vollständige Kodierung, die sie verfehlt, wird einmal mit niedrigerem CRF wiederholt."
+            }
+            Zh => {
+                "自动模式会用多个 CRF 值编码短片段，并选择达到 VMAF 阈值的最高值。完整编码仍未达标时，会以更低的 CRF 重新编码一次。"
+            }
         },
         Msg::QpCustom => match lang {
             En => "Custom",
@@ -4327,6 +4384,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("badge_ready", Msg::StatusReady),
     ("badge_skipped", Msg::Skipped),
     ("badge_verifying", Msg::StatusVerifying),
+    ("status_searching", Msg::StatusSearching),
     ("badge_vmaf_failed", Msg::WebVmafFailed),
     ("cancel", Msg::Cancel),
     ("confirm", Msg::Confirm),
@@ -4359,6 +4417,10 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("cfg_audio_mode_copy", Msg::WebCfgAudioModeCopy),
     ("cfg_audio_mode_opus", Msg::WebCfgAudioModeOpus),
     ("cfg_delete_source", Msg::CfgDeleteSource),
+    ("cfg_crf_mode", Msg::CfgCrfMode),
+    ("crf_mode_fixed", Msg::CrfModeFixed),
+    ("crf_mode_auto", Msg::CrfModeAuto),
+    ("crf_mode_hint", Msg::CrfModeHint),
     ("cfg_daemon_auth_token", Msg::CfgDaemonAuthToken),
     (
         "cfg_daemon_allow_insecure_lan",

@@ -766,6 +766,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The CRF mode defaults to fixed, also in a file written before it
+    /// existed, saves and reloads as automatic, and an unknown value is
+    /// refused instead of read as fixed.
+    #[test]
+    fn the_crf_mode_round_trips_and_rejects_unknown_values() {
+        assert_eq!(AppConfig::default().quality.crf_mode, CrfMode::Fixed);
+        assert!(!AppConfig::default().quality.searches_crf());
+        let legacy: AppConfig = toml::from_str("[quality]\nvmaf_threshold = 92.0").unwrap();
+        assert_eq!(legacy.quality.crf_mode, CrfMode::Fixed);
+
+        let dir = std::env::temp_dir().join(format!("av1c_cfg_crf_mode_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.toml");
+        let mut cfg = AppConfig::default();
+        cfg.quality.crf_mode = CrfMode::Auto;
+        cfg.save_to_path(&path).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("crf_mode = \"auto\""), "{written}");
+        let reloaded = AppConfig::load_from_file(&path).unwrap();
+        assert_eq!(reloaded.quality.crf_mode, CrfMode::Auto);
+        assert!(reloaded.quality.searches_crf());
+
+        std::fs::write(
+            &path,
+            written.replace("crf_mode = \"auto\"", "crf_mode = \"smart\""),
+        )
+        .unwrap();
+        assert!(AppConfig::load_from_file(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn automatic_crf_does_not_search_with_vmaf_off() {
+        let mut quality = QualityConfig {
+            crf_mode: CrfMode::Auto,
+            ..QualityConfig::default()
+        };
+        assert!(quality.searches_crf());
+        quality.vmaf_enabled = false;
+        assert!(!quality.searches_crf());
+    }
+
+    #[test]
+    fn crf_modes_cycle_both_ways() {
+        assert_eq!(CrfMode::Fixed.next(), CrfMode::Auto);
+        assert_eq!(CrfMode::Auto.next(), CrfMode::Fixed);
+        assert_eq!(CrfMode::Fixed.prev(), CrfMode::Auto);
+        assert_eq!(CrfMode::Auto.prev(), CrfMode::Fixed);
+    }
+
     /// Reading without creating leaves no file behind.
     #[test]
     fn load_existing_does_not_create_a_config() {

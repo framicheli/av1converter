@@ -237,7 +237,7 @@ function setIndeterminate(name) {
 // Label shown beside the current-file bar, one per working status.
 const PHASE_KEY = {
   ripping: "status_ripping", analyzing: "badge_analyzing",
-  encoding: "status_encoding", verifying: "verifying_vmaf",
+  encoding: "status_encoding", searching: "status_searching", verifying: "verifying_vmaf",
 };
 
 // Poll updates leave unchanged text nodes intact.
@@ -326,6 +326,7 @@ async function poll() {
     const kind = s.current?.status.kind;
     const statusKey = kind === "ripping" ? "status_ripping"
       : kind === "verifying" ? "verifying_vmaf"
+      : kind === "searching" ? "status_searching"
       : kind === "encoding" || s.encoding_active ? "status_encoding"
       : s.counts.analyzing > 0 ? "badge_analyzing"
       // AwaitingConfig requires track confirmation before queue processing continues.
@@ -339,8 +340,8 @@ async function poll() {
     if (s.current) {
       const st = s.current.status;
       setText($("current-file"), s.current.filename);
-      // Encoding and ripping carry a percentage; the other phases do not.
-      if (st.kind === "encoding" || st.kind === "ripping") {
+      // Encoding, searching and ripping carry a percentage; the other phases do not.
+      if (st.kind === "encoding" || st.kind === "searching" || st.kind === "ripping") {
         const progress = Number(st.progress);
         setProgress("current", Number.isFinite(progress) ? progress : 0);
         setText($("current-pct"), Number.isFinite(progress) ? `${progress.toFixed(1)}%` : "");
@@ -518,7 +519,7 @@ function loadStrings() {
 
 const BADGE_CLASS = {
   pending: "", analyzing: "analyzing", awaiting_config: "warn", ready: "",
-  ripping: "encoding", encoding: "encoding", verifying: "verifying",
+  ripping: "encoding", encoding: "encoding", searching: "encoding", verifying: "verifying",
   done: "done", done_vmaf: "done", done_vmaf_failed: "warn",
   skipped: "", error: "error", quality_warning: "warn",
 };
@@ -549,6 +550,7 @@ function badgeText(st) {
   const pct = (value) => (Number.isFinite(num(value)) ? num(value).toFixed(1) : "?");
   switch (st.kind) {
     case "encoding": return `${tr("status_encoding")} ${pct(st.progress)}%`;
+    case "searching": return `${tr("status_searching")} ${pct(st.progress)}%`;
     case "ripping": return `${tr("status_ripping")} ${pct(st.progress)}%`;
     case "done_vmaf": return `${tr("badge_done")} · VMAF ${pct(st.vmaf)}`;
     case "done_vmaf_failed": return `${tr("badge_done")} · ${tr("badge_vmaf_failed")}`;
@@ -677,7 +679,7 @@ function createRow(job) {
       || !entry.canMoveUp));
     entry.remove.disabled = offline
       || entry.remove.getAttribute("aria-busy") === "true"
-      || ["encoding", "verifying", "ripping"].includes(entry.kind);
+      || ["encoding", "searching", "verifying", "ripping"].includes(entry.kind);
     entry.tracks.disabled = offline || !entry.tracksEditable;
     entry.confirm.disabled = offline;
   };
@@ -718,13 +720,13 @@ function updateRow(row, job) {
   else row.badge.removeAttribute("aria-describedby");
 
   // A rip fills the same bar as an encode: same shape of work, same row.
-  const live = ["encoding", "ripping"].includes(job.status.kind);
+  const live = ["encoding", "searching", "ripping"].includes(job.status.kind);
   row.bar.classList.toggle("hidden", !live);
   if (live) {
     row.bar.value = job.status.progress;
     row.bar.setAttribute(
       "aria-label",
-      `${job.status.kind === "ripping" ? tr("status_ripping") : tr("status_encoding")}: ${job.filename}`,
+      `${tr(PHASE_KEY[job.status.kind])}: ${job.filename}`,
     );
   }
 
@@ -1953,6 +1955,9 @@ const presets = () => [
   ["low", tr("qp_low")], ["medium", tr("qp_medium")],
   ["high", tr("qp_high")], ["custom", tr("qp_custom")],
 ];
+const crfModes = () => [
+  ["fixed", tr("crf_mode_fixed")], ["auto", tr("crf_mode_auto")],
+];
 const audioModes = () => [
   ["copy", tr("cfg_audio_mode_copy")], ["opus", tr("cfg_audio_mode_opus")],
 ];
@@ -1980,6 +1985,7 @@ function settingsFields(cfg) {
     { path: "quality.vmaf_enabled", label: tr("cfg_vmaf_enabled"), type: "checkbox", rebuild: true },
     { path: "quality.vmaf_threshold", label: tr("cfg_vmaf_threshold"), type: "number", min: 0, max: 100, step: "any", disabled: !cfg.quality.vmaf_enabled },
     { path: "quality.delete_source_on_success", label: tr("cfg_delete_source"), type: "checkbox", disabled: !cfg.quality.vmaf_enabled, warning: tr("delete_source_warning"), rebuild: true },
+    { path: "quality.crf_mode", label: tr("cfg_crf_mode"), type: "select", options: crfModes(), disabled: !cfg.quality.vmaf_enabled, hint: tr("crf_mode_hint") },
     { group: tr("group_performance") },
     { path: "performance.svt_preset", label: tr("cfg_svt_preset"), type: "number", min: 0, max: 13 },
     { path: "performance.nvenc_preset", label: tr("cfg_nvenc_preset"), type: "select", options: NVENC_PRESETS },
