@@ -6,6 +6,7 @@
 
 - Optional cropping of black bars and deinterlacing, aimed at DVD rips, in a new Picture section of the TUI and web settings. Every option is off by default. **Crop black bars** samples the video at eight points and crops to the area any sample showed as picture. **Deinterlace** detects interlaced video and deinterlaces it with `bwdif`. **Inverse telecine** restores the original film frames of telecined NTSC DVDs instead of deinterlacing them. **Crop/deinterlace disc rips only** limits all of this to titles ripped from a disc. VMAF scores the output against the source cropped and deinterlaced the same way.
 - A cropped or deinterlaced output keeps its source, even after a passing VMAF score, unless **Delete cropped/deinterlaced sources** is turned on. VMAF cannot show that the crop or deinterlace itself was right. Encodes that keep Dolby Vision are never cropped or deinterlaced.
+- Both UIs show what was applied to each file, such as "cropped to 720×432, deinterlaced". It appears on the queue row from the start of the encode, and on the Finish screen.
 
 ### Fixed
 

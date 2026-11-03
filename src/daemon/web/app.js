@@ -690,6 +690,7 @@ function updateRow(row, job) {
   setText(row.sub, [
     job.crf != null ? `CRF ${job.crf}` : "",
     job.remux_only ? tr("tag_remux") : "",
+    job.picture || "",
     job.source_deleted ? tr("tag_source_deleted") : "",
     job.source_kept_vmaf != null || job.source_kept_reason ? tr("tag_source_kept") : "",
   ].filter(Boolean).join(" · "));

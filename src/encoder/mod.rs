@@ -238,7 +238,8 @@ fn record_and_delete(
 }
 
 /// Orchestrate the full encoding pipeline: encode -> verify. `disc_rip` is
-/// whether the source was ripped from a disc.
+/// whether the source was ripped from a disc. `on_picture` receives the crop
+/// and deinterlace filter before the encode starts.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn run_encoding_pipeline(
     input: &str,
@@ -253,6 +254,7 @@ pub fn run_encoding_pipeline(
     config: &AppConfig,
     progress_callback: Option<ProgressCallback>,
     cancel_flag: &AtomicBool,
+    on_picture: Option<Box<dyn FnOnce(PictureFilter) + Send>>,
     on_before_vmaf: Option<Box<dyn FnOnce() + Send>>,
 ) -> FullEncodeResult {
     if !expected_source.matches_path(input) {
@@ -309,6 +311,9 @@ pub fn run_encoding_pipeline(
         Ok(filter) => params.picture = filter,
         Err(AppError::Cancelled) => return FullEncodeResult::Cancelled,
         Err(e) => warn!("Encoding without cropping or deinterlacing: {e}"),
+    }
+    if let Some(cb) = on_picture {
+        cb(params.picture);
     }
 
     // Total frame count for frame-based progress fallback (some sources, e.g.

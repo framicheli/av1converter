@@ -2870,6 +2870,11 @@ impl App {
                         job.source_kept_reason = Some(reason);
                     }
                 }
+                WorkerMessage::Picture(idx, filter) => {
+                    if let Some(job) = self.queue.jobs.get_mut(idx) {
+                        job.set_picture(filter);
+                    }
+                }
                 WorkerMessage::Cancelled => {
                     for &index in &self.encoding_session_indices {
                         if let Some(job) = self.queue.jobs.get_mut(index)
@@ -4619,6 +4624,28 @@ pub(crate) mod tests {
         assert!(!app.encoding_active);
         assert!(app.tui_lock.is_none());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn the_picture_processing_reaches_the_tui_job() {
+        use crate::analyzer::picture::{FieldTreatment, PictureFilter};
+        let mut app = App::new();
+        let mut job = EncodingJob::new(PathBuf::from("dvd.mkv"));
+        job.status = JobStatus::Encoding { progress: 0.0 };
+        app.queue.jobs.push(job);
+        let (tx, rx) = mpsc::channel();
+        app.progress_receiver = Some(rx);
+        let filter = PictureFilter {
+            crop: None,
+            fields: FieldTreatment::Deinterlace {
+                top_field_first: true,
+            },
+        };
+        tx.send(WorkerMessage::Picture(0, filter)).unwrap();
+
+        app.process_progress_messages();
+
+        assert_eq!(app.queue.jobs[0].picture, Some(filter));
     }
 
     #[test]

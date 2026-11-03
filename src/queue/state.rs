@@ -608,6 +608,18 @@ mod tests {
         done.source_size = Some(1000);
         done.output_size = Some(400);
         done.source_kept_reason = Some(crate::encoder::KeepReason::AudioTranscoded);
+        let picture = crate::analyzer::picture::PictureFilter {
+            crop: Some(crate::analyzer::picture::Crop {
+                width: 720,
+                height: 432,
+                x: 0,
+                y: 24,
+            }),
+            fields: crate::analyzer::picture::FieldTreatment::Deinterlace {
+                top_field_first: false,
+            },
+        };
+        done.set_picture(picture);
         state.jobs.push(done);
         state.cleared_saved_bytes = 777;
         state.converted_count = 7;
@@ -654,11 +666,21 @@ mod tests {
             Some(crate::encoder::KeepReason::AudioTranscoded)
         );
 
-        // A queue written before the keep reason existed still loads.
+        assert_eq!(back.state.jobs[1].picture, Some(picture));
+
+        // A queue written before the keep reason and the picture record
+        // existed still loads.
         let mut older = serde_json::to_value(&back.state.jobs[1]).unwrap();
         older.as_object_mut().unwrap().remove("source_kept_reason");
+        older.as_object_mut().unwrap().remove("picture");
         let older: EncodingJob = serde_json::from_value(older).unwrap();
         assert_eq!(older.source_kept_reason, None);
+        assert_eq!(older.picture, None);
+
+        // A malformed picture record is refused, not read as no processing.
+        let mut corrupt = serde_json::to_value(&back.state.jobs[1]).unwrap();
+        corrupt["picture"]["fields"] = serde_json::json!("Sideways");
+        assert!(serde_json::from_value::<EncodingJob>(corrupt).is_err());
 
         // And resuming leaves settled jobs alone.
         resume(&mut back);

@@ -740,6 +740,7 @@ fn run_deleting_pipeline(
         &config,
         None,
         cancel,
+        None,
         Some(Box::new(move || on_before_vmaf(&hook_input, &hook_output))),
     );
     Some((result, input, output))
@@ -1085,7 +1086,12 @@ fn run_picture_pipeline(
     filter: &str,
     flags: &[&str],
     video: crate::config::VideoConfig,
-) -> (super::FullEncodeResult, PathBuf, PathBuf) {
+) -> (
+    super::FullEncodeResult,
+    PathBuf,
+    PathBuf,
+    Option<crate::analyzer::picture::PictureFilter>,
+) {
     let dir = std::env::temp_dir().join(format!("av1c_e2e_pic_{name}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1107,6 +1113,8 @@ fn run_picture_pipeline(
     metadata.frame_rate_num = num.parse().unwrap();
     metadata.frame_rate_den = den.parse().unwrap();
     let identity = crate::queue::SourceIdentity::from_path(&input).unwrap();
+    let reported = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let reported_into = std::sync::Arc::clone(&reported);
     let result = super::run_encoding_pipeline(
         input.to_str().unwrap(),
         output.to_str().unwrap(),
@@ -1120,15 +1128,25 @@ fn run_picture_pipeline(
         &config,
         None,
         &cancel,
+        Some(Box::new(move |filter| {
+            *reported_into.lock().unwrap() = Some(filter);
+        })),
         None,
     );
-    (result, input, output)
+    let reported = *reported.lock().unwrap();
+    (result, input, output, reported)
 }
 
 const LETTERBOX: &str = "scale=320:160,pad=320:240:0:40";
 const INTERLACE: &str = "interlace=scan=tff,setfield=tff";
 const TELECINE: &str = "telecine=first_field=top:pattern=23";
 const INTERLACED_FLAGS: &[&str] = &["-flags", "+ildct+ilme"];
+const LETTERBOX_CROP: crate::analyzer::picture::Crop = crate::analyzer::picture::Crop {
+    width: 320,
+    height: 160,
+    x: 0,
+    y: 40,
+};
 
 /// Black bars are found on a real clip, cropped away, and the crop is scored
 /// against a reference cropped the same way; deletion is allowed here.
@@ -1143,7 +1161,9 @@ fn a_letterboxed_source_is_cropped_and_may_be_deleted_when_allowed() {
         delete_processed_source: true,
         ..crate::config::VideoConfig::default()
     };
-    let (result, input, output) = run_picture_pipeline("crop", "24", LETTERBOX, &[], video);
+    let (result, input, output, reported) =
+        run_picture_pipeline("crop", "24", LETTERBOX, &[], video);
+    assert_eq!(reported.and_then(|p| p.crop), Some(LETTERBOX_CROP));
     assert!(
         matches!(
             result,
@@ -1171,7 +1191,7 @@ fn a_cropped_output_keeps_its_source_by_default() {
         crop: true,
         ..crate::config::VideoConfig::default()
     };
-    let (result, input, output) = run_picture_pipeline("crop_keep", "24", LETTERBOX, &[], video);
+    let (result, input, output, _) = run_picture_pipeline("crop_keep", "24", LETTERBOX, &[], video);
     assert!(
         matches!(
             result,
@@ -1195,7 +1215,7 @@ fn a_letterboxed_source_is_left_whole_when_cropping_is_off() {
         eprintln!("skipping: this FFmpeg cannot build the fixture, encode AV1 or score VMAF");
         return;
     }
-    let (result, input, output) = run_picture_pipeline(
+    let (result, input, output, reported) = run_picture_pipeline(
         "crop_off",
         "24",
         LETTERBOX,
@@ -1215,6 +1235,10 @@ fn a_letterboxed_source_is_left_whole_when_cropping_is_off() {
     );
     assert!(!input.exists());
     assert_eq!(probe(&output, "stream=width,height"), vec!["320,240"]);
+    assert_eq!(
+        reported,
+        Some(crate::analyzer::picture::PictureFilter::default())
+    );
     let _ = std::fs::remove_dir_all(output.parent().unwrap());
 }
 
@@ -1230,8 +1254,14 @@ fn an_interlaced_source_is_deinterlaced_frame_for_frame_and_passes_vmaf() {
         deinterlace: true,
         ..crate::config::VideoConfig::default()
     };
-    let (result, input, output) =
+    let (result, input, output, reported) =
         run_picture_pipeline("deint", "50", INTERLACE, INTERLACED_FLAGS, video);
+    assert_eq!(
+        reported.map(|p| p.fields),
+        Some(crate::analyzer::picture::FieldTreatment::Deinterlace {
+            top_field_first: true
+        })
+    );
     assert!(
         matches!(
             result,
@@ -1259,8 +1289,12 @@ fn a_telecined_source_is_inverse_telecined_and_verified() {
         inverse_telecine: true,
         ..crate::config::VideoConfig::default()
     };
-    let (result, input, output) =
+    let (result, input, output, reported) =
         run_picture_pipeline("ivtc", "24000/1001", TELECINE, INTERLACED_FLAGS, video);
+    assert_eq!(
+        reported.map(|p| p.fields),
+        Some(crate::analyzer::picture::FieldTreatment::InverseTelecine)
+    );
     assert!(
         matches!(
             result,

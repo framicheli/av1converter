@@ -79,7 +79,7 @@ DVDs are often interlaced or telecined, and many films carry black bars. The `[v
 - **Inverse telecine** (`inverse_telecine`, needs `deinterlace`) treats video with the repeated fields of 3:2 pulldown as telecined film. Instead of deinterlacing it, `fieldmatch` and `decimate` restore the original 23.976 fps frames.
 - **Crop/deinterlace disc rips only** (`disc_rips_only`) applies all of the above only to titles ripped from a disc.
 
-Detection runs when each encode starts. Remuxes, encodes that keep Dolby Vision, and tone-mapped profile 5 encodes are never cropped or deinterlaced. If detection fails, the file is encoded unchanged and the log says why.
+Detection runs when each encode starts. Its result, such as "cropped to 720×432, deinterlaced" or "inverse telecined", is shown on the job's queue row in the TUI and the web UI, and on the TUI Finish screen. Remuxes, encodes that keep Dolby Vision, and tone-mapped profile 5 encodes are never cropped or deinterlaced. If detection fails, the file is encoded unchanged and the log says why.
 
 VMAF scores the output against the source cropped and deinterlaced in exactly the same way. After inverse telecine, frames are paired by position, since the dropped frames change the timestamps. A passing score shows that the encode matches the processed picture. It cannot show that the crop or deinterlace itself was right, so such a source is kept unless `delete_processed_source` is on (see [Source deletion](#source-deletion)).
 

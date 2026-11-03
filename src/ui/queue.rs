@@ -170,7 +170,7 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
             let is_current = i == app.queue.current_job_index && app.encoding_active;
             let is_cursor = i == app.queue_cursor;
             create_queue_item(
-                &job.filename(),
+                &queue_item_name(job, lang),
                 &job.status,
                 is_current,
                 is_cursor,
@@ -390,6 +390,15 @@ pub fn render_queue(f: &mut Frame, app: &mut App) {
     f.render_widget(help, chunks[4]);
 }
 
+/// The file name of a queue row, followed by the crop and deinterlace its
+/// encode applies.
+fn queue_item_name(job: &crate::queue::EncodingJob, lang: Language) -> String {
+    match job.picture.and_then(|picture| picture.summary(lang)) {
+        Some(picture) => format!("{} [{picture}]", job.filename()),
+        None => job.filename(),
+    }
+}
+
 fn create_queue_item(
     name: &str,
     status: &JobStatus,
@@ -500,5 +509,29 @@ fn create_queue_item(
                 ),
             ]))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::queue_item_name;
+    use crate::analyzer::picture::{FieldTreatment, PictureFilter};
+    use crate::i18n::Language;
+    use crate::queue::EncodingJob;
+
+    #[test]
+    fn a_queue_row_names_the_picture_processing_of_its_encode() {
+        let mut job = EncodingJob::new(std::path::PathBuf::from("/nonexistent/TITLE_t01.mkv"));
+        assert_eq!(queue_item_name(&job, Language::English), "TITLE_t01.mkv");
+        job.set_picture(PictureFilter {
+            crop: None,
+            fields: FieldTreatment::InverseTelecine,
+        });
+        assert_eq!(
+            queue_item_name(&job, Language::English),
+            "TITLE_t01.mkv [inverse telecined]"
+        );
+        job.set_picture(PictureFilter::default());
+        assert_eq!(queue_item_name(&job, Language::English), "TITLE_t01.mkv");
     }
 }

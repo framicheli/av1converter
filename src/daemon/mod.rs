@@ -1099,6 +1099,11 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
                 job.source_kept_reason = Some(reason);
             }
         }
+        WorkerMessage::Picture(idx, filter) => {
+            if let Some(job) = id_for(idx).and_then(|id| state.queue.job_by_id_mut(id)) {
+                job.set_picture(filter);
+            }
+        }
         // A daemon stop leaves session jobs as they are; `queue::state::resume`
         // settles them on the next start.
         WorkerMessage::Cancelled if state.shutting_down.load(Ordering::SeqCst) => {}
@@ -1314,6 +1319,45 @@ mod tests {
         let _ = child.wait();
         drop(guard);
         assert!(killed, "the sleeping child outlived the failed startup");
+    }
+
+    /// The detected crop and deinterlace reach the job and the queue rows the
+    /// web UI reads; a later encode that applies none clears them.
+    #[test]
+    fn the_picture_processing_reaches_the_queue_rows() {
+        use crate::analyzer::picture::{Crop, FieldTreatment, PictureFilter};
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut job = EncodingJob::new(std::path::PathBuf::from("dvd.mkv"));
+        job.status = JobStatus::Encoding { progress: 0.0 };
+        let id = state.queue.push(job);
+        state.session = Some(EncodeSession {
+            job_ids: vec![id],
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        });
+        state.encoding_active = true;
+        let shared = Arc::new(Mutex::new(state));
+        let filter = PictureFilter {
+            crop: Some(Crop {
+                width: 704,
+                height: 480,
+                x: 8,
+                y: 0,
+            }),
+            fields: FieldTreatment::InverseTelecine,
+        };
+
+        apply_worker_message(&shared, WorkerMessage::Picture(0, filter));
+
+        assert_eq!(lock(&shared).queue.state.jobs[0].picture, Some(filter));
+        assert_eq!(
+            crate::daemon::api::queue(&shared)["jobs"][0]["picture"],
+            "cropped to 704×480, inverse telecined"
+        );
+
+        apply_worker_message(&shared, WorkerMessage::Picture(0, PictureFilter::default()));
+
+        assert_eq!(lock(&shared).queue.state.jobs[0].picture, None);
+        assert!(crate::daemon::api::queue(&shared)["jobs"][0]["picture"].is_null());
     }
 
     /// A kept source with a reason reaches the queue rows the web UI reads.

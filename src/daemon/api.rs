@@ -270,6 +270,9 @@ pub fn queue(shared: &SharedState) -> Value {
                 "source_kept_reason": job
                     .source_kept_reason
                     .map(|reason| crate::i18n::t(state.config.language, reason.msg())),
+                "picture": job
+                    .picture
+                    .and_then(|picture| picture.summary(state.config.language)),
                 "output_name": job
                     .output_path
                     .as_ref()

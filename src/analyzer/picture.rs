@@ -26,7 +26,7 @@ const TELECINE_PERCENT: u64 = 15;
 const MIN_DETERMINED_FRAMES: u64 = 30;
 
 /// A crop rectangle in source pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Crop {
     pub width: u32,
     pub height: u32,
@@ -35,7 +35,7 @@ pub struct Crop {
 }
 
 /// How the fields of a source are turned into progressive frames.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum FieldTreatment {
     /// The frames pass through unchanged.
     #[default]
@@ -48,7 +48,7 @@ pub enum FieldTreatment {
 }
 
 /// The picture processing applied to one job.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct PictureFilter {
     pub crop: Option<Crop>,
     pub fields: FieldTreatment,
@@ -83,6 +83,30 @@ impl PictureFilter {
             ));
         }
         (!filters.is_empty()).then(|| filters.join(","))
+    }
+
+    /// The processing in `lang`, such as "cropped to 720×432, deinterlaced".
+    /// `None` when the filter changes nothing.
+    pub fn summary(&self, lang: crate::i18n::Language) -> Option<String> {
+        use crate::i18n::{Msg, t};
+        let mut parts = Vec::new();
+        if let Some(crop) = self.crop {
+            parts.push(
+                t(lang, Msg::PictureCropped)
+                    .replace("{width}", &crop.width.to_string())
+                    .replace("{height}", &crop.height.to_string()),
+            );
+        }
+        match self.fields {
+            FieldTreatment::None => {}
+            FieldTreatment::Deinterlace { .. } => {
+                parts.push(t(lang, Msg::PictureDeinterlaced).to_string());
+            }
+            FieldTreatment::InverseTelecine => {
+                parts.push(t(lang, Msg::PictureInverseTelecined).to_string());
+            }
+        }
+        (!parts.is_empty()).then(|| parts.join(", "))
     }
 
     /// A one-line English description for the log.
@@ -419,6 +443,39 @@ mod tests {
         let filter = PictureFilter::default();
         assert_eq!(filter.chain(), None);
         assert!(!filter.drops_frames());
+    }
+
+    #[test]
+    fn the_summary_names_the_crop_size_and_the_field_treatment() {
+        use crate::i18n::Language;
+        let filter = PictureFilter {
+            crop: Some(Crop {
+                width: 720,
+                height: 432,
+                x: 0,
+                y: 24,
+            }),
+            fields: FieldTreatment::Deinterlace {
+                top_field_first: true,
+            },
+        };
+        assert_eq!(
+            filter.summary(Language::English).as_deref(),
+            Some("cropped to 720×432, deinterlaced")
+        );
+        let ivtc = PictureFilter {
+            crop: None,
+            fields: FieldTreatment::InverseTelecine,
+        };
+        assert_eq!(
+            ivtc.summary(Language::English).as_deref(),
+            Some("inverse telecined")
+        );
+        assert_eq!(
+            ivtc.summary(Language::Italian).as_deref(),
+            Some("telecine inverso applicato")
+        );
+        assert_eq!(PictureFilter::default().summary(Language::English), None);
     }
 
     #[test]

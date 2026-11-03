@@ -1,3 +1,4 @@
+use crate::analyzer::picture::PictureFilter;
 use crate::analyzer::{DvMode, VideoMetadata};
 use crate::config::AppConfig;
 use crate::encoder::{self, FullEncodeResult, KeepReason};
@@ -37,6 +38,8 @@ pub enum WorkerMessage {
     SourceKeptLowVmaf(usize, f64, f64),
     /// Source file was kept although VMAF met the threshold
     SourceKept(usize, KeepReason),
+    /// The crop and deinterlace the encode applies, sent before it starts
+    Picture(usize, PictureFilter),
 }
 
 /// Data needed by the worker thread for one job
@@ -96,6 +99,7 @@ pub fn run_worker(
         let input_str = input_str.to_string();
         let output_str = output_str.to_string();
 
+        let tx_picture = tx.clone();
         let tx_verifying = tx.clone();
         let verifying_idx = job.index;
 
@@ -116,6 +120,9 @@ pub fn run_worker(
                     let _ = tx_progress.send(WorkerMessage::Progress(idx, progress));
                 })),
                 cancel_flag.as_ref(),
+                Some(Box::new(move |picture| {
+                    let _ = tx_picture.send(WorkerMessage::Picture(idx, picture));
+                })),
                 Some(Box::new(move || {
                     let _ = tx_verifying.send(WorkerMessage::Verifying(verifying_idx));
                 })),

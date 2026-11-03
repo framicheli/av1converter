@@ -219,6 +219,10 @@ pub struct EncodingJob {
     /// queue file that does not carry the field.
     #[serde(default)]
     pub source_kept_reason: Option<crate::encoder::KeepReason>,
+    /// The crop and deinterlace applied by the last encode. `None` when it
+    /// applied none, and in a queue file that does not carry the field.
+    #[serde(default)]
+    pub picture: Option<crate::analyzer::picture::PictureFilter>,
     pub remux_only: bool,
     /// Dolby Vision handling; `None` until the user has chosen (DV sources only)
     pub dv_mode: Option<DvMode>,
@@ -247,10 +251,17 @@ impl EncodingJob {
             source_deleted: false,
             source_kept_vmaf: None,
             source_kept_reason: None,
+            picture: None,
             remux_only: false,
             dv_mode: None,
             temporary: false,
         }
+    }
+
+    /// Record the crop and deinterlace an encode applies; a filter that
+    /// changes nothing clears the record.
+    pub fn set_picture(&mut self, filter: crate::analyzer::picture::PictureFilter) {
+        self.picture = filter.chain().is_some().then_some(filter);
     }
 
     /// Get the filename
