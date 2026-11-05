@@ -229,8 +229,9 @@ impl RemoteSnapshot {
             let Some(reported) = self.progress.iter().find(|p| p.id == *id) else {
                 continue;
             };
-            if let JobStatus::Encoding { progress } | JobStatus::Ripping { progress } =
-                &mut job.status
+            if let JobStatus::Encoding { progress }
+            | JobStatus::Searching { progress }
+            | JobStatus::Ripping { progress } = &mut job.status
             {
                 *progress = reported.progress;
             }

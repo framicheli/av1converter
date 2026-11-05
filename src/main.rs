@@ -20,7 +20,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend, widgets::Clear};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -730,6 +730,9 @@ fn main() -> io::Result<()> {
 
     // Create app and run
     let mut app = create_app(config, attach);
+    if io::stdout().is_terminal() {
+        spawn_terminal_watch(app.is_attached());
+    }
     let res = run_app(&mut terminal, &mut app);
     if res.is_err() {
         shutdown_after_error(&app);
@@ -740,6 +743,34 @@ fn main() -> io::Result<()> {
     let restore = restore_terminal();
     res?;
     restore
+}
+
+/// Interval between checks that the TUI's terminal is still open.
+const TERMINAL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Exit status of a TUI whose terminal closed, matching a process ended by
+/// SIGHUP.
+const TERMINAL_LOST_EXIT_STATUS: i32 = 129;
+
+/// Starts a thread that ends the process once stdout stops being a terminal.
+/// A local app's tracked ffmpeg/makemkvcon children are killed first; an
+/// attached app leaves the daemon's work running.
+fn spawn_terminal_watch(attached: bool) {
+    std::thread::spawn(move || {
+        wait_for_terminal_loss(|| io::stdout().is_terminal(), TERMINAL_CHECK_INTERVAL);
+        tracing::info!("Terminal closed, exiting");
+        if !attached {
+            utils::child::kill_all();
+        }
+        std::process::exit(TERMINAL_LOST_EXIT_STATUS);
+    });
+}
+
+/// Returns once `is_terminal` reports false, checking every `interval`.
+fn wait_for_terminal_loss(is_terminal: impl Fn() -> bool, interval: Duration) {
+    while is_terminal() {
+        std::thread::sleep(interval);
+    }
 }
 
 /// The app attached to the daemon at `attach`, or a local one.
@@ -1851,6 +1882,13 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
             app.config.quality.delete_source_on_success =
                 !app.config.quality.delete_source_on_success;
         }
+        ConfigField::CrfMode => {
+            app.config.quality.crf_mode = if increase {
+                app.config.quality.crf_mode.next()
+            } else {
+                app.config.quality.crf_mode.prev()
+            };
+        }
         ConfigField::SvtPreset => {
             if increase {
                 app.config.performance.svt_preset =
@@ -1922,6 +1960,24 @@ fn adjust_config_value(app: &mut App, index: usize, increase: bool) {
         }
         ConfigField::SkipAlreadyOpus => {
             app.config.audio.skip_already_opus = !app.config.audio.skip_already_opus;
+        }
+        ConfigField::VideoCrop => {
+            app.config.video.crop = !app.config.video.crop;
+        }
+        ConfigField::VideoDeinterlace => {
+            app.config.video.deinterlace = !app.config.video.deinterlace;
+        }
+        ConfigField::VideoInverseTelecine => {
+            app.config.video.inverse_telecine = !app.config.video.inverse_telecine;
+        }
+        ConfigField::VideoDiscRipsOnly => {
+            app.config.video.disc_rips_only = !app.config.video.disc_rips_only;
+        }
+        ConfigField::VideoDeleteProcessedSource => {
+            app.config.video.delete_processed_source = !app.config.video.delete_processed_source;
+        }
+        ConfigField::VideoDeleteHdr10PlusSource => {
+            app.config.video.delete_hdr10plus_source = !app.config.video.delete_hdr10plus_source;
         }
         ConfigField::SelectAllFallback => {
             app.config.tracks.select_all_fallback = !app.config.tracks.select_all_fallback;
@@ -2380,6 +2436,19 @@ mod tests {
     }
 
     #[test]
+    fn the_terminal_watch_returns_on_the_first_check_without_a_terminal() {
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let is_terminal = || {
+            let n = checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            n < 2
+        };
+
+        wait_for_terminal_loss(is_terminal, Duration::ZERO);
+
+        assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[test]
     fn quitting_an_idle_attached_app_still_asks() {
         let (mut app, _sent, _events) = app::tests::attached_app();
         for job in &mut app.queue.jobs {
@@ -2773,6 +2842,7 @@ mod tests {
             dv_profile: Some(8),
             dv_bl_compat: Some(1),
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "hevc".into(),
             frame_rate_num: 24,
             frame_rate_den: 1,

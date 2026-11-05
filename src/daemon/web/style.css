@@ -315,6 +315,7 @@ td.grew { color: var(--warn); }
 .field input:invalid { border-color: var(--bad); }
 .field input:disabled, .field select:disabled { opacity: 0.55; cursor: not-allowed; }
 .field-warning { grid-column: 2; color: var(--warn); font-size: 11px; max-width: 70ch; }
+.track-warning { color: var(--warn); font-size: 12px; padding: 4px 0; }
 fieldset.field-group {
   border: 0;
   display: grid;

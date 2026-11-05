@@ -81,6 +81,7 @@ fn metadata_for(path: &Path) -> VideoMetadata {
         dv_profile: None,
         dv_bl_compat: None,
         hdr10_static: None,
+        hdr10_plus: false,
         codec_name: "h264".to_string(),
         frame_rate_num: 24,
         frame_rate_den: 1,
@@ -222,7 +223,8 @@ fn sidecar_subtitles_are_muxed_into_the_output() {
             "clip.fr.vtt",
             "WEBVTT\n\n00:00:00.000 --> 00:00:00.500\nBonjour\n",
         ),
-        ("clip.de.sub", "{0}{12}Hallo\n"),
+        // FFmpeg 9 detects MicroDVD from three cue lines.
+        ("clip.de.sub", "{0}{4}Hallo\n{5}{8}und\n{9}{12}Tschüss\n"),
     ];
     for (name, text) in sidecars {
         std::fs::write(dir.join(name), text).unwrap();
@@ -698,7 +700,7 @@ fn run_deleting_pipeline(
     name: &str,
     threshold: f64,
     cancel: &std::sync::Arc<AtomicBool>,
-    on_before_vmaf: impl FnOnce(&Path, &Path) + Send + 'static,
+    mut on_before_vmaf: impl FnMut(&Path, &Path) + Send + 'static,
 ) -> Option<(super::FullEncodeResult, PathBuf, PathBuf)> {
     if !(DependencyStatus::check()
         && DependencyStatus::encoder_available("libsvtav1")
@@ -735,10 +737,13 @@ fn run_deleting_pipeline(
         DvMode::ToHdr10,
         false,
         Vec::new(),
+        false,
         &config,
-        None,
+        super::PipelineHooks {
+            before_vmaf: Some(Box::new(move || on_before_vmaf(&hook_input, &hook_output))),
+            ..super::PipelineHooks::default()
+        },
         cancel,
-        Some(Box::new(move || on_before_vmaf(&hook_input, &hook_output))),
     );
     Some((result, input, output))
 }
@@ -1014,5 +1019,982 @@ fn unsaved_tui_settings_do_not_reach_the_encode() {
         app.queue.jobs[0].status
     );
     assert!(input.exists(), "an unsaved setting deleted the source");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A four-second `testsrc2` clip passed through `filter` and encoded with
+/// libx264 at near-lossless quality with `flags`.
+fn make_picture_fixture(dir: &Path, rate: &str, filter: &str, flags: &[&str]) -> PathBuf {
+    let path = dir.join("picture.mkv");
+    let built = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+        ])
+        .arg(format!("testsrc2=size=320x240:rate={rate}:duration=4"))
+        .args([
+            "-vf", filter, "-c:v", "libx264", "-crf", "8", "-pix_fmt", "yuv420p",
+        ])
+        .args(flags)
+        .arg(&path)
+        .status()
+        .is_ok_and(|status| status.success());
+    assert!(built, "ffmpeg builds the picture fixture with libx264");
+    path
+}
+
+/// The number of video frames in `path`.
+fn frame_count(path: &Path) -> u64 {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-count_frames",
+            "-select_streams",
+            "V:0",
+            "-show_entries",
+            "stream=nb_read_frames",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .expect("ffprobe runs");
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .expect("ffprobe counts the frames")
+}
+
+/// Whether this machine can build the picture fixtures, encode AV1 and score
+/// VMAF.
+fn can_run_picture_pipeline() -> bool {
+    DependencyStatus::check()
+        && DependencyStatus::encoder_available("libsvtav1")
+        && DependencyStatus::encoder_available("libx264")
+        && DependencyStatus::vmaf_available()
+}
+
+/// Runs the full pipeline with source deletion on and `video` as the picture
+/// settings, on a fixture built by [`make_picture_fixture`].
+fn run_picture_pipeline(
+    name: &str,
+    rate: &str,
+    filter: &str,
+    flags: &[&str],
+    video: crate::config::VideoConfig,
+) -> (
+    super::FullEncodeResult,
+    PathBuf,
+    PathBuf,
+    Option<crate::analyzer::picture::PictureFilter>,
+) {
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_pic_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = make_picture_fixture(&dir, rate, filter, flags);
+    let output = dir.join("out.mkv");
+    let mut config = AppConfig {
+        encoder: Encoder::SvtAv1,
+        video,
+        ..AppConfig::default()
+    };
+    config.performance.svt_preset = 12;
+    config.quality.vmaf_enabled = true;
+    config.quality.vmaf_threshold = 70.0;
+    config.quality.delete_source_on_success = true;
+
+    let cancel = AtomicBool::new(false);
+    let mut metadata = metadata_for(&input);
+    let (num, den) = rate.split_once('/').unwrap_or((rate, "1"));
+    metadata.frame_rate_num = num.parse().unwrap();
+    metadata.frame_rate_den = den.parse().unwrap();
+    let identity = crate::queue::SourceIdentity::from_path(&input).unwrap();
+    let reported = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let reported_into = std::sync::Arc::clone(&reported);
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        &identity,
+        &metadata,
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        false,
+        Vec::new(),
+        true,
+        &config,
+        super::PipelineHooks {
+            picture: Some(Box::new(move |filter| {
+                *reported_into.lock().unwrap() = Some(filter);
+            })),
+            ..super::PipelineHooks::default()
+        },
+        &cancel,
+    );
+    let reported = *reported.lock().unwrap();
+    (result, input, output, reported)
+}
+
+const LETTERBOX: &str = "scale=320:160,pad=320:240:0:40";
+const INTERLACE: &str = "interlace=scan=tff,setfield=tff";
+const TELECINE: &str = "telecine=first_field=top:pattern=23";
+const INTERLACED_FLAGS: &[&str] = &["-flags", "+ildct+ilme"];
+const LETTERBOX_CROP: crate::analyzer::picture::Crop = crate::analyzer::picture::Crop {
+    width: 320,
+    height: 160,
+    x: 0,
+    y: 40,
+};
+
+/// Black bars are found on a real clip, cropped away, and the crop is scored
+/// against a reference cropped the same way; deletion is allowed here.
+#[test]
+fn a_letterboxed_source_is_cropped_and_may_be_deleted_when_allowed() {
+    if !can_run_picture_pipeline() {
+        eprintln!("skipping: this FFmpeg cannot build the fixture, encode AV1 or score VMAF");
+        return;
+    }
+    let video = crate::config::VideoConfig {
+        crop: true,
+        delete_processed_source: true,
+        ..crate::config::VideoConfig::default()
+    };
+    let (result, input, output, reported) =
+        run_picture_pipeline("crop", "24", LETTERBOX, &[], video);
+    assert_eq!(reported.and_then(|p| p.crop), Some(LETTERBOX_CROP));
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: true,
+                keep_reason: None,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(!input.exists());
+    assert_eq!(probe(&output, "stream=width,height"), vec!["320,160"]);
+    let _ = std::fs::remove_dir_all(output.parent().unwrap());
+}
+
+/// A cropped output keeps its source while deleting processed sources is off.
+#[test]
+fn a_cropped_output_keeps_its_source_by_default() {
+    if !can_run_picture_pipeline() {
+        eprintln!("skipping: this FFmpeg cannot build the fixture, encode AV1 or score VMAF");
+        return;
+    }
+    let video = crate::config::VideoConfig {
+        crop: true,
+        ..crate::config::VideoConfig::default()
+    };
+    let (result, input, output, _) = run_picture_pipeline("crop_keep", "24", LETTERBOX, &[], video);
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: false,
+                keep_reason: Some(super::KeepReason::PictureProcessed),
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(input.exists());
+    assert_eq!(probe(&output, "stream=width,height"), vec!["320,160"]);
+    let _ = std::fs::remove_dir_all(output.parent().unwrap());
+}
+
+/// With every picture option off, the letterboxed clip is encoded whole.
+#[test]
+fn a_letterboxed_source_is_left_whole_when_cropping_is_off() {
+    if !can_run_picture_pipeline() {
+        eprintln!("skipping: this FFmpeg cannot build the fixture, encode AV1 or score VMAF");
+        return;
+    }
+    let (result, input, output, reported) = run_picture_pipeline(
+        "crop_off",
+        "24",
+        LETTERBOX,
+        &[],
+        crate::config::VideoConfig::default(),
+    );
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: true,
+                keep_reason: None,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(!input.exists());
+    assert_eq!(probe(&output, "stream=width,height"), vec!["320,240"]);
+    assert_eq!(
+        reported,
+        Some(crate::analyzer::picture::PictureFilter::default())
+    );
+    let _ = std::fs::remove_dir_all(output.parent().unwrap());
+}
+
+/// An interlaced clip is deinterlaced into one frame per source frame, keeps
+/// its source, and passes VMAF.
+#[test]
+fn an_interlaced_source_is_deinterlaced_frame_for_frame_and_passes_vmaf() {
+    if !can_run_picture_pipeline() {
+        eprintln!("skipping: this FFmpeg cannot build the fixture, encode AV1 or score VMAF");
+        return;
+    }
+    let video = crate::config::VideoConfig {
+        deinterlace: true,
+        ..crate::config::VideoConfig::default()
+    };
+    let (result, input, output, reported) =
+        run_picture_pipeline("deint", "50", INTERLACE, INTERLACED_FLAGS, video);
+    assert_eq!(
+        reported.map(|p| p.fields),
+        Some(crate::analyzer::picture::FieldTreatment::Deinterlace {
+            top_field_first: true
+        })
+    );
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                keep_reason: Some(super::KeepReason::PictureProcessed),
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert_eq!(frame_count(&output), frame_count(&input));
+    let _ = std::fs::remove_dir_all(output.parent().unwrap());
+}
+
+/// A 3:2 telecined clip has its film frames restored, four in every five,
+/// and passes VMAF against a reference restored the same way.
+#[test]
+fn a_telecined_source_is_inverse_telecined_and_verified() {
+    if !can_run_picture_pipeline() {
+        eprintln!("skipping: this FFmpeg cannot build the fixture, encode AV1 or score VMAF");
+        return;
+    }
+    let video = crate::config::VideoConfig {
+        deinterlace: true,
+        inverse_telecine: true,
+        ..crate::config::VideoConfig::default()
+    };
+    let (result, input, output, reported) =
+        run_picture_pipeline("ivtc", "24000/1001", TELECINE, INTERLACED_FLAGS, video);
+    assert_eq!(
+        reported.map(|p| p.fields),
+        Some(crate::analyzer::picture::FieldTreatment::InverseTelecine)
+    );
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                keep_reason: Some(super::KeepReason::PictureProcessed),
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert_eq!(frame_count(&output) * 5, frame_count(&input) * 4);
+    let _ = std::fs::remove_dir_all(output.parent().unwrap());
+}
+
+/// Detection on real clips: the letterbox, the field parity and the
+/// telecine pattern.
+#[test]
+fn detection_reads_real_letterboxes_interlacing_and_telecine() {
+    use crate::analyzer::picture::{Crop, FieldTreatment, PictureRequest, detect};
+    if !(DependencyStatus::check() && DependencyStatus::encoder_available("libx264")) {
+        eprintln!("skipping: this FFmpeg cannot build the fixtures");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_detect_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cancel = AtomicBool::new(false);
+    let all = PictureRequest {
+        crop: true,
+        deinterlace: true,
+        inverse_telecine: true,
+    };
+    let detect_in = |path: &Path| {
+        let path = path.to_str().unwrap();
+        let order = crate::analyzer::ffprobe::probe_field_order(path, &cancel);
+        detect(path, 320, 240, 4.0, order.as_deref(), all, &cancel).expect("detection runs")
+    };
+
+    let letterboxed = detect_in(&make_picture_fixture(&dir, "24", LETTERBOX, &[]));
+    assert_eq!(
+        letterboxed.crop,
+        Some(Crop {
+            width: 320,
+            height: 160,
+            x: 0,
+            y: 40,
+        })
+    );
+    assert_eq!(letterboxed.fields, FieldTreatment::None);
+
+    let interlaced = detect_in(&make_picture_fixture(
+        &dir,
+        "50",
+        INTERLACE,
+        INTERLACED_FLAGS,
+    ));
+    assert_eq!(interlaced.crop, None);
+    assert_eq!(
+        interlaced.fields,
+        FieldTreatment::Deinterlace {
+            top_field_first: true
+        }
+    );
+
+    let telecined = detect_in(&make_picture_fixture(
+        &dir,
+        "24000/1001",
+        TELECINE,
+        INTERLACED_FLAGS,
+    ));
+    assert_eq!(telecined.fields, FieldTreatment::InverseTelecine);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What an automatic-CRF pipeline run reported: the search progress and the
+/// quality value of each encode, in order.
+#[derive(Default)]
+struct AutoReports {
+    searching: Vec<f64>,
+    crfs: Vec<u8>,
+}
+
+/// Runs the full pipeline in automatic CRF mode against a fresh video-only
+/// clip. `None` when this machine cannot encode AV1 and score VMAF.
+fn run_auto_pipeline(
+    name: &str,
+    threshold: f64,
+    delete_source: bool,
+    mut on_before_vmaf: impl FnMut(&Path, &Path) + Send + 'static,
+) -> Option<(super::FullEncodeResult, PathBuf, PathBuf, AutoReports)> {
+    use std::sync::{Arc, Mutex};
+    if !(DependencyStatus::check()
+        && DependencyStatus::encoder_available("libsvtav1")
+        && DependencyStatus::vmaf_available())
+    {
+        eprintln!("skipping: this FFmpeg cannot encode AV1 and score VMAF");
+        return None;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_auto_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(input) = make_video_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return None;
+    };
+    let output = dir.join("out.mkv");
+    let mut config = AppConfig {
+        encoder: Encoder::SvtAv1,
+        ..AppConfig::default()
+    };
+    config.performance.svt_preset = 12;
+    config.quality.vmaf_enabled = true;
+    config.quality.vmaf_threshold = threshold;
+    config.quality.delete_source_on_success = delete_source;
+    config.quality.crf_mode = crate::config::CrfMode::Auto;
+
+    let reports = Arc::new(Mutex::new(AutoReports::default()));
+    let (searching, crfs) = (Arc::clone(&reports), Arc::clone(&reports));
+    let identity = crate::queue::SourceIdentity::from_path(&input).unwrap();
+    let (hook_input, hook_output) = (input.clone(), output.clone());
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        &identity,
+        &metadata_for(&input),
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        false,
+        Vec::new(),
+        false,
+        &config,
+        super::PipelineHooks {
+            searching: Some(Box::new(move |percent| {
+                searching.lock().unwrap().searching.push(percent);
+            })),
+            crf: Some(Box::new(move |value| crfs.lock().unwrap().crfs.push(value))),
+            before_vmaf: Some(Box::new(move || on_before_vmaf(&hook_input, &hook_output))),
+            ..super::PipelineHooks::default()
+        },
+        &AtomicBool::new(false),
+    );
+    let reports = std::mem::take(&mut *reports.lock().unwrap());
+    Some((result, input, output, reports))
+}
+
+/// The presets-table value of the fixture clip, which is SD.
+fn fixture_table_crf() -> u8 {
+    crate::config::EncodingPresetsConfig::default().sd.crf
+}
+
+/// Replaces `output` with a blurred, downscaled H.264 encode of `input`,
+/// which scores far below any useful threshold.
+fn replace_with_blurred_encode(input: &Path, output: &Path) {
+    let blurred = output.with_extension("blurred.mkv");
+    let built = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(input)
+        .args([
+            "-vf",
+            "scale=40:30,boxblur=4,scale=320:240",
+            "-c:v",
+            "libx264",
+        ])
+        .arg(&blurred)
+        .status()
+        .is_ok_and(|status| status.success());
+    assert!(built, "ffmpeg builds the blurred replacement");
+    std::fs::rename(&blurred, output).unwrap();
+}
+
+/// The search runs on samples before the encode, reports its progress from
+/// zero to done, and the encode uses a value inside the search range that
+/// then passes the full check.
+#[test]
+fn automatic_crf_searches_before_encoding_and_passes() {
+    let Some((result, input, output, reports)) = run_auto_pipeline("pass", 80.0, false, |_, _| {})
+    else {
+        return;
+    };
+    assert!(
+        matches!(result, super::FullEncodeResult::SuccessWithVmaf { .. }),
+        "{result:?}"
+    );
+    assert_eq!(reports.searching.first(), Some(&0.0));
+    assert_eq!(reports.searching.last(), Some(&100.0));
+    assert_eq!(reports.crfs.len(), 1, "one encode: {:?}", reports.crfs);
+    let (lo, hi) = super::crf_search::search_range(fixture_table_crf(), 63);
+    assert!((lo..=hi).contains(&reports.crfs[0]), "{:?}", reports.crfs);
+    assert!(output.exists());
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+/// When no searched value meets the threshold, the encode runs once at the
+/// lowest value searched and is not redone.
+#[test]
+fn an_unreachable_threshold_encodes_once_at_the_lowest_searched_value() {
+    let Some((result, input, _, reports)) =
+        run_auto_pipeline("unreachable", 101.0, false, |_, _| {})
+    else {
+        return;
+    };
+    assert!(
+        matches!(result, super::FullEncodeResult::QualityWarning { .. }),
+        "{result:?}"
+    );
+    let (lo, _) = super::crf_search::search_range(fixture_table_crf(), 63);
+    assert_eq!(reports.crfs, vec![lo]);
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+/// A full output that misses the threshold after a passing search is
+/// re-encoded once, lower by the retry step, and the redone output passes.
+#[test]
+fn a_failed_full_check_is_redone_once_at_a_lower_crf() {
+    let mut first = true;
+    let Some((result, input, output, reports)) =
+        run_auto_pipeline("retry", 80.0, false, move |input, output| {
+            if std::mem::take(&mut first) {
+                replace_with_blurred_encode(input, output);
+            }
+        })
+    else {
+        return;
+    };
+    assert!(
+        matches!(result, super::FullEncodeResult::SuccessWithVmaf { .. }),
+        "{result:?}"
+    );
+    assert_eq!(reports.crfs.len(), 2, "{:?}", reports.crfs);
+    assert_eq!(
+        reports.crfs[1],
+        reports.crfs[0] - super::crf_search::RETRY_STEP
+    );
+    assert!(output.exists());
+    assert!(input.exists(), "deletion is off");
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+/// With deletion on, an output that is no longer the file the encoder wrote
+/// is neither removed for the re-encode nor allowed to delete the source.
+#[test]
+fn a_replaced_output_is_not_redone_and_keeps_the_source() {
+    let Some((result, input, output, reports)) =
+        run_auto_pipeline("replaced", 80.0, true, replace_with_blurred_encode)
+    else {
+        return;
+    };
+    assert!(
+        matches!(result, super::FullEncodeResult::QualityWarning { .. }),
+        "{result:?}"
+    );
+    assert_eq!(reports.crfs.len(), 1, "{:?}", reports.crfs);
+    assert!(output.exists(), "the replaced output is left alone");
+    assert!(input.exists());
+    let _ = std::fs::remove_dir_all(input.parent().unwrap());
+}
+
+/// Fixed mode never searches: the encode uses the presets-table value.
+#[test]
+fn fixed_crf_encodes_at_the_presets_value_without_searching() {
+    use std::sync::{Arc, Mutex};
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    if !(DependencyStatus::check()
+        && DependencyStatus::encoder_available("libsvtav1")
+        && DependencyStatus::vmaf_available())
+    {
+        eprintln!("skipping: this FFmpeg cannot encode AV1 and score VMAF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_fixed_crf_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(input) = make_video_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    let mut config = AppConfig::default();
+    config.performance.svt_preset = 12;
+    config.quality.vmaf_threshold = 101.0;
+    let reports = Arc::new(Mutex::new(AutoReports::default()));
+    let (searching, crfs) = (Arc::clone(&reports), Arc::clone(&reports));
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        dir.join("out.mkv").to_str().unwrap(),
+        &crate::queue::SourceIdentity::from_path(&input).unwrap(),
+        &metadata_for(&input),
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        false,
+        Vec::new(),
+        false,
+        &config,
+        super::PipelineHooks {
+            searching: Some(Box::new(move |percent| {
+                searching.lock().unwrap().searching.push(percent);
+            })),
+            crf: Some(Box::new(move |value| crfs.lock().unwrap().crfs.push(value))),
+            ..super::PipelineHooks::default()
+        },
+        &cancel,
+    );
+    assert!(
+        matches!(result, super::FullEncodeResult::QualityWarning { .. }),
+        "{result:?}"
+    );
+    let reports = reports.lock().unwrap();
+    assert_eq!(reports.searching, Vec::<f64>::new());
+    assert_eq!(reports.crfs, vec![fixture_table_crf()]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A cancel during the CRF search ends the job as cancelled before any
+/// encode, leaving no output behind and the source in place.
+#[test]
+fn a_cancel_during_the_crf_search_encodes_nothing() {
+    use std::sync::{Arc, Mutex};
+    if !(DependencyStatus::check()
+        && DependencyStatus::encoder_available("libsvtav1")
+        && DependencyStatus::vmaf_available())
+    {
+        eprintln!("skipping: this FFmpeg cannot encode AV1 and score VMAF");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_auto_cancel_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(input) = make_video_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    let output = dir.join("out.mkv");
+    let mut config = AppConfig::default();
+    config.performance.svt_preset = 12;
+    config.quality.delete_source_on_success = true;
+    config.quality.crf_mode = crate::config::CrfMode::Auto;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
+    let crfs = Arc::new(Mutex::new(Vec::new()));
+    let crfs_into = Arc::clone(&crfs);
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        &crate::queue::SourceIdentity::from_path(&input).unwrap(),
+        &metadata_for(&input),
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        false,
+        Vec::new(),
+        false,
+        &config,
+        super::PipelineHooks {
+            searching: Some(Box::new(move |percent| {
+                if percent > 0.0 {
+                    flag.store(true, std::sync::atomic::Ordering::Release);
+                }
+            })),
+            crf: Some(Box::new(move |value| crfs_into.lock().unwrap().push(value))),
+            ..super::PipelineHooks::default()
+        },
+        &cancel,
+    );
+    assert!(
+        matches!(result, super::FullEncodeResult::Cancelled),
+        "{result:?}"
+    );
+    assert_eq!(*crfs.lock().unwrap(), Vec::<u8>::new());
+    assert!(!output.exists());
+    assert!(input.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A remux copies the video and reports no CRF, also in automatic mode.
+#[test]
+fn a_remux_reports_no_crf() {
+    use std::sync::{Arc, Mutex};
+    if !DependencyStatus::check() {
+        eprintln!("skipping: ffmpeg/ffprobe not available");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_remux_crf_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let Some(input) = make_video_fixture(&dir) else {
+        eprintln!("skipping: could not build the fixture clip");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    let mut config = AppConfig::default();
+    config.quality.crf_mode = crate::config::CrfMode::Auto;
+    let reports = Arc::new(Mutex::new(AutoReports::default()));
+    let (searching, crfs) = (Arc::clone(&reports), Arc::clone(&reports));
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        dir.join("out_remux.mkv").to_str().unwrap(),
+        &crate::queue::SourceIdentity::from_path(&input).unwrap(),
+        &metadata_for(&input),
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        true,
+        Vec::new(),
+        false,
+        &config,
+        super::PipelineHooks {
+            searching: Some(Box::new(move |percent| {
+                searching.lock().unwrap().searching.push(percent);
+            })),
+            crf: Some(Box::new(move |value| crfs.lock().unwrap().crfs.push(value))),
+            ..super::PipelineHooks::default()
+        },
+        &AtomicBool::new(false),
+    );
+    assert!(
+        matches!(result, super::FullEncodeResult::Success),
+        "{result:?}"
+    );
+    let reports = reports.lock().unwrap();
+    assert_eq!(reports.crfs, Vec::<u8>::new());
+    assert_eq!(reports.searching, Vec::<f64>::new());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Writes an x265 `dhdr10-info` file describing one 24-frame scene.
+fn write_hdr10_plus_json(path: &Path) {
+    let scenes: Vec<serde_json::Value> = (0..24)
+        .map(|frame| {
+            serde_json::json!({
+                "BezierCurveData": {
+                    "Anchors": [256, 512, 768, 1000, 1500, 2000, 2500, 3000, 3500],
+                    "KneePointX": 100,
+                    "KneePointY": 200
+                },
+                "LuminanceParameters": {
+                    "AverageRGB": 1000,
+                    "LuminanceDistributions": {
+                        "DistributionIndex": [1, 5, 10, 25, 50, 75, 90, 95, 99],
+                        "DistributionValues": [10, 20, 30, 40, 50, 60, 70, 80, 90]
+                    },
+                    "MaxScl": [4000, 3000, 2000]
+                },
+                "NumberOfWindows": 1,
+                "TargetedSystemDisplayMaximumLuminance": 400,
+                "SceneFrameIndex": frame,
+                "SceneId": 0,
+                "SequenceFrameIndex": frame
+            })
+        })
+        .collect();
+    let info = serde_json::json!({
+        "JSONInfo": { "HDR10plusProfile": "B", "Version": "1.0" },
+        "SceneInfo": scenes,
+        "SceneInfoSummary": { "SceneFirstFrameIndex": [0], "SceneFrameNumbers": [24] },
+        "ToolInfo": { "Tool": "av1converter tests", "Version": "1" }
+    });
+    std::fs::write(path, info.to_string()).unwrap();
+}
+
+/// A one-second 10-bit PQ HEVC clip in `dir` with HDR10 static metadata, and
+/// HDR10+ dynamic metadata when `dynamic` is set. `None` when this `FFmpeg`
+/// cannot build it.
+fn make_pq_fixture(dir: &Path, dynamic: bool) -> Option<PathBuf> {
+    let path = dir.join(if dynamic {
+        "hdr10plus.mkv"
+    } else {
+        "hdr10.mkv"
+    });
+    let mut x265 = "hdr10=1:hdr10-opt=1:colorprim=bt2020:transfer=smpte2084:\
+                    colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)\
+                    R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400:\
+                    log-level=error"
+        .to_string();
+    if dynamic {
+        let json = dir.join("hdr10plus.json");
+        write_hdr10_plus_json(&json);
+        x265.push_str(":dhdr10-info=");
+        x265.push_str(json.to_str()?);
+    }
+    Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=24:duration=1",
+            "-pix_fmt",
+            "yuv420p10le",
+            "-c:v",
+            "libx265",
+            "-x265-params",
+            &x265,
+        ])
+        .arg(&path)
+        .status()
+        .is_ok_and(|status| status.success())
+        .then_some(path)
+}
+
+/// Whether ffprobe itself reports HDR10+ on the first frame of `path`.
+fn ffprobe_sees_hdr10_plus(path: &Path) -> bool {
+    probe_first_frame_side_data(path).contains("SMPTE2094-40")
+}
+
+/// `ffprobe -show_entries frame_side_data_list` for the first frame of `path`.
+fn probe_first_frame_side_data(path: &Path) -> String {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "V:0",
+            "-read_intervals",
+            "%+#1",
+            "-show_entries",
+            "frame_side_data_list",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .output()
+        .expect("ffprobe runs");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// A fresh directory holding an HDR10+ clip and a plain HDR10 clip. `None`
+/// when this `FFmpeg` or its x265 cannot write HDR10+.
+fn hdr10_plus_fixtures(name: &str) -> Option<(PathBuf, PathBuf, PathBuf)> {
+    if !(DependencyStatus::check() && DependencyStatus::encoder_available("libx265")) {
+        eprintln!("skipping: this FFmpeg has no libx265");
+        return None;
+    }
+    let dir = std::env::temp_dir().join(format!("av1c_e2e_hdr10p_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let fixtures = make_pq_fixture(&dir, true).zip(make_pq_fixture(&dir, false));
+    match fixtures {
+        Some((plus, plain)) if ffprobe_sees_hdr10_plus(&plus) => Some((dir, plus, plain)),
+        _ => {
+            eprintln!("skipping: this x265 cannot write HDR10+ dynamic metadata");
+            let _ = std::fs::remove_dir_all(&dir);
+            None
+        }
+    }
+}
+
+#[test]
+fn analysis_finds_hdr10_plus_on_a_real_clip_and_not_on_plain_hdr10() {
+    let Some((dir, plus, plain)) = hdr10_plus_fixtures("analyze") else {
+        return;
+    };
+    let cancel = AtomicBool::new(false);
+    let found = crate::analyzer::analyze(plus.to_str().unwrap(), &cancel)
+        .unwrap()
+        .metadata;
+    assert_eq!(found.hdr_type, HdrType::Pq);
+    assert!(found.hdr10_plus);
+    assert_eq!(found.hdr_string(), "HDR10+");
+    let hdr10 = found
+        .hdr10_static
+        .expect("static metadata on the first frame");
+    assert_eq!((hdr10.max_cll, hdr10.max_fall), (1000, 400));
+
+    let without = crate::analyzer::analyze(plain.to_str().unwrap(), &cancel)
+        .unwrap()
+        .metadata;
+    assert_eq!(without.hdr_type, HdrType::Pq);
+    assert!(!without.hdr10_plus);
+    assert_eq!(without.hdr_string(), "HDR10");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Encodes `input` with source deletion on and a VMAF threshold of 1, so
+/// every encode passes. `None` when this machine cannot encode AV1 and score
+/// VMAF.
+fn run_hdr10_plus_pipeline(
+    input: &Path,
+    delete_hdr10plus_source: bool,
+) -> Option<(super::FullEncodeResult, PathBuf)> {
+    if !(DependencyStatus::encoder_available("libsvtav1") && DependencyStatus::vmaf_available()) {
+        eprintln!("skipping: this FFmpeg cannot encode AV1 and score VMAF");
+        return None;
+    }
+    let cancel = AtomicBool::new(false);
+    let metadata = crate::analyzer::analyze(input.to_str().unwrap(), &cancel)
+        .unwrap()
+        .metadata;
+    let output = input.with_file_name("out.mkv");
+    let mut config = AppConfig {
+        encoder: Encoder::SvtAv1,
+        ..AppConfig::default()
+    };
+    config.quality.vmaf_enabled = true;
+    config.quality.vmaf_threshold = 1.0;
+    config.quality.delete_source_on_success = true;
+    config.video.delete_hdr10plus_source = delete_hdr10plus_source;
+    let identity = crate::queue::SourceIdentity::from_path(input).unwrap();
+    let result = super::run_encoding_pipeline(
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        &identity,
+        &metadata,
+        crate::tracks::OutputTracks::default(),
+        DvMode::ToHdr10,
+        false,
+        Vec::new(),
+        false,
+        &config,
+        super::PipelineHooks::default(),
+        &cancel,
+    );
+    Some((result, output))
+}
+
+#[test]
+fn an_hdr10_plus_source_is_kept_after_a_passing_score() {
+    let Some((dir, plus, _)) = hdr10_plus_fixtures("keep") else {
+        return;
+    };
+    let Some((result, output)) = run_hdr10_plus_pipeline(&plus, false) else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: false,
+                keep_reason: Some(super::KeepReason::Hdr10PlusDropped),
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(plus.exists());
+    assert!(output.exists());
+
+    let ledger = std::fs::read_to_string(super::ledger_path()).unwrap();
+    let recorded: serde_json::Value = serde_json::from_str(ledger.lines().next().unwrap()).unwrap();
+    assert_eq!(recorded["action"], serde_json::json!("kept"));
+    assert_eq!(recorded["reason"], serde_json::json!("Hdr10PlusDropped"));
+
+    let _ = std::fs::remove_dir_all(super::ledger_dir());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_hdr10_plus_source_is_deleted_when_allowed() {
+    let Some((dir, plus, _)) = hdr10_plus_fixtures("allow") else {
+        return;
+    };
+    let Some((result, output)) = run_hdr10_plus_pipeline(&plus, true) else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: true,
+                keep_reason: None,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(!plus.exists());
+    assert!(output.exists());
+    let _ = std::fs::remove_dir_all(super::ledger_dir());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_plain_hdr10_source_is_deleted_after_a_passing_score() {
+    let Some((dir, _, plain)) = hdr10_plus_fixtures("plain") else {
+        return;
+    };
+    let Some((result, _)) = run_hdr10_plus_pipeline(&plain, false) else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    assert!(
+        matches!(
+            result,
+            super::FullEncodeResult::SuccessWithVmaf {
+                source_deleted: true,
+                keep_reason: None,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(!plain.exists());
+    let _ = std::fs::remove_dir_all(super::ledger_dir());
     let _ = std::fs::remove_dir_all(&dir);
 }

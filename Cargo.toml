@@ -1,6 +1,6 @@
 [package]
 name = "av1converter"
-version = "3.1.1"
+version = "3.2.0"
 edition = "2024"
 rust-version = "1.99"
 description = "Batch convert video files to AV1 with FFmpeg, from a terminal UI or a daemon with a web UI"

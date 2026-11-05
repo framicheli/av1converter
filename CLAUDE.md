@@ -49,7 +49,7 @@ cargo check --locked --all-targets   # MSRV job, toolchain 1.91
 - **Run `cargo fmt` on every commit.** If the tree has already drifted from `cargo fmt`, land a separate `style:` commit first.
 - **Commit messages**: `feat|fix|docs|style: <plain description> (<files touched>)`, one logical change per commit.
 - **CHANGELOG**: every user-visible change adds a line to `CHANGELOG.md` under the current version heading (`### Added` / `### Changed` / `### Fixed`, plus `### Breaking changes` when config or CLI behaviour changes incompatibly) in the same commit. Write it for users, not contributors.
-- **README**: when behaviour, keys, CLI options or config keys change, update `README.md` in the same change.
+- **README and docs**: when behaviour, keys, CLI options or config keys change, update `README.md` and the matching page in `docs/` (`installation`, `usage`, `daemon`, `disc-ripping`, `configuration`) in the same change. The README stays an overview; reference detail goes in `docs/`.
 - **TUI/web feature parity**: any feature added to one UI goes into the other in the same batch. The only accepted difference is that a remote browser sees host-level settings (`daemon.*`, `disc.*`, autostart) read-only; a browser on the daemon host gets everything the TUI has.
 - **Strings**: no hard-coded user-facing text. Add a `Msg` variant with all six translations, and a `WEB_KEYS` entry if the web UI shows it.
 - **Comments are always descriptions, never reasoning.** Say what the code does, not why it was written that way: no "because…", "so that…", "to avoid…" clauses, no design rationale, no history, and no `ponytail:` or similar markers. Reasoning goes in the commit message.
@@ -67,7 +67,7 @@ Before calling a change done, list what it touched and check each of these:
 - Is every new string translated, and in `WEB_KEYS` if the web uses it?
 - Does a new setting appear in `SERIALIZED_SETTING_PATHS`, `CONFIG_ITEMS` and `settingsFields`?
 - Can the change reach source deletion, `browse_root` checks, token handling, or queue persistence? If so, test the failure path too.
-- Are the CHANGELOG and README updated?
+- Are the CHANGELOG, README and `docs/` updated?
 
 Fix anything you find, then audit again. A step is closed only when an audit finds nothing real.
 

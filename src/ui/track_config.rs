@@ -20,6 +20,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         resolution_string,
         hdr_string,
         hdr_display,
+        hdr10_plus,
         audio_data,
         subtitle_data,
         remux_only,
@@ -82,14 +83,22 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
                 let profile = meta
                     .and_then(|m| m.dv_profile)
                     .map_or_else(String::new, |p| format!(" P{p}"));
+                let plus = if meta.is_some_and(|m| m.hdr10_plus) {
+                    " + HDR10+"
+                } else {
+                    ""
+                };
                 match job.dv_mode {
                     Some(DvMode::KeepDolbyVision) => {
-                        format!("Dolby Vision{profile} ({})", t(lang, Msg::DvKeptTag))
+                        format!("Dolby Vision{profile}{plus} ({})", t(lang, Msg::DvKeptTag))
                     }
                     Some(DvMode::ToHdr10) => {
-                        format!("Dolby Vision{profile} ({})", t(lang, Msg::DvConvertedTag))
+                        format!(
+                            "Dolby Vision{profile}{plus} ({})",
+                            t(lang, Msg::DvConvertedTag)
+                        )
                     }
-                    None => format!("Dolby Vision{profile}"),
+                    None => format!("Dolby Vision{profile}{plus}"),
                 }
             } else {
                 job.metadata.as_ref().map_or_else(
@@ -107,6 +116,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             ),
             job.hdr_string().to_string(),
             hdr_display,
+            job.metadata.as_ref().is_some_and(|m| m.hdr10_plus),
             audio_data,
             subtitle_data,
             job.remux_only,
@@ -155,7 +165,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
     }
 
     // File info header
-    let info_lines = vec![
+    let mut info_lines = vec![
         Line::from(vec![
             Span::styled(
                 format!("{}: ", t(lang, Msg::FileLabel)),
@@ -182,9 +192,9 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             Span::styled(
                 hdr_display,
                 Style::default().fg(match hdr_string.as_str() {
-                    "HDR10" => Color::Yellow,
+                    "HDR10" | "HDR10+" => Color::Yellow,
                     "HLG" => Color::Green,
-                    "Dolby Vision" => Color::Magenta,
+                    s if s.starts_with("Dolby Vision") => Color::Magenta,
                     _ => Color::Reset,
                 }),
             ),
@@ -219,6 +229,12 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
             Span::styled(output_filename, Style::default().fg(Color::Cyan)),
         ]),
     ];
+    if hdr10_plus && !remux_only {
+        info_lines.push(Line::from(Span::styled(
+            format!("⚠ {}", t(lang, Msg::Hdr10PlusDroppedHint)),
+            Style::default().fg(Color::Yellow),
+        )));
+    }
 
     let configurable = app
         .queue
@@ -373,7 +389,7 @@ pub fn render_track_config(f: &mut Frame, app: &mut App) {
         Span::styled("O", Style::default().fg(Color::Yellow)),
         Span::raw(format!("\u{a0}{}  ", t(lang, Msg::AllOpus))),
     ];
-    if hdr_string == "Dolby Vision" && !remux_only {
+    if hdr_string.starts_with("Dolby Vision") && !remux_only {
         help_spans.push(Span::styled("d", Style::default().fg(Color::Yellow)));
         help_spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::DvModeHelp))));
     }

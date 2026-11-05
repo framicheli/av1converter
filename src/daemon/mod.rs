@@ -946,6 +946,7 @@ fn maybe_start_session(shared: &SharedState, worker_tx: &Sender<WorkerMessage>) 
                     .resolve_for(&job.audio_tracks, &audio_config, &output)
             },
             input: job.path.clone(),
+            disc_rip: job.temporary,
             output,
             source_identity,
             metadata,
@@ -1041,7 +1042,12 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
                     state.queue.state.current_job_index = index;
                 }
                 if let Some(job) = state.queue.job_by_id_mut(id)
-                    && matches!(job.status, JobStatus::Encoding { .. })
+                    && matches!(
+                        job.status,
+                        JobStatus::Encoding { .. }
+                            | JobStatus::Searching { .. }
+                            | JobStatus::Verifying
+                    )
                 {
                     job.status = JobStatus::Encoding { progress };
                 }
@@ -1050,6 +1056,21 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
         WorkerMessage::Verifying(idx) => {
             if let Some(job) = id_for(idx).and_then(|id| state.queue.job_by_id_mut(id)) {
                 job.status = JobStatus::Verifying;
+            }
+        }
+        WorkerMessage::Searching(idx, progress) => {
+            if let Some(job) = id_for(idx).and_then(|id| state.queue.job_by_id_mut(id))
+                && matches!(
+                    job.status,
+                    JobStatus::Encoding { .. } | JobStatus::Searching { .. }
+                )
+            {
+                job.status = JobStatus::Searching { progress };
+            }
+        }
+        WorkerMessage::Crf(idx, value) => {
+            if let Some(job) = id_for(idx).and_then(|id| state.queue.job_by_id_mut(id)) {
+                job.crf = Some(value);
             }
         }
         WorkerMessage::Done(idx) => {
@@ -1096,6 +1117,11 @@ fn apply_worker_message(shared: &SharedState, msg: WorkerMessage) {
         WorkerMessage::SourceKept(idx, reason) => {
             if let Some(job) = id_for(idx).and_then(|id| state.queue.job_by_id_mut(id)) {
                 job.source_kept_reason = Some(reason);
+            }
+        }
+        WorkerMessage::Picture(idx, filter) => {
+            if let Some(job) = id_for(idx).and_then(|id| state.queue.job_by_id_mut(id)) {
+                job.set_picture(filter);
             }
         }
         // A daemon stop leaves session jobs as they are; `queue::state::resume`
@@ -1315,6 +1341,107 @@ mod tests {
         assert!(killed, "the sleeping child outlived the failed startup");
     }
 
+    /// The CRF search progress and each encode's CRF reach the queue rows the
+    /// web UI reads, and a redone encode after VMAF goes back to encoding.
+    #[test]
+    fn the_crf_search_and_redone_encode_reach_the_queue_rows() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut job = EncodingJob::new(std::path::PathBuf::from("film.mkv"));
+        job.status = JobStatus::Encoding { progress: 0.0 };
+        let id = state.queue.push(job);
+        state.session = Some(EncodeSession {
+            job_ids: vec![id],
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        });
+        state.encoding_active = true;
+        let shared = Arc::new(Mutex::new(state));
+
+        apply_worker_message(&shared, WorkerMessage::Searching(0, 40.0));
+        let row = &crate::daemon::api::queue(&shared)["jobs"][0];
+        assert_eq!(
+            row["status"],
+            serde_json::json!({"kind": "searching", "progress": 40.0})
+        );
+        assert_eq!(
+            crate::daemon::api::status(&shared)["current"]["status"]["kind"],
+            "searching"
+        );
+
+        apply_worker_message(&shared, WorkerMessage::Crf(0, 30));
+        apply_worker_message(&shared, WorkerMessage::Progress(0, 10.0));
+        apply_worker_message(&shared, WorkerMessage::Verifying(0));
+        apply_worker_message(&shared, WorkerMessage::Crf(0, 26));
+        apply_worker_message(&shared, WorkerMessage::Progress(0, 3.0));
+
+        let row = &crate::daemon::api::queue(&shared)["jobs"][0];
+        assert_eq!(row["crf"], 26);
+        assert_eq!(
+            row["status"],
+            serde_json::json!({"kind": "encoding", "progress": 3.0})
+        );
+    }
+
+    /// A late search report does not reopen a job that already finished.
+    #[test]
+    fn a_search_report_leaves_a_finished_job_alone() {
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut job = EncodingJob::new(std::path::PathBuf::from("film.mkv"));
+        job.status = JobStatus::Done;
+        let id = state.queue.push(job);
+        state.session = Some(EncodeSession {
+            job_ids: vec![id],
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        });
+        let shared = Arc::new(Mutex::new(state));
+
+        apply_worker_message(&shared, WorkerMessage::Searching(0, 10.0));
+        apply_worker_message(&shared, WorkerMessage::Progress(0, 10.0));
+
+        assert!(matches!(
+            lock(&shared).queue.state.jobs[0].status,
+            JobStatus::Done
+        ));
+    }
+
+    /// The detected crop and deinterlace reach the job and the queue rows the
+    /// web UI reads; a later encode that applies none clears them.
+    #[test]
+    fn the_picture_processing_reaches_the_queue_rows() {
+        use crate::analyzer::picture::{Crop, FieldTreatment, PictureFilter};
+        let mut state = DaemonState::new(AppConfig::default());
+        let mut job = EncodingJob::new(std::path::PathBuf::from("dvd.mkv"));
+        job.status = JobStatus::Encoding { progress: 0.0 };
+        let id = state.queue.push(job);
+        state.session = Some(EncodeSession {
+            job_ids: vec![id],
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        });
+        state.encoding_active = true;
+        let shared = Arc::new(Mutex::new(state));
+        let filter = PictureFilter {
+            crop: Some(Crop {
+                width: 704,
+                height: 480,
+                x: 8,
+                y: 0,
+            }),
+            fields: FieldTreatment::InverseTelecine,
+        };
+
+        apply_worker_message(&shared, WorkerMessage::Picture(0, filter));
+
+        assert_eq!(lock(&shared).queue.state.jobs[0].picture, Some(filter));
+        assert_eq!(
+            crate::daemon::api::queue(&shared)["jobs"][0]["picture"],
+            "cropped to 704×480, inverse telecined"
+        );
+
+        apply_worker_message(&shared, WorkerMessage::Picture(0, PictureFilter::default()));
+
+        assert_eq!(lock(&shared).queue.state.jobs[0].picture, None);
+        assert!(crate::daemon::api::queue(&shared)["jobs"][0]["picture"].is_null());
+    }
+
     /// A kept source with a reason reaches the queue rows the web UI reads.
     #[test]
     fn a_kept_source_reason_reaches_the_queue_rows() {
@@ -1397,6 +1524,7 @@ mod tests {
                 dv_profile: None,
                 dv_bl_compat: None,
                 hdr10_static: None,
+                hdr10_plus: false,
                 codec_name: "hevc".to_string(),
                 frame_rate_num: 24,
                 frame_rate_den: 1,
@@ -1440,6 +1568,7 @@ mod tests {
                 dv_profile: None,
                 dv_bl_compat: None,
                 hdr10_static: None,
+                hdr10_plus: false,
                 codec_name: "hevc".to_string(),
                 frame_rate_num: 24,
                 frame_rate_den: 1,
@@ -1757,6 +1886,7 @@ mod tests {
             dv_profile: None,
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "hevc".to_string(),
             frame_rate_num: 24,
             frame_rate_den: 1,

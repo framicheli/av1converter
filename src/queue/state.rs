@@ -360,6 +360,7 @@ fn preserve_unreadable(path: &Path) -> Option<PathBuf> {
 /// - `Encoding` — the `.part` scratch file is deleted and the job re-queued to
 ///   encode from the start. The destination is untouched: the scratch file is
 ///   published to it only once the encode finishes.
+/// - `Searching` — re-queued; its samples live in the scratch directory.
 /// - `Verifying` with its output on disk — recorded as encoded-but-unverified.
 ///   Without its output, it is handled like `Encoding`.
 /// - `Analyzing`, and anything else unfinished — `Ready` when analyzed,
@@ -407,6 +408,7 @@ pub fn resume(queue: &mut PersistedQueue) {
                 };
             }
             JobStatus::Encoding { .. }
+            | JobStatus::Searching { .. }
             | JobStatus::Verifying
             | JobStatus::Analyzing
             | JobStatus::Pending
@@ -570,6 +572,7 @@ mod tests {
             dv_profile: None,
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "hevc".to_string(),
             frame_rate_num: 24,
             frame_rate_den: 1,
@@ -608,6 +611,18 @@ mod tests {
         done.source_size = Some(1000);
         done.output_size = Some(400);
         done.source_kept_reason = Some(crate::encoder::KeepReason::AudioTranscoded);
+        let picture = crate::analyzer::picture::PictureFilter {
+            crop: Some(crate::analyzer::picture::Crop {
+                width: 720,
+                height: 432,
+                x: 0,
+                y: 24,
+            }),
+            fields: crate::analyzer::picture::FieldTreatment::Deinterlace {
+                top_field_first: false,
+            },
+        };
+        done.set_picture(picture);
         state.jobs.push(done);
         state.cleared_saved_bytes = 777;
         state.converted_count = 7;
@@ -654,11 +669,21 @@ mod tests {
             Some(crate::encoder::KeepReason::AudioTranscoded)
         );
 
-        // A queue written before the keep reason existed still loads.
+        assert_eq!(back.state.jobs[1].picture, Some(picture));
+
+        // A queue written before the keep reason and the picture record
+        // existed still loads.
         let mut older = serde_json::to_value(&back.state.jobs[1]).unwrap();
         older.as_object_mut().unwrap().remove("source_kept_reason");
+        older.as_object_mut().unwrap().remove("picture");
         let older: EncodingJob = serde_json::from_value(older).unwrap();
         assert_eq!(older.source_kept_reason, None);
+        assert_eq!(older.picture, None);
+
+        // A malformed picture record is refused, not read as no processing.
+        let mut corrupt = serde_json::to_value(&back.state.jobs[1]).unwrap();
+        corrupt["picture"]["fields"] = serde_json::json!("Sideways");
+        assert!(serde_json::from_value::<EncodingJob>(corrupt).is_err());
 
         // And resuming leaves settled jobs alone.
         resume(&mut back);
@@ -812,6 +837,33 @@ mod tests {
 
         assert!(matches!(queue.state.jobs[0].status, JobStatus::Ready));
         assert!(queue.state.jobs[0].temporary);
+    }
+
+    /// A job stopped during the CRF search is persisted without its
+    /// percentage and reloads ready to encode again, with the CRF it last
+    /// reported.
+    #[test]
+    fn a_job_stopped_during_the_crf_search_is_encoded_again() {
+        let mut job = EncodingJob::new(PathBuf::from("/movies/film.mkv"));
+        job.metadata = Some(meta());
+        job.source_identity = Some(source_identity());
+        job.status = JobStatus::Searching { progress: 40.0 };
+        job.crf = Some(27);
+        let saved = serde_json::to_value(&job).unwrap();
+        assert_eq!(saved["status"], serde_json::json!({"Searching": {}}));
+        let reloaded: EncodingJob = serde_json::from_value(saved).unwrap();
+        assert!(matches!(
+            reloaded.status,
+            JobStatus::Searching { progress } if progress == 0.0
+        ));
+        let mut state = QueueState::new();
+        state.jobs.push(reloaded);
+        let mut queue = persisted(state, vec![1], 2);
+
+        resume(&mut queue);
+
+        assert!(matches!(queue.state.jobs[0].status, JobStatus::Ready));
+        assert_eq!(queue.state.jobs[0].crf, Some(27));
     }
 
     /// A rip cut short by a restart records the failure and stops claiming its

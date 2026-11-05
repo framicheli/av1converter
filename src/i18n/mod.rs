@@ -201,6 +201,7 @@ pub enum Msg {
     StatusConfiguring,
     StatusReady,
     StatusVerifying,
+    StatusSearching,
     StatusDone,
     Elapsed,
     Eta,
@@ -232,6 +233,8 @@ pub enum Msg {
     KeepSourceChanged,
     KeepDeleteFailed,
     KeepLedgerUnwritable,
+    KeepPictureProcessed,
+    KeepHdr10PlusDropped,
     TimeLabel,
     ResultTitle,
     Summary,
@@ -303,6 +306,10 @@ pub enum Msg {
     CfgVmafThreshold,
     CfgVmafEnabled,
     CfgDeleteSource,
+    CfgCrfMode,
+    CrfModeFixed,
+    CrfModeAuto,
+    CrfModeHint,
     CfgSvtPreset,
     CfgNvencPreset,
     CfgQualityPreset,
@@ -339,6 +346,16 @@ pub enum Msg {
     CfgDaemonBrowseRoot,
     CfgMakemkvconPath,
     CfgStagingDirectory,
+    CfgCrop,
+    CfgDeinterlace,
+    CfgInverseTelecine,
+    CfgDiscRipsOnly,
+    CfgDeleteProcessedSource,
+    DeleteProcessedSourceWarning,
+    CfgDeleteHdr10PlusSource,
+    DeleteHdr10PlusSourceWarning,
+    Hdr10PlusDroppedHint,
+    InverseTelecineHint,
     CfgDaemonAuthToken,
     CfgDaemonAllowInsecureLan,
     CfgDaemonBehindProxy,
@@ -435,6 +452,10 @@ pub enum Msg {
     WebGroupAudio,
     WebGroupDaemon,
     WebGroupDisc,
+    WebGroupVideo,
+    PictureCropped,
+    PictureDeinterlaced,
+    PictureInverseTelecined,
     WebGroupRateFactors,
     WebCfgOutputDirectory,
     WebCfgSelectAllFallback,
@@ -1579,6 +1600,14 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Bereit",
             Zh => "就绪",
         },
+        Msg::StatusSearching => match lang {
+            En => "Finding CRF...",
+            It => "Ricerca del CRF...",
+            Es => "Buscando CRF...",
+            Fr => "Recherche du CRF...",
+            De => "CRF wird gesucht...",
+            Zh => "正在寻找 CRF...",
+        },
         Msg::StatusVerifying => match lang {
             En => "Verifying quality...",
             It => "Verifica qualità...",
@@ -1819,6 +1848,56 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "le journal des suppressions n'a pas pu être écrit",
             De => "das Löschprotokoll konnte nicht geschrieben werden",
             Zh => "无法写入删除记录",
+        },
+        Msg::KeepPictureProcessed => match lang {
+            En => "the output was cropped or deinterlaced",
+            It => "l'uscita è stata ritagliata o deinterlacciata",
+            Es => "la salida se recortó o se desentrelazó",
+            Fr => "la sortie a été recadrée ou désentrelacée",
+            De => "die Ausgabe wurde beschnitten oder deinterlaced",
+            Zh => "输出已裁剪或去隔行",
+        },
+        Msg::KeepHdr10PlusDropped => match lang {
+            En => "its HDR10+ dynamic metadata is not carried into the output",
+            It => "i suoi metadati dinamici HDR10+ non vengono riportati nell'uscita",
+            Es => "sus metadatos dinámicos HDR10+ no se trasladan a la salida",
+            Fr => "ses métadonnées dynamiques HDR10+ ne sont pas reprises dans la sortie",
+            De => "seine dynamischen HDR10+-Metadaten werden nicht in die Ausgabe übernommen",
+            Zh => "其 HDR10+ 动态元数据未带入输出",
+        },
+        Msg::CfgDeleteHdr10PlusSource => match lang {
+            En => "Delete HDR10+ sources",
+            It => "Elimina sorgenti HDR10+",
+            Es => "Eliminar orígenes HDR10+",
+            Fr => "Supprimer les sources HDR10+",
+            De => "HDR10+-Quellen löschen",
+            Zh => "删除 HDR10+ 源文件",
+        },
+        Msg::DeleteHdr10PlusSourceWarning => match lang {
+            En => {
+                "The AV1 output does not carry the HDR10+ dynamic metadata. Deleting the source loses it for good."
+            }
+            It => {
+                "L'uscita AV1 non contiene i metadati dinamici HDR10+. Eliminando la sorgente vanno persi per sempre."
+            }
+            Es => {
+                "La salida AV1 no contiene los metadatos dinámicos HDR10+. Al eliminar el origen se pierden para siempre."
+            }
+            Fr => {
+                "La sortie AV1 ne contient pas les métadonnées dynamiques HDR10+. Supprimer la source les perd définitivement."
+            }
+            De => {
+                "Die AV1-Ausgabe enthält die dynamischen HDR10+-Metadaten nicht. Mit dem Löschen der Quelle gehen sie endgültig verloren."
+            }
+            Zh => "AV1 输出不包含 HDR10+ 动态元数据。删除源文件会使其永久丢失。",
+        },
+        Msg::Hdr10PlusDroppedHint => match lang {
+            En => "HDR10+ dynamic metadata is not carried into the AV1 output.",
+            It => "I metadati dinamici HDR10+ non vengono riportati nell'uscita AV1.",
+            Es => "Los metadatos dinámicos HDR10+ no se trasladan a la salida AV1.",
+            Fr => "Les métadonnées dynamiques HDR10+ ne sont pas reprises dans la sortie AV1.",
+            De => "Die dynamischen HDR10+-Metadaten werden nicht in die AV1-Ausgabe übernommen.",
+            Zh => "HDR10+ 动态元数据不会带入 AV1 输出。",
         },
         Msg::TimeLabel => match lang {
             En => "Time",
@@ -2455,6 +2534,50 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             De => "Hoch",
             Zh => "高",
         },
+        Msg::CfgCrfMode => match lang {
+            En => "CRF Selection",
+            It => "Scelta del CRF",
+            Es => "Selección de CRF",
+            Fr => "Choix du CRF",
+            De => "CRF-Auswahl",
+            Zh => "CRF 选择",
+        },
+        Msg::CrfModeFixed => match lang {
+            En => "Fixed",
+            It => "Fisso",
+            Es => "Fijo",
+            Fr => "Fixe",
+            De => "Fest",
+            Zh => "固定",
+        },
+        Msg::CrfModeAuto => match lang {
+            En => "Automatic",
+            It => "Automatico",
+            Es => "Automático",
+            Fr => "Automatique",
+            De => "Automatisch",
+            Zh => "自动",
+        },
+        Msg::CrfModeHint => match lang {
+            En => {
+                "Automatic encodes short samples at several CRF values and keeps the highest one that meets the VMAF threshold. A full encode that still misses it is redone once at a lower CRF."
+            }
+            It => {
+                "Automatico codifica brevi campioni con diversi valori di CRF e sceglie il più alto che raggiunge la soglia VMAF. Una codifica completa che la manca viene rifatta una volta con un CRF più basso."
+            }
+            Es => {
+                "Automático codifica muestras cortas con varios valores de CRF y elige el más alto que alcanza el umbral VMAF. Una codificación completa que no lo alcanza se repite una vez con un CRF más bajo."
+            }
+            Fr => {
+                "Automatique encode de courts extraits à plusieurs valeurs de CRF et retient la plus haute qui atteint le seuil VMAF. Un encodage complet qui le manque est refait une fois avec un CRF plus bas."
+            }
+            De => {
+                "Automatisch kodiert kurze Ausschnitte mit mehreren CRF-Werten und wählt den höchsten, der die VMAF-Schwelle erreicht. Eine vollständige Kodierung, die sie verfehlt, wird einmal mit niedrigerem CRF wiederholt."
+            }
+            Zh => {
+                "自动模式会用多个 CRF 值编码短片段，并选择达到 VMAF 阈值的最高值。完整编码仍未达标时，会以更低的 CRF 重新编码一次。"
+            }
+        },
         Msg::QpCustom => match lang {
             En => "Custom",
             It => "Personalizzato",
@@ -2644,6 +2767,81 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             Fr => "Dossier temporaire des disques",
             De => "Zwischenordner für Discs",
             Zh => "光盘暂存目录",
+        },
+        Msg::CfgCrop => match lang {
+            En => "Crop black bars",
+            It => "Ritaglia le bande nere",
+            Es => "Recortar bandas negras",
+            Fr => "Recadrer les bandes noires",
+            De => "Schwarze Balken entfernen",
+            Zh => "裁剪黑边",
+        },
+        Msg::CfgDeinterlace => match lang {
+            En => "Deinterlace",
+            It => "Deinterlaccia",
+            Es => "Desentrelazar",
+            Fr => "Désentrelacer",
+            De => "Deinterlacing",
+            Zh => "去隔行",
+        },
+        Msg::CfgInverseTelecine => match lang {
+            En => "Inverse telecine",
+            It | Es => "Telecine inverso",
+            Fr => "Télécinéma inverse",
+            De => "Inverse Telecine",
+            Zh => "反胶转视",
+        },
+        Msg::CfgDiscRipsOnly => match lang {
+            En => "Crop/deinterlace disc rips only",
+            It => "Ritaglia/deinterlaccia solo i dischi",
+            Es => "Recortar/desentrelazar solo discos",
+            Fr => "Recadrer/désentrelacer les disques seulement",
+            De => "Nur Disc-Rips beschneiden/deinterlacen",
+            Zh => "仅对光盘提取裁剪/去隔行",
+        },
+        Msg::CfgDeleteProcessedSource => match lang {
+            En => "Delete cropped/deinterlaced sources",
+            It => "Elimina sorgenti ritagliate/deinterlacciate",
+            Es => "Eliminar orígenes recortados/desentrelazados",
+            Fr => "Supprimer les sources recadrées/désentrelacées",
+            De => "Beschnittene/deinterlacte Quellen löschen",
+            Zh => "删除已裁剪/去隔行的源文件",
+        },
+        Msg::DeleteProcessedSourceWarning => match lang {
+            En => {
+                "VMAF compares against the source cropped or deinterlaced the same way: it cannot show that the crop or deinterlace itself was right."
+            }
+            It => {
+                "VMAF confronta con la sorgente ritagliata o deinterlacciata allo stesso modo: non può dimostrare che il ritaglio o il deinterlacciamento fossero corretti."
+            }
+            Es => {
+                "VMAF compara con el origen recortado o desentrelazado de la misma forma: no puede demostrar que el recorte o el desentrelazado fueran correctos."
+            }
+            Fr => {
+                "VMAF compare à la source recadrée ou désentrelacée de la même façon : il ne peut pas montrer que le recadrage ou le désentrelacement étaient justes."
+            }
+            De => {
+                "VMAF vergleicht mit der gleich beschnittenen oder deinterlacten Quelle: Es kann nicht zeigen, dass der Beschnitt oder das Deinterlacing selbst richtig war."
+            }
+            Zh => "VMAF 与以相同方式裁剪或去隔行的源进行比较：无法证明裁剪或去隔行本身是正确的。",
+        },
+        Msg::InverseTelecineHint => match lang {
+            En => {
+                "Telecined film (NTSC DVD) is restored to its original frames instead of deinterlaced. Needs Deinterlace."
+            }
+            It => {
+                "I film in telecine (DVD NTSC) tornano ai fotogrammi originali invece di essere deinterlacciati. Richiede Deinterlaccia."
+            }
+            Es => {
+                "Las películas con telecine (DVD NTSC) recuperan sus fotogramas originales en lugar de desentrelazarse. Requiere Desentrelazar."
+            }
+            Fr => {
+                "Les films télécinémas (DVD NTSC) retrouvent leurs images d'origine au lieu d'être désentrelacés. Nécessite Désentrelacer."
+            }
+            De => {
+                "Telecine-Filme (NTSC-DVD) erhalten ihre Originalbilder zurück, statt deinterlaced zu werden. Erfordert Deinterlacing."
+            }
+            Zh => "胶转视影片（NTSC DVD）恢复为原始帧，而不是去隔行。需要开启去隔行。",
         },
         Msg::CfgDaemonAuthToken => match lang {
             En => "Daemon Access Token",
@@ -3445,6 +3643,37 @@ pub fn t(lang: Language, msg: Msg) -> &'static str {
             En | It | Es | Fr | De => "Daemon",
             Zh => "守护进程",
         },
+        Msg::WebGroupVideo => match lang {
+            En => "Picture",
+            It => "Immagine",
+            Es => "Imagen",
+            Fr => "Image",
+            De => "Bild",
+            Zh => "画面",
+        },
+        Msg::PictureCropped => match lang {
+            En => "cropped to {width}×{height}",
+            It => "ritagliato a {width}×{height}",
+            Es => "recortado a {width}×{height}",
+            Fr => "recadré en {width}×{height}",
+            De => "beschnitten auf {width}×{height}",
+            Zh => "已裁剪为 {width}×{height}",
+        },
+        Msg::PictureDeinterlaced => match lang {
+            En | De => "deinterlaced",
+            It => "deinterlacciato",
+            Es => "desentrelazado",
+            Fr => "désentrelacé",
+            Zh => "已去隔行",
+        },
+        Msg::PictureInverseTelecined => match lang {
+            En => "inverse telecined",
+            It => "telecine inverso applicato",
+            Es => "telecine inverso aplicado",
+            Fr => "télécinéma inverse appliqué",
+            De => "Inverse Telecine angewendet",
+            Zh => "已反胶转视",
+        },
         Msg::WebGroupDisc => match lang {
             En => "Disc ripping",
             It => "Estrazione dischi",
@@ -4201,6 +4430,7 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("badge_ready", Msg::StatusReady),
     ("badge_skipped", Msg::Skipped),
     ("badge_verifying", Msg::StatusVerifying),
+    ("status_searching", Msg::StatusSearching),
     ("badge_vmaf_failed", Msg::WebVmafFailed),
     ("cancel", Msg::Cancel),
     ("confirm", Msg::Confirm),
@@ -4233,6 +4463,10 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("cfg_audio_mode_copy", Msg::WebCfgAudioModeCopy),
     ("cfg_audio_mode_opus", Msg::WebCfgAudioModeOpus),
     ("cfg_delete_source", Msg::CfgDeleteSource),
+    ("cfg_crf_mode", Msg::CfgCrfMode),
+    ("crf_mode_fixed", Msg::CrfModeFixed),
+    ("crf_mode_auto", Msg::CrfModeAuto),
+    ("crf_mode_hint", Msg::CrfModeHint),
     ("cfg_daemon_auth_token", Msg::CfgDaemonAuthToken),
     (
         "cfg_daemon_allow_insecure_lan",
@@ -4269,6 +4503,22 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("cfg_select_all_fallback", Msg::WebCfgSelectAllFallback),
     ("cfg_skip_already_opus", Msg::SkipAlreadyOpus),
     ("cfg_staging_directory", Msg::CfgStagingDirectory),
+    ("cfg_crop", Msg::CfgCrop),
+    ("cfg_deinterlace", Msg::CfgDeinterlace),
+    ("cfg_inverse_telecine", Msg::CfgInverseTelecine),
+    ("cfg_disc_rips_only", Msg::CfgDiscRipsOnly),
+    ("cfg_delete_processed_source", Msg::CfgDeleteProcessedSource),
+    (
+        "delete_processed_source_warning",
+        Msg::DeleteProcessedSourceWarning,
+    ),
+    ("cfg_delete_hdr10plus_source", Msg::CfgDeleteHdr10PlusSource),
+    (
+        "delete_hdr10plus_source_warning",
+        Msg::DeleteHdr10PlusSourceWarning,
+    ),
+    ("hdr10plus_hint", Msg::Hdr10PlusDroppedHint),
+    ("inverse_telecine_hint", Msg::InverseTelecineHint),
     ("cfg_subtitle_languages", Msg::CfgSubtitleLanguages),
     ("cfg_svt_preset", Msg::CfgSvtPreset),
     ("cfg_vmaf_enabled", Msg::CfgVmafEnabled),
@@ -4308,6 +4558,8 @@ pub const WEB_KEYS: &[(&str, Msg)] = &[
     ("group_audio", Msg::WebGroupAudio),
     ("group_daemon", Msg::WebGroupDaemon),
     ("group_disc", Msg::WebGroupDisc),
+    ("group_video", Msg::WebGroupVideo),
+    ("picture_label", Msg::WebGroupVideo),
     ("group_general", Msg::WebGroupGeneral),
     ("group_output", Msg::WebGroupOutput),
     ("group_performance", Msg::WebGroupPerformance),

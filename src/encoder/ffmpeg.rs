@@ -107,7 +107,7 @@ pub enum EncodeResult {
 #[allow(clippy::too_many_lines)]
 pub fn encode_video(
     params: &EncodingParams,
-    progress_callback: Option<ProgressCallback>,
+    progress_callback: Option<&mut dyn FnMut(f64)>,
     cancel_flag: &AtomicBool,
     duration: f64,
     total_frames: f64,
@@ -287,7 +287,7 @@ fn run_encode_loop(
     progress_file: &Path,
     duration: f64,
     total_frames: f64,
-    mut progress_callback: Option<ProgressCallback>,
+    mut progress_callback: Option<&mut dyn FnMut(f64)>,
     cancel_flag: &AtomicBool,
     output: &str,
     stderr_path: &Path,

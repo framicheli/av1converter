@@ -1,4 +1,5 @@
 use crate::analyzer::HdrType;
+use crate::analyzer::picture::PictureFilter;
 use crate::error::AppError;
 use serde::Deserialize;
 use std::path::Path;
@@ -31,7 +32,7 @@ fn escape_filter_value(value: &str) -> String {
 
 /// Wait for a child process, killing it as soon as the cancel flag is raised.
 /// `Ok(None)` means it was cancelled rather than allowed to finish.
-fn wait_or_cancel(
+pub(crate) fn wait_or_cancel(
     child: &mut std::process::Child,
     cancel_flag: &AtomicBool,
 ) -> Result<Option<std::process::ExitStatus>, AppError> {
@@ -53,6 +54,25 @@ fn wait_or_cancel(
                 )));
             }
         }
+    }
+}
+
+/// A stretch of the source, in seconds from its start.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Window {
+    pub start_secs: f64,
+    pub length_secs: f64,
+}
+
+impl Window {
+    /// The input options that read only this stretch of the next input.
+    pub fn input_args(&self) -> [String; 4] {
+        [
+            "-ss".to_string(),
+            format!("{:.3}", self.start_secs),
+            "-t".to_string(),
+            format!("{:.3}", self.length_secs),
+        ]
     }
 }
 
@@ -125,16 +145,45 @@ fn vmaf_failure(stderr: String) -> AppError {
     AppError::Vmaf(stderr)
 }
 
-/// Calculate VMAF score between original and encoded video. Honours
-/// `cancel_flag` as encoding does: the ffmpeg process is killed and its log
-/// file cleaned up.
-#[allow(clippy::too_many_lines)]
+/// The `-lavfi` graph that scores input 1 against input 0. The reference
+/// passes through `picture` first, the same crop and deinterlace the encode
+/// applied. Frames are paired by timestamp, or by position when `picture`
+/// drops frames.
+fn vmaf_graph(
+    log_path: &str,
+    n_threads: usize,
+    model_suffix: &str,
+    picture: &PictureFilter,
+) -> String {
+    let align = if picture.drops_frames() {
+        "settb=1,setpts=N"
+    } else {
+        "setpts=PTS-STARTPTS"
+    };
+    let reference = picture
+        .chain()
+        .map_or_else(String::new, |chain| format!("{chain},"));
+    format!(
+        "[0:V]{reference}format=yuv420p10le,{align}[ref];\
+         [1:V]format=yuv420p10le,{align}[dist];\
+         [dist][ref]libvmaf=log_path={}:log_fmt=json:n_threads={n_threads}:n_subsample=10{model_suffix}",
+        escape_filter_value(log_path),
+    )
+}
+
+/// Calculate VMAF score between original and encoded video. With `window`,
+/// only that stretch of the original is the reference. Honours `cancel_flag`
+/// as encoding does: the ffmpeg process is killed and its log file cleaned
+/// up.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub fn calculate_vmaf(
     original: &Path,
     encoded: &Path,
+    window: Option<&Window>,
     hdr_type: HdrType,
     width: u32,
     height: u32,
+    picture: &PictureFilter,
     cancel_flag: &AtomicBool,
 ) -> Result<VmafOutcome, AppError> {
     let uid = VMAF_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -161,13 +210,11 @@ pub fn calculate_vmaf(
 
     // VMAF filter with quick settings (subsample=10 for speed). libvmaf takes
     // the distorted stream as its first input and the reference as its second.
-    let filter = format!(
-        "[0:V]format=yuv420p10le,setpts=PTS-STARTPTS[ref];\
-         [1:V]format=yuv420p10le,setpts=PTS-STARTPTS[dist];\
-         [dist][ref]libvmaf=log_path={}:log_fmt=json:n_threads={}:n_subsample=10{}",
-        escape_filter_value(&json_output.to_string_lossy()),
+    let filter = vmaf_graph(
+        &json_output.to_string_lossy(),
         n_threads,
-        model_suffix
+        model_suffix,
+        picture,
     );
 
     info!(
@@ -189,10 +236,12 @@ pub fn calculate_vmaf(
         .map_err(|e| AppError::Vmaf(format!("Failed to create VMAF log file: {e}")))?;
 
     let mut ffmpeg = Command::new("ffmpeg");
+    ffmpeg.args(["-nostdin", "-nostats"]);
+    if let Some(window) = window {
+        ffmpeg.args(window.input_args());
+    }
     ffmpeg
         .args([
-            "-nostdin",
-            "-nostats",
             "-i",
             &original.to_string_lossy(),
             "-i",
@@ -260,7 +309,8 @@ pub fn calculate_vmaf(
 mod tests {
     #[cfg(unix)]
     use super::wait_or_cancel;
-    use super::{VmafJson, VmafResult, escape_filter_value, vmaf_failure};
+    use super::{VmafJson, VmafResult, Window, escape_filter_value, vmaf_failure, vmaf_graph};
+    use crate::analyzer::picture::{Crop, FieldTreatment, PictureFilter};
     #[cfg(unix)]
     use std::process::Stdio;
     #[cfg(unix)]
@@ -363,6 +413,69 @@ mod tests {
     #[test]
     fn both_scores_below_the_threshold_fail() {
         assert!(!scores(80.0, 70.0).meets_threshold(90.0));
+    }
+
+    #[test]
+    fn an_unprocessed_reference_is_paired_by_timestamp() {
+        assert_eq!(
+            vmaf_graph("/tmp/v.json", 4, "", &PictureFilter::default()),
+            "[0:V]format=yuv420p10le,setpts=PTS-STARTPTS[ref];\
+             [1:V]format=yuv420p10le,setpts=PTS-STARTPTS[dist];\
+             [dist][ref]libvmaf=log_path=/tmp/v.json:log_fmt=json:n_threads=4:n_subsample=10"
+        );
+    }
+
+    #[test]
+    fn a_cropped_reference_is_cropped_like_the_encode() {
+        let picture = PictureFilter {
+            crop: Some(Crop {
+                width: 640,
+                height: 272,
+                x: 0,
+                y: 44,
+            }),
+            fields: FieldTreatment::Deinterlace {
+                top_field_first: true,
+            },
+        };
+        assert_eq!(
+            vmaf_graph(
+                "/tmp/v.json",
+                2,
+                ":model='version=vmaf_v0.6.1neg'",
+                &picture
+            ),
+            "[0:V]bwdif=mode=send_frame:parity=tff:deint=all,crop=640:272:0:44,\
+             format=yuv420p10le,setpts=PTS-STARTPTS[ref];\
+             [1:V]format=yuv420p10le,setpts=PTS-STARTPTS[dist];\
+             [dist][ref]libvmaf=log_path=/tmp/v.json:log_fmt=json:n_threads=2:\
+             n_subsample=10:model='version=vmaf_v0.6.1neg'"
+        );
+    }
+
+    #[test]
+    fn an_inverse_telecined_reference_is_paired_by_frame_position() {
+        let picture = PictureFilter {
+            crop: None,
+            fields: FieldTreatment::InverseTelecine,
+        };
+        let graph = vmaf_graph("/tmp/v.json", 1, "", &picture);
+        assert!(graph.starts_with(
+            "[0:V]fieldmatch=order=auto:combmatch=full,\
+             bwdif=mode=send_frame:deint=interlaced,decimate,\
+             format=yuv420p10le,settb=1,setpts=N[ref];\
+             [1:V]format=yuv420p10le,settb=1,setpts=N[dist];"
+        ));
+        assert!(!graph.contains("STARTPTS"));
+    }
+
+    #[test]
+    fn a_window_reads_its_stretch_to_the_millisecond() {
+        let window = Window {
+            start_secs: 125.5,
+            length_secs: 8.0,
+        };
+        assert_eq!(window.input_args(), ["-ss", "125.500", "-t", "8.000"]);
     }
 
     /// Option-level escapes are escaped again for the graph parser.

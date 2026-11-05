@@ -2135,6 +2135,7 @@ impl App {
                             .resolve_for(&j.audio_tracks, &audio_config, &output)
                     },
                     input: j.path.clone(),
+                    disc_rip: j.temporary,
                     output,
                     source_identity,
                     metadata,
@@ -2851,6 +2852,16 @@ impl App {
                         job.status = JobStatus::Verifying;
                     }
                 }
+                WorkerMessage::Searching(idx, progress) => {
+                    if let Some(job) = self.queue.jobs.get_mut(idx) {
+                        job.status = JobStatus::Searching { progress };
+                    }
+                }
+                WorkerMessage::Crf(idx, value) => {
+                    if let Some(job) = self.queue.jobs.get_mut(idx) {
+                        job.crf = Some(value);
+                    }
+                }
                 WorkerMessage::DoneVmafFailed(idx, reason) => {
                     self.finish_job(idx, JobStatus::DoneVmafFailed { reason });
                 }
@@ -2867,6 +2878,11 @@ impl App {
                 WorkerMessage::SourceKept(idx, reason) => {
                     if let Some(job) = self.queue.jobs.get_mut(idx) {
                         job.source_kept_reason = Some(reason);
+                    }
+                }
+                WorkerMessage::Picture(idx, filter) => {
+                    if let Some(job) = self.queue.jobs.get_mut(idx) {
+                        job.set_picture(filter);
                     }
                 }
                 WorkerMessage::Cancelled => {
@@ -4250,6 +4266,7 @@ pub(crate) mod tests {
             dv_profile: None,
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "h264".into(),
             frame_rate_num: 24,
             frame_rate_den: 1,
@@ -4620,6 +4637,56 @@ pub(crate) mod tests {
         assert!(!path.exists());
     }
 
+    /// The CRF search progress and each encode's CRF reach the TUI job, and
+    /// the encode's progress takes over from the search.
+    #[test]
+    fn the_crf_search_and_chosen_crf_reach_the_tui_job() {
+        let mut app = App::new();
+        let mut job = EncodingJob::new(PathBuf::from("film.mkv"));
+        job.status = JobStatus::Encoding { progress: 0.0 };
+        app.queue.jobs.push(job);
+        let (tx, rx) = mpsc::channel();
+        app.progress_receiver = Some(rx);
+
+        tx.send(WorkerMessage::Searching(0, 25.0)).unwrap();
+        app.process_progress_messages();
+        assert!(matches!(
+            app.queue.jobs[0].status,
+            JobStatus::Searching { progress } if (progress - 25.0).abs() < f64::EPSILON
+        ));
+
+        tx.send(WorkerMessage::Crf(0, 31)).unwrap();
+        tx.send(WorkerMessage::Progress(0, 5.0)).unwrap();
+        app.process_progress_messages();
+        assert_eq!(app.queue.jobs[0].crf, Some(31));
+        assert!(matches!(
+            app.queue.jobs[0].status,
+            JobStatus::Encoding { progress } if (progress - 5.0).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn the_picture_processing_reaches_the_tui_job() {
+        use crate::analyzer::picture::{FieldTreatment, PictureFilter};
+        let mut app = App::new();
+        let mut job = EncodingJob::new(PathBuf::from("dvd.mkv"));
+        job.status = JobStatus::Encoding { progress: 0.0 };
+        app.queue.jobs.push(job);
+        let (tx, rx) = mpsc::channel();
+        app.progress_receiver = Some(rx);
+        let filter = PictureFilter {
+            crop: None,
+            fields: FieldTreatment::Deinterlace {
+                top_field_first: true,
+            },
+        };
+        tx.send(WorkerMessage::Picture(0, filter)).unwrap();
+
+        app.process_progress_messages();
+
+        assert_eq!(app.queue.jobs[0].picture, Some(filter));
+    }
+
     #[test]
     fn empty_encode_session_does_not_arm_encoding() {
         let mut app = App::new();
@@ -4635,6 +4702,7 @@ pub(crate) mod tests {
             dv_profile: None,
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "h264".into(),
             frame_rate_num: 24,
             frame_rate_den: 1,
@@ -5172,6 +5240,7 @@ pub(crate) mod tests {
             dv_profile: None,
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "h264".to_string(),
             frame_rate_num: 24,
             frame_rate_den: 1,
@@ -5535,6 +5604,7 @@ pub(crate) mod tests {
                     dv_profile: None,
                     dv_bl_compat: None,
                     hdr10_static: None,
+                    hdr10_plus: false,
                     codec_name: "h264".into(),
                     frame_rate_num: 24,
                     frame_rate_den: 1,
@@ -5850,6 +5920,7 @@ pub(crate) mod tests {
             dv_profile: None,
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "h264".into(),
             frame_rate_num: 24,
             frame_rate_den: 1,

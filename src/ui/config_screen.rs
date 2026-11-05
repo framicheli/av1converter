@@ -1,6 +1,6 @@
 use super::common::{message_color, wrapped_rows};
 use crate::app::App;
-use crate::config::{AppConfig, AudioMode, EncodingPreset, QualityPreset};
+use crate::config::{AppConfig, AudioMode, CrfMode, EncodingPreset, QualityPreset};
 use crate::i18n::{Msg, t};
 use ratatui::{
     Frame,
@@ -31,6 +31,7 @@ pub enum ConfigField {
     VmafThreshold,
     VmafEnabled,
     DeleteSource,
+    CrfMode,
     SvtPreset,
     NvencPreset,
     QualityPreset,
@@ -45,6 +46,12 @@ pub enum ConfigField {
     AudioDefaultMode,
     OpusBitratePerChannel,
     SkipAlreadyOpus,
+    VideoCrop,
+    VideoDeinterlace,
+    VideoInverseTelecine,
+    VideoDiscRipsOnly,
+    VideoDeleteProcessedSource,
+    VideoDeleteHdr10PlusSource,
     DaemonEnabled,
     DaemonAutostart,
     DaemonBindAddress,
@@ -128,6 +135,11 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         label: Msg::CfgDeleteSource,
         kind: ConfigItemKind::Toggle,
         field: ConfigField::DeleteSource,
+    },
+    ConfigItem {
+        label: Msg::CfgCrfMode,
+        kind: ConfigItemKind::Cycle,
+        field: ConfigField::CrfMode,
     },
     ConfigItem {
         label: Msg::CfgRfSd,
@@ -380,6 +392,36 @@ pub const CONFIG_ITEMS: &[ConfigItem] = &[
         field: ConfigField::SkipAlreadyOpus,
     },
     ConfigItem {
+        label: Msg::CfgCrop,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VideoCrop,
+    },
+    ConfigItem {
+        label: Msg::CfgDeinterlace,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VideoDeinterlace,
+    },
+    ConfigItem {
+        label: Msg::CfgInverseTelecine,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VideoInverseTelecine,
+    },
+    ConfigItem {
+        label: Msg::CfgDiscRipsOnly,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VideoDiscRipsOnly,
+    },
+    ConfigItem {
+        label: Msg::CfgDeleteProcessedSource,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VideoDeleteProcessedSource,
+    },
+    ConfigItem {
+        label: Msg::CfgDeleteHdr10PlusSource,
+        kind: ConfigItemKind::Toggle,
+        field: ConfigField::VideoDeleteHdr10PlusSource,
+    },
+    ConfigItem {
         label: Msg::CfgDaemonEnabled,
         kind: ConfigItemKind::Toggle,
         field: ConfigField::DaemonEnabled,
@@ -444,6 +486,7 @@ fn config_field_path(field: ConfigField) -> Option<String> {
         ConfigField::VmafThreshold => "quality.vmaf_threshold",
         ConfigField::VmafEnabled => "quality.vmaf_enabled",
         ConfigField::DeleteSource => "quality.delete_source_on_success",
+        ConfigField::CrfMode => "quality.crf_mode",
         ConfigField::SvtPreset => "performance.svt_preset",
         ConfigField::NvencPreset => "performance.nvenc_preset",
         ConfigField::QualityPreset => "quality_preset",
@@ -457,6 +500,12 @@ fn config_field_path(field: ConfigField) -> Option<String> {
         ConfigField::AudioDefaultMode => "audio.default_mode",
         ConfigField::OpusBitratePerChannel => "audio.opus_bitrate_per_channel",
         ConfigField::SkipAlreadyOpus => "audio.skip_already_opus",
+        ConfigField::VideoCrop => "video.crop",
+        ConfigField::VideoDeinterlace => "video.deinterlace",
+        ConfigField::VideoInverseTelecine => "video.inverse_telecine",
+        ConfigField::VideoDiscRipsOnly => "video.disc_rips_only",
+        ConfigField::VideoDeleteProcessedSource => "video.delete_processed_source",
+        ConfigField::VideoDeleteHdr10PlusSource => "video.delete_hdr10plus_source",
         ConfigField::DaemonEnabled => "daemon.enabled",
         ConfigField::DaemonBindAddress => "daemon.bind_address",
         ConfigField::DaemonPort => "daemon.port",
@@ -516,13 +565,34 @@ pub fn visible_config_items(config: &AppConfig) -> Vec<&'static ConfigItem> {
             config.quality.vmaf_enabled
                 || !matches!(
                     item.field,
-                    ConfigField::VmafThreshold | ConfigField::DeleteSource
+                    ConfigField::VmafThreshold | ConfigField::DeleteSource | ConfigField::CrfMode
                 )
         })
+        .filter(|item| picture_item_visible(config, item.field))
         .filter(|item| {
             item.field != ConfigField::DaemonAutostart || crate::daemon::service::supported()
         })
         .collect()
+}
+
+/// Whether a picture row is shown: inverse telecine with deinterlacing on,
+/// the disc-only row with cropping or deinterlacing on, processed-source
+/// deletion when source deletion is also on, and HDR10+ source deletion when
+/// source deletion is on. Other rows are always shown.
+fn picture_item_visible(config: &AppConfig, field: ConfigField) -> bool {
+    let video = &config.video;
+    let processing = video.crop || video.deinterlace;
+    match field {
+        ConfigField::VideoInverseTelecine => video.deinterlace,
+        ConfigField::VideoDiscRipsOnly => processing,
+        ConfigField::VideoDeleteProcessedSource => {
+            processing && config.quality.vmaf_enabled && config.quality.delete_source_on_success
+        }
+        ConfigField::VideoDeleteHdr10PlusSource => {
+            config.quality.vmaf_enabled && config.quality.delete_source_on_success
+        }
+        _ => true,
+    }
 }
 
 /// Localized display name for a quality preset.
@@ -534,6 +604,17 @@ fn quality_preset_name(lang: crate::i18n::Language, preset: QualityPreset) -> &'
             QualityPreset::Medium => Msg::QpMedium,
             QualityPreset::High => Msg::QpHigh,
             QualityPreset::Custom => Msg::QpCustom,
+        },
+    )
+}
+
+/// Localized display name for a CRF mode.
+fn crf_mode_name(lang: crate::i18n::Language, mode: CrfMode) -> &'static str {
+    t(
+        lang,
+        match mode {
+            CrfMode::Fixed => Msg::CrfModeFixed,
+            CrfMode::Auto => Msg::CrfModeAuto,
         },
     )
 }
@@ -563,6 +644,7 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::DeleteSource => {
             bool_display(config.language, config.quality.delete_source_on_success)
         }
+        ConfigField::CrfMode => crf_mode_name(config.language, config.quality.crf_mode).to_string(),
         ConfigField::SvtPreset => config.performance.svt_preset.to_string(),
         ConfigField::NvencPreset => config.performance.nvenc_preset.clone(),
         ConfigField::Preset(tier, metric) => {
@@ -587,6 +669,20 @@ pub fn get_config_value(config: &AppConfig, index: usize) -> String {
         ConfigField::OpusBitratePerChannel => config.audio.opus_bitrate_per_channel.to_string(),
         ConfigField::SkipAlreadyOpus => {
             bool_display(config.language, config.audio.skip_already_opus)
+        }
+        ConfigField::VideoCrop => bool_display(config.language, config.video.crop),
+        ConfigField::VideoDeinterlace => bool_display(config.language, config.video.deinterlace),
+        ConfigField::VideoInverseTelecine => {
+            bool_display(config.language, config.video.inverse_telecine)
+        }
+        ConfigField::VideoDiscRipsOnly => {
+            bool_display(config.language, config.video.disc_rips_only)
+        }
+        ConfigField::VideoDeleteProcessedSource => {
+            bool_display(config.language, config.video.delete_processed_source)
+        }
+        ConfigField::VideoDeleteHdr10PlusSource => {
+            bool_display(config.language, config.video.delete_hdr10plus_source)
         }
         ConfigField::DaemonEnabled => bool_display(config.language, config.daemon.enabled),
         ConfigField::DaemonAutostart => {
@@ -818,6 +914,10 @@ fn selected_config_hint(app: &App) -> Option<Msg> {
     }
     match field {
         Some(ConfigField::DeleteSource) => Some(Msg::WebDeleteSourceWarning),
+        Some(ConfigField::VideoDeleteProcessedSource) => Some(Msg::DeleteProcessedSourceWarning),
+        Some(ConfigField::VideoDeleteHdr10PlusSource) => Some(Msg::DeleteHdr10PlusSourceWarning),
+        Some(ConfigField::VideoInverseTelecine) => Some(Msg::InverseTelecineHint),
+        Some(ConfigField::CrfMode) => Some(Msg::CrfModeHint),
         Some(ConfigField::DaemonAutostart) => Some(Msg::CfgDaemonAutostartHint),
         Some(
             ConfigField::DaemonEnabled
@@ -1063,6 +1163,30 @@ mod tests {
             .expect("the port row");
         assert!(!port.1.contains(Modifier::DIM));
         assert_ne!(selected_config_hint(&app), Some(Msg::HostSettingsReadOnly));
+    }
+
+    /// The CRF selection row shows its translated mode, carries its hint, and
+    /// is hidden with VMAF off.
+    #[test]
+    fn the_crf_mode_row_follows_vmaf_and_names_its_mode() {
+        let mut app = App::new();
+        app.config = AppConfig::default();
+        let index = visible_config_items(&app.config)
+            .iter()
+            .position(|item| item.field == ConfigField::CrfMode)
+            .unwrap();
+        assert_eq!(get_config_value(&app.config, index), "Fixed");
+        app.config.quality.crf_mode = CrfMode::Auto;
+        assert_eq!(get_config_value(&app.config, index), "Automatic");
+        app.config_selected = index;
+        assert_eq!(selected_config_hint(&app), Some(Msg::CrfModeHint));
+
+        app.config.quality.vmaf_enabled = false;
+        assert!(
+            !visible_config_items(&app.config)
+                .iter()
+                .any(|item| item.field == ConfigField::CrfMode)
+        );
     }
 
     #[test]

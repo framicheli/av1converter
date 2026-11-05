@@ -475,7 +475,7 @@ mod tests {
                 id: 0,
                 name: "Blade Runner, The \"Final\" Cut".to_string(),
                 duration: Duration::from_secs(7051),
-                size_bytes: 29_715_223_808,
+                size_bytes: 52_428_800,
                 chapters: 32,
                 tracks: Vec::new(),
             },
@@ -860,6 +860,36 @@ mod tests {
         let dir = file.parent().unwrap();
         assert!(is_staging_dir(dir));
         assert_eq!(dir.parent().unwrap(), root);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A title larger than the free space under the staging root is refused
+    /// before makemkvcon runs, and no staging directory is created.
+    #[cfg(unix)]
+    #[test]
+    fn a_title_larger_than_the_free_space_is_refused() {
+        let base = scratch("no_space");
+        let root = base.join("staging");
+        let out = base.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let mut config = config_with_root(&root);
+        config.output.output_directory = Some(out.to_string_lossy().into_owned());
+
+        let (source, mut title) = disc("THE_DISC");
+        title.size_bytes = u64::MAX / 2;
+        let bin = fake_makemkvcon(&base, &Fake::Rip);
+        let result = rip_to_staging(
+            &bin,
+            &config,
+            &source,
+            &title,
+            |_| {},
+            &AtomicBool::new(false),
+        );
+
+        assert!(matches!(result, Err(DiscError::InsufficientSpace)));
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
 
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -50,6 +50,37 @@ impl QualityPreset {
     }
 }
 
+/// How the CRF (or hardware quality value) of an encode is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CrfMode {
+    /// The per-resolution value from the presets table.
+    #[default]
+    #[serde(rename = "fixed")]
+    Fixed,
+    /// A sample search for the highest value whose samples meet the VMAF
+    /// threshold, with one re-encode at a lower value when the full output
+    /// misses it. Applies only with VMAF enabled.
+    #[serde(rename = "auto")]
+    Auto,
+}
+
+impl CrfMode {
+    /// All modes, in display/cycle order.
+    pub const ALL: [CrfMode; 2] = [CrfMode::Fixed, CrfMode::Auto];
+
+    /// The next mode in [`CrfMode::ALL`], wrapping around.
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    /// The previous mode in [`CrfMode::ALL`], wrapping around.
+    pub fn prev(self) -> Self {
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
 /// Quality configuration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -61,6 +92,16 @@ pub struct QualityConfig {
     /// Delete source file after encoding when VMAF score meets threshold
     #[serde(default)]
     pub delete_source_on_success: bool,
+    /// How each encode's CRF is chosen
+    #[serde(default)]
+    pub crf_mode: CrfMode,
+}
+
+impl QualityConfig {
+    /// Whether encodes search for their CRF: automatic mode with VMAF on.
+    pub fn searches_crf(&self) -> bool {
+        self.crf_mode == CrfMode::Auto && self.vmaf_enabled
+    }
 }
 
 impl Default for QualityConfig {
@@ -69,6 +110,7 @@ impl Default for QualityConfig {
             vmaf_threshold: 90.0,
             vmaf_enabled: true,
             delete_source_on_success: false,
+            crf_mode: CrfMode::Fixed,
         }
     }
 }
@@ -501,6 +543,29 @@ impl AudioMode {
         let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
         Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
     }
+}
+
+/// Picture processing applied before encoding (black-bar cropping and
+/// deinterlacing) and source deletion for processed or HDR10+ sources. Every
+/// option is off by default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct VideoConfig {
+    /// Detect black bars and crop them away.
+    pub crop: bool,
+    /// Detect interlaced video and deinterlace it with `bwdif`.
+    pub deinterlace: bool,
+    /// Detect telecined film and restore its progressive frames with
+    /// `fieldmatch` and `decimate`. Applies only with `deinterlace`.
+    pub inverse_telecine: bool,
+    /// Apply cropping and deinterlacing only to titles ripped from a disc.
+    pub disc_rips_only: bool,
+    /// Allow source deletion when the output was cropped or deinterlaced.
+    pub delete_processed_source: bool,
+    /// Allow source deletion when the source carries HDR10+ dynamic metadata
+    /// the output drops.
+    pub delete_hdr10plus_source: bool,
 }
 
 /// Audio transcoding configuration

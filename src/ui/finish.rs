@@ -242,6 +242,23 @@ fn render_single_file_finish(f: &mut Frame, app: &App) {
         )]));
     }
 
+    if let Some(crf) = job.crf {
+        lines.push(Line::from(vec![
+            Span::styled("CRF: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(crf.to_string()),
+        ]));
+    }
+
+    if let Some(picture) = job.picture.and_then(|picture| picture.summary(lang)) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}: ", t(lang, Msg::WebGroupVideo)),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::raw(picture),
+        ]));
+    }
+
     if !elapsed_str.is_empty() {
         lines.push(Line::from(vec![
             Span::styled(
@@ -484,7 +501,17 @@ fn source_kept_text(job: &crate::queue::EncodingJob, lang: Language) -> String {
     }
 }
 
+/// The result line under the multi-file list: the outcome, then the CRF of
+/// the encode and the crop and deinterlace it applied.
 fn result_detail(job: &crate::queue::EncodingJob, lang: Language) -> String {
+    std::iter::once(result_outcome(job, lang))
+        .chain(job.crf.map(|crf| format!("CRF {crf}")))
+        .chain(job.picture.and_then(|picture| picture.summary(lang)))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn result_outcome(job: &crate::queue::EncodingJob, lang: Language) -> String {
     match &job.status {
         JobStatus::Done => t(lang, Msg::Success).to_string(),
         JobStatus::DoneWithVmaf { score } => format!("VMAF {score:.1}"),
@@ -631,7 +658,7 @@ fn create_result_item(
 
 #[cfg(test)]
 mod tests {
-    use super::source_kept_text;
+    use super::{result_detail, source_kept_text};
     use crate::encoder::KeepReason;
     use crate::i18n::Language;
     use crate::queue::{EncodingJob, JobStatus};
@@ -662,6 +689,43 @@ mod tests {
         assert_eq!(
             source_kept_text(&mean_failed, Language::English),
             "Source kept (VMAF 93.0 < 95)"
+        );
+    }
+
+    #[test]
+    fn the_result_line_names_the_crf_of_the_encode() {
+        let mut job = job_with(JobStatus::DoneWithVmaf { score: 97.0 });
+        job.crf = Some(28);
+        assert_eq!(result_detail(&job, Language::English), "VMAF 97.0 · CRF 28");
+        job.set_picture(crate::analyzer::picture::PictureFilter {
+            crop: None,
+            fields: crate::analyzer::picture::FieldTreatment::InverseTelecine,
+        });
+        assert_eq!(
+            result_detail(&job, Language::English),
+            "VMAF 97.0 · CRF 28 · inverse telecined"
+        );
+    }
+
+    #[test]
+    fn the_result_line_names_the_crop_and_deinterlace() {
+        use crate::analyzer::picture::{Crop, FieldTreatment, PictureFilter};
+        let mut job = job_with(JobStatus::DoneWithVmaf { score: 97.0 });
+        assert_eq!(result_detail(&job, Language::English), "VMAF 97.0");
+        job.set_picture(PictureFilter {
+            crop: Some(Crop {
+                width: 720,
+                height: 432,
+                x: 0,
+                y: 24,
+            }),
+            fields: FieldTreatment::Deinterlace {
+                top_field_first: false,
+            },
+        });
+        assert_eq!(
+            result_detail(&job, Language::English),
+            "VMAF 97.0 · cropped to 720×432, deinterlaced"
         );
     }
 

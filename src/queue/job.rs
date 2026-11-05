@@ -158,6 +158,12 @@ pub enum JobStatus {
         #[serde(skip)]
         progress: f64,
     },
+    /// Searching the CRF on samples before encoding. The percentage is not
+    /// persisted.
+    Searching {
+        #[serde(skip)]
+        progress: f64,
+    },
     /// Running VMAF quality check after encoding
     Verifying,
     /// Successfully encoded (no VMAF run)
@@ -219,6 +225,10 @@ pub struct EncodingJob {
     /// queue file that does not carry the field.
     #[serde(default)]
     pub source_kept_reason: Option<crate::encoder::KeepReason>,
+    /// The crop and deinterlace applied by the last encode. `None` when it
+    /// applied none, and in a queue file that does not carry the field.
+    #[serde(default)]
+    pub picture: Option<crate::analyzer::picture::PictureFilter>,
     pub remux_only: bool,
     /// Dolby Vision handling; `None` until the user has chosen (DV sources only)
     pub dv_mode: Option<DvMode>,
@@ -247,10 +257,17 @@ impl EncodingJob {
             source_deleted: false,
             source_kept_vmaf: None,
             source_kept_reason: None,
+            picture: None,
             remux_only: false,
             dv_mode: None,
             temporary: false,
         }
+    }
+
+    /// Record the crop and deinterlace an encode applies; a filter that
+    /// changes nothing clears the record.
+    pub fn set_picture(&mut self, filter: crate::analyzer::picture::PictureFilter) {
+        self.picture = filter.chain().is_some().then_some(filter);
     }
 
     /// Get the filename
@@ -470,7 +487,9 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
                 job.status.is_terminal()
                     || matches!(
                         job.status,
-                        JobStatus::Encoding { .. } | JobStatus::Verifying
+                        JobStatus::Searching { .. }
+                            | JobStatus::Encoding { .. }
+                            | JobStatus::Verifying
                     )
             })
             .filter_map(|job| job.output_path.as_deref().map(output_key)),
@@ -480,7 +499,7 @@ pub fn make_output_paths_unique(jobs: &mut [EncodingJob]) {
         if job.status.is_terminal()
             || matches!(
                 job.status,
-                JobStatus::Encoding { .. } | JobStatus::Verifying
+                JobStatus::Searching { .. } | JobStatus::Encoding { .. } | JobStatus::Verifying
             )
         {
             continue;
@@ -1345,6 +1364,7 @@ mod tests {
             dv_profile: Some(profile),
             dv_bl_compat: None,
             hdr10_static: None,
+            hdr10_plus: false,
             codec_name: "hevc".to_string(),
             frame_rate_num: 24,
             frame_rate_den: 1,

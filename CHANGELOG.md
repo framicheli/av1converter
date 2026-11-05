@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.2.0] - Unreleased
+
+### Added
+
+- Optional cropping of black bars and deinterlacing, aimed at DVD rips, in a new Picture section of the TUI and web settings. Every option is off by default. **Crop black bars** samples the video at eight points and crops to the area any sample showed as picture. **Deinterlace** detects interlaced video and deinterlaces it with `bwdif`. **Inverse telecine** restores the original film frames of telecined NTSC DVDs instead of deinterlacing them. **Crop/deinterlace disc rips only** limits all of this to titles ripped from a disc. VMAF scores the output against the source cropped and deinterlaced the same way.
+- A cropped or deinterlaced output keeps its source, even after a passing VMAF score, unless **Delete cropped/deinterlaced sources** is turned on. VMAF cannot show that the crop or deinterlace itself was right. Encodes that keep Dolby Vision are never cropped or deinterlaced.
+- Both UIs show what was applied to each file, such as "cropped to 720×432, deinterlaced". It appears on the queue row from the start of the encode, and on the Finish screen.
+- Automatic CRF selection, a new **CRF selection** setting in the Quality section of the TUI and web settings (`crf_mode` in the configuration file). **Fixed**, the default, keeps using the presets table. **Automatic** encodes short samples of each file at several CRF values, scores them with VMAF and encodes the file at the highest value that meets the VMAF threshold. If the full encode still misses it, the file is encoded once more at a lower CRF. The queue shows a **Finding CRF...** phase with its progress. Automatic mode needs VMAF to be on.
+- The CRF each encode used is shown on the queue row and on the Finish screen in both UIs.
+- HDR10+ sources are recognised. Both UIs label them **HDR10+** (or **Dolby Vision + HDR10+**), and Track configuration warns that the HDR10+ dynamic metadata is not carried into the AV1 output. A Dolby Vision source encoded with **Keep Dolby Vision** still keeps its Dolby Vision.
+- An HDR10+ source keeps its source file, even after a passing VMAF score, unless the new **Delete HDR10+ sources** setting (`delete_hdr10plus_source`) is turned on. Before, such a source was deleted and its HDR10+ metadata was lost.
+
+### Fixed
+
+- The terminal UI exits when its terminal window closes, even when started with `nohup` or with hang-ups otherwise ignored; before, it kept running in the background and used a full CPU core. An attached TUI leaves the daemon's encode running; a standalone one stops its encode, as closing the window always did.
+- Correction to the 3.0.0 notes: MKV output keeps attachments such as embedded fonts, but not cover art. Cover art is dropped from every container, and a source that has it is never deleted automatically.
+
 ## [3.1.1] - Unreleased
 
 ### Fixed
