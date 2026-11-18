@@ -64,6 +64,8 @@ av1converter --start           # prints the web UI link with its access token
 
 `ffmpeg` and `ffprobe` **8.0 or newer** must be on your `PATH` (8.0 added Dolby Vision profile 10 in AV1; the tool is tested against 8.1). The version is not checked at startup. Ripping discs additionally needs [MakeMKV](docs/disc-ripping.md#makemkv).
 
+Both settings screens show you exactly what is installed: the **Dependencies** view (TUI: press `d` on the Settings screen; web UI: top of the Settings tab) lists every prerequisite below with ✓/✗ and the install command for your platform, copyable with `y` or a Copy button. It installs nothing itself.
+
 Not every FFmpeg build includes every feature. What you need depends on what you use:
 
 | FFmpeg capability                      | Needed for                                                                                                      | Required?                                   |

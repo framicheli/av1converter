@@ -287,6 +287,12 @@ td.grew { color: var(--warn); }
 
 /* ── Settings form ──────────────────────────────────────────────── */
 #settings-form { display: grid; gap: 4px; }
+
+#settings-deps { margin-bottom: 20px; }
+#settings-deps h3 { margin: 0 0 6px; font-size: 13px; color: var(--ink-2); }
+.deps-row { display: flex; align-items: center; gap: 10px; padding: 3px 0; flex-wrap: wrap; }
+.deps-label { min-width: 280px; }
+.deps-cmd { color: var(--ink-2); }
 .field {
   display: grid;
   grid-template-columns: 280px 1fr;

@@ -211,6 +211,7 @@ fn handle_request(
         ),
         (Method::Get, "/api/settings") => (200, api::settings_get(shared)),
         (Method::Get, "/api/settings/access") => (200, api::settings_access(shared, local_request)),
+        (Method::Get, "/api/settings/deps") => (200, api::deps(shared)),
         (Method::Get, "/api/strings") => (200, api::strings(shared)),
         (Method::Get, "/api/job/tracks") => {
             api::job_tracks(shared, &query_param(query, "id").unwrap_or_default())
@@ -497,6 +498,7 @@ mod tests {
         };
 
         let routes = [
+            ("GET", "/api/settings/deps"),
             ("POST", "/api/discs/list"),
             ("POST", "/api/discs/scan"),
             ("POST", "/api/discs/rip"),

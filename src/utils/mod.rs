@@ -1,11 +1,13 @@
 pub mod child;
+pub mod clipboard;
 pub mod deps;
 pub mod humanize;
 pub mod logger;
 pub mod random;
 pub mod scratch;
 
-pub use deps::DependencyStatus;
+pub use clipboard::copy_to_clipboard;
+pub use deps::{DependencyReport, DependencyStatus, dependency_report};
 pub use humanize::{format_duration, format_file_size};
 pub use logger::{init_daemon_logging, init_logging};
 pub use random::random_hex;

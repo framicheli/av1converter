@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.3.0] - Unreleased
+
+### Added
+
+- A **Dependencies** view in the settings of both UIs (TUI: `d` on the Settings screen; web UI: top of the Settings tab). It lists every prerequisite — FFmpeg/FFprobe, the SVT-AV1 encoder, VMAF, Opus, libplacebo and MakeMKV — with its installed status and the install command for the current platform, copyable with `y` or a Copy button. It installs nothing itself; prerequisites outside `PATH` (a custom `makemkvcon_path`, for instance) can show as missing here while still working.
+
 ## [3.2.0] - Unreleased
 
 ### Added

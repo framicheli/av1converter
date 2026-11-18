@@ -1417,6 +1417,20 @@ pub fn settings_get(shared: &SharedState) -> Value {
     redacted(&lock(shared).config)
 }
 
+/// The prerequisite report for the Dependencies panel in Settings.
+pub fn deps(_shared: &SharedState) -> Value {
+    crate::utils::dependency_report()
+        .into_iter()
+        .map(|dep| {
+            json!({
+                "key": dep.key,
+                "installed": dep.installed,
+                "command": dep.command,
+            })
+        })
+        .collect()
+}
+
 /// Report host-level settings capabilities for the current connection.
 pub fn settings_access(shared: &SharedState, local_request: bool) -> Value {
     json!({
@@ -1752,7 +1766,7 @@ mod tests {
     #[cfg(unix)]
     use super::{Msg, fs_browse};
     use super::{
-        RecursiveScanGuard, queue, queue_cancel, queue_cancel_analysis, queue_clear_finished,
+        RecursiveScanGuard, deps, queue, queue_cancel, queue_cancel_analysis, queue_clear_finished,
         queue_move_up, queue_remove, settings_access, status, within_root,
     };
     use super::{SharedState, Value, json, queue_add};
@@ -1764,6 +1778,26 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
+
+    #[test]
+    fn deps_endpoint_reports_each_prerequisite_once() {
+        let shared = Arc::new(Mutex::new(DaemonState::new(AppConfig::default())));
+        let report = deps(&shared);
+        let keys: Vec<&str> = report
+            .as_array()
+            .expect("an array")
+            .iter()
+            .map(|entry| entry["key"].as_str().expect("a key"))
+            .collect();
+        let mut unique = keys.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), keys.len());
+        assert_eq!(keys.len(), 6);
+        for entry in report.as_array().unwrap() {
+            assert!(entry["installed"].is_boolean());
+        }
+    }
 
     fn shared_with_two_jobs() -> (SharedState, Vec<u64>) {
         let mut state = DaemonState::new(AppConfig::default());

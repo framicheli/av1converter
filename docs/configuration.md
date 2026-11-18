@@ -69,6 +69,8 @@ behind_proxy = false       # Treat every web request as remote; set when a rever
 
 **Settings screens.** Every field exists in both the TUI and web settings pages. The TUI hides rows that do not apply (per-tier values outside `custom`, VMAF options while VMAF is off, `film_grain` unless the encoder is SVT-AV1, picture options that depend on one that is off) and the web page greys them out or omits them. Remote browsers see the `[daemon]` and `[disc]` blocks read-only (see [Host-level settings](daemon.md#host-level-settings)). The web Settings tab re-reads the configuration each time it opens, unless it has unsaved edits.
 
+**Dependencies.** The top of the web Settings tab, and the separate Dependencies view the TUI Settings screen opens with `d`, list every prerequisite (FFmpeg/FFprobe, the SVT-AV1 encoder, VMAF, Opus, libplacebo, MakeMKV) with its installed status and the install command for the current platform. The command is copyable (`y` in the TUI, a Copy button in the web); nothing is installed for you. Prerequisite checks look on `PATH` only — a `makemkvcon_path` outside `PATH` is still found at rip time but shows as missing here.
+
 **When changes apply.** Edits take effect once saved. Bind-address and port changes take effect after a daemon restart. Encoder, quality and output changes update waiting jobs; track defaults apply only to files added after the change.
 
 ## Debugging

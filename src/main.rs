@@ -898,6 +898,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     Screen::Queue => ui::render_queue(f, app),
                     Screen::Finish => ui::render_finish(f, app),
                     Screen::Configuration => ui::render_config_screen(f, app),
+                    Screen::Dependencies => ui::render_deps_screen(f, app),
                 }
                 if app.dv_dialog.is_some() && app.current_screen == Screen::TrackConfig {
                     ui::render_dv_dialog(f, app);
@@ -993,6 +994,37 @@ fn handle_key(app: &mut App, key: KeyCode) {
         Screen::Queue => handle_queue_key(app, key),
         Screen::Finish => handle_finish_key(app, key),
         Screen::Configuration => handle_config_key(app, key),
+        Screen::Dependencies => handle_deps_key(app, key),
+    }
+}
+
+fn handle_deps_key(app: &mut App, key: KeyCode) {
+    let count = app.deps_report.len();
+    match key {
+        KeyCode::Up | KeyCode::Char('k') if app.deps_selected > 0 => app.deps_selected -= 1,
+        KeyCode::Down | KeyCode::Char('j') if app.deps_selected + 1 < count => {
+            app.deps_selected += 1;
+        }
+        KeyCode::Esc => app.current_screen = Screen::Configuration,
+        KeyCode::Char('y') => copy_dep_command(app),
+        _ => {}
+    }
+}
+
+/// Copy the selected dependency's install command. When no clipboard utility
+/// is available, the command itself becomes the message so it stays visible.
+fn copy_dep_command(app: &mut App) {
+    let lang = app.config.language;
+    match app
+        .deps_report
+        .get(app.deps_selected)
+        .and_then(|dep| dep.command)
+    {
+        Some(cmd) if crate::utils::copy_to_clipboard(cmd) => {
+            app.set_timed_success(t(lang, Msg::DepCopied), 4);
+        }
+        Some(cmd) => app.set_message(cmd),
+        None => {}
     }
 }
 
@@ -1522,6 +1554,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                 start_config_edit(app);
             }
         }
+        KeyCode::Char('d') => app.navigate_to_dependencies(),
         KeyCode::Char('s') => save_config(app),
         KeyCode::Char('b') => browse_config_folder(app),
         _ => {}

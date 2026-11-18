@@ -757,6 +757,120 @@ fn bool_display(lang: crate::i18n::Language, v: bool) -> String {
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 
+/// Localized label for a dependency report key.
+fn dep_label(key: &str) -> Msg {
+    match key {
+        "ffmpeg" => Msg::DepFfmpeg,
+        "libsvtav1" => Msg::DepSvtAv1,
+        "libvmaf" => Msg::DepVmaf,
+        "libopus" => Msg::DepOpus,
+        "libplacebo" => Msg::DepLibplacebo,
+        _ => Msg::DepMakemkv,
+    }
+}
+
+/// Render the read-only Dependencies screen: one row per prerequisite with
+/// its status and the install command for this machine.
+pub fn render_deps_screen(f: &mut Frame, app: &App) {
+    let lang = app.config.language;
+
+    let help_text = Line::from(vec![
+        Span::styled("y", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}  ", t(lang, Msg::DepCopyCommand))),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(format!("\u{a0}{}", t(lang, Msg::Back))),
+    ]);
+
+    let notice = app.message.as_ref().map(|msg| {
+        Line::from(Span::styled(
+            msg.clone(),
+            Style::default()
+                .fg(message_color(app.message_kind))
+                .add_modifier(Modifier::BOLD),
+        ))
+    });
+
+    let footer_width = f.area().width.saturating_sub(2);
+    let notice_rows = notice.as_ref().map_or(0, |line| {
+        wrapped_rows(&line.to_string(), footer_width).min(4)
+    });
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(notice_rows),
+            Constraint::Length(wrapped_rows(&help_text.to_string(), footer_width)),
+        ])
+        .margin(1)
+        .split(f.area());
+
+    let title = Paragraph::new(t(lang, Msg::DepsTitle))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
+    f.render_widget(title, chunks[0]);
+
+    let items: Vec<ListItem> = app
+        .deps_report
+        .iter()
+        .enumerate()
+        .map(|(i, dep)| {
+            let prefix = if i == app.deps_selected { "> " } else { "  " };
+            let (mark, mark_color, status, status_color) = if dep.installed {
+                ("✓", Color::Green, Msg::DepInstalled, Color::Green)
+            } else {
+                ("✗", Color::Red, Msg::DepMissing, Color::Red)
+            };
+            let first = Line::from(vec![
+                Span::styled(format!("{prefix}{mark} "), Style::default().fg(mark_color)),
+                Span::raw(format!("{:<34}", t(lang, dep_label(dep.key)))),
+                Span::styled(t(lang, status), Style::default().fg(status_color)),
+            ]);
+            let mut lines = vec![first];
+            if !dep.installed {
+                let hint = match dep.command {
+                    Some(cmd) => {
+                        Span::styled(format!("   → {cmd}"), Style::default().fg(Color::DarkGray))
+                    }
+                    None => Span::styled(
+                        format!("   → {}", t(lang, Msg::DepNoCommand)),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                };
+                lines.push(Line::from(hint));
+            }
+            ListItem::new(lines)
+        })
+        .collect();
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(app.deps_selected));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(format!(" {} ", t(lang, Msg::DepsTitle))),
+    );
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    if let Some(notice) = notice {
+        f.render_widget(Paragraph::new(notice).wrap(Wrap { trim: true }), chunks[2]);
+    }
+    f.render_widget(
+        Paragraph::new(help_text).wrap(Wrap { trim: true }),
+        chunks[3],
+    );
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn render_config_screen(f: &mut Frame, app: &App) {
     let lang = app.config.language;
@@ -797,6 +911,8 @@ pub fn render_config_screen(f: &mut Frame, app: &App) {
             spans.push(Span::raw(format!("\u{a0}{}  ", t(lang, Msg::WebBrowse))));
         }
         spans.extend([
+            Span::styled("d", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("\u{a0}{}  ", t(lang, Msg::DepsTitle))),
             Span::styled("s", Style::default().fg(Color::Yellow)),
             Span::raw(format!("\u{a0}{}  ", t(lang, Msg::Save))),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),

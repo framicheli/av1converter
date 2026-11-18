@@ -31,6 +31,7 @@ pub enum Screen {
     Queue,
     Finish,
     Configuration,
+    Dependencies,
 }
 
 /// Current disc discovery, scan, or rip UI state.
@@ -322,6 +323,11 @@ pub struct App {
     /// The configuration as last loaded or saved. Encodes, analysis and track
     /// choices read it; the Settings screen edits `config`.
     pub saved_config: AppConfig,
+
+    // Dependencies screen state
+    /// Prerequisite report captured when the screen was opened.
+    pub deps_report: Vec<crate::utils::DependencyReport>,
+    pub deps_selected: usize,
 
     // Finish screen
     pub finish_cursor: usize,
@@ -985,6 +991,8 @@ impl App {
             config_edit_buffer: None,
             config_edit_cursor: 0,
             saved_config: config.clone(),
+            deps_report: Vec::new(),
+            deps_selected: 0,
             config,
             finish_cursor: 0,
             finish_list_state,
@@ -1228,6 +1236,13 @@ impl App {
         self.send_to_daemon(ClientRequest::SettingsGet);
         self.config_selected = 0;
         self.current_screen = Screen::Configuration;
+    }
+
+    /// Refresh the prerequisite report and open the Dependencies screen.
+    pub fn navigate_to_dependencies(&mut self) {
+        self.deps_report = crate::utils::dependency_report();
+        self.deps_selected = 0;
+        self.current_screen = Screen::Dependencies;
     }
 
     /// Whether the live config has diverged from the saved one.

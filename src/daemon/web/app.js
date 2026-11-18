@@ -2241,12 +2241,62 @@ function loadSettings() {
   return settingsLoad;
 }
 
+const DEP_LABEL_KEYS = {
+  ffmpeg: "dep_ffmpeg",
+  libsvtav1: "dep_svtav1",
+  libvmaf: "dep_vmaf",
+  libopus: "dep_opus",
+  libplacebo: "dep_libplacebo",
+  makemkv: "dep_makemkv",
+};
+
+function renderDeps(deps) {
+  const list = $("deps-list");
+  list.textContent = "";
+  for (const dep of deps) {
+    const row = document.createElement("div");
+    row.className = "deps-row";
+    const label = document.createElement("span");
+    label.className = "deps-label";
+    label.textContent = tr(DEP_LABEL_KEYS[dep.key] ?? dep.key);
+    const badge = document.createElement("span");
+    badge.className = `badge ${dep.installed ? "done" : "error"}`;
+    badge.textContent = tr(dep.installed ? "dep_installed" : "dep_missing");
+    row.append(label, badge);
+    if (!dep.installed) {
+      if (dep.command) {
+        const cmd = document.createElement("code");
+        cmd.className = "deps-cmd";
+        cmd.textContent = dep.command;
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "badge";
+        copy.textContent = tr("dep_copy_command");
+        copy.addEventListener("click", () => {
+          navigator.clipboard.writeText(dep.command).then(
+            () => toast(tr("dep_copied")),
+            () => toast(dep.command, true),
+          );
+        });
+        row.append(cmd, copy);
+      } else {
+        const note = document.createElement("span");
+        note.className = "muted";
+        note.textContent = tr("dep_no_command");
+        row.append(note);
+      }
+    }
+    list.appendChild(row);
+  }
+}
+
 async function loadSettingsNow() {
   try {
     const [loadedConfig, access] = await Promise.all([
       api("/api/settings"),
       api("/api/settings/access"),
     ]);
+    api("/api/settings/deps").then(renderDeps).catch(() => {});
     // Edits made while the request was out are kept.
     if (settingsDirty()) return;
     config = loadedConfig;

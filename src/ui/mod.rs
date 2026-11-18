@@ -10,7 +10,7 @@ pub mod home;
 mod queue;
 mod track_config;
 
-pub use config_screen::render_config_screen;
+pub use config_screen::{render_config_screen, render_deps_screen};
 pub use confirm_dialog::render_confirm_dialog;
 pub use disc::{render_disc_drives, render_disc_titles};
 pub use dv_dialog::render_dv_dialog;
@@ -307,6 +307,37 @@ mod tests {
 
         assert!(screen.contains("Removed 2 finished"));
         assert!(screen.contains("a.mkv"));
+    }
+
+    #[test]
+    fn the_dependencies_screen_lists_status_and_command() {
+        let mut app = App::new();
+        app.deps_report = vec![
+            crate::utils::DependencyReport {
+                key: "ffmpeg",
+                installed: true,
+                command: Some("brew install ffmpeg"),
+            },
+            crate::utils::DependencyReport {
+                key: "libvmaf",
+                installed: false,
+                command: Some("brew install ffmpeg"),
+            },
+            crate::utils::DependencyReport {
+                key: "makemkv",
+                installed: false,
+                command: None,
+            },
+        ];
+
+        let screen = rendered(100, 24, |frame| super::render_deps_screen(frame, &app));
+
+        let lang = app.config.language;
+        assert!(screen.contains(t(lang, Msg::DepsTitle)));
+        assert!(screen.contains(t(lang, Msg::DepInstalled)));
+        assert!(screen.contains(t(lang, Msg::DepMissing)));
+        assert!(screen.contains(t(lang, Msg::DepNoCommand)));
+        assert!(screen.contains("brew install ffmpeg"));
     }
 
     #[test]
